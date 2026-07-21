@@ -1,1 +1,1 @@
-"""Turns raw API payloads into normalized tables, separating personal data from model-safe fields."""
+"""Normalizes raw API payloads into tables, splitting personal data from model-safe fields."""

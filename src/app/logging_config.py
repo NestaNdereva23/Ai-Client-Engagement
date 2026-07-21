@@ -28,11 +28,7 @@ def configure_logging(level: str = "INFO", json_logs: bool = False) -> None:
         cache_logger_on_first_use=True,
     )
 
-    renderer = (
-        structlog.processors.JSONRenderer()
-        if json_logs
-        else structlog.dev.ConsoleRenderer()
-    )
+    renderer = structlog.processors.JSONRenderer() if json_logs else structlog.dev.ConsoleRenderer()
     formatter = structlog.stdlib.ProcessorFormatter(
         foreign_pre_chain=shared_processors,
         processors=[structlog.stdlib.ProcessorFormatter.remove_processors_meta, renderer],

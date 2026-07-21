@@ -14,7 +14,7 @@ __version__ = "0.1.0"
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     """
-        Build and configure the FastAPI application.
+    Build and configure the FastAPI application.
     """
     settings = settings or get_settings()
     configure_logging(settings.log_level, json_logs=settings.is_production)

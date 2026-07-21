@@ -27,7 +27,6 @@ class Settings(BaseSettings):
     app_name: str = "AI Client Engagement"
     log_level: str = "INFO"
 
-
     # Database
     database_url: str = "postgresql+psycopg://ace:ace@localhost:5432/ace"
 
