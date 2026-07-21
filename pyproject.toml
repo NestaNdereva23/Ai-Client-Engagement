@@ -5,7 +5,7 @@ description = "AI Client Engagement (ACE): AI-drafted, human-reviewed personaliz
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.115",
+    "fastapi[standard]>=0.115",
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
     "pydantic-settings>=2.5",
