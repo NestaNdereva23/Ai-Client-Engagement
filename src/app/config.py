@@ -29,6 +29,8 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "postgresql+psycopg://ace:ace@localhost:5432/ace"
+    # Time zone for database timestamps. Nairobi (EAT) is UTC+3, no daylight saving.
+    db_timezone: str = "Africa/Nairobi"
 
     # Cytonn client-data API. Reads CY_API_BASE_URL / CY_API_KEY
     cytonn_api_base_url: str = Field(
