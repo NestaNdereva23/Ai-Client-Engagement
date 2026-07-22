@@ -1,0 +1,55 @@
+"""Shared test fixtures.
+
+Worker tests need PostgreSQL (JSONB and upsert). When no database is reachable
+they are skipped rather than failed, so the rest of the suite still runs.
+"""
+
+from __future__ import annotations
+
+import pytest
+from sqlalchemy import text
+
+import app.db.models  # noqa: F401  (registers models on Base.metadata)
+from app.db.base import Base
+from app.db.session import SessionLocal, engine
+
+
+def _db_available() -> bool:
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
+
+
+DB_AVAILABLE = _db_available()
+
+
+@pytest.fixture
+def db() -> None:
+    """Skip a test cleanly when no database is reachable."""
+    if not DB_AVAILABLE:
+        pytest.skip("database not available")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _ensure_tables() -> None:
+    """Create tables if they are missing, so worker tests can run locally."""
+    if DB_AVAILABLE:
+        Base.metadata.create_all(engine)
+
+
+@pytest.fixture
+def cleanup_runs():
+    """Collect run ids to delete after the test, keeping the database clean."""
+    run_ids: list[str] = []
+    yield run_ids
+    if not DB_AVAILABLE:
+        return
+    with SessionLocal() as session:
+        for run_id in run_ids:
+            session.execute(text("DELETE FROM ingestion_rejects WHERE run_id = :r"), {"r": run_id})
+            session.execute(text("DELETE FROM raw_staging WHERE run_id = :r"), {"r": run_id})
+            session.execute(text("DELETE FROM ingestion_status WHERE run_id = :r"), {"r": run_id})
+        session.commit()
