@@ -6,6 +6,7 @@ and ``create_all`` see them.
 
 from app.db.models.models import (
     INGESTION_STATES,
+    ClientFeatures,
     Clients,
     Funds,
     IngestionReject,
@@ -17,6 +18,7 @@ from app.db.models.models import (
 
 __all__ = [
     "INGESTION_STATES",
+    "ClientFeatures",
     "Clients",
     "Funds",
     "IngestionReject",

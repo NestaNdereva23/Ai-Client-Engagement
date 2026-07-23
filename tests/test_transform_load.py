@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import delete, func, select
 
 from app.db.models.models import (
+    ClientFeatures,
     Clients,
     Funds,
     IngestionStatus,
@@ -64,6 +65,7 @@ def normalized_ids():
         return
     with SessionLocal() as session:
         session.execute(delete(Transactions).where(Transactions.txn_id.in_(ids["txns"])))
+        session.execute(delete(ClientFeatures).where(ClientFeatures.client_id.in_(ids["clients"])))
         session.execute(delete(PiiVault).where(PiiVault.client_id.in_(ids["clients"])))
         session.execute(delete(Clients).where(Clients.client_id.in_(ids["clients"])))
         session.execute(delete(Funds).where(Funds.unit_fund_id.in_(ids["funds"])))
@@ -248,6 +250,28 @@ def test_purchases_censored_persists_on_clients(
     with SessionLocal() as session:
         assert session.get(Clients, 1001).purchases_censored is False
         assert session.get(Clients, 2002).purchases_censored is True
+
+
+def test_transform_run_persists_client_features(
+    db: None, cleanup_runs: list[str], normalized_ids
+) -> None:
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    normalized_ids["funds"].add(10)
+    normalized_ids["clients"].add(1001)
+    normalized_ids["txns"].add(5001)
+
+    with SessionLocal() as session:
+        _seed_run(session, run_id, _one_fund_one_client())
+        counts = transform_run(session, run_id)
+
+    assert counts.features == 1
+    with SessionLocal() as session:
+        feature = session.get(ClientFeatures, 1001)
+        assert feature is not None
+        assert feature.archetype == "One-and-done"
+        assert feature.history_censored is False
+        assert feature.value_tier in {"Top", "High", "Mid", "Low"}
 
 
 def _count(session, model, key_value: int, key_col) -> int:
