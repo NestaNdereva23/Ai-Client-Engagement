@@ -11,7 +11,15 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.db.models.models import Clients, Funds, IngestionStatus, PiiVault, Transactions
+from app.db.models.models import (
+    ClientFeatures,
+    Clients,
+    Funds,
+    IngestionStatus,
+    PiiVault,
+    Transactions,
+)
+from app.transform.features import FeatureRow, derive_features
 from app.transform.flatten import ClientRow, FlattenResult, FundRow, TxnRow, flatten_run
 
 # Columns updated on conflict, one entry per table. The natural key is excluded.
@@ -30,6 +38,7 @@ _CLIENT_UPDATE = [
     "days_since_last_activity",
     "net_flow",
     "computed_at",
+    "purchases_censored",
 ]
 _TXN_UPDATE = [
     "txn_type",
@@ -45,6 +54,16 @@ _TXN_UPDATE = [
 # The vault re-transform updates only the name and its source. Contact channels
 # and opt-out arrive from a separate source and must survive a re-transform.
 _VAULT_UPDATE = ["client_name", "source"]
+_FEATURE_UPDATE = [
+    "archetype",
+    "recency_bucket",
+    "value_tier",
+    "own_rhythm_days",
+    "rhythm_band",
+    "observed_volume",
+    "purchases_censored",
+    "history_censored",
+]
 
 
 @dataclass
@@ -55,6 +74,7 @@ class PersistCounts:
     clients: int = 0
     transactions: int = 0
     vault: int = 0
+    features: int = 0
 
 
 def _fund_dict(f: FundRow) -> dict[str, Any]:
@@ -81,6 +101,7 @@ def _client_dict(c: ClientRow) -> dict[str, Any]:
         "days_since_last_activity": c.days_since_last_activity,
         "net_flow": c.net_flow,
         "computed_at": c.computed_at,
+        "purchases_censored": c.purchases_censored,
     }
 
 
@@ -109,6 +130,20 @@ def _vault_dict(c: ClientRow, source: str | None) -> dict[str, Any]:
     }
 
 
+def _feature_dict(f: FeatureRow) -> dict[str, Any]:
+    return {
+        "client_id": f.client_id,
+        "archetype": f.archetype,
+        "recency_bucket": f.recency_bucket,
+        "value_tier": f.value_tier,
+        "own_rhythm_days": f.own_rhythm_days,
+        "rhythm_band": f.rhythm_band,
+        "observed_volume": f.observed_volume,
+        "purchases_censored": f.purchases_censored,
+        "history_censored": f.history_censored,
+    }
+
+
 def _upsert(
     session: Session,
     model: type,
@@ -132,16 +167,18 @@ def _upsert(
 def persist_result(
     session: Session, result: FlattenResult, source: str | None = None
 ) -> PersistCounts:
-    """Upsert a flattened result into funds, clients, transactions, and the vault.
+    """Upsert a flattened result into funds, clients, transactions, vault, features.
 
-    The fund/client/transaction order satisfies the foreign keys within one
-    transaction. client_name is written only to the vault, never to clients. Rows
-    are keyed into dicts first so a repeated natural key becomes a single upsert.
+    Clients land before transactions and features so their foreign keys hold
+    within one transaction. client_name is written only to the vault, never to
+    clients. Rows are keyed into dicts first so a repeated natural key becomes a
+    single upsert.
     """
     funds = {f.unit_fund_id: _fund_dict(f) for f in result.funds}
     clients = {c.client_id: _client_dict(c) for c in result.clients}
     txns = {t.txn_id: _txn_dict(t) for t in result.transactions if t.txn_id is not None}
     vault = {c.client_id: _vault_dict(c, source) for c in result.clients}
+    features = {f.client_id: _feature_dict(f) for f in derive_features(result)}
 
     counts = PersistCounts()
     counts.funds = _upsert(
@@ -160,6 +197,14 @@ def persist_result(
         list(vault.values()),
         "client_id",
         _VAULT_UPDATE,
+        extra_set={"updated_at": func.now()},
+    )
+    counts.features = _upsert(
+        session,
+        ClientFeatures,
+        list(features.values()),
+        "client_id",
+        _FEATURE_UPDATE,
         extra_set={"updated_at": func.now()},
     )
     session.commit()

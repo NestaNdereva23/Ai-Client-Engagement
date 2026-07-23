@@ -146,6 +146,10 @@ class Clients(Base):
     days_since_last_activity: Mapped[int | None] = mapped_column(Integer, nullable=True)
     net_flow: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
     computed_at: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # True when the purchase window is full, so older purchases are hidden.
+    purchases_censored: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
 
 
 class Transactions(Base):
@@ -163,6 +167,39 @@ class Transactions(Base):
     unit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     fees_incurred: Mapped[float | None] = mapped_column(Float, nullable=True)
     sale_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ClientFeatures(Base):
+    """Bucketed, model-safe features for one client, keyed by client_id.
+
+    Every column is a label, bucket, count, or interval, never an exact amount or
+    date, so the model-facing projection can allow-list straight from here. Rows
+    are recomputed by the pipeline, not edited by hand.
+    """
+
+    __tablename__ = "client_features"
+
+    client_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("clients.client_id"), primary_key=True, autoincrement=False
+    )
+    archetype: Mapped[str] = mapped_column(Text, nullable=False)
+    recency_bucket: Mapped[str] = mapped_column(Text, nullable=False)
+    value_tier: Mapped[str] = mapped_column(Text, nullable=False)
+    own_rhythm_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rhythm_band: Mapped[str] = mapped_column(Text, nullable=False)
+    observed_volume: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    purchases_censored: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    history_censored: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
 
 
 class PiiVault(Base):

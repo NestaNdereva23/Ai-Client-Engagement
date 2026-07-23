@@ -1,0 +1,291 @@
+"""M2.7 invariants for the transform and PII split.
+
+Three things must hold across the whole flatten to features pipeline:
+
+- the same raw payload and reference timestamp always derive the same funds,
+  clients, transactions, and features (a pure, deterministic pipeline);
+- no client_name or raw contact channel appears anywhere outside pii_vault,
+  neither in a normalized or feature column nor in a persisted row;
+- the censoring flags set while flattening survive through to the features.
+
+The determinism check is property style: it builds many varied payloads from
+seeded randomness and asserts each one derives identically on a rerun, rather
+than pinning one hand-written case.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import random
+from datetime import datetime, timedelta, timezone
+from typing import Any
+from uuid import uuid4
+
+import pytest
+from sqlalchemy import inspect, select
+
+from app.db.models.models import (
+    ClientFeatures,
+    Clients,
+    Funds,
+    IngestionStatus,
+    PiiVault,
+    RawStaging,
+    Transactions,
+)
+from app.db.session import SessionLocal
+from app.transform.features import FeatureRow, derive_features
+from app.transform.flatten import flatten_payload
+
+EAT = timezone(timedelta(hours=3))
+# Anchored well after every generated date so recency math never underflows.
+ANCHOR = datetime(2026, 7, 23, 9, 0, tzinfo=EAT)
+
+# Restricted fields that must never leave pii_vault, matched against column
+# names and against persisted string values.
+PII_COLUMNS = {"client_name", "contact_email", "contact_whatsapp", "opt_out_flag"}
+NON_VAULT_MODELS = [Funds, Clients, Transactions, ClientFeatures]
+
+
+def _txn(rng: random.Random, txn_id: int, fund_id: int) -> dict[str, Any]:
+    """One transaction with a random date and a mix of clean and dirty amounts."""
+    day = rng.randint(1, 28)
+    month = rng.randint(1, 12)
+    year = rng.choice([2019, 2021, 2023, 2024, 2025])
+    # Occasionally an unparseable amount, to exercise the lenient parse path;
+    # it must not make the derivation drift on a rerun.
+    number = rng.choice(["100", "5000", "250000", "1000000", "not-a-number", ""])
+    return {
+        "id": txn_id,
+        "date": f"{year:04d}-{month:02d}-{day:02d}T00:00:00",
+        "number": number,
+        "unit_fund_id": fund_id,
+    }
+
+
+def _random_payload(seed: int) -> dict[str, Any]:
+    """Build a varied but well-formed payload deterministically from a seed.
+
+    Funds hold overlapping clients so multi-fund aggregation is exercised, and
+    purchase and sale counts span the censoring boundaries on both windows.
+    """
+    rng = random.Random(seed)
+    txn_id = seed * 10_000
+    funds = []
+    for f in range(rng.randint(1, 3)):
+        fund_id = 10 + f
+        clients = []
+        for _ in range(rng.randint(1, 4)):
+            client_id = 1000 + rng.randint(0, 5)  # collisions across funds are intended
+            n_purchases = rng.randint(0, 6)
+            n_sales = rng.randint(0, 3)
+            purchases = []
+            for _ in range(n_purchases):
+                txn_id += 1
+                purchases.append(_txn(rng, txn_id, fund_id))
+            sales = []
+            for _ in range(n_sales):
+                txn_id += 1
+                sales.append(_txn(rng, txn_id, fund_id))
+            clients.append(
+                {
+                    "client_id": client_id,
+                    "client_code": f"C-{client_id}",
+                    "client_name": f"Client {client_id}",
+                    "balance": 0,
+                    "computed_at": "2026-07-20T08:00:00",
+                    "last_5_purchases": purchases,
+                    "last_2_sales": sales,
+                }
+            )
+        funds.append(
+            {
+                "unit_fund_id": fund_id,
+                "unit_fund_name": f"Fund {fund_id}",
+                "inactive_client_count": len(clients),
+                "clients": clients,
+            }
+        )
+    return {"data": funds}
+
+
+@pytest.mark.parametrize("seed", range(25))
+def test_same_payload_and_anchor_derive_identically(seed: int) -> None:
+    payload = _random_payload(seed)
+    first = flatten_payload(payload, ANCHOR)
+    second = flatten_payload(payload, ANCHOR)
+
+    assert first.funds == second.funds
+    assert first.clients == second.clients
+    assert first.transactions == second.transactions
+    assert derive_features(first) == derive_features(second)
+
+
+def test_feature_row_carries_no_pii_field() -> None:
+    """The model-facing feature row exposes no name or contact field at all."""
+    names = {f.name for f in dataclasses.fields(FeatureRow)}
+    assert names.isdisjoint(PII_COLUMNS)
+
+
+@pytest.mark.parametrize("model", NON_VAULT_MODELS)
+def test_normalized_tables_have_no_pii_columns(model: type) -> None:
+    columns = {c.name for c in model.__table__.columns}
+    assert columns.isdisjoint(PII_COLUMNS), f"{model.__tablename__} exposes a PII column"
+
+
+def test_only_pii_vault_declares_pii_columns() -> None:
+    assert PII_COLUMNS <= {c.name for c in PiiVault.__table__.columns}
+
+
+CENSORING_CASES = [
+    # (purchases, sales) -> (purchases_censored, history_censored)
+    ((5, 0), (True, True)),  # full purchase window
+    ((4, 0), (False, False)),  # room to spare
+    ((1, 2), (False, True)),  # full sale window truncates history
+    ((0, 0), (False, False)),  # nothing observed
+]
+
+
+@pytest.mark.parametrize(("counts", "expected"), CENSORING_CASES)
+def test_censoring_flags_survive_flatten_to_features(
+    counts: tuple[int, int], expected: tuple[bool, bool]
+) -> None:
+    n_purchases, n_sales = counts
+    purchases = [
+        {"id": i, "date": "2024-01-01T00:00:00", "number": "100", "unit_fund_id": 10}
+        for i in range(n_purchases)
+    ]
+    sales = [
+        {"id": 100 + i, "date": "2024-01-01T00:00:00", "number": "50", "unit_fund_id": 10}
+        for i in range(n_sales)
+    ]
+    payload = {
+        "data": [
+            {
+                "unit_fund_id": 10,
+                "unit_fund_name": "Money Market Fund",
+                "inactive_client_count": 1,
+                "clients": [
+                    {"client_id": 1001, "last_5_purchases": purchases, "last_2_sales": sales}
+                ],
+            }
+        ]
+    }
+    result = flatten_payload(payload, ANCHOR)
+    client = result.clients[0]
+    features = derive_features(result)
+    assert len(features) == 1
+    # The flag set on the flattened client row is the flag carried to the feature.
+    assert (client.purchases_censored, client.history_censored) == expected
+    assert (features[0].purchases_censored, features[0].history_censored) == expected
+
+
+def test_censoring_survives_multi_fund_aggregation() -> None:
+    """A client censored in one fund is censored in its single feature row."""
+
+    def _client(fund_id: int, base: int, n_purchases: int) -> dict[str, Any]:
+        return {
+            "client_id": 1001,
+            "last_5_purchases": [
+                {
+                    "id": base + i,
+                    "date": "2024-01-01T00:00:00",
+                    "number": "100",
+                    "unit_fund_id": fund_id,
+                }
+                for i in range(n_purchases)
+            ],
+            "last_2_sales": [],
+        }
+
+    payload = {
+        "data": [
+            {
+                "unit_fund_id": 10,
+                "unit_fund_name": "Fund A",
+                "inactive_client_count": 1,
+                "clients": [_client(10, 100, 1)],  # not censored here
+            },
+            {
+                "unit_fund_id": 20,
+                "unit_fund_name": "Fund B",
+                "inactive_client_count": 1,
+                "clients": [_client(20, 200, 5)],  # full window here
+            },
+        ]
+    }
+    features = derive_features(flatten_payload(payload, ANCHOR))
+    assert len(features) == 1
+    assert features[0].purchases_censored is True
+    assert features[0].history_censored is True
+
+
+def _seed_run(session, run_id: str, payload: dict[str, Any]) -> None:
+    session.add(IngestionStatus(run_id=run_id, endpoint="inactive-clients", reference_ts=ANCHOR))
+    session.add(
+        RawStaging(run_id=run_id, endpoint="inactive-clients", natural_key="1", payload=payload)
+    )
+    session.commit()
+
+
+def test_client_name_appears_in_no_persisted_row_outside_the_vault(
+    db: None, cleanup_runs: list[str]
+) -> None:
+    """After a real transform, scan every non-vault row for the name string."""
+    from app.transform.load import transform_run
+
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    secret_name = "Wangari Distinctive-Name"
+    payload = {
+        "data": [
+            {
+                "unit_fund_id": 910,
+                "unit_fund_name": "Money Market Fund",
+                "inactive_client_count": 1,
+                "clients": [
+                    {
+                        "client_id": 91001,
+                        "client_code": "C-91001",
+                        "client_name": secret_name,
+                        "balance": 0,
+                        "computed_at": "2026-07-20T08:00:00",
+                        "last_5_purchases": [
+                            {
+                                "id": 95001,
+                                "date": "2024-07-01T00:00:00",
+                                "number": "5000",
+                                "unit_fund_id": 910,
+                            }
+                        ],
+                        "last_2_sales": [],
+                    }
+                ],
+            }
+        ]
+    }
+
+    try:
+        with SessionLocal() as session:
+            _seed_run(session, run_id, payload)
+            transform_run(session, run_id)
+
+        with SessionLocal() as session:
+            # The name is present in the vault.
+            assert session.get(PiiVault, 91001).client_name == secret_name
+            # And absent from every column of every non-vault row for this client.
+            for model in NON_VAULT_MODELS:
+                rows = session.scalars(select(model)).all()
+                for row in rows:
+                    values = [str(getattr(row, c.name)) for c in inspect(model).columns]
+                    assert secret_name not in " | ".join(values)
+    finally:
+        with SessionLocal() as session:
+            session.execute(Transactions.__table__.delete().where(Transactions.client_id == 91001))
+            session.execute(
+                ClientFeatures.__table__.delete().where(ClientFeatures.client_id == 91001)
+            )
+            session.execute(PiiVault.__table__.delete().where(PiiVault.client_id == 91001))
+            session.execute(Clients.__table__.delete().where(Clients.client_id == 91001))
+            session.execute(Funds.__table__.delete().where(Funds.unit_fund_id == 910))
+            session.commit()
