@@ -66,7 +66,7 @@ class IngestionWorker:
         self._client = client
         self._session_factory = session_factory
         self._endpoint = endpoint
-        self._fetch_path = endpoint if fetch_path is None else fetch_path
+        self._fetch_path = "" if fetch_path is None else fetch_path
         self._max_pages = max_pages
         self._page_fetcher = page_fetcher
 
