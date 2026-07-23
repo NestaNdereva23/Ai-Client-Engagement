@@ -8,6 +8,11 @@ flow, days since last activity).
 It reads from raw staging, never the source, so re-processing is free. Amounts
 arrive as strings and dates in mixed ISO formats; both are parsed leniently and
 anything unparseable is counted rather than raising.
+
+days_since_* is anchored to a reference timestamp, not the wall clock. flatten_run
+reads that timestamp back from the run's ingestion_status row, so re-running the
+same run gives identical derivations. The timestamp is stored and read over an
+EAT connection, so its calendar date is already East Africa Time.
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models.models import RawStaging
+from app.db.models.models import IngestionStatus, RawStaging
 from app.ingestion.contracts import ClientRecord, FundRecord, RawEnvelope
 
 
@@ -141,16 +146,15 @@ def _txn_row(
     )
 
 
-def flatten_payload(
-    payload: dict[str, Any], reference_date: datetime | None = None
-) -> FlattenResult:
+def flatten_payload(payload: dict[str, Any], reference_date: datetime) -> FlattenResult:
     """Flatten one raw payload into funds, clients, and transactions.
 
-    reference_date anchors days since last activity. It defaults to now, but a
-    caller should pass a fixed value so the same payload always flattens the same
-    way.
+    reference_date anchors days since last activity. It is required, with no
+    wall-clock fallback, so the same payload and anchor always flatten the same
+    way. Its calendar date is used, taken in whatever zone the datetime carries;
+    flatten_run supplies the run's persisted EAT timestamp.
     """
-    ref = (reference_date or datetime.now()).date()
+    ref = reference_date.date()
     result = FlattenResult()
     seen_funds: set[int] = set()
 
@@ -216,15 +220,30 @@ def flatten_payload(
     return result
 
 
+def _load_reference_ts(session: Session, run_id: str) -> datetime:
+    """Return the run's persisted anchor timestamp for recency math.
+
+    Raises when the run or its reference timestamp is missing, since without the
+    anchor the derivations would not be reproducible.
+    """
+    ref = session.execute(
+        select(IngestionStatus.reference_ts).where(IngestionStatus.run_id == run_id)
+    ).scalar_one_or_none()
+    if ref is None:
+        raise ValueError(f"run {run_id} has no persisted reference_ts to anchor days_since_*")
+    return ref
+
+
 def flatten_run(
     session: Session, run_id: str, reference_date: datetime | None = None
 ) -> FlattenResult:
     """Read a run's raw staging pages and flatten them into one result.
 
-    Funds are de-duplicated across pages. reference_date is applied to every
-    page, so one run flattens consistently.
+    Funds are de-duplicated across pages. The anchor for days_since_* is the run's
+    persisted reference_ts, read back here, so re-running the same run reproduces
+    identical derivations. Pass reference_date only to override that anchor.
     """
-    ref = reference_date or datetime.now()
+    ref = reference_date if reference_date is not None else _load_reference_ts(session, run_id)
     payloads = (
         session.execute(
             select(RawStaging.payload)

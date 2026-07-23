@@ -6,14 +6,22 @@ and ``create_all`` see them.
 
 from app.db.models.models import (
     INGESTION_STATES,
+    Clients,
+    Funds,
     IngestionReject,
     IngestionStatus,
+    PiiVault,
     RawStaging,
+    Transactions,
 )
 
 __all__ = [
     "INGESTION_STATES",
+    "Clients",
+    "Funds",
     "IngestionReject",
     "IngestionStatus",
+    "PiiVault",
     "RawStaging",
+    "Transactions",
 ]
