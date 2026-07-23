@@ -74,6 +74,11 @@ class IngestionStatus(Base):
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # Anchor for recency math. Set once when the run starts and never on resume,
+    # so transform derives the same days_since_* however often it re-runs.
+    reference_ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     records_seen: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     records_written: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
