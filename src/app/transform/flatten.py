@@ -28,6 +28,11 @@ from sqlalchemy.orm import Session
 from app.db.models.models import IngestionStatus, RawStaging
 from app.ingestion.contracts import ClientRecord, FundRecord, RawEnvelope
 
+# The source returns at most this many purchases and sales per client. Hitting a
+# cap means real history is hidden behind it.
+PURCHASE_CAP = 5
+SALE_CAP = 2
+
 
 @dataclass
 class FundRow:
@@ -53,6 +58,8 @@ class ClientRow:
     days_since_last_activity: int | None
     net_flow: float
     computed_at: str | None
+    purchases_censored: bool
+    history_censored: bool
 
 
 @dataclass
@@ -197,6 +204,11 @@ def flatten_payload(payload: dict[str, Any], reference_date: datetime) -> Flatte
             total_purchase = sum(r.amount for r in purchase_rows)
             total_sale = sum(r.amount for r in sale_rows)
 
+            # A full purchase window hides older purchases. A full window of
+            # either kind means the client's real history is truncated.
+            purchases_censored = len(purchases) >= PURCHASE_CAP
+            history_censored = purchases_censored or len(sales) >= SALE_CAP
+
             result.clients.append(
                 ClientRow(
                     client_id=client.client_id,
@@ -214,6 +226,8 @@ def flatten_payload(payload: dict[str, Any], reference_date: datetime) -> Flatte
                     days_since_last_activity=(ref - last_activity).days if last_activity else None,
                     net_flow=total_purchase - total_sale,
                     computed_at=client.computed_at,
+                    purchases_censored=purchases_censored,
+                    history_censored=history_censored,
                 )
             )
 

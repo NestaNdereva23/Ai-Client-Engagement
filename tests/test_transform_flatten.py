@@ -63,6 +63,52 @@ def test_flatten_payload_requires_a_reference_date() -> None:
         flatten_payload(_payload())  # type: ignore[call-arg]
 
 
+def _payload_counts(n_purchases: int, n_sales: int) -> dict[str, Any]:
+    """One client carrying the given number of purchases and sales."""
+    purchases = [
+        {"id": i, "date": "2026-07-01T00:00:00", "number": "100", "unit_fund_id": 10}
+        for i in range(n_purchases)
+    ]
+    sales = [
+        {"id": 100 + i, "date": "2026-07-01T00:00:00", "number": "50", "unit_fund_id": 10}
+        for i in range(n_sales)
+    ]
+    return {
+        "data": [
+            {
+                "unit_fund_id": 10,
+                "unit_fund_name": "Money Market Fund",
+                "inactive_client_count": 1,
+                "clients": [
+                    {
+                        "client_id": 1001,
+                        "last_5_purchases": purchases,
+                        "last_2_sales": sales,
+                    }
+                ],
+            }
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    ("n_purchases", "n_sales", "purchases_censored", "history_censored"),
+    [
+        (5, 0, True, True),  # full purchase window
+        (4, 0, False, False),  # room to spare
+        (1, 2, False, True),  # full sale window truncates history
+        (0, 0, False, False),  # nothing returned
+    ],
+)
+def test_flatten_payload_sets_censoring_flags(
+    n_purchases: int, n_sales: int, purchases_censored: bool, history_censored: bool
+) -> None:
+    result = flatten_payload(_payload_counts(n_purchases, n_sales), ANCHOR)
+    client = result.clients[0]
+    assert client.purchases_censored is purchases_censored
+    assert client.history_censored is history_censored
+
+
 def test_flatten_run_uses_persisted_reference_ts(db: None, cleanup_runs: list[str]) -> None:
     run_id = uuid4().hex
     cleanup_runs.append(run_id)

@@ -215,5 +215,40 @@ def test_retransform_updates_name_but_keeps_contact(
         assert vault.opt_out_flag is True
 
 
+def test_purchases_censored_persists_on_clients(
+    db: None, cleanup_runs: list[str], normalized_ids
+) -> None:
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    normalized_ids["funds"].add(10)
+    normalized_ids["clients"].update({1001, 2002})
+    normalized_ids["txns"].update({5001, 7001, 7002, 7003, 7004, 7005})
+
+    # One client with a single purchase, one with a full purchase window.
+    full_window = {
+        "client_id": 2002,
+        "last_5_purchases": [
+            {"id": tid, "date": "2026-07-01T00:00:00", "number": "100", "unit_fund_id": 10}
+            for tid in (7001, 7002, 7003, 7004, 7005)
+        ],
+        "last_2_sales": [],
+    }
+    payload = _payload(
+        {
+            "unit_fund_id": 10,
+            "unit_fund_name": "Money Market Fund",
+            "inactive_client_count": 2,
+            "clients": [_client(1001, 10, 5001), full_window],
+        }
+    )
+    with SessionLocal() as session:
+        _seed_run(session, run_id, payload)
+        transform_run(session, run_id)
+
+    with SessionLocal() as session:
+        assert session.get(Clients, 1001).purchases_censored is False
+        assert session.get(Clients, 2002).purchases_censored is True
+
+
 def _count(session, model, key_value: int, key_col) -> int:
     return session.scalar(select(func.count()).select_from(model).where(key_col == key_value)) or 0

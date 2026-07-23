@@ -30,6 +30,7 @@ _CLIENT_UPDATE = [
     "days_since_last_activity",
     "net_flow",
     "computed_at",
+    "purchases_censored",
 ]
 _TXN_UPDATE = [
     "txn_type",
@@ -81,6 +82,7 @@ def _client_dict(c: ClientRow) -> dict[str, Any]:
         "days_since_last_activity": c.days_since_last_activity,
         "net_flow": c.net_flow,
         "computed_at": c.computed_at,
+        "purchases_censored": c.purchases_censored,
     }
 
 

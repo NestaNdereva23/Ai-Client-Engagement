@@ -146,6 +146,10 @@ class Clients(Base):
     days_since_last_activity: Mapped[int | None] = mapped_column(Integer, nullable=True)
     net_flow: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
     computed_at: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # True when the purchase window is full, so older purchases are hidden.
+    purchases_censored: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
 
 
 class Transactions(Base):
