@@ -7,11 +7,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.db.models.models import Clients, Funds, Transactions
+from app.db.models.models import Clients, Funds, IngestionStatus, PiiVault, Transactions
 from app.transform.flatten import ClientRow, FlattenResult, FundRow, TxnRow, flatten_run
 
 # Columns updated on conflict, one entry per table. The natural key is excluded.
@@ -42,6 +42,9 @@ _TXN_UPDATE = [
     "fees_incurred",
     "sale_type",
 ]
+# The vault re-transform updates only the name and its source. Contact channels
+# and opt-out arrive from a separate source and must survive a re-transform.
+_VAULT_UPDATE = ["client_name", "source"]
 
 
 @dataclass
@@ -51,6 +54,7 @@ class PersistCounts:
     funds: int = 0
     clients: int = 0
     transactions: int = 0
+    vault: int = 0
 
 
 def _fund_dict(f: FundRow) -> dict[str, Any]:
@@ -95,6 +99,16 @@ def _txn_dict(t: TxnRow) -> dict[str, Any]:
     }
 
 
+def _vault_dict(c: ClientRow, source: str | None) -> dict[str, Any]:
+    # Only the name (and its source) is written here; contact channels stay null
+    # until a contact source exists.
+    return {
+        "client_id": c.client_id,
+        "client_name": c.client_name,
+        "source": source,
+    }
+
+
 def _upsert(
     session: Session,
     model: type,
@@ -115,15 +129,19 @@ def _upsert(
     return len(rows)
 
 
-def persist_result(session: Session, result: FlattenResult) -> PersistCounts:
-    """Upsert a flattened result into funds, then clients, then transactions.
+def persist_result(
+    session: Session, result: FlattenResult, source: str | None = None
+) -> PersistCounts:
+    """Upsert a flattened result into funds, clients, transactions, and the vault.
 
-    The order satisfies the foreign keys within one transaction. Rows are keyed
-    into dicts first so a repeated natural key becomes a single upsert.
+    The fund/client/transaction order satisfies the foreign keys within one
+    transaction. client_name is written only to the vault, never to clients. Rows
+    are keyed into dicts first so a repeated natural key becomes a single upsert.
     """
     funds = {f.unit_fund_id: _fund_dict(f) for f in result.funds}
     clients = {c.client_id: _client_dict(c) for c in result.clients}
     txns = {t.txn_id: _txn_dict(t) for t in result.transactions if t.txn_id is not None}
+    vault = {c.client_id: _vault_dict(c, source) for c in result.clients}
 
     counts = PersistCounts()
     counts.funds = _upsert(
@@ -136,11 +154,26 @@ def persist_result(session: Session, result: FlattenResult) -> PersistCounts:
     )
     counts.clients = _upsert(session, Clients, list(clients.values()), "client_id", _CLIENT_UPDATE)
     counts.transactions = _upsert(session, Transactions, list(txns.values()), "txn_id", _TXN_UPDATE)
+    counts.vault = _upsert(
+        session,
+        PiiVault,
+        list(vault.values()),
+        "client_id",
+        _VAULT_UPDATE,
+        extra_set={"updated_at": func.now()},
+    )
     session.commit()
     return counts
 
 
 def transform_run(session: Session, run_id: str) -> PersistCounts:
-    """Flatten a run's raw staging and upsert it into the normalized tables."""
+    """Flatten a run's raw staging and upsert it into the normalized tables.
+
+    The run's endpoint is recorded as the vault source, so the name's provenance
+    travels with it.
+    """
     result = flatten_run(session, run_id)
-    return persist_result(session, result)
+    source = session.execute(
+        select(IngestionStatus.endpoint).where(IngestionStatus.run_id == run_id)
+    ).scalar_one_or_none()
+    return persist_result(session, result, source=source)

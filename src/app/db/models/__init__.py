@@ -10,6 +10,7 @@ from app.db.models.models import (
     Funds,
     IngestionReject,
     IngestionStatus,
+    PiiVault,
     RawStaging,
     Transactions,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "Funds",
     "IngestionReject",
     "IngestionStatus",
+    "PiiVault",
     "RawStaging",
     "Transactions",
 ]

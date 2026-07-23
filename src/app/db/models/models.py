@@ -12,6 +12,7 @@ from datetime import date, datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -22,6 +23,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -161,3 +163,31 @@ class Transactions(Base):
     unit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     fees_incurred: Mapped[float | None] = mapped_column(Float, nullable=True)
     sale_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class PiiVault(Base):
+    """The only table holding real PII, keyed by client_id for re-attachment.
+
+    client_name is the sole real personal data in the source. Contact channels
+    are not in the payload yet; the columns exist and are nullable so a contact
+    source slots in later with no schema change. Kept standalone with no foreign
+    key so it can move to a restricted DB role that the generation service
+    cannot read.
+    """
+
+    __tablename__ = "pii_vault"
+
+    client_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    client_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    contact_email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    contact_whatsapp: Mapped[str | None] = mapped_column(Text, nullable=True)
+    opt_out_flag: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )

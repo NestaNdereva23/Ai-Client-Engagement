@@ -7,7 +7,14 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, func, select
 
-from app.db.models.models import Clients, Funds, IngestionStatus, RawStaging, Transactions
+from app.db.models.models import (
+    Clients,
+    Funds,
+    IngestionStatus,
+    PiiVault,
+    RawStaging,
+    Transactions,
+)
 from app.db.session import SessionLocal
 from app.transform.load import transform_run
 
@@ -57,6 +64,7 @@ def normalized_ids():
         return
     with SessionLocal() as session:
         session.execute(delete(Transactions).where(Transactions.txn_id.in_(ids["txns"])))
+        session.execute(delete(PiiVault).where(PiiVault.client_id.in_(ids["clients"])))
         session.execute(delete(Clients).where(Clients.client_id.in_(ids["clients"])))
         session.execute(delete(Funds).where(Funds.unit_fund_id.in_(ids["funds"])))
         session.commit()
@@ -148,6 +156,63 @@ def test_multi_fund_client_collapses_to_one_row_keeping_transactions(
             select(Transactions.txn_id).where(Transactions.client_id == 1001)
         ).all()
         assert set(txns) == {5001, 6001}
+
+
+def test_client_name_lands_only_in_the_vault(
+    db: None, cleanup_runs: list[str], normalized_ids
+) -> None:
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    normalized_ids["funds"].add(10)
+    normalized_ids["clients"].add(1001)
+    normalized_ids["txns"].add(5001)
+
+    with SessionLocal() as session:
+        _seed_run(session, run_id, _one_fund_one_client())
+        counts = transform_run(session, run_id)
+
+    assert counts.vault == 1
+    with SessionLocal() as session:
+        vault = session.get(PiiVault, 1001)
+        assert vault is not None
+        assert vault.client_name == "Jane Doe"
+        # Provenance recorded; contact channels stay empty until a contact source exists.
+        assert vault.source == "inactive-clients"
+        assert vault.contact_email is None
+        assert vault.opt_out_flag is False
+    # The name exists nowhere in the normalized clients row.
+    assert "client_name" not in {c.name for c in Clients.__table__.columns}
+
+
+def test_retransform_updates_name_but_keeps_contact(
+    db: None, cleanup_runs: list[str], normalized_ids
+) -> None:
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    normalized_ids["funds"].add(10)
+    normalized_ids["clients"].add(1001)
+    normalized_ids["txns"].add(5001)
+
+    with SessionLocal() as session:
+        _seed_run(session, run_id, _one_fund_one_client())
+        transform_run(session, run_id)
+
+    # Simulate a later contact source filling the vault.
+    with SessionLocal() as session:
+        vault = session.get(PiiVault, 1001)
+        vault.contact_email = "jane@example.com"
+        vault.opt_out_flag = True
+        session.commit()
+
+    # A re-transform must refresh the name without wiping the contact channel.
+    with SessionLocal() as session:
+        transform_run(session, run_id)
+
+    with SessionLocal() as session:
+        vault = session.get(PiiVault, 1001)
+        assert vault.client_name == "Jane Doe"
+        assert vault.contact_email == "jane@example.com"
+        assert vault.opt_out_flag is True
 
 
 def _count(session, model, key_value: int, key_col) -> int:
