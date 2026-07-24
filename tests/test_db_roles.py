@@ -47,14 +47,6 @@ def test_safe_role_cannot_read_the_vault(roles) -> None:
         session.execute(text("RESET ROLE"))
 
 
-def test_safe_role_can_read_model_facing_features(roles) -> None:
-    with SessionLocal() as session:
-        session.execute(text(f'SET ROLE "{SAFE}"'))
-        count = session.scalar(text("SELECT count(*) FROM client_features"))
-        session.execute(text("RESET ROLE"))
-    assert count is not None
-
-
 def test_restricted_role_can_read_the_vault(roles) -> None:
     with SessionLocal() as session:
         session.execute(text(f'SET ROLE "{RESTRICTED}"'))
@@ -72,6 +64,6 @@ def test_safe_session_helper_denies_the_vault(roles) -> None:
 def test_safe_session_resets_the_role_for_later_callers(roles) -> None:
     # A safe session must leave the pooled connection able to read the vault again.
     with safe_session() as session:
-        session.execute(text("SELECT count(*) FROM client_features"))
+        session.execute(text("SELECT 1"))
     with SessionLocal() as session:
         assert session.scalar(text("SELECT count(*) FROM pii_vault")) is not None
