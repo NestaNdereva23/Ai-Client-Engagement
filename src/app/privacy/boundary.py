@@ -9,7 +9,7 @@ outside this function.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from app.privacy.scanners import (
@@ -27,14 +27,21 @@ def to_model_context(row: Mapping[str, Any]) -> dict[str, Any]:
     return {key: row[key] for key in MODEL_ALLOWED_KEYS if key in row}
 
 
-def run_model_boundary(context: Mapping[str, Any], model_call: ModelCall) -> str:
+def run_model_boundary(
+    context: Mapping[str, Any],
+    model_call: ModelCall,
+    *,
+    identifiers: Iterable[str] = (),
+) -> str:
     """Send allow-listed context to the model and return the drafted text.
 
-    Fails closed: an inbound hit aborts before the call, an outbound hit aborts
-    after it, and nothing is returned in either case.
+    identifiers are the request's real client values; the scanners block them
+    from the payload and from the draft. Fails closed: an inbound hit aborts
+    before the call, an outbound hit aborts after it, returning nothing.
     """
     payload = dict(context)
-    scan_inbound(payload)
+    identifiers = tuple(identifiers)
+    scan_inbound(payload, identifiers)
     draft = model_call(payload)
-    scan_outbound(draft)
+    scan_outbound(draft, identifiers)
     return draft

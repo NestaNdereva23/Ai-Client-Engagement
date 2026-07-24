@@ -55,8 +55,26 @@ def test_inbound_hit_aborts_before_the_model_is_called() -> None:
     assert called is False
 
 
+def test_boundary_blocks_a_draft_that_echoes_a_real_identifier() -> None:
+    with pytest.raises(OutboundLeak):
+        run_model_boundary(
+            ALLOWLISTED,
+            lambda payload: "Warm regards to Jane Doe",
+            identifiers=["Jane Doe"],
+        )
+
+
+def test_boundary_returns_a_clean_placeholder_draft_with_identifiers_set() -> None:
+    draft = run_model_boundary(
+        ALLOWLISTED,
+        lambda payload: "Dear {{first_name}}, come back soon.",
+        identifiers=["Jane Doe"],
+    )
+    assert draft == "Dear {{first_name}}, come back soon."
+
+
 def test_outbound_hit_aborts_after_the_call(monkeypatch: pytest.MonkeyPatch) -> None:
-    def blocking_scan(draft: str) -> None:
+    def blocking_scan(draft: str, identifiers=()) -> None:
         raise OutboundLeak("echoed an identifier")
 
     monkeypatch.setattr(boundary, "scan_outbound", blocking_scan)
