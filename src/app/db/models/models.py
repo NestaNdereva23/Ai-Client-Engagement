@@ -203,14 +203,7 @@ class ClientFeatures(Base):
 
 
 class PiiVault(Base):
-    """The only table holding real PII, keyed by client_id for re-attachment.
-
-    client_name is the sole real personal data in the source. Contact channels
-    are not in the payload yet; the columns exist and are nullable so a contact
-    source slots in later with no schema change. Kept standalone with no foreign
-    key so it can move to a restricted DB role that the generation service
-    cannot read.
-    """
+    """The only table holding real PII, keyed by client_id for re-attachment."""
 
     __tablename__ = "pii_vault"
 
