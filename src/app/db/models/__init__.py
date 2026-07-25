@@ -16,10 +16,12 @@ from app.db.models.models import (
     RawStaging,
     Transactions,
 )
+from app.db.models.rules import BusinessRule
 
 __all__ = [
     "INGESTION_STATES",
     "AuditLog",
+    "BusinessRule",
     "ClientFeatures",
     "Clients",
     "Funds",
