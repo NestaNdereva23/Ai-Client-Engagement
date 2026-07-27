@@ -16,6 +16,16 @@ config.set_main_option("sqlalchemy.url", get_settings().database_url)
 
 target_metadata = Base.metadata
 
+# Partial and vector indexes whose predicate/opclass text does not round-trip
+# through reflection; managed by hand in migrations, skipped by autogenerate.
+_SKIP_INDEXES = {"uq_rag_active_version_per_doc", "ix_rag_chunks_embedding_hnsw"}
+
+
+def include_object(obj, name, type_, reflected, compare_to):
+    if type_ == "index" and name in _SKIP_INDEXES:
+        return False
+    return True
+
 
 def run_migrations_offline() -> None:
     context.configure(
@@ -23,6 +33,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -35,7 +46,11 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            include_object=include_object,
+        )
         with context.begin_transaction():
             context.run_migrations()
 

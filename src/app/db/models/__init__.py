@@ -16,6 +16,7 @@ from app.db.models.models import (
     RawStaging,
     Transactions,
 )
+from app.db.models.rag import RagChunk, RagDocument, RagDocumentVersion
 from app.db.models.rules import BusinessRule, ClientMessageIndicators
 
 __all__ = [
@@ -29,6 +30,9 @@ __all__ = [
     "IngestionReject",
     "IngestionStatus",
     "PiiVault",
+    "RagChunk",
+    "RagDocument",
+    "RagDocumentVersion",
     "RawStaging",
     "Transactions",
 ]
