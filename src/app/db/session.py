@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import contextmanager
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -38,6 +39,23 @@ def get_session() -> Iterator[Session]:
     try:
         yield session
     finally:
+        session.close()
+
+
+@contextmanager
+def safe_session() -> Iterator[Session]:
+    """Model-facing session running under the safe role, which cannot read pii_vault.
+
+    The role is reset before the connection returns to the pool.
+    """
+    session = SessionLocal()
+    try:
+        session.execute(text(f'SET ROLE "{_settings.db_safe_role}"'))
+        yield session
+    finally:
+        session.rollback()
+        session.execute(text("RESET ROLE"))
+        session.commit()
         session.close()
 
 

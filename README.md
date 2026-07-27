@@ -18,6 +18,6 @@ uv sync                 # create the virtual environment and install dependencie
 
 ## Design principles
 
-- No client personal data (names, contact details, identifiers) is ever sent to the LLM.
+- No client personal data (names, contact details, identifiers) is ever sent to the LLM. Personal data lives in a separate `pii_vault` table that a restricted DB role owns; the model-facing path runs under a safe role that can read only `llm_client_context`, an allow-listed view of tiers and buckets.
 - No message is delivered without human review and approval.
 - Every action that writes data is recorded in an audit trail.

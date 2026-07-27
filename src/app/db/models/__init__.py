@@ -4,6 +4,7 @@ Importing this package registers every model on ``Base.metadata`` so migrations
 and ``create_all`` see them.
 """
 
+from app.db.models.audit import AuditLog
 from app.db.models.models import (
     INGESTION_STATES,
     ClientFeatures,
@@ -15,9 +16,12 @@ from app.db.models.models import (
     RawStaging,
     Transactions,
 )
+from app.db.models.rules import BusinessRule
 
 __all__ = [
     "INGESTION_STATES",
+    "AuditLog",
+    "BusinessRule",
     "ClientFeatures",
     "Clients",
     "Funds",
