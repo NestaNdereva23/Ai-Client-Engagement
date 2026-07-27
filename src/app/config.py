@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     # Role the model-facing path switches into; it has no grant on pii_vault.
     db_safe_role: str = "ace_safe"
 
+    # Embeddings for RAG. The same model must index and query, or similarity is
+    # meaningless. The dev default is deterministic and needs no external service.
+    embedding_provider: str = "hashing"
+    embedding_model: str = "dev-hashing"
+    embedding_batch_size: int = 64
+
     # Cytonn client-data API. Reads CY_API_BASE_URL / CY_API_KEY
     cytonn_api_base_url: str = Field(
         default="",
