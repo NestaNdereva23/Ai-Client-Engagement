@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from app.agents.email_agent import build_system_prompt
 from app.agents.graph import (
     ClientContext,
     GenerationState,
@@ -44,7 +45,7 @@ def make_context_loader(chunks=()):
         return ClientContext(
             raw_context=RAW_CONTEXT,
             angle="winback_habit",
-            prompt_variant="habit_default",
+            prompt_variant="habit_premium",
             chunks=chunks,
         )
 
@@ -83,6 +84,32 @@ def test_happy_path_runs_all_four_nodes_and_carries_run_and_trace_ids() -> None:
     # as extra keys in the boundary-scanned context.
     assert llm.calls[0]["system"].count("11.35%") == 1
     assert "winback_habit" in llm.calls[0]["system"]
+
+
+def test_default_prompt_builder_is_email_agents_and_reflects_the_rule_outcome() -> None:
+    """prompt_variant comes from the rule outcome (M4), not a hard-coded template."""
+    llm = ScriptedLLMClient(["Dear {{first_name}}, welcome back."])
+    graph = build_generation_graph(context_loader=make_context_loader(), llm_client=llm)
+
+    graph.invoke(new_generation_state(client_id=1001, product="money market"))
+
+    assert llm.calls[0]["system"] == build_system_prompt(
+        angle="winback_habit", prompt_variant="habit_premium"
+    )
+
+
+def test_prompt_builder_is_injectable_for_a_future_channel() -> None:
+    """A future channel can swap EmailAgent's prompt builder without touching the graph."""
+    llm = ScriptedLLMClient(["Dear {{first_name}}, welcome back."])
+    graph = build_generation_graph(
+        context_loader=make_context_loader(),
+        llm_client=llm,
+        prompt_builder=lambda **_: "a completely different channel's prompt",
+    )
+
+    graph.invoke(new_generation_state(client_id=1001, product="money market"))
+
+    assert llm.calls[0]["system"] == "a completely different channel's prompt"
 
 
 def test_boundary_context_carries_only_the_allowlisted_tiers() -> None:
@@ -176,7 +203,7 @@ def test_a_boundary_leak_aborts_the_run_instead_of_being_treated_as_retryable() 
             return ClientContext(
                 raw_context={**RAW_CONTEXT, "archetype": "reachable at jane@example.com"},
                 angle="winback_habit",
-                prompt_variant="habit_default",
+                prompt_variant="habit_premium",
                 chunks=(),
             )
 

@@ -11,7 +11,7 @@ from sqlalchemy import BigInteger, Column, MetaData, Table, Text
 
 view_metadata = MetaData()
 
-# The only fields the model-facing path may read: tiers and buckets, keyed by
+# The only fields the model facing path may read: tiers and buckets, keyed by
 # client_id for server-side re-attachment. No name, code, exact amount, or date.
 llm_client_context = Table(
     "llm_client_context",

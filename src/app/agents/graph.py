@@ -24,6 +24,7 @@ from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agents.email_agent import build_system_prompt
 from app.db.models.rules import ClientMessageIndicators
 from app.db.models.views import llm_client_context
 from app.privacy.boundary import AuditSink, run_model_boundary, to_model_context
@@ -31,12 +32,8 @@ from app.privacy.llm_client import LLMClient, as_model_call
 from app.rag.grounding import GroundingChunk, UngroundedClaim, enforce_grounding
 from app.rag.retrieve import retrieve_product_facts
 
-DEFAULT_SYSTEM_PROMPT = (
-    "Draft a short win back email for a dormant investment client. Use "
-    "placeholders like {{first_name}} and {{fund_name}} for anything specific "
-    "to the client; never invent a name, amount, or date. Only cite a rate or "
-    "return that appears, verbatim, in the facts below."
-)
+# The default prompt builder is EmailAgent
+PromptBuilder = Callable[..., str]
 
 # Guard against an endlessly retrying loop
 DEFAULT_MAX_ATTEMPTS = 2
@@ -136,18 +133,12 @@ def load_client_context(session: Session, client_id: int, product: str) -> Clien
     )
 
 
-def _render_facts(chunks: Sequence[GroundingChunk]) -> str:
-    if not chunks:
-        return "(no facts retrieved; do not cite a rate or return)"
-    return "\n".join(f"- {chunk.text}" for chunk in chunks)
-
-
 def build_generation_graph(
     *,
     context_loader: ContextLoader,
     llm_client: LLMClient,
     guardrail_checks: Sequence[GuardrailCheck] = (default_grounding_check,),
-    system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+    prompt_builder: PromptBuilder = build_system_prompt,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     audit: AuditSink | None = None,
 ) -> CompiledStateGraph:
@@ -165,10 +156,10 @@ def build_generation_graph(
 
     def assemble_prompt(state: GenerationState) -> dict[str, Any]:
         context = to_model_context(state["raw_context"])
-        prompt = (
-            f"{system_prompt}\n\n"
-            f"Angle: {state.get('angle') or 'winback'}\n"
-            f"Facts you may cite (only these, verbatim):\n{_render_facts(state.get('chunks', ()))}"
+        prompt = prompt_builder(
+            angle=state.get("angle"),
+            prompt_variant=state.get("prompt_variant"),
+            chunks=state.get("chunks", ()),
         )
         return {"context": context, "system_prompt": prompt}
 
