@@ -50,6 +50,19 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("CY_API_KEY", "CYTONN_API_KEY"),
     )
 
+    # LLM provider for draft generation. Claude is primary; the provider name
+    # picks the implementation, the rest configure it, so a future provider
+    # slots in without code changes at call sites.
+    llm_provider: str = "anthropic"
+    anthropic_api_key: str = Field(default="", validation_alias=AliasChoices("ANTHROPIC_API_KEY"))
+    # Defaults to the latest Claude model; override per environment without a
+    # code change. Newer Claude models reject a non-default temperature, so
+    # llm_temperature defaults to unset (omitted from the request) rather than
+    # a fixed number.
+    llm_model: str = "claude-opus-5"
+    llm_temperature: float | None = None
+    llm_max_tokens: int = 1024
+
     @property
     def is_production(self) -> bool:
         """True when running in the production environment."""
