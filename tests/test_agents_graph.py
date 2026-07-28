@@ -3,9 +3,11 @@
 These prove the four nodes run in order, run_id/trace_id are set once and
 carried through every node (and into the boundary audit), the model's raw
 output is parsed and validated against the EmailDraft schema before any other
-guardrail runs, an ungrounded draft retries then is regenerated, a
-structurally or semantically bad draft is rejected after the retry budget,
-and a leak at the privacy boundary aborts the whole run rather than being
+guardrail runs, an outbound PII leak and an ungrounded or malformed draft are
+all handled as retryable output guardrails with the failing one recorded on
+GenerationState.failed_guardrail, a structurally or semantically bad draft is
+rejected once the retry budget runs out, and a leak at the privacy boundary
+from a broken payload (inbound) still aborts the whole run rather than being
 swallowed as a retryable guardrail failure. There is never a path out of this
 graph to anything resembling a send.
 """
@@ -21,10 +23,10 @@ from app.agents.email_agent import build_system_prompt
 from app.agents.graph import (
     ClientContext,
     GenerationState,
-    GuardrailFailure,
     build_generation_graph,
     new_generation_state,
 )
+from app.agents.guardrails import GuardrailFailure
 from app.privacy.boundary import BoundaryAudit
 from app.privacy.scanners import InboundLeak
 
@@ -185,6 +187,7 @@ def test_persistently_ungrounded_draft_is_rejected_after_the_retry_budget() -> N
 
     assert result["status"] == "rejected"
     assert result["attempts"] == 2
+    assert result["failed_guardrail"] == "grounding"
     # The reason reflects the last draft tried, not the first.
     assert "42.00" in (result["reason"] or "")
     assert len(llm.calls) == 2
@@ -213,6 +216,8 @@ def test_never_reaches_accepted_without_passing_every_guardrail_check() -> None:
 
     assert result["status"] == "rejected"
     assert result["reason"] == "never good enough"
+    # A GuardrailFailure raised without a name still gets recorded on the trace.
+    assert result["failed_guardrail"] == "unknown"
 
 
 def test_malformed_json_draft_retries_then_is_rejected_after_the_budget() -> None:
@@ -226,6 +231,7 @@ def test_malformed_json_draft_retries_then_is_rejected_after_the_budget() -> Non
 
     assert result["status"] == "rejected"
     assert result["attempts"] == 2
+    assert result["failed_guardrail"] == "structured_output"
     assert "not valid JSON" in (result["reason"] or "")
     # A draft that never parsed has no validated body or structured output.
     assert result.get("body") is None
@@ -243,6 +249,7 @@ def test_draft_missing_a_required_placeholder_is_rejected() -> None:
     result = graph.invoke(new_generation_state(client_id=1001, product="money market"))
 
     assert result["status"] == "rejected"
+    assert result["failed_guardrail"] == "structured_output"
     assert "missing required placeholders" in (result["reason"] or "")
     assert "{{fund_name}}" in (result["reason"] or "")
 
@@ -258,8 +265,68 @@ def test_draft_with_an_unexpected_placeholder_token_is_rejected() -> None:
     result = graph.invoke(new_generation_state(client_id=1001, product="money market"))
 
     assert result["status"] == "rejected"
+    assert result["failed_guardrail"] == "structured_output"
     assert "unexpected placeholder" in (result["reason"] or "")
     assert "{{amount}}" in (result["reason"] or "")
+
+
+def test_a_format_violation_is_rejected_and_recorded_as_format_length() -> None:
+    """A body that is too short passes structured output and grounding, then fails format."""
+    llm = ScriptedLLMClient([draft_json(subject="Hi {{first_name}}", body="{{fund_name}}")])
+    graph = build_generation_graph(
+        context_loader=make_context_loader(), llm_client=llm, max_attempts=1
+    )
+
+    result = graph.invoke(new_generation_state(client_id=1001, product="money market"))
+
+    assert result["status"] == "rejected"
+    assert result["failed_guardrail"] == "format_length"
+    assert "under" in (result["reason"] or "")
+    # Structured output did validate; the failure is purely about length.
+    assert result["body"] == "{{fund_name}}"
+
+
+def test_an_outbound_pii_leak_retries_then_accepts_a_clean_draft() -> None:
+    """The model's own words leaking a contact channel is a retryable output guardrail."""
+    llm = ScriptedLLMClient(
+        [
+            draft_json(
+                body="Dear {{first_name}}, reach us at winback@example.com re {{fund_name}}."
+            ),
+            draft_json(body="Dear {{first_name}}, welcome back to {{fund_name}}."),
+        ]
+    )
+    graph = build_generation_graph(
+        context_loader=make_context_loader(), llm_client=llm, max_attempts=2
+    )
+
+    result = graph.invoke(new_generation_state(client_id=1001, product="money market"))
+
+    assert result["status"] == "accepted"
+    assert result["attempts"] == 2
+    assert len(llm.calls) == 2
+
+
+def test_a_persistent_outbound_pii_leak_is_rejected_and_recorded_as_pii_scan() -> None:
+    llm = ScriptedLLMClient(
+        [
+            draft_json(body="Dear {{first_name}}, call 0712345678 about {{fund_name}}."),
+            draft_json(body="Dear {{first_name}}, email winback@example.com re {{fund_name}}."),
+        ]
+    )
+    graph = build_generation_graph(
+        context_loader=make_context_loader(), llm_client=llm, max_attempts=2
+    )
+
+    result = graph.invoke(new_generation_state(client_id=1001, product="money market"))
+
+    assert result["status"] == "rejected"
+    assert result["attempts"] == 2
+    assert result["failed_guardrail"] == "pii_scan"
+    # The leaked draft never reached structured-output parsing.
+    assert result.get("body") is None
+    assert result.get("raw_structured_output") is None
+    assert len(llm.calls) == 2
 
 
 def test_a_boundary_leak_aborts_the_run_instead_of_being_treated_as_retryable() -> None:
