@@ -1,15 +1,18 @@
 """The generation graph: retrieve, assemble, generate, guardrails, no send.
 
 These prove the four nodes run in order, run_id/trace_id are set once and
-carried through every node (and into the boundary audit), an ungrounded
-draft retries then is regenerated, a draft that never grounds is rejected
-after the retry budget, and a leak at the privacy boundary aborts the whole
-run rather than being swallowed as a retryable guardrail failure. There is
-never a path out of this graph to anything resembling a send.
+carried through every node (and into the boundary audit), the model's raw
+output is parsed and validated against the EmailDraft schema before any other
+guardrail runs, an ungrounded draft retries then is regenerated, a
+structurally or semantically bad draft is rejected after the retry budget,
+and a leak at the privacy boundary aborts the whole run rather than being
+swallowed as a retryable guardrail failure. There is never a path out of this
+graph to anything resembling a send.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import pytest
@@ -32,6 +35,11 @@ RAW_CONTEXT = {
     "value_tier_label": "High",
     "rhythm_band": "Unknown",
 }
+
+
+def draft_json(subject: str = "Come back to {{fund_name}}", body: str = "") -> str:
+    """A raw model output: valid JSON matching the EmailDraft schema."""
+    return json.dumps({"subject": subject, "body": body})
 
 
 @dataclass(frozen=True)
@@ -68,14 +76,21 @@ class ScriptedLLMClient:
 
 def test_happy_path_runs_all_four_nodes_and_carries_run_and_trace_ids() -> None:
     chunks = [FakeChunk(chunk_id=1, text="the fund yielded 11.35% this week")]
-    llm = ScriptedLLMClient(["Dear {{first_name}}, your fund returned 11.35% last week."])
+    llm = ScriptedLLMClient(
+        [draft_json(body="Dear {{first_name}}, your {{fund_name}} returned 11.35% last week.")]
+    )
     graph = build_generation_graph(context_loader=make_context_loader(chunks), llm_client=llm)
 
     state = new_generation_state(client_id=1001, product="money market")
     result = graph.invoke(state)
 
     assert result["status"] == "accepted"
-    assert result["draft"] == "Dear {{first_name}}, your fund returned 11.35% last week."
+    assert result["subject"] == "Come back to {{fund_name}}"
+    assert result["body"] == "Dear {{first_name}}, your {{fund_name}} returned 11.35% last week."
+    assert result["raw_structured_output"] == {
+        "subject": result["subject"],
+        "body": result["body"],
+    }
     assert result["attempts"] == 1
     # run_id/trace_id set once at entry, unchanged by every node.
     assert result["run_id"] == state["run_id"]
@@ -88,7 +103,7 @@ def test_happy_path_runs_all_four_nodes_and_carries_run_and_trace_ids() -> None:
 
 def test_default_prompt_builder_is_email_agents_and_reflects_the_rule_outcome() -> None:
     """prompt_variant comes from the rule outcome (M4), not a hard-coded template."""
-    llm = ScriptedLLMClient(["Dear {{first_name}}, welcome back."])
+    llm = ScriptedLLMClient([draft_json(body="Dear {{first_name}}, welcome back.")])
     graph = build_generation_graph(context_loader=make_context_loader(), llm_client=llm)
 
     graph.invoke(new_generation_state(client_id=1001, product="money market"))
@@ -100,7 +115,7 @@ def test_default_prompt_builder_is_email_agents_and_reflects_the_rule_outcome() 
 
 def test_prompt_builder_is_injectable_for_a_future_channel() -> None:
     """A future channel can swap EmailAgent's prompt builder without touching the graph."""
-    llm = ScriptedLLMClient(["Dear {{first_name}}, welcome back."])
+    llm = ScriptedLLMClient([draft_json(body="Dear {{first_name}}, welcome back.")])
     graph = build_generation_graph(
         context_loader=make_context_loader(),
         llm_client=llm,
@@ -120,7 +135,7 @@ def test_boundary_context_carries_only_the_allowlisted_tiers() -> None:
 
         def generate(self, *, system: str, user: str) -> str:
             seen_payloads.append(dict(item.split(": ", 1) for item in user.split("\n")))
-            return "Dear {{first_name}}, welcome back."
+            return draft_json(body="Dear {{first_name}}, welcome back.")
 
     graph = build_generation_graph(
         context_loader=make_context_loader(), llm_client=RecordingLLMClient()
@@ -140,8 +155,8 @@ def test_ungrounded_draft_retries_then_accepts_a_grounded_one() -> None:
     chunks = [FakeChunk(chunk_id=1, text="the fund yielded 11.35% this week")]
     llm = ScriptedLLMClient(
         [
-            "Dear {{first_name}}, we made up a 99.99% return for you.",
-            "Dear {{first_name}}, your fund returned 11.35% last week.",
+            draft_json(body="Dear {{first_name}}, we made up a 99.99% return for {{fund_name}}."),
+            draft_json(body="Dear {{first_name}}, {{fund_name}} returned 11.35% last week."),
         ]
     )
     graph = build_generation_graph(context_loader=make_context_loader(chunks), llm_client=llm)
@@ -156,8 +171,10 @@ def test_ungrounded_draft_retries_then_accepts_a_grounded_one() -> None:
 def test_persistently_ungrounded_draft_is_rejected_after_the_retry_budget() -> None:
     llm = ScriptedLLMClient(
         [
-            "Dear {{first_name}}, we made up a 99.99% return for you.",
-            "Dear {{first_name}}, still making up a 42.00% return.",
+            draft_json(body="Dear {{first_name}}, we made up a 99.99% return for {{fund_name}}."),
+            draft_json(
+                body="Dear {{first_name}}, still making up a 42.00% return for {{fund_name}}."
+            ),
         ]
     )
     graph = build_generation_graph(
@@ -179,7 +196,12 @@ def test_never_reaches_accepted_without_passing_every_guardrail_check() -> None:
     def always_fails(state: GenerationState) -> None:
         raise GuardrailFailure("never good enough")
 
-    llm = ScriptedLLMClient(["draft one", "draft two"])
+    llm = ScriptedLLMClient(
+        [
+            draft_json(body="Dear {{first_name}}, draft one for {{fund_name}}."),
+            draft_json(body="Dear {{first_name}}, draft two for {{fund_name}}."),
+        ]
+    )
     graph = build_generation_graph(
         context_loader=make_context_loader(),
         llm_client=llm,
@@ -191,6 +213,53 @@ def test_never_reaches_accepted_without_passing_every_guardrail_check() -> None:
 
     assert result["status"] == "rejected"
     assert result["reason"] == "never good enough"
+
+
+def test_malformed_json_draft_retries_then_is_rejected_after_the_budget() -> None:
+    """A draft that is not valid JSON never reaches the pluggable checks at all."""
+    llm = ScriptedLLMClient(["not json at all", "still not json"])
+    graph = build_generation_graph(
+        context_loader=make_context_loader(), llm_client=llm, max_attempts=2
+    )
+
+    result = graph.invoke(new_generation_state(client_id=1001, product="money market"))
+
+    assert result["status"] == "rejected"
+    assert result["attempts"] == 2
+    assert "not valid JSON" in (result["reason"] or "")
+    # A draft that never parsed has no validated body or structured output.
+    assert result.get("body") is None
+    assert result.get("raw_structured_output") is None
+
+
+def test_draft_missing_a_required_placeholder_is_rejected() -> None:
+    llm = ScriptedLLMClient(
+        [draft_json(subject="Welcome back", body="Dear {{first_name}}, welcome back.")]
+    )
+    graph = build_generation_graph(
+        context_loader=make_context_loader(), llm_client=llm, max_attempts=1
+    )
+
+    result = graph.invoke(new_generation_state(client_id=1001, product="money market"))
+
+    assert result["status"] == "rejected"
+    assert "missing required placeholders" in (result["reason"] or "")
+    assert "{{fund_name}}" in (result["reason"] or "")
+
+
+def test_draft_with_an_unexpected_placeholder_token_is_rejected() -> None:
+    llm = ScriptedLLMClient(
+        [draft_json(body="Dear {{first_name}}, your {{fund_name}} made {{amount}}.")]
+    )
+    graph = build_generation_graph(
+        context_loader=make_context_loader(), llm_client=llm, max_attempts=1
+    )
+
+    result = graph.invoke(new_generation_state(client_id=1001, product="money market"))
+
+    assert result["status"] == "rejected"
+    assert "unexpected placeholder" in (result["reason"] or "")
+    assert "{{amount}}" in (result["reason"] or "")
 
 
 def test_a_boundary_leak_aborts_the_run_instead_of_being_treated_as_retryable() -> None:
@@ -223,7 +292,7 @@ def test_a_boundary_leak_aborts_the_run_instead_of_being_treated_as_retryable() 
 
 def test_boundary_audit_sink_receives_the_runs_ids() -> None:
     records: list[BoundaryAudit] = []
-    llm = ScriptedLLMClient(["Dear {{first_name}}, welcome back."])
+    llm = ScriptedLLMClient([draft_json(body="Dear {{first_name}}, welcome back.")])
     graph = build_generation_graph(
         context_loader=make_context_loader(), llm_client=llm, audit=records.append
     )

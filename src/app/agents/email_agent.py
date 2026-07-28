@@ -13,11 +13,14 @@ from app.rag.grounding import GroundingChunk
 REQUIRED_PLACEHOLDERS = ("{{first_name}}", "{{fund_name}}")
 
 _BASE_INSTRUCTIONS = (
-    "Draft a short win back email for a dormant investment client. "
+    "Draft a short win back email for a dormant investment client. Respond "
+    'with only a JSON object of the form {"subject": "...", "body": "..."} '
+    "and nothing else: no markdown fences, no commentary before or after it. "
     "Use {{first_name}} for the client's name and {{fund_name}} for the fund "
-    "or product name; use no other placeholder token. Never invent or state a "
-    "real name, exact amount, exact date, or contact detail. Only cite a rate "
-    "or return that appears, verbatim, in the facts provided."
+    "or product name, in the subject and/or body; use no other placeholder "
+    "token. Never invent or state a real name, exact amount, exact date, or "
+    "contact detail. Only cite a rate or return that appears, verbatim, in "
+    "the facts provided."
 )
 
 # One line of tone and framing per prompt variant, keyed by the exact string a

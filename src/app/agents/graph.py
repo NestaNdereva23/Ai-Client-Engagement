@@ -31,6 +31,7 @@ from app.privacy.boundary import AuditSink, run_model_boundary, to_model_context
 from app.privacy.llm_client import LLMClient, as_model_call
 from app.rag.grounding import GroundingChunk, UngroundedClaim, enforce_grounding
 from app.rag.retrieve import retrieve_product_facts
+from app.schemas.email_draft import DraftValidationError, parse_email_draft
 
 # The default prompt builder is EmailAgent
 PromptBuilder = Callable[..., str]
@@ -72,7 +73,10 @@ class GenerationState(TypedDict, total=False):
     chunks: Sequence[GroundingChunk]
     context: dict[str, Any]
     system_prompt: str
-    draft: str | None
+    draft: str | None  # the model's raw output, unparsed, as generated
+    subject: str | None
+    body: str | None
+    raw_structured_output: dict[str, Any] | None  # EmailDraft.model_dump(), for audit
     attempts: int
     status: str  # "pending" | "accepted" | "rejected"
     reason: str | None
@@ -97,9 +101,9 @@ def new_generation_state(*, client_id: int, product: str) -> GenerationState:
 
 
 def default_grounding_check(state: GenerationState) -> None:
-    """Every rate or return claim in the draft must trace to a retrieved chunk."""
+    """Every rate or return claim in the email body must trace to a retrieved chunk."""
     try:
-        enforce_grounding(state.get("draft") or "", state.get("chunks", []))
+        enforce_grounding(state.get("body") or "", state.get("chunks", []))
     except UngroundedClaim as exc:
         raise GuardrailFailure(str(exc)) from exc
 
@@ -175,15 +179,34 @@ def build_generation_graph(
         )
         return {"draft": draft, "attempts": state.get("attempts", 0) + 1}
 
+    def _retry_or_reject(state: GenerationState, reason: str) -> dict[str, Any]:
+        if state.get("attempts", 0) < max_attempts:
+            return {"status": "pending", "reason": reason}
+        return {"status": "rejected", "reason": reason}
+
     def guardrails(state: GenerationState) -> dict[str, Any]:
+        # Structured-output validation comes first: a draft that is not valid
+        # JSON, or is missing a field or a required placeholder, never even
+        # reaches the pluggable checks below.
+        try:
+            structured = parse_email_draft(state.get("draft") or "")
+        except DraftValidationError as failure:
+            return _retry_or_reject(state, str(failure))
+
+        updates: dict[str, Any] = {
+            "subject": structured.subject,
+            "body": structured.body,
+            "raw_structured_output": structured.model_dump(),
+        }
+        check_state: GenerationState = {**state, **updates}
+
         for check in checks:
             try:
-                check(state)
+                check(check_state)
             except GuardrailFailure as failure:
-                if state.get("attempts", 0) < max_attempts:
-                    return {"status": "pending", "reason": str(failure)}
-                return {"status": "rejected", "reason": str(failure)}
-        return {"status": "accepted", "reason": None}
+                return {**updates, **_retry_or_reject(state, str(failure))}
+
+        return {**updates, "status": "accepted", "reason": None}
 
     def route_after_guardrails(state: GenerationState) -> str:
         if state["status"] == "pending":
