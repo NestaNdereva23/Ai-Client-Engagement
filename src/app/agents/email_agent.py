@@ -75,6 +75,17 @@ def variant_guidance(prompt_variant: str | None) -> str:
     return _VARIANT_GUIDANCE.get(prompt_variant, _DEFAULT_VARIANT_GUIDANCE)
 
 
+def template_text(prompt_variant: str | None) -> str:
+    """The stable instructions for a prompt variant: base contract plus framing.
+
+    This excludes the angle line and retrieved facts, since those are data,
+    not template; llmops.versions hashes exactly this to register a
+    prompt_versions row, so a call with unchanged wording reuses the same
+    version and a genuine wording change registers a new one.
+    """
+    return f"{_BASE_INSTRUCTIONS}\n\n{variant_guidance(prompt_variant)}"
+
+
 def _render_facts(chunks: Sequence[GroundingChunk]) -> str:
     if not chunks:
         return "(no facts retrieved; do not cite a rate or return)"
@@ -87,13 +98,10 @@ def build_system_prompt(
     prompt_variant: str | None,
     chunks: Sequence[GroundingChunk] = (),
 ) -> str:
-    """The full system prompt for one draft: the shared contract, plus the
-    variant's framing, plus the facts the model may cite.
-    """
+    """The full system prompt for one draft: the template, the angle, and the facts."""
     return (
-        f"{_BASE_INSTRUCTIONS}\n\n"
-        f"Angle: {angle or 'winback'}\n"
-        f"{variant_guidance(prompt_variant)}\n\n"
+        f"{template_text(prompt_variant)}\n\n"
+        f"Angle: {angle or 'winback'}\n\n"
         f"Facts you may cite (only these, verbatim):\n{_render_facts(chunks)}"
     )
 
