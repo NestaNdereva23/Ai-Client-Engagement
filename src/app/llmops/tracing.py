@@ -36,12 +36,14 @@ class Tracer(Protocol):
         name: str,
         input: Any,
         metadata: dict[str, Any] | None = None,
-    ) -> Any:
-        """Open a span and return an opaque handle to pass to end_span."""
-        ...
+        as_type: str = "span",
+        model: str | None = None,
+    ) -> Any: ...
 
-    def end_span(self, handle: Any, *, output: Any) -> None:
-        """Close a span opened by start_span."""
+    def end_span(
+        self, handle: Any, *, output: Any, usage_details: dict[str, int] | None = None
+    ) -> None:
+        """Close a span opened by start_span, optionally attaching token usage."""
         ...
 
     def get_trace_url(self, trace_id: str) -> str | None:
@@ -50,6 +52,10 @@ class Tracer(Protocol):
 
     def flush(self) -> None:
         """Send any queued spans now, rather than waiting for the batch interval."""
+        ...
+
+    def shutdown(self) -> None:
+        """Release background export resources; call once when done tracing."""
         ...
 
 
@@ -63,10 +69,14 @@ class NullTracer:
         name: str,
         input: Any,
         metadata: dict[str, Any] | None = None,
+        as_type: str = "span",
+        model: str | None = None,
     ) -> None:
         return None
 
-    def end_span(self, handle: Any, *, output: Any) -> None:
+    def end_span(
+        self, handle: Any, *, output: Any, usage_details: dict[str, int] | None = None
+    ) -> None:
         return None
 
     def get_trace_url(self, trace_id: str) -> str | None:
@@ -75,12 +85,26 @@ class NullTracer:
     def flush(self) -> None:
         return None
 
+    def shutdown(self) -> None:
+        return None
+
 
 class LangfuseTracer:
-    """Sends spans to a self hosted Langfuse instance."""
+    """Sends spans to a self hosted Langfuse instance.
 
-    def __init__(self, *, host: str, public_key: str, secret_key: str) -> None:
-        self._client = Langfuse(host=host, public_key=public_key, secret_key=secret_key)
+    Pass in a Langfuse instance to make tests fast, offline, and free of a
+    real background export thread; by default it builds one from host/keys.
+    """
+
+    def __init__(
+        self,
+        *,
+        host: str = "",
+        public_key: str = "",
+        secret_key: str = "",
+        client: Langfuse | None = None,
+    ) -> None:
+        self._client = client or Langfuse(host=host, public_key=public_key, secret_key=secret_key)
 
     def start_span(
         self,
@@ -89,6 +113,8 @@ class LangfuseTracer:
         name: str,
         input: Any,
         metadata: dict[str, Any] | None = None,
+        as_type: str = "span",
+        model: str | None = None,
     ) -> Any:
         try:
             return self._client.start_observation(
@@ -96,16 +122,20 @@ class LangfuseTracer:
                 name=name,
                 input=input,
                 metadata=metadata,
+                as_type=as_type,
+                model=model,
             )
         except Exception:
             logger.warning("langfuse_span_start_failed", name=name, exc_info=True)
             return None
 
-    def end_span(self, handle: Any, *, output: Any) -> None:
+    def end_span(
+        self, handle: Any, *, output: Any, usage_details: dict[str, int] | None = None
+    ) -> None:
         if handle is None:
             return
         try:
-            handle.update(output=output)
+            handle.update(output=output, usage_details=usage_details)
             handle.end()
         except Exception:
             logger.warning("langfuse_span_end_failed", exc_info=True)
@@ -122,6 +152,12 @@ class LangfuseTracer:
             self._client.flush()
         except Exception:
             logger.warning("langfuse_flush_failed", exc_info=True)
+
+    def shutdown(self) -> None:
+        try:
+            self._client.shutdown()
+        except Exception:
+            logger.warning("langfuse_shutdown_failed", exc_info=True)
 
 
 def get_tracer(settings: Settings | None = None) -> Tracer:

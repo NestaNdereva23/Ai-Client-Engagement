@@ -17,7 +17,9 @@ from app.agents.graph import (  # noqa: E402
 from app.agents.guardrails import DEFAULT_GUARDRAIL_CHECKS  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.db.session import SessionLocal  # noqa: E402
+from app.llmops.telemetry import persist_generation_telemetry  # noqa: E402
 from app.llmops.tracing import get_tracer  # noqa: E402
+from app.llmops.versions import persist_generation_run  # noqa: E402
 from app.logging_config import configure_logging  # noqa: E402
 from app.privacy.llm_client import get_llm_client  # noqa: E402
 
@@ -45,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"langfuse={'enabled' if settings.langfuse_enabled else 'disabled'}")
 
     session = SessionLocal()
+    trace_url = None
     try:
         graph = build_generation_graph(
             context_loader=functools.partial(load_client_context, session),
@@ -62,8 +65,14 @@ def main(argv: list[str] | None = None) -> int:
             for node, update in step.items():
                 _print_step(node, update)
                 final_state.update(update)
+
+        run = persist_generation_run(session, final_state, settings)
+        persist_generation_telemetry(session, run, final_state, tracer=tracer)
+        session.commit()
+        trace_url = tracer.get_trace_url(final_state["trace_id"])
     finally:
         tracer.flush()
+        tracer.shutdown()
         session.close()
 
     print("\n=== final result ===")
@@ -71,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"attempts:         {final_state.get('attempts')}")
     print(f"failed_guardrail: {final_state.get('failed_guardrail')}")
     print(f"reason:           {final_state.get('reason')}")
-    trace_url = tracer.get_trace_url(final_state["trace_id"])
+    print(f"run_id:           {final_state.get('run_id')}")
     if trace_url:
         print(f"trace:            {trace_url}")
     return 0 if final_state.get("status") == "accepted" else 1

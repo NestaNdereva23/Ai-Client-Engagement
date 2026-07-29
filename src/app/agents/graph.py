@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -67,6 +68,8 @@ class GenerationState(TypedDict, total=False):
     status: str  # "pending" | "accepted" | "rejected"
     reason: str | None
     failed_guardrail: str | None  # "pii_scan" | "structured_output" | "grounding" | ...
+    llm_calls: list[dict[str, Any]]
+    tool_calls: list[dict[str, Any]]
 
 
 # A guardrail check inspects the state and raises GuardrailFailure on a bad
@@ -118,8 +121,15 @@ def load_client_context(session: Session, client_id: int, product: str) -> Clien
     )
 
 
-def _traced(name: str, fn: Callable[[GenerationState], dict[str, Any]], tracer: Tracer):
-    """Wrap a node so one Langfuse span covers its call, under the run's trace_id."""
+def _traced(
+    name: str,
+    fn: Callable[[GenerationState], dict[str, Any]],
+    tracer: Tracer,
+    *,
+    as_type: str = "span",
+    model: str | None = None,
+):
+    # Wrap a node so one Langfuse span covers its call, under the run's trace_id.
 
     def wrapped(state: GenerationState) -> dict[str, Any]:
         metadata = (
@@ -132,10 +142,21 @@ def _traced(name: str, fn: Callable[[GenerationState], dict[str, Any]], tracer: 
             else None
         )
         handle = tracer.start_span(
-            trace_id=state["trace_id"], name=name, input=dict(state), metadata=metadata
+            trace_id=state["trace_id"],
+            name=name,
+            input=dict(state),
+            metadata=metadata,
+            as_type=as_type,
+            model=model,
         )
         result = fn(state)
-        tracer.end_span(handle, output=result)
+        usage_details = None
+        if as_type == "generation":
+            calls = result.get("llm_calls") or state.get("llm_calls") or []
+            if calls and calls[-1]["input_tokens"] is not None:
+                last = calls[-1]
+                usage_details = {"input": last["input_tokens"], "output": last["output_tokens"]}
+        tracer.end_span(handle, output=result, usage_details=usage_details)
         return result
 
     return wrapped
@@ -164,11 +185,27 @@ def build_generation_graph(
 
     def retrieve_context(state: GenerationState) -> dict[str, Any]:
         client_context = context_loader(state["client_id"], state["product"])
+        tool_calls = [
+            {
+                "tool_name": "context_fetch",
+                "input": {"client_id": state["client_id"], "product": state["product"]},
+                "output": {
+                    "angle": client_context.angle,
+                    "prompt_variant": client_context.prompt_variant,
+                },
+            },
+            {
+                "tool_name": "rag_retrieval",
+                "input": {"product": state["product"], "angle": client_context.angle},
+                "output": {"chunk_count": len(client_context.chunks)},
+            },
+        ]
         return {
             "raw_context": client_context.raw_context,
             "angle": client_context.angle,
             "prompt_variant": client_context.prompt_variant,
             "chunks": client_context.chunks,
+            "tool_calls": tool_calls,
         }
 
     def assemble_prompt(state: GenerationState) -> dict[str, Any]:
@@ -180,9 +217,21 @@ def build_generation_graph(
         )
         return {"context": context, "system_prompt": prompt}
 
+    def _call_record(attempt: int, system_prompt: str, raw_output: str | None, latency_ms: int):
+        usage = getattr(llm_client, "last_usage", None)
+        return {
+            "attempt": attempt,
+            "system_prompt": system_prompt,
+            "raw_output": raw_output,
+            "input_tokens": usage.input_tokens if usage else None,
+            "output_tokens": usage.output_tokens if usage else None,
+            "latency_ms": latency_ms,
+        }
+
     def generate(state: GenerationState) -> dict[str, Any]:
         attempts = state.get("attempts", 0) + 1
         model_call = as_model_call(llm_client, system=state["system_prompt"])
+        started = time.monotonic()
         try:
             draft = run_model_boundary(
                 state["context"],
@@ -193,10 +242,25 @@ def build_generation_graph(
                 audit=audit,
             )
         except OutboundLeak as leak:
-            return {"attempts": attempts, **_retry_or_reject(attempts, "pii_scan", str(leak))}
+            latency_ms = int((time.monotonic() - started) * 1000)
+            calls = [
+                *state.get("llm_calls", ()),
+                _call_record(attempts, state["system_prompt"], None, latency_ms),
+            ]
+            return {
+                "attempts": attempts,
+                "llm_calls": calls,
+                **_retry_or_reject(attempts, "pii_scan", str(leak)),
+            }
+        latency_ms = int((time.monotonic() - started) * 1000)
+        calls = [
+            *state.get("llm_calls", ()),
+            _call_record(attempts, state["system_prompt"], draft, latency_ms),
+        ]
         return {
             "draft": draft,
             "attempts": attempts,
+            "llm_calls": calls,
             "status": "pending",
             "reason": None,
             "failed_guardrail": None,
@@ -244,7 +308,10 @@ def build_generation_graph(
     graph = StateGraph(GenerationState)
     graph.add_node("retrieve_context", _traced("retrieve_context", retrieve_context, tracer))
     graph.add_node("assemble_prompt", _traced("assemble_prompt", assemble_prompt, tracer))
-    graph.add_node("generate", _traced("generate", generate, tracer))
+    graph.add_node(
+        "generate",
+        _traced("generate", generate, tracer, as_type="generation", model=llm_client.model),
+    )
     graph.add_node("guardrails", _traced("guardrails", guardrails, tracer))
 
     graph.add_edge(START, "retrieve_context")

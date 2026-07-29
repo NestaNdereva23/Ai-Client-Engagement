@@ -91,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
     trace_url = tracer.get_trace_url(result["trace_id"])
     if trace_url:
         print(f"\ntrace: {trace_url}")
+    tracer.shutdown()
 
     return 0 if result["status"] == "accepted" else 1
 

@@ -1,16 +1,8 @@
-"""Provider-abstracted client for the model API, Claude (Anthropic) primary.
-
-This is the only module allowed to import the Anthropic SDK (enforced by
-test_only_privacy_imports_the_model_sdk). Everything outside app.privacy gets
-a ModelCall-shaped callable from as_model_call() and hands it to
-run_model_boundary(); nothing outside this module talks to the SDK directly.
-
-Model id, temperature, and max tokens all come from Settings, never
-hard coded, so switching models or tuning generation is a config change.
-"""
+# Provider-abstracted client for the model API
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 import anthropic
@@ -25,6 +17,14 @@ logger = structlog.get_logger(__name__)
 
 class LLMClientError(RuntimeError):
     """Raised when a model call fails after the provider's own retries."""
+
+
+@dataclass(frozen=True)
+class LLMUsage:
+    """Token counts for the most recent generate() call."""
+
+    input_tokens: int
+    output_tokens: int
 
 
 @runtime_checkable
@@ -57,6 +57,7 @@ class AnthropicLLMClient:
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.last_usage: LLMUsage | None = None
         self._client = client or anthropic.Anthropic(api_key=api_key)
 
     def generate(self, *, system: str, user: str) -> str:
@@ -81,19 +82,16 @@ class AnthropicLLMClient:
         if response.stop_reason == "refusal":
             raise LLMClientError("model declined the request")
 
+        self.last_usage = LLMUsage(
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+        )
         text = "".join(block.text for block in response.content if block.type == "text")
         return text
 
 
 class OllamaLLMClient:
-    """Local Ollama implementation of LLMClient, for testing against an open model.
-
-    Talks to Ollama's REST API directly (no extra dependency beyond httpx,
-    already used elsewhere in this app); a server must already be running
-    locally, e.g. `ollama run phi4-mini`. Never wired up as the production
-    default: llm_provider stays "anthropic" unless a developer's own .env
-    (gitignored) opts into "ollama" for local testing.
-    """
+    """Local Ollama implementation of LLMClient, for testing against an open model."""
 
     def __init__(
         self,
@@ -107,6 +105,7 @@ class OllamaLLMClient:
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.last_usage: LLMUsage | None = None
         self._client = client or httpx.Client(base_url=base_url, timeout=120.0)
 
     def generate(self, *, system: str, user: str) -> str:
@@ -124,11 +123,6 @@ class OllamaLLMClient:
                         {"role": "system", "content": system},
                         {"role": "user", "content": user},
                     ],
-                    # Small local models follow "respond with only this JSON
-                    # shape" far less reliably than Claude does from prompting
-                    # alone; Ollama's server-side JSON mode makes that
-                    # realistic to test against, without changing the
-                    # LLMClient contract (still plain text out).
                     "format": "json",
                     "stream": False,
                     "options": options,
@@ -139,7 +133,12 @@ class OllamaLLMClient:
             logger.warning("llm_client.request_failed", model=self.model, error=str(exc))
             raise LLMClientError(f"model request failed: {exc}") from exc
 
-        return response.json()["message"]["content"]
+        body = response.json()
+        self.last_usage = LLMUsage(
+            input_tokens=body.get("prompt_eval_count", 0),
+            output_tokens=body.get("eval_count", 0),
+        )
+        return body["message"]["content"]
 
 
 def get_llm_client(settings: Settings | None = None) -> LLMClient:
