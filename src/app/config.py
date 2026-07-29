@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     embedding_model: str = "dev-hashing"
     embedding_batch_size: int = 64
 
-    # Cytonn client data API. Reads CY_API_BASE_URL / CY_API_KEY
+    # Cy client data API. Reads CY_API_BASE_URL / CY_API_KEY
     cytonn_api_base_url: str = Field(
         default="",
         validation_alias=AliasChoices("CY_API_BASE_URL", "CYTONN_API_BASE_URL"),
@@ -50,28 +50,30 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("CY_API_KEY", "CYTONN_API_KEY"),
     )
 
-    # LLM provider for draft generation. Claude is primary; the provider name
-    # picks the implementation, the rest configure it, so a future provider
-    # slots in without code changes at call sites.
+    # LLM provider for draft generation.
     llm_provider: str = "anthropic"
     anthropic_api_key: str = Field(default="", validation_alias=AliasChoices("ANTHROPIC_API_KEY"))
-    # Defaults to the latest Claude model; override per environment without a
-    # code change. Newer Claude models reject a non-default temperature, so
-    # llm_temperature defaults to unset (omitted from the request) rather than
-    # a fixed number.
-    llm_model: str = "claude-opus-5"
+    llm_model: str = "claude-haiku-4"
     llm_temperature: float | None = None
     llm_max_tokens: int = 1024
-    # Only read when llm_provider="ollama" (local testing against an
-    # open-source model, e.g. `ollama run phi4-mini`); never used in
-    # production. Not a secret, but set it in .env, not here, so a
-    # developer's local endpoint/model choice never lands in git.
+
     ollama_base_url: str = "http://localhost:11434"
+
+    langfuse_base_url: str = ""
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
 
     @property
     def is_production(self) -> bool:
         """True when running in the production environment."""
         return self.app_env == "production"
+
+    @property
+    def langfuse_enabled(self) -> bool:
+        """True only once a host and both keys are configured."""
+        return bool(
+            self.langfuse_base_url and self.langfuse_public_key and self.langfuse_secret_key
+        )
 
 
 @lru_cache
