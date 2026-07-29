@@ -1,13 +1,14 @@
-"""The Claude client is provider-abstracted, config-driven, and only reachable
-through the privacy boundary.
+"""The LLM client is provider-abstracted and config-driven.
 
-These prove get_llm_client() builds the client from Settings (not hard-coded
-values), AnthropicLLMClient talks to an injected SDK client so tests never hit
-the network, and as_model_call() produces something run_model_boundary can
-call directly.
+These prove get_llm_client() builds the client Settings asks for (Claude or
+Ollama), AnthropicLLMClient and OllamaLLMClient both talk to an injected
+transport so tests never hit the network, and as_model_call() produces
+something run_model_boundary can call directly.
 """
 
 from __future__ import annotations
+
+import json
 
 import anthropic
 import httpx
@@ -18,6 +19,7 @@ from app.privacy.boundary import run_model_boundary
 from app.privacy.llm_client import (
     AnthropicLLMClient,
     LLMClientError,
+    OllamaLLMClient,
     as_model_call,
     get_llm_client,
 )
@@ -132,6 +134,98 @@ def test_generate_wraps_sdk_errors() -> None:
     fake = FakeAnthropic(error)
     client = AnthropicLLMClient(api_key="k", model="claude-opus-5", max_tokens=100, client=fake)
     with pytest.raises(LLMClientError, match="boom"):
+        client.generate(system="s", user="u")
+
+
+def test_get_llm_client_builds_ollama_from_settings() -> None:
+    settings = make_settings(
+        llm_provider="ollama",
+        llm_model="phi4-mini",
+        llm_max_tokens=512,
+        llm_temperature=0.2,
+    )
+    client = get_llm_client(settings)
+    assert isinstance(client, OllamaLLMClient)
+    assert client.model == "phi4-mini"
+    assert client.max_tokens == 512
+    assert client.temperature == 0.2
+
+
+def _ollama_client(handler, **overrides) -> OllamaLLMClient:
+    transport = httpx.MockTransport(handler)
+    defaults = {
+        "model": "phi4-mini",
+        "max_tokens": 256,
+        "client": httpx.Client(transport=transport, base_url="http://localhost:11434"),
+    }
+    defaults.update(overrides)
+    return OllamaLLMClient(**defaults)
+
+
+def test_ollama_generate_posts_the_configured_model_and_messages() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"message": {"content": "Dear {{first_name}}"}})
+
+    client = _ollama_client(handler)
+    result = client.generate(system="draft an email", user="archetype: One-and-done")
+
+    assert result == "Dear {{first_name}}"
+    assert seen["url"] == "http://localhost:11434/api/chat"
+    assert seen["body"]["model"] == "phi4-mini"
+    assert seen["body"]["messages"] == [
+        {"role": "system", "content": "draft an email"},
+        {"role": "user", "content": "archetype: One-and-done"},
+    ]
+    assert seen["body"]["options"]["num_predict"] == 256
+    assert "temperature" not in seen["body"]["options"]
+
+
+def test_ollama_generate_passes_temperature_when_configured() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"message": {"content": "draft"}})
+
+    client = _ollama_client(handler, temperature=0.3)
+    client.generate(system="s", user="u")
+
+    assert seen["body"]["options"]["temperature"] == 0.3
+
+
+def test_ollama_generate_requests_json_mode() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"message": {"content": "{}"}})
+
+    client = _ollama_client(handler)
+    client.generate(system="s", user="u")
+
+    assert seen["body"]["format"] == "json"
+    assert seen["body"]["stream"] is False
+
+
+def test_ollama_generate_wraps_transport_errors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = _ollama_client(handler)
+    with pytest.raises(LLMClientError, match="connection refused"):
+        client.generate(system="s", user="u")
+
+
+def test_ollama_generate_wraps_a_non_2xx_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "model not found"})
+
+    client = _ollama_client(handler)
+    with pytest.raises(LLMClientError):
         client.generate(system="s", user="u")
 
 
