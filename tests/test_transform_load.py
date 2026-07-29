@@ -274,5 +274,42 @@ def test_transform_run_persists_client_features(
         assert feature.value_tier in {"Top", "High", "Mid", "Low"}
 
 
+def test_upsert_batches_to_stay_under_the_postgres_bind_param_limit(
+    db: None, cleanup_runs: list[str], normalized_ids, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for the real limit (65535): force tiny batches with a
+    handful of rows instead of needing thousands of real clients to trigger it.
+    """
+    from app.transform import load as load_module
+
+    monkeypatch.setattr(load_module, "_MAX_BIND_PARAMS", 30)  # forces several batches
+
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    n_clients = 12
+    client_ids = list(range(9001, 9001 + n_clients))
+    normalized_ids["funds"].add(10)
+    normalized_ids["clients"].update(client_ids)
+    normalized_ids["txns"].update(range(90001, 90001 + n_clients))
+
+    clients = [_client(cid, 10, 90001 + i) for i, cid in enumerate(client_ids)]
+    payload = _payload(
+        {
+            "unit_fund_id": 10,
+            "unit_fund_name": "Money Market Fund",
+            "inactive_client_count": n_clients,
+            "clients": clients,
+        }
+    )
+    with SessionLocal() as session:
+        _seed_run(session, run_id, payload)
+        counts = transform_run(session, run_id)
+
+    assert counts.clients == n_clients
+    with SessionLocal() as session:
+        rows = session.scalars(select(Clients).where(Clients.client_id.in_(client_ids))).all()
+        assert {row.client_id for row in rows} == set(client_ids)
+
+
 def _count(session, model, key_value: int, key_col) -> int:
     return session.scalar(select(func.count()).select_from(model).where(key_col == key_value)) or 0
