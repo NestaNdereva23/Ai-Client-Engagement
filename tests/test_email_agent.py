@@ -29,8 +29,8 @@ def test_system_prompt_always_states_the_placeholder_contract() -> None:
     prompt = build_system_prompt(angle="winback_habit", prompt_variant="habit_standard")
     for token in REQUIRED_PLACEHOLDERS:
         assert token in prompt
-    assert "real name" in prompt
-    assert "exact amount" in prompt
+    assert "real person's name" in prompt
+    assert "exact investment amount" in prompt
 
 
 def test_system_prompt_carries_the_angle() -> None:
