@@ -57,7 +57,7 @@ def run_model_boundary(
     trace_id: str | None = None,
     audit: AuditSink | None = None,
 ) -> str:
-    """Send allow-listed context to the model and return the drafted text.
+    """Send allow listed context to the model and return the drafted text.
 
     identifiers are the request's real client values; the scanners block them
     from the payload and from the draft. Fails closed: an inbound hit aborts
