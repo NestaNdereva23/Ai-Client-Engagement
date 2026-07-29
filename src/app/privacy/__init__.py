@@ -12,6 +12,7 @@ from app.privacy.llm_client import (
     AnthropicLLMClient,
     LLMClient,
     LLMClientError,
+    OllamaLLMClient,
     as_model_call,
     get_llm_client,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "LLMClient",
     "LLMClientError",
     "ModelCall",
+    "OllamaLLMClient",
     "OutboundLeak",
     "as_model_call",
     "get_llm_client",

@@ -37,5 +37,17 @@ jobs:
         run: uv run ruff format --check .
       - name: Apply migrations
         run: uv run alembic upgrade head
+      - name: Create test database
+        run: |
+          uv run python -c "
+          from sqlalchemy import create_engine, text
+          engine = create_engine('postgresql+psycopg://ace:ace@localhost:5432/postgres', isolation_level='AUTOCOMMIT')
+          with engine.connect() as conn:
+              conn.execute(text('CREATE DATABASE ace_test'))
+          "
+      - name: Apply migrations to test database
+        run: uv run alembic upgrade head
+        env:
+          DATABASE_URL: postgresql+psycopg://ace:ace@localhost:5432/ace_test
       - name: Test
         run: uv run pytest

@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     embedding_model: str = "dev-hashing"
     embedding_batch_size: int = 64
 
-    # Cytonn client-data API. Reads CY_API_BASE_URL / CY_API_KEY
+    # Cytonn client data API. Reads CY_API_BASE_URL / CY_API_KEY
     cytonn_api_base_url: str = Field(
         default="",
         validation_alias=AliasChoices("CY_API_BASE_URL", "CYTONN_API_BASE_URL"),
@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     llm_model: str = "claude-opus-5"
     llm_temperature: float | None = None
     llm_max_tokens: int = 1024
+    # Only read when llm_provider="ollama" (local testing against an
+    # open-source model, e.g. `ollama run phi4-mini`); never used in
+    # production. Not a secret, but set it in .env, not here, so a
+    # developer's local endpoint/model choice never lands in git.
+    ollama_base_url: str = "http://localhost:11434"
 
     @property
     def is_production(self) -> bool:

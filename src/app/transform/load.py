@@ -1,6 +1,4 @@
-"""
-Persist flattened output into the normalized funds, clients, transactions.
-"""
+"""Persist flattened output into the normalized funds, clients, transactions."""
 
 from __future__ import annotations
 
@@ -22,7 +20,7 @@ from app.db.models.models import (
 from app.transform.features import FeatureRow, derive_features
 from app.transform.flatten import ClientRow, FlattenResult, FundRow, TxnRow, flatten_run
 
-# Columns updated on conflict, one entry per table. The natural key is excluded.
+# Columns updated on conflict, one entry per table.
 _FUND_UPDATE = ["unit_fund_name", "inactive_client_count"]
 _CLIENT_UPDATE = [
     "client_code",
@@ -51,8 +49,8 @@ _TXN_UPDATE = [
     "fees_incurred",
     "sale_type",
 ]
-# The vault re-transform updates only the name and its source. Contact channels
-# and opt-out arrive from a separate source and must survive a re-transform.
+# The vault retransform updates only the name and its source. Contact channels
+# and opt-out arrive from a separate source
 _VAULT_UPDATE = ["client_name", "source"]
 _FEATURE_UPDATE = [
     "archetype",
@@ -144,6 +142,13 @@ def _feature_dict(f: FeatureRow) -> dict[str, Any]:
     }
 
 
+# Postgres rejects a query with more than 65535 bind parameters. A single
+# multi-row INSERT ... VALUES (...), (...) binds row_count * column_count of
+# them, so a wide table (Clients, 15 columns) hits the cap at a few thousand
+# rows -- well within one ingestion run's size. Batch to stay under it.
+_MAX_BIND_PARAMS = 65535
+
+
 def _upsert(
     session: Session,
     model: type,
@@ -152,15 +157,23 @@ def _upsert(
     update_columns: list[str],
     extra_set: dict[str, Any] | None = None,
 ) -> int:
-    """Insert rows, updating the named columns when the key already exists."""
+    """Insert rows, updating the named columns when the key already exists.
+
+    Batched so a large run never builds a single INSERT past Postgres's
+    bind-parameter limit, however many columns the row carries.
+    """
     if not rows:
         return 0
-    stmt = pg_insert(model).values(rows)
-    set_ = {col: getattr(stmt.excluded, col) for col in update_columns}
-    if extra_set:
-        set_.update(extra_set)
-    stmt = stmt.on_conflict_do_update(index_elements=[key], set_=set_)
-    session.execute(stmt)
+
+    batch_size = max(1, _MAX_BIND_PARAMS // len(rows[0]))
+    for start in range(0, len(rows), batch_size):
+        batch = rows[start : start + batch_size]
+        stmt = pg_insert(model).values(batch)
+        set_ = {col: getattr(stmt.excluded, col) for col in update_columns}
+        if extra_set:
+            set_.update(extra_set)
+        stmt = stmt.on_conflict_do_update(index_elements=[key], set_=set_)
+        session.execute(stmt)
     return len(rows)
 
 
@@ -212,11 +225,7 @@ def persist_result(
 
 
 def transform_run(session: Session, run_id: str) -> PersistCounts:
-    """Flatten a run's raw staging and upsert it into the normalized tables.
-
-    The run's endpoint is recorded as the vault source, so the name's provenance
-    travels with it.
-    """
+    """Flatten a run's raw staging and upsert it into the normalized tables."""
     result = flatten_run(session, run_id)
     source = session.execute(
         select(IngestionStatus.endpoint).where(IngestionStatus.run_id == run_id)

@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 
 import anthropic
+import httpx
 import structlog
 
 from app.config import Settings, get_settings
@@ -84,6 +85,63 @@ class AnthropicLLMClient:
         return text
 
 
+class OllamaLLMClient:
+    """Local Ollama implementation of LLMClient, for testing against an open model.
+
+    Talks to Ollama's REST API directly (no extra dependency beyond httpx,
+    already used elsewhere in this app); a server must already be running
+    locally, e.g. `ollama run phi4-mini`. Never wired up as the production
+    default: llm_provider stays "anthropic" unless a developer's own .env
+    (gitignored) opts into "ollama" for local testing.
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        max_tokens: int,
+        temperature: float | None = None,
+        base_url: str = "http://localhost:11434",
+        client: httpx.Client | None = None,
+    ) -> None:
+        self.model = model
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self._client = client or httpx.Client(base_url=base_url, timeout=120.0)
+
+    def generate(self, *, system: str, user: str) -> str:
+        """Send one system/user turn to the local model and return the reply text."""
+        options: dict[str, Any] = {"num_predict": self.max_tokens}
+        if self.temperature is not None:
+            options["temperature"] = self.temperature
+
+        try:
+            response = self._client.post(
+                "/api/chat",
+                json={
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    # Small local models follow "respond with only this JSON
+                    # shape" far less reliably than Claude does from prompting
+                    # alone; Ollama's server-side JSON mode makes that
+                    # realistic to test against, without changing the
+                    # LLMClient contract (still plain text out).
+                    "format": "json",
+                    "stream": False,
+                    "options": options,
+                },
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.warning("llm_client.request_failed", model=self.model, error=str(exc))
+            raise LLMClientError(f"model request failed: {exc}") from exc
+
+        return response.json()["message"]["content"]
+
+
 def get_llm_client(settings: Settings | None = None) -> LLMClient:
     """Build the configured LLM client. The one place a provider is chosen."""
     settings = settings or get_settings()
@@ -94,6 +152,13 @@ def get_llm_client(settings: Settings | None = None) -> LLMClient:
             model=settings.llm_model,
             max_tokens=settings.llm_max_tokens,
             temperature=settings.llm_temperature,
+        )
+    if provider == "ollama":
+        return OllamaLLMClient(
+            model=settings.llm_model,
+            max_tokens=settings.llm_max_tokens,
+            temperature=settings.llm_temperature,
+            base_url=settings.ollama_base_url,
         )
     raise ValueError(f"unknown LLM provider: {provider!r}")
 

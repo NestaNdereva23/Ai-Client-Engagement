@@ -13,8 +13,14 @@ The first use case is re-engaging dormant clients over email. The system reads c
 ## Getting started
 
 ```bash
-uv sync                 # create the virtual environment and install dependencies
+uv sync                                   # create the virtual environment and install dependencies
+docker compose up -d                      # start Postgres 16 + pgvector (needs POSTGRES_* in .env)
+uv run alembic upgrade head                # apply migrations to the main database
+DATABASE_URL=postgresql+psycopg://ace:ace@localhost:5432/ace_test uv run alembic upgrade head
+                                           # apply migrations to the test database (adjust host/port to match .env)
 ```
+
+The test suite never runs against the database used for real ingested data: `tests/conftest.py` redirects `DATABASE_URL` to a database named `<database>_test` automatically (or to `TEST_DATABASE_URL` if set). A fresh `docker compose up -d` creates both databases on first boot (`docker/init-test-db.sh`); an existing container needs the one-off `CREATE DATABASE <name>_test` above, or an equivalent `psql`/`CREATE DATABASE` command, before the second `alembic upgrade head` will connect.
 
 ## Design principles
 
