@@ -2,8 +2,8 @@
 
 Wraps the generation graph (agents.graph) and EmailAgent's own prompt logic
 (agents.email_agent) behind the orchestrator.ChannelAgent shape: a channel
-name plus one generate(client_id, product) method. This is the only module
-that wires the two together, so agents.graph never has to import
+name plus one generate(client_id, product) method. This is module
+wires the two together, so agents.graph never has to import
 agents.email_agent's default prompt builder itself in a way that would stop
 a different channel from reusing the graph machinery.
 """
@@ -22,6 +22,7 @@ from app.agents.graph import (
     new_generation_state,
 )
 from app.agents.guardrails import DEFAULT_GUARDRAIL_CHECKS
+from app.llmops.tracing import NullTracer, Tracer
 from app.privacy.boundary import AuditSink
 from app.privacy.llm_client import LLMClient
 
@@ -41,7 +42,9 @@ class EmailAgent:
         guardrail_checks: Sequence[GuardrailCheck] = DEFAULT_GUARDRAIL_CHECKS,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         audit: AuditSink | None = None,
+        tracer: Tracer | None = None,
     ) -> None:
+        self._tracer = tracer or NullTracer()
         self._graph = build_generation_graph(
             context_loader=context_loader,
             llm_client=llm_client,
@@ -49,9 +52,13 @@ class EmailAgent:
             prompt_builder=build_system_prompt,
             max_attempts=max_attempts,
             audit=audit,
+            tracer=self._tracer,
         )
 
     def generate(self, *, client_id: int, product: str) -> GenerationState:
         """Run the graph for one client's draft and return the terminal state."""
         state = new_generation_state(client_id=client_id, product=product)
-        return self._graph.invoke(state)
+        try:
+            return self._graph.invoke(state)
+        finally:
+            self._tracer.flush()

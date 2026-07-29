@@ -22,6 +22,10 @@ DATABASE_URL=postgresql+psycopg://ace:ace@localhost:5432/ace_test uv run alembic
 
 The test suite never runs against the database used for real ingested data: `tests/conftest.py` redirects `DATABASE_URL` to a database named `<database>_test` automatically (or to `TEST_DATABASE_URL` if set). A fresh `docker compose up -d` creates both databases on first boot (`docker/init-test-db.sh`); an existing container needs the one-off `CREATE DATABASE <name>_test` above, or an equivalent `psql`/`CREATE DATABASE` command, before the second `alembic upgrade head` will connect.
 
+## Tracing (Langfuse)
+
+`docker compose up -d` also starts a self-hosted Langfuse (web on `localhost:3000`, its own worker, Postgres, ClickHouse, Redis and MinIO, fully isolated from the app's own database). It is optional: a generation run behaves identically without it. See the `LANGFUSE_*` block in `.env.example` for the compose bootstrap variables (all `CHANGEME` defaults, dev-only) and for `LANGFUSE_HOST` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`, the three the app itself reads. Until all three are set, every generation runs through a no-op tracer.
+
 ## Design principles
 
 - No client personal data (names, contact details, identifiers) is ever sent to the LLM. Personal data lives in a separate `pii_vault` table that a restricted DB role owns; the model-facing path runs under a safe role that can read only `llm_client_context`, an allow-listed view of tiers and buckets.

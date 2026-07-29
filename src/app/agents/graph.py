@@ -1,20 +1,8 @@
-"""The draft generation graph: retrieve context, assemble prompt, generate, guardrails.
-
-Four nodes run in a line for one client's draft. An inbound leak (the payload
-we built is broken) still aborts the whole run: that is a structural bug, not
-something retrying fixes. Everything else that can go wrong with a draft, an
-outbound PII leak (M3.5), bad structured output (M6.4), an ungrounded claim
-(M5.5), or a format or length violation, is an output guardrail: it loops
-back to generate up to a retry limit, then the run is rejected, and
-GenerationState.failed_guardrail records which one caught it.
-
-State carries run_id and trace_id, set once at entry and unchanged through
-every node, so LLMOps and the audit log (already indexed on both columns)
-can join a generation run to its boundary crossings.
-"""
+"""The draft generation graph: retrieve context, assemble prompt, generate, guardrails"""
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -29,6 +17,7 @@ from app.agents.email_agent import build_system_prompt
 from app.agents.guardrails import DEFAULT_GUARDRAIL_CHECKS, GuardrailFailure
 from app.db.models.rules import ClientMessageIndicators
 from app.db.models.views import llm_client_context
+from app.llmops.tracing import NullTracer, Tracer
 from app.privacy.boundary import AuditSink, run_model_boundary, to_model_context
 from app.privacy.llm_client import LLMClient, as_model_call
 from app.privacy.scanners import OutboundLeak
@@ -54,8 +43,7 @@ class ClientContext:
 
 
 # Loads a client's context; the caller binds a live session (e.g. via
-# functools.partial(load_client_context, session)) so this module never has
-# to know about SQLAlchemy directly.
+# functools.partial(load_client_context, session))
 ContextLoader = Callable[[int, str], ClientContext]
 
 
@@ -80,6 +68,8 @@ class GenerationState(TypedDict, total=False):
     status: str  # "pending" | "accepted" | "rejected"
     reason: str | None
     failed_guardrail: str | None  # "pii_scan" | "structured_output" | "grounding" | ...
+    llm_calls: list[dict[str, Any]]
+    tool_calls: list[dict[str, Any]]
 
 
 # A guardrail check inspects the state and raises GuardrailFailure on a bad
@@ -88,12 +78,15 @@ GuardrailCheck = Callable[[GenerationState], None]
 
 
 def new_generation_state(*, client_id: int, product: str) -> GenerationState:
-    """Seed state for one run: fresh run_id/trace_id, zero attempts."""
+    """Seed state for one run: fresh run_id/trace_id, zero attempts.
+    trace_id is a bare 32-char hex uuid because
+    that is also a valid Langfuse trace id
+    """
     return {
         "client_id": client_id,
         "product": product,
         "run_id": str(uuid.uuid4()),
-        "trace_id": str(uuid.uuid4()),
+        "trace_id": uuid.uuid4().hex,
         "attempts": 0,
         "status": "pending",
         "reason": None,
@@ -103,9 +96,7 @@ def new_generation_state(*, client_id: int, product: str) -> GenerationState:
 
 def load_client_context(session: Session, client_id: int, product: str) -> ClientContext:
     """The default ContextLoader: read the masked view, resolved indicators, and RAG facts.
-
-    Bind a session to get a ContextLoader, e.g.
-    functools.partial(load_client_context, session).
+    Bind a session to get a ContextLoader
     """
     row = (
         session.execute(
@@ -130,6 +121,47 @@ def load_client_context(session: Session, client_id: int, product: str) -> Clien
     )
 
 
+def _traced(
+    name: str,
+    fn: Callable[[GenerationState], dict[str, Any]],
+    tracer: Tracer,
+    *,
+    as_type: str = "span",
+    model: str | None = None,
+):
+    # Wrap a node so one Langfuse span covers its call, under the run's trace_id.
+
+    def wrapped(state: GenerationState) -> dict[str, Any]:
+        metadata = (
+            {
+                "run_id": state["run_id"],
+                "client_id": state["client_id"],
+                "product": state["product"],
+            }
+            if name == "retrieve_context"
+            else None
+        )
+        handle = tracer.start_span(
+            trace_id=state["trace_id"],
+            name=name,
+            input=dict(state),
+            metadata=metadata,
+            as_type=as_type,
+            model=model,
+        )
+        result = fn(state)
+        usage_details = None
+        if as_type == "generation":
+            calls = result.get("llm_calls") or state.get("llm_calls") or []
+            if calls and calls[-1]["input_tokens"] is not None:
+                last = calls[-1]
+                usage_details = {"input": last["input_tokens"], "output": last["output_tokens"]}
+        tracer.end_span(handle, output=result, usage_details=usage_details)
+        return result
+
+    return wrapped
+
+
 def build_generation_graph(
     *,
     context_loader: ContextLoader,
@@ -138,9 +170,14 @@ def build_generation_graph(
     prompt_builder: PromptBuilder = build_system_prompt,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     audit: AuditSink | None = None,
+    tracer: Tracer | None = None,
 ) -> CompiledStateGraph:
-    """Wire the four nodes into a compiled graph, ready to invoke() per client."""
+    """Wire the four nodes into a compiled graph, ready to invoke() per client.
+    tracer defaults to a no-op (NullTracer), so building and running a graph
+    never requires a live Langfuse instance
+    """
     checks = tuple(guardrail_checks)
+    tracer = tracer or NullTracer()
 
     def _retry_or_reject(attempts: int, guardrail: str, reason: str) -> dict[str, Any]:
         status = "pending" if attempts < max_attempts else "rejected"
@@ -148,11 +185,27 @@ def build_generation_graph(
 
     def retrieve_context(state: GenerationState) -> dict[str, Any]:
         client_context = context_loader(state["client_id"], state["product"])
+        tool_calls = [
+            {
+                "tool_name": "context_fetch",
+                "input": {"client_id": state["client_id"], "product": state["product"]},
+                "output": {
+                    "angle": client_context.angle,
+                    "prompt_variant": client_context.prompt_variant,
+                },
+            },
+            {
+                "tool_name": "rag_retrieval",
+                "input": {"product": state["product"], "angle": client_context.angle},
+                "output": {"chunk_count": len(client_context.chunks)},
+            },
+        ]
         return {
             "raw_context": client_context.raw_context,
             "angle": client_context.angle,
             "prompt_variant": client_context.prompt_variant,
             "chunks": client_context.chunks,
+            "tool_calls": tool_calls,
         }
 
     def assemble_prompt(state: GenerationState) -> dict[str, Any]:
@@ -164,9 +217,21 @@ def build_generation_graph(
         )
         return {"context": context, "system_prompt": prompt}
 
+    def _call_record(attempt: int, system_prompt: str, raw_output: str | None, latency_ms: int):
+        usage = getattr(llm_client, "last_usage", None)
+        return {
+            "attempt": attempt,
+            "system_prompt": system_prompt,
+            "raw_output": raw_output,
+            "input_tokens": usage.input_tokens if usage else None,
+            "output_tokens": usage.output_tokens if usage else None,
+            "latency_ms": latency_ms,
+        }
+
     def generate(state: GenerationState) -> dict[str, Any]:
         attempts = state.get("attempts", 0) + 1
         model_call = as_model_call(llm_client, system=state["system_prompt"])
+        started = time.monotonic()
         try:
             draft = run_model_boundary(
                 state["context"],
@@ -177,15 +242,25 @@ def build_generation_graph(
                 audit=audit,
             )
         except OutboundLeak as leak:
-            # The model's own words leaked something: exactly the M3.5 output
-            # guardrail, handled the same way as any other guardrail failure
-            # (retry, then reject), never a crash out of invoke(). An inbound
-            # leak is different and still propagates: that means the payload
-            # we built is broken, not that this particular draft is bad.
-            return {"attempts": attempts, **_retry_or_reject(attempts, "pii_scan", str(leak))}
+            latency_ms = int((time.monotonic() - started) * 1000)
+            calls = [
+                *state.get("llm_calls", ()),
+                _call_record(attempts, state["system_prompt"], None, latency_ms),
+            ]
+            return {
+                "attempts": attempts,
+                "llm_calls": calls,
+                **_retry_or_reject(attempts, "pii_scan", str(leak)),
+            }
+        latency_ms = int((time.monotonic() - started) * 1000)
+        calls = [
+            *state.get("llm_calls", ()),
+            _call_record(attempts, state["system_prompt"], draft, latency_ms),
+        ]
         return {
             "draft": draft,
             "attempts": attempts,
+            "llm_calls": calls,
             "status": "pending",
             "reason": None,
             "failed_guardrail": None,
@@ -201,7 +276,7 @@ def build_generation_graph(
     def guardrails(state: GenerationState) -> dict[str, Any]:
         attempts = state.get("attempts", 0)
 
-        # Structured-output validation comes first: a draft that is not valid
+        # Structured output validation comes first: a draft that is not valid
         # JSON, or is missing a field or a required placeholder, never even
         # reaches the pluggable checks below.
         try:
@@ -231,10 +306,13 @@ def build_generation_graph(
         return "done"
 
     graph = StateGraph(GenerationState)
-    graph.add_node("retrieve_context", retrieve_context)
-    graph.add_node("assemble_prompt", assemble_prompt)
-    graph.add_node("generate", generate)
-    graph.add_node("guardrails", guardrails)
+    graph.add_node("retrieve_context", _traced("retrieve_context", retrieve_context, tracer))
+    graph.add_node("assemble_prompt", _traced("assemble_prompt", assemble_prompt, tracer))
+    graph.add_node(
+        "generate",
+        _traced("generate", generate, tracer, as_type="generation", model=llm_client.model),
+    )
+    graph.add_node("guardrails", _traced("guardrails", guardrails, tracer))
 
     graph.add_edge(START, "retrieve_context")
     graph.add_edge("retrieve_context", "assemble_prompt")

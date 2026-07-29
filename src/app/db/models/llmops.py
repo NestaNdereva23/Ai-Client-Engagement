@@ -80,3 +80,86 @@ class GenerationRun(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class LLMRequest(Base):
+    """One model call attempt within a generation run."""
+
+    __tablename__ = "llm_requests"
+
+    request_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("generation_runs.run_id"), nullable=False, index=True
+    )
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_version_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("model_versions.model_version_id"), nullable=False
+    )
+    system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class LLMResponse(Base):
+    """The reply for one llm_requests row; raw_output is null for a pii_scan block."""
+
+    __tablename__ = "llm_responses"
+
+    response_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    request_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("llm_requests.request_id"), nullable=False, unique=True
+    )
+    raw_output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class TokenUsage(Base):
+    """Token counts for one llm_requests row; null when the client didn't report usage."""
+
+    __tablename__ = "token_usage"
+
+    token_usage_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    request_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("llm_requests.request_id"), nullable=False, unique=True
+    )
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ToolCall(Base):
+    """One non-LLM tool invocation (context fetch, RAG retrieval) within a run."""
+
+    __tablename__ = "tool_calls"
+
+    tool_call_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("generation_runs.run_id"), nullable=False, index=True
+    )
+    tool_name: Mapped[str] = mapped_column(Text, nullable=False)
+    tool_input: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    tool_output: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class TraceRef(Base):
+    """The Langfuse trace id (and resolved URL, when available) for one run."""
+
+    __tablename__ = "trace_refs"
+
+    run_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("generation_runs.run_id"), primary_key=True, autoincrement=False
+    )
+    trace_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    trace_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

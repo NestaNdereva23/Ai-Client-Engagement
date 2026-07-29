@@ -38,10 +38,19 @@ class FakeTextBlock:
         self.text = text
 
 
+class FakeUsage:
+    def __init__(self, input_tokens: int = 10, output_tokens: int = 20) -> None:
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+
+
 class FakeResponse:
-    def __init__(self, text: str, stop_reason: str = "end_turn") -> None:
+    def __init__(
+        self, text: str, stop_reason: str = "end_turn", usage: FakeUsage | None = None
+    ) -> None:
         self.content = [FakeTextBlock(text)]
         self.stop_reason = stop_reason
+        self.usage = usage or FakeUsage()
 
 
 class FakeMessages:
@@ -121,6 +130,15 @@ def test_generate_returns_the_text_content() -> None:
     assert client.generate(system="s", user="u") == "Dear {{first_name}}, come back."
 
 
+def test_generate_sets_last_usage_from_the_response() -> None:
+    fake = FakeAnthropic(FakeResponse("draft", usage=FakeUsage(input_tokens=42, output_tokens=7)))
+    client = AnthropicLLMClient(api_key="k", model="claude-opus-5", max_tokens=100, client=fake)
+    assert client.last_usage is None
+    client.generate(system="s", user="u")
+    assert client.last_usage.input_tokens == 42
+    assert client.last_usage.output_tokens == 7
+
+
 def test_generate_raises_llm_client_error_on_refusal() -> None:
     fake = FakeAnthropic(FakeResponse("", stop_reason="refusal"))
     client = AnthropicLLMClient(api_key="k", model="claude-opus-5", max_tokens=100, client=fake)
@@ -182,6 +200,30 @@ def test_ollama_generate_posts_the_configured_model_and_messages() -> None:
     ]
     assert seen["body"]["options"]["num_predict"] == 256
     assert "temperature" not in seen["body"]["options"]
+
+
+def test_ollama_generate_sets_last_usage_from_the_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"message": {"content": "draft"}, "prompt_eval_count": 15, "eval_count": 30},
+        )
+
+    client = _ollama_client(handler)
+    assert client.last_usage is None
+    client.generate(system="s", user="u")
+    assert client.last_usage.input_tokens == 15
+    assert client.last_usage.output_tokens == 30
+
+
+def test_ollama_generate_defaults_usage_when_the_response_omits_it() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"message": {"content": "draft"}})
+
+    client = _ollama_client(handler)
+    client.generate(system="s", user="u")
+    assert client.last_usage.input_tokens == 0
+    assert client.last_usage.output_tokens == 0
 
 
 def test_ollama_generate_passes_temperature_when_configured() -> None:

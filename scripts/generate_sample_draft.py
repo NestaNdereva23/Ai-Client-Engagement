@@ -13,6 +13,7 @@ from app.agents.email_channel import EmailAgent  # noqa: E402
 from app.agents.graph import ClientContext  # noqa: E402
 from app.agents.orchestrator import Orchestrator  # noqa: E402
 from app.config import get_settings  # noqa: E402
+from app.llmops.tracing import get_tracer  # noqa: E402
 from app.privacy.llm_client import get_llm_client  # noqa: E402
 
 
@@ -63,10 +64,16 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = get_settings()
     llm_client = get_llm_client(settings)
-    print(f"provider={settings.llm_provider} model={settings.llm_model}\n")
+    print(f"provider={settings.llm_provider} model={settings.llm_model}")
+
+    tracer = get_tracer(settings)
+    print(f"langfuse={'enabled' if settings.langfuse_enabled else 'disabled'}\n")
 
     agent = EmailAgent(
-        context_loader=context_loader, llm_client=llm_client, max_attempts=args.max_attempts
+        context_loader=context_loader,
+        llm_client=llm_client,
+        max_attempts=args.max_attempts,
+        tracer=tracer,
     )
     orchestrator = Orchestrator()
     orchestrator.register(agent)
@@ -81,6 +88,10 @@ def main(argv: list[str] | None = None) -> int:
     if result.get("subject") is not None:
         print(f"\nsubject: {result['subject']}")
         print(f"body:    {result['body']}")
+    trace_url = tracer.get_trace_url(result["trace_id"])
+    if trace_url:
+        print(f"\ntrace: {trace_url}")
+    tracer.shutdown()
 
     return 0 if result["status"] == "accepted" else 1
 

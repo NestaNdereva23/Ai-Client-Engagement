@@ -15,7 +15,7 @@ import json
 from dataclasses import dataclass
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.agents.email_agent import REQUIRED_PLACEHOLDERS
 from app.agents.email_channel import EmailAgent
@@ -23,9 +23,19 @@ from app.agents.graph import ClientContext
 from app.agents.guardrails import MIN_BODY_LENGTH
 from app.agents.orchestrator import Orchestrator
 from app.config import Settings
-from app.db.models.llmops import GenerationRun, ModelVersion, PromptVersion
+from app.db.models.llmops import (
+    GenerationRun,
+    LLMRequest,
+    LLMResponse,
+    ModelVersion,
+    PromptVersion,
+    TokenUsage,
+    ToolCall,
+    TraceRef,
+)
 from app.db.models.models import Clients, Funds
 from app.db.session import SessionLocal
+from app.llmops.telemetry import persist_generation_telemetry
 from app.llmops.versions import persist_generation_run
 from app.privacy.scanners import scan_outbound
 
@@ -101,6 +111,19 @@ def client(db: None):
     yield client_id
 
     with SessionLocal() as session:
+        run_ids = session.scalars(
+            select(GenerationRun.run_id).where(GenerationRun.client_id == client_id)
+        ).all()
+        if run_ids:
+            request_ids = session.scalars(
+                select(LLMRequest.request_id).where(LLMRequest.run_id.in_(run_ids))
+            ).all()
+            if request_ids:
+                session.execute(delete(TokenUsage).where(TokenUsage.request_id.in_(request_ids)))
+                session.execute(delete(LLMResponse).where(LLMResponse.request_id.in_(request_ids)))
+                session.execute(delete(LLMRequest).where(LLMRequest.request_id.in_(request_ids)))
+            session.execute(delete(ToolCall).where(ToolCall.run_id.in_(run_ids)))
+            session.execute(delete(TraceRef).where(TraceRef.run_id.in_(run_ids)))
         session.execute(delete(GenerationRun).where(GenerationRun.client_id == client_id))
         session.execute(delete(Clients).where(Clients.client_id == client_id))
         session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
@@ -140,6 +163,7 @@ def test_a_good_draft_is_accepted_with_placeholders_no_pii_and_stamped_versions(
     settings = make_settings()
     with SessionLocal() as session:
         run = persist_generation_run(session, result, settings)
+        persist_generation_telemetry(session, run, result)
         session.commit()
         run_id = run.run_id
 
@@ -147,11 +171,19 @@ def test_a_good_draft_is_accepted_with_placeholders_no_pii_and_stamped_versions(
         stored = session.get(GenerationRun, run_id)
         prompt_version = session.get(PromptVersion, stored.prompt_version_id)
         model_version = session.get(ModelVersion, stored.model_version_id)
+        requests = session.scalars(select(LLMRequest).where(LLMRequest.run_id == run_id)).all()
+        tool_calls = session.scalars(select(ToolCall).where(ToolCall.run_id == run_id)).all()
+        trace_ref = session.get(TraceRef, run_id)
 
     assert stored.prompt_version_id is not None
     assert stored.model_version_id is not None
     assert prompt_version.prompt_variant == "habit_premium"
     assert model_version.model_id == "claude-opus-5"
+
+    assert len(requests) == 1
+    assert requests[0].model_version_id == stored.model_version_id
+    assert {t.tool_name for t in tool_calls} == {"context_fetch", "rag_retrieval"}
+    assert trace_ref.trace_id == stored.trace_id
 
 
 def test_grounding_passes_a_good_draft_and_rejects_a_bad_one(client: int) -> None:

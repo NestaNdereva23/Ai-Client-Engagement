@@ -102,6 +102,123 @@ def test_happy_path_runs_all_four_nodes_and_carries_run_and_trace_ids() -> None:
     assert llm.calls[0]["system"].count("11.35%") == 1
     assert "winback_habit" in llm.calls[0]["system"]
 
+    assert len(result["llm_calls"]) == 1
+    call = result["llm_calls"][0]
+    assert call["attempt"] == 1
+    assert call["raw_output"] == result["draft"]
+    assert isinstance(call["latency_ms"], int)
+
+    tool_names = {call["tool_name"] for call in result["tool_calls"]}
+    assert tool_names == {"context_fetch", "rag_retrieval"}
+    rag_call = next(c for c in result["tool_calls"] if c["tool_name"] == "rag_retrieval")
+    assert rag_call["output"]["chunk_count"] == 1
+
+
+def test_llm_calls_gets_one_entry_per_attempt_on_a_retry() -> None:
+    llm = ScriptedLLMClient(
+        [
+            draft_json(body="Dear {{first_name}}, call 0712345678 about {{fund_name}}."),
+            draft_json(body="Dear {{first_name}}, welcome back to {{fund_name}}."),
+        ]
+    )
+    graph = build_generation_graph(
+        context_loader=make_context_loader(), llm_client=llm, max_attempts=2
+    )
+
+    result = graph.invoke(new_generation_state(client_id=1001, product="money market"))
+
+    assert result["status"] == "accepted"
+    assert [call["attempt"] for call in result["llm_calls"]] == [1, 2]
+    assert result["llm_calls"][0]["raw_output"] is None
+    assert result["llm_calls"][1]["raw_output"] == result["draft"]
+
+
+class SpyTracer:
+    """Records start_span/end_span calls in order; never talks to Langfuse."""
+
+    def __init__(self) -> None:
+        self.started: list[dict] = []
+        self.ended: list[dict] = []
+
+    def start_span(self, *, trace_id, name, input, metadata=None, as_type="span", model=None):
+        handle = object()
+        self.started.append(
+            {
+                "trace_id": trace_id,
+                "name": name,
+                "input": input,
+                "metadata": metadata,
+                "as_type": as_type,
+                "model": model,
+            }
+        )
+        return handle
+
+    def end_span(self, handle, *, output, usage_details=None) -> None:
+        self.ended.append({"handle": handle, "output": output, "usage_details": usage_details})
+
+    def get_trace_url(self, trace_id: str) -> None:
+        return None
+
+    def flush(self) -> None:
+        pass
+
+
+def test_tracer_records_one_span_per_node_under_the_runs_trace_id() -> None:
+    llm = ScriptedLLMClient([draft_json(body="Dear {{first_name}}, welcome back.")])
+    tracer = SpyTracer()
+    graph = build_generation_graph(
+        context_loader=make_context_loader(), llm_client=llm, tracer=tracer
+    )
+
+    state = new_generation_state(client_id=1001, product="money market")
+    result = graph.invoke(state)
+
+    assert result["status"] == "accepted"
+    # trace_id is a bare 32-char hex id: valid as-is as a Langfuse trace id.
+    assert len(state["trace_id"]) == 32
+    assert all(c in "0123456789abcdef" for c in state["trace_id"])
+
+    node_names = [call["name"] for call in tracer.started]
+    assert node_names == ["retrieve_context", "assemble_prompt", "generate", "guardrails"]
+    assert all(call["trace_id"] == state["trace_id"] for call in tracer.started)
+    assert len(tracer.ended) == len(tracer.started)
+
+    first_metadata = tracer.started[0]["metadata"]
+    assert first_metadata == {
+        "run_id": state["run_id"],
+        "client_id": state["client_id"],
+        "product": state["product"],
+    }
+    assert all(call["metadata"] is None for call in tracer.started[1:])
+
+    # Only "generate" is tagged as a Langfuse generation; that is what makes
+    # Langfuse compute token usage and cost for it.
+    as_types = {call["name"]: call["as_type"] for call in tracer.started}
+    assert as_types["generate"] == "generation"
+    assert as_types["retrieve_context"] == "span"
+    generate_start = next(c for c in tracer.started if c["name"] == "generate")
+    assert generate_start["model"] == "stub"
+
+
+def test_tracer_attaches_token_usage_only_to_the_generate_span() -> None:
+    llm = ScriptedLLMClient([draft_json(body="Dear {{first_name}}, welcome back.")])
+    llm.last_usage = type("Usage", (), {"input_tokens": 11, "output_tokens": 22})()
+    tracer = SpyTracer()
+    graph = build_generation_graph(
+        context_loader=make_context_loader(), llm_client=llm, tracer=tracer
+    )
+
+    result = graph.invoke(new_generation_state(client_id=1001, product="money market"))
+
+    node_names = [call["name"] for call in tracer.started]
+    generate_index = node_names.index("generate")
+    assert tracer.ended[generate_index]["usage_details"] == {"input": 11, "output": 22}
+    other_indices = [i for i in range(len(node_names)) if i != generate_index]
+    assert all(tracer.ended[i]["usage_details"] is None for i in other_indices)
+    assert result["llm_calls"][0]["input_tokens"] == 11
+    assert result["llm_calls"][0]["output_tokens"] == 22
+
 
 def test_default_prompt_builder_is_email_agents_and_reflects_the_rule_outcome() -> None:
     """prompt_variant comes from the rule outcome (M4), not a hard-coded template."""
