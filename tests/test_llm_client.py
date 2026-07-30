@@ -307,6 +307,21 @@ def test_ollama_generate_requests_json_mode() -> None:
     assert seen["body"]["stream"] is False
 
 
+def test_ollama_generate_disables_thinking() -> None:
+    """A thinking-capable model must answer directly, not spend the token
+    budget reasoning in a separate field and never reach content."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"message": {"content": "{}"}})
+
+    client = _ollama_client(handler)
+    client.generate(system="s", user="u")
+
+    assert seen["body"]["think"] is False
+
+
 def test_ollama_generate_wraps_transport_errors() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)

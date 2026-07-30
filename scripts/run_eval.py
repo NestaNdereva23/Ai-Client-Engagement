@@ -15,7 +15,12 @@ from app.db.session import SessionLocal  # noqa: E402
 from app.llmops.judge import judge_draft  # noqa: E402
 from app.llmops.versions import persist_evaluation  # noqa: E402
 from app.logging_config import configure_logging  # noqa: E402
-from app.privacy.llm_client import get_judge_llm_client, resolve_judge_model_config  # noqa: E402
+from app.privacy.llm_client import (  # noqa: E402
+    LLMClientError,
+    get_judge_llm_client,
+    resolve_judge_model_config,
+)
+from app.schemas.evaluation import EvaluationParseError  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -71,16 +76,26 @@ def main(argv: list[str] | None = None) -> int:
         runs = _unjudged_runs(session, args.limit)
         print(f"{len(runs)} run(s) to judge")
 
+        failures = 0
         for run in runs:
             chunks = _retrieved_chunks(session, run.run_id)
             draft = _draft_text(run.ai_draft_content)
-            scores = judge_draft(llm_client, draft=draft, chunks=chunks)
-            persist_evaluation(session, run, scores, settings)
-            session.commit()
+            try:
+                scores = judge_draft(llm_client, draft=draft, chunks=chunks)
+                persist_evaluation(session, run, scores, settings)
+                session.commit()
+            except (EvaluationParseError, LLMClientError) as exc:
+                session.rollback()
+                failures += 1
+                print(f"{run.run_id}: skipped, {exc}")
+                continue
             print(
                 f"{run.run_id}: tone={scores.tone} compliance={scores.compliance} "
                 f"grounding={scores.grounding} personalization={scores.personalization}"
             )
+
+        if failures:
+            print(f"{failures} run(s) could not be judged")
     finally:
         session.close()
 

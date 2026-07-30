@@ -12,10 +12,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import structlog
+
 from app.privacy.llm_client import LLMClient
 from app.privacy.scanners import scan_outbound
 from app.rag.grounding import GroundingChunk
 from app.schemas.evaluation import EvaluationScores, parse_evaluation_scores
+
+logger = structlog.get_logger(__name__)
 
 _RUBRIC_INSTRUCTIONS = (
     "You are a quality judge for AI drafted win back investment emails. "
@@ -68,6 +72,18 @@ def judge_draft(
 ) -> EvaluationScores:
     """Call the judge model once and return validated scores. Never touches a database."""
     system = build_judge_prompt(chunks=chunks)
+    logger.info("judge_request", model=llm_client.model, system=system, user=draft)
     raw = llm_client.generate(system=system, user=draft)
+    logger.info("judge_response", model=llm_client.model, raw_output=raw)
     scan_outbound(raw)
-    return parse_evaluation_scores(raw)
+    scores = parse_evaluation_scores(raw)
+    logger.info(
+        "judge_scored",
+        model=llm_client.model,
+        tone=scores.tone,
+        compliance=scores.compliance,
+        grounding=scores.grounding,
+        personalization=scores.personalization,
+        notes=scores.notes,
+    )
+    return scores

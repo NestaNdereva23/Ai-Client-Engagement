@@ -126,6 +126,11 @@ class OllamaLLMClient:
                     ],
                     "format": "json",
                     "stream": False,
+                    # A thinking-capable model (e.g. qwen3.5) otherwise spends
+                    # the whole token budget reasoning in a separate
+                    # "thinking" field and never reaches content; a model
+                    # without that capability just ignores this.
+                    "think": False,
                     "options": options,
                 },
             )
@@ -135,6 +140,7 @@ class OllamaLLMClient:
             raise LLMClientError(f"model request failed: {exc}") from exc
 
         body = response.json()
+        logger.info("ollama_response_body", model=self.model, body=body)
         self.last_usage = LLMUsage(
             input_tokens=body.get("prompt_eval_count", 0),
             output_tokens=body.get("eval_count", 0),

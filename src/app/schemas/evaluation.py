@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import structlog
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+logger = structlog.get_logger(__name__)
 
 
 class EvaluationParseError(Exception):
@@ -26,6 +29,7 @@ class EvaluationScores(BaseModel):
 
 def parse_evaluation_scores(raw: str) -> EvaluationScores:
     """Parse and validate the judge's raw output, raising EvaluationParseError on failure."""
+    logger.info("parse_raw_message", raw=raw)
     try:
         payload: Any = json.loads(raw)
     except json.JSONDecodeError as exc:
