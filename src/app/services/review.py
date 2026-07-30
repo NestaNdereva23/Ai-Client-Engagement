@@ -17,7 +17,7 @@ from __future__ import annotations
 import uuid
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
 from app.audit.log import record_audit
@@ -25,6 +25,7 @@ from app.db.models.llmops import GenerationRun
 from app.db.models.models import Clients, Funds, PiiVault
 from app.db.models.outreach import REVIEW_OUTCOMES, OutreachMessage, ReviewAction
 from app.db.session import restricted_session
+from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_cursor, encode_cursor
 
 logger = structlog.get_logger(__name__)
 
@@ -143,14 +144,38 @@ def create_outreach_message(
 
 
 def list_pending_messages(
-    session: Session, *, status: str = "pending_review", campaign_id: int | None = None
-) -> list[OutreachMessage]:
-    """Messages in the given status, oldest first: the reviewer's queue."""
+    session: Session,
+    *,
+    status: str = "pending_review",
+    campaign_id: int | None = None,
+    cursor: str | None = None,
+    limit: int = DEFAULT_LIMIT,
+) -> tuple[list[OutreachMessage], str | None]:
+    """One page of messages in the given status, oldest first: the reviewer's queue.
+
+    Ordered by (created_at, message_id) rather than created_at alone, so two
+    messages created in the same instant still sort deterministically and a
+    cursor built from one of them is unambiguous.
+    """
+    limit = clamp_limit(limit)
     query = select(OutreachMessage).where(OutreachMessage.status == status)
     if campaign_id is not None:
         query = query.where(OutreachMessage.campaign_id == campaign_id)
-    query = query.order_by(OutreachMessage.created_at)
-    return list(session.scalars(query).all())
+    if cursor is not None:
+        after_created_at, after_id = decode_cursor(cursor)
+        query = query.where(
+            tuple_(OutreachMessage.created_at, OutreachMessage.message_id)
+            > (after_created_at, after_id)
+        )
+    query = query.order_by(OutreachMessage.created_at, OutreachMessage.message_id).limit(limit + 1)
+    rows = list(session.scalars(query).all())
+
+    next_cursor = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        next_cursor = encode_cursor(last.created_at, last.message_id)
+    return rows, next_cursor
 
 
 def get_message(session: Session, message_id: str) -> OutreachMessage:

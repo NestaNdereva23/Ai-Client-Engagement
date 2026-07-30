@@ -4,6 +4,7 @@ Importing this package registers every model on ``Base.metadata`` so migrations
 and ``create_all`` see them.
 """
 
+from app.db.models.api import IdempotencyKey
 from app.db.models.audit import AuditLog
 from app.db.models.llmops import GenerationRun, ModelVersion, PromptVersion
 from app.db.models.models import (
@@ -41,6 +42,7 @@ __all__ = [
     "Clients",
     "Funds",
     "GenerationRun",
+    "IdempotencyKey",
     "IngestionReject",
     "IngestionStatus",
     "ModelVersion",

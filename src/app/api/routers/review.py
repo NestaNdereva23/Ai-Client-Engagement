@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db.session import get_session
+from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.review import (
     DecideRequest,
     OutreachMessageDetail,
@@ -26,15 +27,24 @@ from app.services.review import decide as decide_message
 router = APIRouter(prefix="/reviews", tags=["review"])
 
 
-@router.get("", response_model=list[OutreachMessageSummary])
+@router.get("", response_model=Page[OutreachMessageSummary])
 def list_reviews(
     status: str = "pending_review",
     campaign_id: int | None = None,
+    cursor: str | None = None,
+    limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
-) -> list[OutreachMessageSummary]:
-    """The reviewer's queue: messages in the given status, oldest first."""
-    messages = list_pending_messages(session, status=status, campaign_id=campaign_id)
-    return [OutreachMessageSummary.model_validate(m) for m in messages]
+) -> Page[OutreachMessageSummary]:
+    """The reviewer's queue: one page of messages in the given status, oldest first."""
+    try:
+        messages, next_cursor = list_pending_messages(
+            session, status=status, campaign_id=campaign_id, cursor=cursor, limit=limit
+        )
+    except InvalidCursor:
+        raise HTTPException(status_code=400, detail="invalid cursor") from None
+    return Page(
+        items=[OutreachMessageSummary.model_validate(m) for m in messages], next_cursor=next_cursor
+    )
 
 
 @router.get("/{message_id}", response_model=OutreachMessageDetail)

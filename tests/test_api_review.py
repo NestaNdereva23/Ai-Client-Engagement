@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete, text
 
 from app.config import Settings
+from app.db.models.api import IdempotencyKey
 from app.db.models.llmops import GenerationRun
 from app.db.models.models import Clients, Funds, PiiVault
 from app.db.models.outreach import Campaign, OutreachMessage, ReviewAction
@@ -24,6 +25,8 @@ from app.main import app
 from app.services.review import create_outreach_message
 
 client = TestClient(app)
+
+REVIEWS = "/api/v1/reviews"
 
 
 def make_settings(**overrides) -> Settings:
@@ -104,25 +107,70 @@ def message(roles):
         session.commit()
 
 
+@pytest.fixture
+def two_messages(roles):
+    """Two pending_review outreach_messages, same campaign, for paging through."""
+    fund_id = 973
+    client_id = 97301
+    with SessionLocal() as session:
+        session.add(Funds(unit_fund_id=fund_id, unit_fund_name="Cytonn Money Market Fund"))
+        session.commit()
+        session.add(
+            Clients(
+                client_id=client_id,
+                unit_fund_id=fund_id,
+                n_purchases_returned=0,
+                n_sales_returned=0,
+            )
+        )
+        session.add(PiiVault(client_id=client_id, client_name="Jane Doe"))
+        session.commit()
+        campaign = Campaign(name="api pagination test campaign")
+        session.add(campaign)
+        session.commit()
+        campaign_id_val = campaign.campaign_id
+
+        run_ids = []
+        message_ids = []
+        for _ in range(2):
+            run = persist_generation_run(session, accepted_state(client_id), make_settings())
+            created = create_outreach_message(session, run, campaign_id=campaign_id_val)
+            session.commit()
+            run_ids.append(run.run_id)
+            message_ids.append(created.message_id)
+
+    yield message_ids, campaign_id_val
+
+    with SessionLocal() as session:
+        session.execute(delete(ReviewAction).where(ReviewAction.message_id.in_(message_ids)))
+        session.execute(delete(OutreachMessage).where(OutreachMessage.message_id.in_(message_ids)))
+        session.execute(delete(GenerationRun).where(GenerationRun.run_id.in_(run_ids)))
+        session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id_val))
+        session.execute(delete(PiiVault).where(PiiVault.client_id == client_id))
+        session.execute(delete(Clients).where(Clients.client_id == client_id))
+        session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
+        session.commit()
+
+
 def test_list_reviews_returns_the_pending_message(message) -> None:
     message_id, _campaign_id = message
-    response = client.get("/reviews")
+    response = client.get(REVIEWS)
     assert response.status_code == 200
-    ids = [row["message_id"] for row in response.json()]
+    ids = [row["message_id"] for row in response.json()["items"]]
     assert message_id in ids
 
 
 def test_list_reviews_filters_by_campaign(message) -> None:
     message_id, campaign_id = message
-    matched = client.get("/reviews", params={"campaign_id": campaign_id})
-    unmatched = client.get("/reviews", params={"campaign_id": campaign_id + 1})
-    assert message_id in [row["message_id"] for row in matched.json()]
-    assert message_id not in [row["message_id"] for row in unmatched.json()]
+    matched = client.get(REVIEWS, params={"campaign_id": campaign_id})
+    unmatched = client.get(REVIEWS, params={"campaign_id": campaign_id + 1})
+    assert message_id in [row["message_id"] for row in matched.json()["items"]]
+    assert message_id not in [row["message_id"] for row in unmatched.json()["items"]]
 
 
 def test_get_review_returns_both_content_versions(message) -> None:
     message_id, _campaign_id = message
-    response = client.get(f"/reviews/{message_id}")
+    response = client.get(f"{REVIEWS}/{message_id}")
     assert response.status_code == 200
     body = response.json()
     assert body["ai_draft_content"]["body"] == "Dear {{first_name}}, we miss you."
@@ -131,20 +179,21 @@ def test_get_review_returns_both_content_versions(message) -> None:
 
 
 def test_get_review_404s_when_not_found(db: None) -> None:
-    response = client.get("/reviews/not-a-real-id")
+    response = client.get(f"{REVIEWS}/not-a-real-id")
     assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
 
 
 def test_decide_approve_returns_the_action_and_updates_status(message) -> None:
     message_id, _campaign_id = message
     response = client.post(
-        f"/reviews/{message_id}/decide",
+        f"{REVIEWS}/{message_id}/decide",
         json={"outcome": "approve", "reviewer_id": "fa-1"},
     )
     assert response.status_code == 200
     assert response.json()["outcome"] == "approve"
 
-    detail = client.get(f"/reviews/{message_id}").json()
+    detail = client.get(f"{REVIEWS}/{message_id}").json()
     assert detail["status"] == "approved"
     assert len(detail["history"]) == 1
 
@@ -152,17 +201,18 @@ def test_decide_approve_returns_the_action_and_updates_status(message) -> None:
 def test_decide_edit_approve_without_content_is_rejected(message) -> None:
     message_id, _campaign_id = message
     response = client.post(
-        f"/reviews/{message_id}/decide",
+        f"{REVIEWS}/{message_id}/decide",
         json={"outcome": "edit_approve", "reviewer_id": "fa-1"},
     )
     assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
 
 
 def test_decide_edit_approve_stores_the_edit(message) -> None:
     message_id, _campaign_id = message
     edited = {"subject": "New subject", "body": "New body"}
     response = client.post(
-        f"/reviews/{message_id}/decide",
+        f"{REVIEWS}/{message_id}/decide",
         json={"outcome": "edit_approve", "reviewer_id": "fa-1", "edited_content": edited},
     )
     assert response.status_code == 200
@@ -172,21 +222,68 @@ def test_decide_edit_approve_stores_the_edit(message) -> None:
 def test_decide_twice_is_a_conflict(message) -> None:
     message_id, _campaign_id = message
     first = client.post(
-        f"/reviews/{message_id}/decide",
+        f"{REVIEWS}/{message_id}/decide",
         json={"outcome": "approve", "reviewer_id": "fa-1"},
     )
     assert first.status_code == 200
 
     second = client.post(
-        f"/reviews/{message_id}/decide",
+        f"{REVIEWS}/{message_id}/decide",
         json={"outcome": "reject", "reviewer_id": "fa-2"},
     )
     assert second.status_code == 409
+    assert second.json()["error"]["code"] == "conflict"
 
 
 def test_decide_404s_when_the_message_does_not_exist(db: None) -> None:
     response = client.post(
-        "/reviews/not-a-real-id/decide",
+        f"{REVIEWS}/not-a-real-id/decide",
         json={"outcome": "approve", "reviewer_id": "fa-1"},
     )
     assert response.status_code == 404
+
+
+def test_decide_replays_the_first_result_for_a_repeated_idempotency_key(message) -> None:
+    message_id, _campaign_id = message
+    key = str(uuid4())
+    headers = {"Idempotency-Key": key}
+    try:
+        first = client.post(
+            f"{REVIEWS}/{message_id}/decide",
+            json={"outcome": "approve", "reviewer_id": "fa-1"},
+            headers=headers,
+        )
+        assert first.status_code == 200
+
+        replay = client.post(
+            f"{REVIEWS}/{message_id}/decide",
+            json={"outcome": "reject", "reviewer_id": "fa-2"},
+            headers=headers,
+        )
+        assert replay.status_code == 200
+        assert replay.json() == first.json()
+
+        detail = client.get(f"{REVIEWS}/{message_id}").json()
+        assert detail["status"] == "approved"
+        assert len(detail["history"]) == 1
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(IdempotencyKey).where(IdempotencyKey.idempotency_key == key))
+            session.commit()
+
+
+def test_list_reviews_pages_through_the_query_params(two_messages) -> None:
+    message_ids, campaign_id = two_messages
+    page_one = client.get(REVIEWS, params={"campaign_id": campaign_id, "limit": 1})
+    assert page_one.status_code == 200
+    body_one = page_one.json()
+    assert [row["message_id"] for row in body_one["items"]] == [message_ids[0]]
+    assert body_one["next_cursor"] is not None
+
+    page_two = client.get(
+        REVIEWS, params={"campaign_id": campaign_id, "limit": 1, "cursor": body_one["next_cursor"]}
+    )
+    assert page_two.status_code == 200
+    body_two = page_two.json()
+    assert [row["message_id"] for row in body_two["items"]] == [message_ids[1]]
+    assert body_two["next_cursor"] is None
