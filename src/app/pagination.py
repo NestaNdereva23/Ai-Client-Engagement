@@ -44,5 +44,18 @@ def decode_cursor(cursor: str) -> tuple[datetime, str]:
         raise InvalidCursor(cursor) from exc
 
 
+def encode_id_cursor(row_id: int) -> str:
+    """For a list keyed by a single ordered id, with no timestamp to pair it with."""
+    return base64.urlsafe_b64encode(json.dumps([row_id]).encode()).decode()
+
+
+def decode_id_cursor(cursor: str) -> int:
+    try:
+        (row_id,) = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
+        return row_id
+    except Exception as exc:
+        raise InvalidCursor(cursor) from exc
+
+
 def clamp_limit(limit: int) -> int:
     return max(1, min(limit, MAX_LIMIT))

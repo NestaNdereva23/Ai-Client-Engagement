@@ -10,7 +10,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.routers import review
+from app.api.routers import audit, clients, data_quality, ingestion, review, rules
 
 router = APIRouter(prefix="/api/v1")
 router.include_router(review.router)
+router.include_router(ingestion.router)
+router.include_router(data_quality.router)
+router.include_router(clients.router)
+router.include_router(rules.router)
+router.include_router(audit.router)
