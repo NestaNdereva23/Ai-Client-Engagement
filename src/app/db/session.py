@@ -53,7 +53,7 @@ def safe_session() -> Iterator[Session]:
     role is reset on that same connection before it returns to the pool.
     """
     connection = engine.connect()
-    session = Session(bind=connection)
+    session = Session(bind=connection, expire_on_commit=False)
     try:
         session.execute(text(f'SET ROLE "{_settings.db_safe_role}"'))
         yield session
@@ -77,7 +77,7 @@ def restricted_session() -> Iterator[Session]:
     role is reset on that same connection before it returns to the pool.
     """
     connection = engine.connect()
-    session = Session(bind=connection)
+    session = Session(bind=connection, expire_on_commit=False)
     try:
         session.execute(text(f'SET ROLE "{_settings.db_restricted_role}"'))
         yield session

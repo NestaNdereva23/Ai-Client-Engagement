@@ -74,6 +74,13 @@ class Settings(BaseSettings):
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
 
+    # Shared secret for the integration plane, a stopgap ahead of M8A.7's
+    # scoped API keys / OAuth client-credentials. Empty means integration
+    # endpoints refuse every request rather than run unprotected.
+    integration_api_key: str = Field(
+        default="", validation_alias=AliasChoices("INTEGRATION_API_KEY")
+    )
+
     @property
     def is_production(self) -> bool:
         """True when running in the production environment."""

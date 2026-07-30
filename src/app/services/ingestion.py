@@ -8,6 +8,7 @@ list_runs and get_run while it is still going.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from sqlalchemy import select, tuple_
@@ -29,6 +30,19 @@ def run_in_background(client: Any, *, run_id: str, endpoint: str, max_pages: int
         worker.run(run_id=run_id)
     finally:
         client.close()
+
+
+def resolve_trigger_run_id(session: Session, requested_run_id: str | None) -> str:
+    """The run id a trigger endpoint should use: fresh, or the caller's own id
+    when it names a run to resume. Shared by the console and integration
+    trigger endpoints so a typo or an unedited placeholder can never silently
+    start a fresh run under that name; raises RunNotFound when requested_run_id
+    is given but no such run exists.
+    """
+    if requested_run_id is None:
+        return uuid.uuid4().hex
+    get_run(session, requested_run_id)
+    return requested_run_id
 
 
 def list_runs(

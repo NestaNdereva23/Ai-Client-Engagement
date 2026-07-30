@@ -28,6 +28,7 @@ from app.db.models.outreach import (
 )
 from app.db.models.rag import RagChunk, RagDocument, RagDocumentVersion
 from app.db.models.rules import BusinessRule, ClientMessageIndicators
+from app.db.models.suppression import Suppression
 
 __all__ = [
     "CAMPAIGN_STATUSES",
@@ -54,5 +55,6 @@ __all__ = [
     "RagDocumentVersion",
     "RawStaging",
     "ReviewAction",
+    "Suppression",
     "Transactions",
 ]

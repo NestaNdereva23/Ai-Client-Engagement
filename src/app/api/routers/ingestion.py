@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from uuid import uuid4
-
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -12,7 +10,7 @@ from app.db.session import get_session
 from app.ingestion.api_client import CytonnClient
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.ingestion import IngestionRunAccepted, IngestionRunOut, TriggerIngestionRequest
-from app.services.ingestion import RunNotFound, get_run, list_runs
+from app.services.ingestion import RunNotFound, get_run, list_runs, resolve_trigger_run_id
 from app.services.ingestion import run_in_background as run_ingestion_in_background
 
 router = APIRouter(prefix="/ingestion", tags=["ingestion"])
@@ -39,16 +37,12 @@ def trigger_run(
     A supplied run_id must already exist; a typo or an unedited API-docs
     placeholder must never silently start a fresh run under that name.
     """
-    if body.run_id is not None:
-        try:
-            get_run(session, body.run_id)
-        except RunNotFound:
-            raise HTTPException(
-                status_code=400, detail=f"no existing run to resume: {body.run_id}"
-            ) from None
-        run_id = body.run_id
-    else:
-        run_id = uuid4().hex
+    try:
+        run_id = resolve_trigger_run_id(session, body.run_id)
+    except RunNotFound:
+        raise HTTPException(
+            status_code=400, detail=f"no existing run to resume: {body.run_id}"
+        ) from None
 
     background_tasks.add_task(
         run_ingestion_in_background,
