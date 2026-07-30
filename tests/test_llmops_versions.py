@@ -13,18 +13,28 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.agents.email_agent import template_text
 from app.config import Settings
-from app.db.models.llmops import GenerationRun, ModelVersion, PromptVersion
+from app.db.models.llmops import (
+    Evaluation,
+    GenerationRun,
+    ModelVersion,
+    PromptVersion,
+    RubricVersion,
+)
 from app.db.models.models import Clients, Funds
 from app.db.session import SessionLocal
+from app.llmops.judge import rubric_text
 from app.llmops.versions import (
     get_or_create_model_version,
     get_or_create_prompt_version,
+    get_or_create_rubric_version,
+    persist_evaluation,
     persist_generation_run,
 )
+from app.schemas.evaluation import EvaluationScores
 
 
 def make_settings(**overrides) -> Settings:
@@ -60,6 +70,11 @@ def client(db: None):
     yield client_id
 
     with SessionLocal() as session:
+        run_ids = session.scalars(
+            select(GenerationRun.run_id).where(GenerationRun.client_id == client_id)
+        ).all()
+        if run_ids:
+            session.execute(delete(Evaluation).where(Evaluation.run_id.in_(run_ids)))
         session.execute(delete(GenerationRun).where(GenerationRun.client_id == client_id))
         session.execute(delete(Clients).where(Clients.client_id == client_id))
         session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
@@ -232,3 +247,63 @@ def test_two_runs_with_the_same_config_share_one_version_row_each(client: int) -
     assert first.model_version_id == second.model_version_id
     # Distinct runs still get distinct run ids.
     assert first.run_id != second.run_id
+
+
+def test_get_or_create_rubric_version_dedupes_the_unchanged_rubric(db: None) -> None:
+    with SessionLocal() as session:
+        first = get_or_create_rubric_version(session)
+        second = get_or_create_rubric_version(session)
+        session.commit()
+
+    assert first.rubric_version_id == second.rubric_version_id
+    assert first.rubric_text == rubric_text()
+
+
+def make_scores(**overrides) -> EvaluationScores:
+    defaults = {"tone": 4, "compliance": 5, "grounding": 5, "personalization": 3, "notes": "fine"}
+    defaults.update(overrides)
+    return EvaluationScores(**defaults)
+
+
+def test_persist_evaluation_stamps_and_stores_a_score(client: int) -> None:
+    settings = make_settings()
+    with SessionLocal() as session:
+        run = persist_generation_run(session, accepted_state(client), settings)
+        session.commit()
+        run_id = run.run_id
+
+    with SessionLocal() as session:
+        run = session.get(GenerationRun, run_id)
+        evaluation = persist_evaluation(
+            session, run, make_scores(tone=2, notes="a bit stiff"), settings
+        )
+        session.commit()
+        evaluation_id = evaluation.evaluation_id
+
+    with SessionLocal() as session:
+        stored = session.get(Evaluation, evaluation_id)
+        rubric_version = session.get(RubricVersion, stored.rubric_version_id)
+
+    assert stored.run_id == run_id
+    assert stored.tone == 2
+    assert stored.notes == "a bit stiff"
+    assert rubric_version.rubric_text == rubric_text()
+
+
+def test_two_evaluations_for_different_runs_share_one_rubric_version(client: int) -> None:
+    settings = make_settings()
+    with SessionLocal() as session:
+        first_run = persist_generation_run(session, accepted_state(client), settings)
+        second_run = persist_generation_run(session, accepted_state(client), settings)
+        session.commit()
+        first_id, second_id = first_run.run_id, second_run.run_id
+
+    with SessionLocal() as session:
+        first_run = session.get(GenerationRun, first_id)
+        second_run = session.get(GenerationRun, second_id)
+        first_eval = persist_evaluation(session, first_run, make_scores(), settings)
+        second_eval = persist_evaluation(session, second_run, make_scores(), settings)
+        session.commit()
+
+    assert first_eval.rubric_version_id == second_eval.rubric_version_id
+    assert first_eval.evaluation_id != second_eval.evaluation_id

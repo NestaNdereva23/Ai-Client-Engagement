@@ -197,7 +197,12 @@ def build_generation_graph(
             {
                 "tool_name": "rag_retrieval",
                 "input": {"product": state["product"], "angle": client_context.angle},
-                "output": {"chunk_count": len(client_context.chunks)},
+                "output": {
+                    "chunk_count": len(client_context.chunks),
+                    "chunks": [
+                        {"chunk_id": c.chunk_id, "text": c.text} for c in client_context.chunks
+                    ],
+                },
             },
         ]
         return {

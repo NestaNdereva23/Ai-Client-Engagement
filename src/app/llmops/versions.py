@@ -18,7 +18,15 @@ from sqlalchemy.orm import Session
 
 from app.agents.email_agent import template_text
 from app.config import Settings
-from app.db.models.llmops import GenerationRun, ModelVersion, PromptVersion
+from app.db.models.llmops import (
+    Evaluation,
+    GenerationRun,
+    ModelVersion,
+    PromptVersion,
+    RubricVersion,
+)
+from app.llmops.judge import rubric_text
+from app.schemas.evaluation import EvaluationScores
 
 # The only channel today; a future SMS/WhatsApp agent registers its own.
 EMAIL_CHANNEL = "email"
@@ -128,3 +136,48 @@ def persist_generation_run(
     session.add(run)
     session.flush()
     return run
+
+
+def get_or_create_rubric_version(session: Session) -> RubricVersion:
+    """Look up the current judge rubric, or register it."""
+    text = rubric_text()
+    rubric_hash = _hash(text)
+    existing = session.scalar(select(RubricVersion).where(RubricVersion.rubric_hash == rubric_hash))
+    if existing is not None:
+        return existing
+
+    row = RubricVersion(rubric_text=text, rubric_hash=rubric_hash)
+    session.add(row)
+    session.flush()
+    return row
+
+
+def persist_evaluation(
+    session: Session,
+    run: GenerationRun,
+    scores: EvaluationScores,
+    settings: Settings,
+) -> Evaluation:
+    """Stamp a judge's scores with the rubric/model version that produced them, and store them."""
+    rubric_version = get_or_create_rubric_version(session)
+    model_version = get_or_create_model_version(
+        session,
+        provider=settings.llm_provider,
+        model_id=settings.llm_model,
+        temperature=settings.llm_temperature,
+        max_tokens=settings.llm_max_tokens,
+    )
+
+    row = Evaluation(
+        run_id=run.run_id,
+        rubric_version_id=rubric_version.rubric_version_id,
+        model_version_id=model_version.model_version_id,
+        tone=scores.tone,
+        compliance=scores.compliance,
+        grounding=scores.grounding,
+        personalization=scores.personalization,
+        notes=scores.notes,
+    )
+    session.add(row)
+    session.flush()
+    return row

@@ -112,6 +112,9 @@ def test_happy_path_runs_all_four_nodes_and_carries_run_and_trace_ids() -> None:
     assert tool_names == {"context_fetch", "rag_retrieval"}
     rag_call = next(c for c in result["tool_calls"] if c["tool_name"] == "rag_retrieval")
     assert rag_call["output"]["chunk_count"] == 1
+    assert rag_call["output"]["chunks"] == [
+        {"chunk_id": 1, "text": "the fund yielded 11.35% this week"}
+    ]
 
 
 def test_llm_calls_gets_one_entry_per_attempt_on_a_retry() -> None:
