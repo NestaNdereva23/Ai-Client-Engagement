@@ -46,9 +46,14 @@ def get_session() -> Iterator[Session]:
 def safe_session() -> Iterator[Session]:
     """Model-facing session running under the safe role, which cannot read pii_vault.
 
-    The role is reset before the connection returns to the pool.
+    Bound to one explicit connection for its whole lifetime: a commit inside
+    the block must not check the connection back into the pool while the role
+    is still set on it, or the reset below could land on a different
+    connection and leak the role into whatever picks that one up next. The
+    role is reset on that same connection before it returns to the pool.
     """
-    session = SessionLocal()
+    connection = engine.connect()
+    session = Session(bind=connection)
     try:
         session.execute(text(f'SET ROLE "{_settings.db_safe_role}"'))
         yield session
@@ -57,6 +62,7 @@ def safe_session() -> Iterator[Session]:
         session.execute(text("RESET ROLE"))
         session.commit()
         session.close()
+        connection.close()
 
 
 @contextmanager
@@ -64,9 +70,14 @@ def restricted_session() -> Iterator[Session]:
     """Vault-facing session running under the restricted role, the only one
     with a grant on pii_vault.
 
-    The role is reset before the connection returns to the pool.
+    Bound to one explicit connection for its whole lifetime: a commit inside
+    the block must not check the connection back into the pool while the role
+    is still set on it, or the reset below could land on a different
+    connection and leak the role into whatever picks that one up next. The
+    role is reset on that same connection before it returns to the pool.
     """
-    session = SessionLocal()
+    connection = engine.connect()
+    session = Session(bind=connection)
     try:
         session.execute(text(f'SET ROLE "{_settings.db_restricted_role}"'))
         yield session
@@ -75,6 +86,7 @@ def restricted_session() -> Iterator[Session]:
         session.execute(text("RESET ROLE"))
         session.commit()
         session.close()
+        connection.close()
 
 
 def check_connection() -> bool:
