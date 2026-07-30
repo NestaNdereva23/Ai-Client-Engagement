@@ -100,13 +100,14 @@ class OllamaLLMClient:
         max_tokens: int,
         temperature: float | None = None,
         base_url: str = "http://localhost:11434",
+        timeout: float = 120.0,
         client: httpx.Client | None = None,
     ) -> None:
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.last_usage: LLMUsage | None = None
-        self._client = client or httpx.Client(base_url=base_url, timeout=120.0)
+        self._client = client or httpx.Client(base_url=base_url, timeout=timeout)
 
     def generate(self, *, system: str, user: str) -> str:
         """Send one system/user turn to the local model and return the reply text."""
@@ -125,6 +126,11 @@ class OllamaLLMClient:
                     ],
                     "format": "json",
                     "stream": False,
+                    # A thinking-capable model (e.g. qwen3.5) otherwise spends
+                    # the whole token budget reasoning in a separate
+                    # "thinking" field and never reaches content; a model
+                    # without that capability just ignores this.
+                    "think": False,
                     "options": options,
                 },
             )
@@ -134,6 +140,7 @@ class OllamaLLMClient:
             raise LLMClientError(f"model request failed: {exc}") from exc
 
         body = response.json()
+        logger.info("ollama_response_body", model=self.model, body=body)
         self.last_usage = LLMUsage(
             input_tokens=body.get("prompt_eval_count", 0),
             output_tokens=body.get("eval_count", 0),
@@ -141,25 +148,78 @@ class OllamaLLMClient:
         return body["message"]["content"]
 
 
-def get_llm_client(settings: Settings | None = None) -> LLMClient:
-    """Build the configured LLM client. The one place a provider is chosen."""
-    settings = settings or get_settings()
-    provider = settings.llm_provider
+def _build_llm_client(
+    *,
+    provider: str,
+    model: str,
+    max_tokens: int,
+    temperature: float | None,
+    anthropic_api_key: str,
+    ollama_base_url: str,
+    ollama_timeout: float,
+) -> LLMClient:
     if provider == "anthropic":
         return AnthropicLLMClient(
-            api_key=settings.anthropic_api_key,
-            model=settings.llm_model,
-            max_tokens=settings.llm_max_tokens,
-            temperature=settings.llm_temperature,
+            api_key=anthropic_api_key, model=model, max_tokens=max_tokens, temperature=temperature
         )
     if provider == "ollama":
         return OllamaLLMClient(
-            model=settings.llm_model,
-            max_tokens=settings.llm_max_tokens,
-            temperature=settings.llm_temperature,
-            base_url=settings.ollama_base_url,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            base_url=ollama_base_url,
+            timeout=ollama_timeout,
         )
     raise ValueError(f"unknown LLM provider: {provider!r}")
+
+
+def get_llm_client(settings: Settings | None = None) -> LLMClient:
+    """Build the configured LLM client. The one place a provider is chosen."""
+    settings = settings or get_settings()
+    return _build_llm_client(
+        provider=settings.llm_provider,
+        model=settings.llm_model,
+        max_tokens=settings.llm_max_tokens,
+        temperature=settings.llm_temperature,
+        anthropic_api_key=settings.anthropic_api_key,
+        ollama_base_url=settings.ollama_base_url,
+        ollama_timeout=settings.ollama_timeout_seconds,
+    )
+
+
+def resolve_judge_model_config(
+    settings: Settings | None = None,
+) -> tuple[str, str, float | None, int]:
+    """The (provider, model, temperature, max_tokens) judge_draft actually runs with.
+
+    judge_llm_provider/judge_llm_model fall back to llm_provider/llm_model when
+    unset, so a caller (llmops.versions.persist_evaluation) can stamp the exact
+    judge model without re-deriving the same fallback separately.
+    """
+    settings = settings or get_settings()
+    provider = settings.judge_llm_provider or settings.llm_provider
+    model = settings.judge_llm_model or settings.llm_model
+    return provider, model, settings.judge_llm_temperature, settings.judge_llm_max_tokens
+
+
+def get_judge_llm_client(settings: Settings | None = None) -> LLMClient:
+    """Build the LLM client llmops.judge scores drafts with.
+
+    Independent of get_llm_client: judge_llm_provider/judge_llm_model let the
+    judge run a different model than generation (e.g. a second local Ollama
+    model), falling back to the generation model when not configured.
+    """
+    settings = settings or get_settings()
+    provider, model, temperature, max_tokens = resolve_judge_model_config(settings)
+    return _build_llm_client(
+        provider=provider,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        anthropic_api_key=settings.anthropic_api_key,
+        ollama_base_url=settings.ollama_base_url,
+        ollama_timeout=settings.ollama_timeout_seconds,
+    )
 
 
 def as_model_call(client: LLMClient, *, system: str) -> ModelCall:

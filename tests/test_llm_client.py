@@ -21,7 +21,9 @@ from app.privacy.llm_client import (
     LLMClientError,
     OllamaLLMClient,
     as_model_call,
+    get_judge_llm_client,
     get_llm_client,
+    resolve_judge_model_config,
 )
 
 ALLOWLISTED = {
@@ -77,6 +79,11 @@ def make_settings(**overrides) -> Settings:
         "llm_model": "claude-opus-5",
         "llm_temperature": None,
         "llm_max_tokens": 1024,
+        "judge_llm_provider": "",
+        "judge_llm_model": "",
+        "judge_llm_temperature": None,
+        "judge_llm_max_tokens": 512,
+        "ollama_timeout_seconds": 120.0,
     }
     defaults.update(overrides)
     return Settings(**defaults)
@@ -169,6 +176,53 @@ def test_get_llm_client_builds_ollama_from_settings() -> None:
     assert client.temperature == 0.2
 
 
+def test_get_llm_client_builds_ollama_with_the_configured_timeout() -> None:
+    settings = make_settings(
+        llm_provider="ollama", llm_model="phi4-mini", ollama_timeout_seconds=600.0
+    )
+    client = get_llm_client(settings)
+    assert client._client.timeout == httpx.Timeout(600.0)
+
+
+def test_resolve_judge_model_config_falls_back_to_generation_when_unset() -> None:
+    settings = make_settings(llm_provider="ollama", llm_model="phi4-mini")
+    provider, model, temperature, max_tokens = resolve_judge_model_config(settings)
+    assert (provider, model) == ("ollama", "phi4-mini")
+    assert max_tokens == 512
+
+
+def test_resolve_judge_model_config_uses_the_configured_judge_model() -> None:
+    settings = make_settings(
+        llm_provider="ollama",
+        llm_model="phi4-mini",
+        judge_llm_provider="ollama",
+        judge_llm_model="qwen3.5",
+        judge_llm_temperature=0.1,
+        judge_llm_max_tokens=256,
+    )
+    provider, model, temperature, max_tokens = resolve_judge_model_config(settings)
+    assert (provider, model, temperature, max_tokens) == ("ollama", "qwen3.5", 0.1, 256)
+
+
+def test_get_judge_llm_client_falls_back_to_the_generation_client_when_unset() -> None:
+    settings = make_settings(llm_provider="ollama", llm_model="phi4-mini")
+    client = get_judge_llm_client(settings)
+    assert isinstance(client, OllamaLLMClient)
+    assert client.model == "phi4-mini"
+
+
+def test_get_judge_llm_client_uses_a_distinct_judge_model_when_configured() -> None:
+    settings = make_settings(
+        llm_provider="ollama",
+        llm_model="phi4-mini",
+        judge_llm_model="qwen3.5",
+    )
+    generation_client = get_llm_client(settings)
+    judge_client = get_judge_llm_client(settings)
+    assert generation_client.model == "phi4-mini"
+    assert judge_client.model == "qwen3.5"
+
+
 def _ollama_client(handler, **overrides) -> OllamaLLMClient:
     transport = httpx.MockTransport(handler)
     defaults = {
@@ -251,6 +305,21 @@ def test_ollama_generate_requests_json_mode() -> None:
 
     assert seen["body"]["format"] == "json"
     assert seen["body"]["stream"] is False
+
+
+def test_ollama_generate_disables_thinking() -> None:
+    """A thinking-capable model must answer directly, not spend the token
+    budget reasoning in a separate field and never reach content."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"message": {"content": "{}"}})
+
+    client = _ollama_client(handler)
+    client.generate(system="s", user="u")
+
+    assert seen["body"]["think"] is False
 
 
 def test_ollama_generate_wraps_transport_errors() -> None:

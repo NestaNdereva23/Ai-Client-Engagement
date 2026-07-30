@@ -163,3 +163,41 @@ class TraceRef(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class RubricVersion(Base):
+    """One distinct LLM-as-judge rubric, content addressed like prompt_versions."""
+
+    __tablename__ = "rubric_versions"
+
+    rubric_version_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    rubric_text: Mapped[str] = mapped_column(Text, nullable=False)
+    rubric_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class Evaluation(Base):
+    """One judge scoring of one generation run's draft."""
+
+    __tablename__ = "evaluations"
+
+    evaluation_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("generation_runs.run_id"), nullable=False, index=True
+    )
+    rubric_version_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("rubric_versions.rubric_version_id"), nullable=False
+    )
+    model_version_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("model_versions.model_version_id"), nullable=False
+    )
+    tone: Mapped[int] = mapped_column(Integer, nullable=False)
+    compliance: Mapped[int] = mapped_column(Integer, nullable=False)
+    grounding: Mapped[int] = mapped_column(Integer, nullable=False)
+    personalization: Mapped[int] = mapped_column(Integer, nullable=False)
+    notes: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
