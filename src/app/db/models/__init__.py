@@ -17,13 +17,25 @@ from app.db.models.models import (
     RawStaging,
     Transactions,
 )
+from app.db.models.outreach import (
+    CAMPAIGN_STATUSES,
+    MESSAGE_STATUSES,
+    REVIEW_OUTCOMES,
+    Campaign,
+    OutreachMessage,
+    ReviewAction,
+)
 from app.db.models.rag import RagChunk, RagDocument, RagDocumentVersion
 from app.db.models.rules import BusinessRule, ClientMessageIndicators
 
 __all__ = [
+    "CAMPAIGN_STATUSES",
     "INGESTION_STATES",
+    "MESSAGE_STATUSES",
+    "REVIEW_OUTCOMES",
     "AuditLog",
     "BusinessRule",
+    "Campaign",
     "ClientFeatures",
     "ClientMessageIndicators",
     "Clients",
@@ -32,11 +44,13 @@ __all__ = [
     "IngestionReject",
     "IngestionStatus",
     "ModelVersion",
+    "OutreachMessage",
     "PiiVault",
     "PromptVersion",
     "RagChunk",
     "RagDocument",
     "RagDocumentVersion",
     "RawStaging",
+    "ReviewAction",
     "Transactions",
 ]
