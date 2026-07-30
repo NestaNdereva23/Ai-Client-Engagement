@@ -100,13 +100,14 @@ class OllamaLLMClient:
         max_tokens: int,
         temperature: float | None = None,
         base_url: str = "http://localhost:11434",
+        timeout: float = 120.0,
         client: httpx.Client | None = None,
     ) -> None:
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.last_usage: LLMUsage | None = None
-        self._client = client or httpx.Client(base_url=base_url, timeout=120.0)
+        self._client = client or httpx.Client(base_url=base_url, timeout=timeout)
 
     def generate(self, *, system: str, user: str) -> str:
         """Send one system/user turn to the local model and return the reply text."""
@@ -149,6 +150,7 @@ def _build_llm_client(
     temperature: float | None,
     anthropic_api_key: str,
     ollama_base_url: str,
+    ollama_timeout: float,
 ) -> LLMClient:
     if provider == "anthropic":
         return AnthropicLLMClient(
@@ -156,7 +158,11 @@ def _build_llm_client(
         )
     if provider == "ollama":
         return OllamaLLMClient(
-            model=model, max_tokens=max_tokens, temperature=temperature, base_url=ollama_base_url
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            base_url=ollama_base_url,
+            timeout=ollama_timeout,
         )
     raise ValueError(f"unknown LLM provider: {provider!r}")
 
@@ -171,6 +177,7 @@ def get_llm_client(settings: Settings | None = None) -> LLMClient:
         temperature=settings.llm_temperature,
         anthropic_api_key=settings.anthropic_api_key,
         ollama_base_url=settings.ollama_base_url,
+        ollama_timeout=settings.ollama_timeout_seconds,
     )
 
 
@@ -205,6 +212,7 @@ def get_judge_llm_client(settings: Settings | None = None) -> LLMClient:
         temperature=temperature,
         anthropic_api_key=settings.anthropic_api_key,
         ollama_base_url=settings.ollama_base_url,
+        ollama_timeout=settings.ollama_timeout_seconds,
     )
 
 

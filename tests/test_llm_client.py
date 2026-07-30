@@ -83,6 +83,7 @@ def make_settings(**overrides) -> Settings:
         "judge_llm_model": "",
         "judge_llm_temperature": None,
         "judge_llm_max_tokens": 512,
+        "ollama_timeout_seconds": 120.0,
     }
     defaults.update(overrides)
     return Settings(**defaults)
@@ -173,6 +174,14 @@ def test_get_llm_client_builds_ollama_from_settings() -> None:
     assert client.model == "phi4-mini"
     assert client.max_tokens == 512
     assert client.temperature == 0.2
+
+
+def test_get_llm_client_builds_ollama_with_the_configured_timeout() -> None:
+    settings = make_settings(
+        llm_provider="ollama", llm_model="phi4-mini", ollama_timeout_seconds=600.0
+    )
+    client = get_llm_client(settings)
+    assert client._client.timeout == httpx.Timeout(600.0)
 
 
 def test_resolve_judge_model_config_falls_back_to_generation_when_unset() -> None:

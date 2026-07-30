@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 1024
 
     ollama_base_url: str = "http://localhost:11434"
+    ollama_timeout_seconds: float = 300.0
 
     # LLM-as-judge model (llmops.judge). Empty provider/model falls back to
     # llm_provider/llm_model, so judging works with no extra config.
