@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     db_timezone: str = "Africa/Nairobi"
     # Role the model-facing path switches into; it has no grant on pii_vault.
     db_safe_role: str = "ace_safe"
+    # Role server-side re-attachment switches into; the only one with a grant
+    # on pii_vault.
+    db_restricted_role: str = "ace_restricted"
 
     # Embeddings for RAG. The same model must index and query, or similarity is
     # meaningless. The dev default is deterministic and needs no external service.

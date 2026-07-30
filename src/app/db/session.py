@@ -59,6 +59,24 @@ def safe_session() -> Iterator[Session]:
         session.close()
 
 
+@contextmanager
+def restricted_session() -> Iterator[Session]:
+    """Vault-facing session running under the restricted role, the only one
+    with a grant on pii_vault.
+
+    The role is reset before the connection returns to the pool.
+    """
+    session = SessionLocal()
+    try:
+        session.execute(text(f'SET ROLE "{_settings.db_restricted_role}"'))
+        yield session
+    finally:
+        session.rollback()
+        session.execute(text("RESET ROLE"))
+        session.commit()
+        session.close()
+
+
 def check_connection() -> bool:
     with engine.connect() as conn:
         conn.execute(text("SELECT 1"))
