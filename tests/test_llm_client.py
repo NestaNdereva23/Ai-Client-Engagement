@@ -21,7 +21,9 @@ from app.privacy.llm_client import (
     LLMClientError,
     OllamaLLMClient,
     as_model_call,
+    get_judge_llm_client,
     get_llm_client,
+    resolve_judge_model_config,
 )
 
 ALLOWLISTED = {
@@ -77,6 +79,10 @@ def make_settings(**overrides) -> Settings:
         "llm_model": "claude-opus-5",
         "llm_temperature": None,
         "llm_max_tokens": 1024,
+        "judge_llm_provider": "",
+        "judge_llm_model": "",
+        "judge_llm_temperature": None,
+        "judge_llm_max_tokens": 512,
     }
     defaults.update(overrides)
     return Settings(**defaults)
@@ -167,6 +173,45 @@ def test_get_llm_client_builds_ollama_from_settings() -> None:
     assert client.model == "phi4-mini"
     assert client.max_tokens == 512
     assert client.temperature == 0.2
+
+
+def test_resolve_judge_model_config_falls_back_to_generation_when_unset() -> None:
+    settings = make_settings(llm_provider="ollama", llm_model="phi4-mini")
+    provider, model, temperature, max_tokens = resolve_judge_model_config(settings)
+    assert (provider, model) == ("ollama", "phi4-mini")
+    assert max_tokens == 512
+
+
+def test_resolve_judge_model_config_uses_the_configured_judge_model() -> None:
+    settings = make_settings(
+        llm_provider="ollama",
+        llm_model="phi4-mini",
+        judge_llm_provider="ollama",
+        judge_llm_model="qwen3.5",
+        judge_llm_temperature=0.1,
+        judge_llm_max_tokens=256,
+    )
+    provider, model, temperature, max_tokens = resolve_judge_model_config(settings)
+    assert (provider, model, temperature, max_tokens) == ("ollama", "qwen3.5", 0.1, 256)
+
+
+def test_get_judge_llm_client_falls_back_to_the_generation_client_when_unset() -> None:
+    settings = make_settings(llm_provider="ollama", llm_model="phi4-mini")
+    client = get_judge_llm_client(settings)
+    assert isinstance(client, OllamaLLMClient)
+    assert client.model == "phi4-mini"
+
+
+def test_get_judge_llm_client_uses_a_distinct_judge_model_when_configured() -> None:
+    settings = make_settings(
+        llm_provider="ollama",
+        llm_model="phi4-mini",
+        judge_llm_model="qwen3.5",
+    )
+    generation_client = get_llm_client(settings)
+    judge_client = get_judge_llm_client(settings)
+    assert generation_client.model == "phi4-mini"
+    assert judge_client.model == "qwen3.5"
 
 
 def _ollama_client(handler, **overrides) -> OllamaLLMClient:

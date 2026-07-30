@@ -44,6 +44,10 @@ def make_settings(**overrides) -> Settings:
         "llm_model": "claude-opus-5",
         "llm_temperature": None,
         "llm_max_tokens": 1024,
+        "judge_llm_provider": "",
+        "judge_llm_model": "",
+        "judge_llm_temperature": None,
+        "judge_llm_max_tokens": 512,
     }
     defaults.update(overrides)
     return Settings(**defaults)
@@ -307,3 +311,35 @@ def test_two_evaluations_for_different_runs_share_one_rubric_version(client: int
 
     assert first_eval.rubric_version_id == second_eval.rubric_version_id
     assert first_eval.evaluation_id != second_eval.evaluation_id
+
+
+def test_persist_evaluation_stamps_the_judges_own_model_not_generations(client: int) -> None:
+    """judge_llm_model differing from llm_model must be reflected in the stamped model_version."""
+    generation_settings = make_settings(llm_provider="ollama", llm_model="phi4-mini")
+    judge_settings = make_settings(
+        llm_provider="ollama",
+        llm_model="phi4-mini",
+        judge_llm_provider="ollama",
+        judge_llm_model="qwen3.5",
+    )
+
+    with SessionLocal() as session:
+        run = persist_generation_run(session, accepted_state(client), generation_settings)
+        session.commit()
+        run_id = run.run_id
+
+    with SessionLocal() as session:
+        run = session.get(GenerationRun, run_id)
+        evaluation = persist_evaluation(session, run, make_scores(), judge_settings)
+        session.commit()
+        evaluation_id = evaluation.evaluation_id
+
+    with SessionLocal() as session:
+        stored_run = session.get(GenerationRun, run_id)
+        stored_eval = session.get(Evaluation, evaluation_id)
+        generation_model = session.get(ModelVersion, stored_run.model_version_id)
+        judge_model = session.get(ModelVersion, stored_eval.model_version_id)
+
+    assert generation_model.model_id == "phi4-mini"
+    assert judge_model.model_id == "qwen3.5"
+    assert generation_model.model_version_id != judge_model.model_version_id

@@ -15,7 +15,7 @@ from app.db.session import SessionLocal  # noqa: E402
 from app.llmops.judge import judge_draft  # noqa: E402
 from app.llmops.versions import persist_evaluation  # noqa: E402
 from app.logging_config import configure_logging  # noqa: E402
-from app.privacy.llm_client import get_llm_client  # noqa: E402
+from app.privacy.llm_client import get_judge_llm_client, resolve_judge_model_config  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -62,8 +62,9 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = get_settings()
     configure_logging(settings.log_level)
-    llm_client = get_llm_client(settings)
-    print(f"provider={settings.llm_provider} model={settings.llm_model}")
+    llm_client = get_judge_llm_client(settings)
+    provider, model, _, _ = resolve_judge_model_config(settings)
+    print(f"judge provider={provider} model={model}")
 
     session = SessionLocal()
     try:

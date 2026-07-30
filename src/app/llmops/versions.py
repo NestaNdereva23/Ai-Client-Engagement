@@ -26,6 +26,7 @@ from app.db.models.llmops import (
     RubricVersion,
 )
 from app.llmops.judge import rubric_text
+from app.privacy.llm_client import resolve_judge_model_config
 from app.schemas.evaluation import EvaluationScores
 
 # The only channel today; a future SMS/WhatsApp agent registers its own.
@@ -158,14 +159,19 @@ def persist_evaluation(
     scores: EvaluationScores,
     settings: Settings,
 ) -> Evaluation:
-    """Stamp a judge's scores with the rubric/model version that produced them, and store them."""
+    """Stamp a judge's scores with the rubric/model version that produced them, and store them.
+
+    Stamps the model judge_draft actually ran with, not generation's: they
+    differ whenever judge_llm_provider/judge_llm_model are set.
+    """
     rubric_version = get_or_create_rubric_version(session)
+    provider, model_id, temperature, max_tokens = resolve_judge_model_config(settings)
     model_version = get_or_create_model_version(
         session,
-        provider=settings.llm_provider,
-        model_id=settings.llm_model,
-        temperature=settings.llm_temperature,
-        max_tokens=settings.llm_max_tokens,
+        provider=provider,
+        model_id=model_id,
+        temperature=temperature,
+        max_tokens=max_tokens,
     )
 
     row = Evaluation(
