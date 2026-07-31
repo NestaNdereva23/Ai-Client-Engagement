@@ -19,7 +19,7 @@ from app.campaigns.state_machine import (
     transition_enrollment,
 )
 from app.db.models.audit import AuditLog
-from app.db.models.campaigns import Enrollment
+from app.db.models.campaigns import Enrollment, TouchLog
 from app.db.models.models import Clients, Funds
 from app.db.models.outreach import Campaign
 from app.db.session import SessionLocal
@@ -67,6 +67,14 @@ def client_row(db: None):
     yield _CLIENT_ID
 
     with SessionLocal() as session:
+        # Torn down before `campaign` (fixtures unwind in reverse setup order), so
+        # any enrollment referencing this client must go first or the FK blocks it.
+        enrollment_ids = session.scalars(
+            select(Enrollment.enrollment_id).where(Enrollment.client_id == _CLIENT_ID)
+        ).all()
+        if enrollment_ids:
+            session.execute(delete(TouchLog).where(TouchLog.enrollment_id.in_(enrollment_ids)))
+        session.execute(delete(Enrollment).where(Enrollment.client_id == _CLIENT_ID))
         session.execute(delete(Clients).where(Clients.client_id == _CLIENT_ID))
         session.execute(delete(Funds).where(Funds.unit_fund_id == _FUND_ID))
         session.commit()

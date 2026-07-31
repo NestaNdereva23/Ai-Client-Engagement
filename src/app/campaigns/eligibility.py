@@ -1,14 +1,21 @@
 """The eligibility gate: whether an enrollment's next touch may go out.
 
-Runs before generation and again right before send, since a suppression or
-a reply can land in the gap between the two. Every skip is logged with its
-reason. A skip that happens before the enrollment's first touch always
-lands on excluded, matching the enrollment state machine, which only has
-one way out of the enrolled state; a skip that happens mid sequence lands
-on the specific stopped state for that reason. A skip caused by something
-that might resolve itself later (a cooldown window, a paused campaign, a
-touch still waiting on a decision) does not change the enrollment's status
-at all, it is just tried again on the next run.
+check_eligibility runs before generation and covers every skip condition,
+including the ones about whether a new touch should be scheduled at all
+(idempotency, a still-pending previous touch, cooldown). check_stop_conditions
+is the narrower recheck meant to run again right before an already-approved
+touch actually sends, since a suppression or a reply can land in the gap
+between the two; it only asks whether something should stop delivery
+altogether, not whether a new touch should be scheduled.
+
+Every skip is logged with its reason. A skip that happens before the
+enrollment's first touch always lands on excluded, matching the enrollment
+state machine, which only has one way out of the enrolled state; a skip
+that happens mid sequence lands on the specific stopped state for that
+reason. A skip caused by something that might resolve itself later (a
+cooldown window, a paused campaign, a touch still waiting on a decision)
+does not change the enrollment's status at all, it is just tried again on
+the next run.
 """
 
 from __future__ import annotations
@@ -68,64 +75,81 @@ def check_eligibility(
     if _has_unresolved_touch(session, enrollment.enrollment_id):
         return _skip(session, enrollment, reason="previous_touch_pending", terminal=False)
 
-    suppression_reason = session.get(Suppression, enrollment.client_id)
-    if suppression_reason is not None:
-        status = (
-            "stopped_bounce" if "bounce" in suppression_reason.reason.lower() else "stopped_optout"
-        )
+    stop = _stop_reason(session, enrollment)
+    if stop is not None:
+        reason, terminal_status, detail = stop
         return _skip(
             session,
             enrollment,
-            reason="suppressed",
+            reason=reason,
             terminal=True,
-            terminal_status=status,
-            detail=suppression_reason.reason,
-        )
-
-    opted_out, has_contact = _vault_signals(enrollment.client_id)
-    if opted_out:
-        return _skip(
-            session, enrollment, reason="opted_out", terminal=True, terminal_status="stopped_optout"
-        )
-    if not has_contact:
-        return _skip(
-            session,
-            enrollment,
-            reason="no_deliverable_contact",
-            terminal=True,
-            terminal_status="excluded",
+            terminal_status=terminal_status,
+            detail=detail,
         )
 
     days = get_settings().campaign_cooldown_days if cooldown_days is None else cooldown_days
     if _within_cooldown(session, enrollment.client_id, days):
         return _skip(session, enrollment, reason="cooldown", terminal=False)
 
-    stopping_event = _latest_event_type(session, enrollment.client_id, _STOPPING_EVENT_TYPES)
-    if stopping_event is not None:
+    return EligibilityResult(eligible=True)
+
+
+def check_stop_conditions(session: Session, enrollment: Enrollment) -> EligibilityResult:
+    """The part of the gate worth re-checking right before an approved touch sends.
+
+    Idempotency and cooldown are about whether to schedule a new touch, not
+    whether one already generated and approved should still go out, so
+    those are not repeated here. This only asks whether something has
+    happened since generation that should stop delivery altogether: a
+    suppression, an opt-out, a bounce or complaint, a reply, new client
+    activity, or the campaign itself having been paused in the meantime.
+    """
+    campaign = session.get(Campaign, enrollment.campaign_id)
+    if campaign is None or campaign.status in ("paused", "completed"):
+        return _skip(session, enrollment, reason="campaign_inactive", terminal=False)
+
+    stop = _stop_reason(session, enrollment)
+    if stop is not None:
+        reason, terminal_status, detail = stop
         return _skip(
             session,
             enrollment,
-            reason=stopping_event,
+            reason=reason,
             terminal=True,
-            terminal_status="stopped_bounce",
-        )
-
-    since = _last_touch_sent_at(session, enrollment)
-    if _latest_event_type(session, enrollment.client_id, ("reply",), since=since) is not None:
-        return _skip(
-            session, enrollment, reason="replied", terminal=True, terminal_status="stopped_reply"
-        )
-
-    if _reengaged(session, enrollment):
-        return _skip(
-            session,
-            enrollment,
-            reason="reengaged",
-            terminal=True,
-            terminal_status="stopped_reengaged",
+            terminal_status=terminal_status,
+            detail=detail,
         )
 
     return EligibilityResult(eligible=True)
+
+
+def _stop_reason(session: Session, enrollment: Enrollment) -> tuple[str, str, str | None] | None:
+    """(reason, terminal_status, detail) for a permanent stop signal, or None."""
+    suppression_reason = session.get(Suppression, enrollment.client_id)
+    if suppression_reason is not None:
+        status = (
+            "stopped_bounce" if "bounce" in suppression_reason.reason.lower() else "stopped_optout"
+        )
+        return "suppressed", status, suppression_reason.reason
+
+    opted_out, has_contact = _vault_signals(enrollment.client_id)
+    if opted_out:
+        return "opted_out", "stopped_optout", None
+    if not has_contact:
+        return "no_deliverable_contact", "excluded", None
+
+    stopping_event = _latest_event_type(session, enrollment.client_id, _STOPPING_EVENT_TYPES)
+    if stopping_event is not None:
+        return stopping_event, "stopped_bounce", None
+
+    since = _last_touch_sent_at(session, enrollment)
+    if _latest_event_type(session, enrollment.client_id, ("reply",), since=since) is not None:
+        return "replied", "stopped_reply", None
+
+    if _reengaged(session, enrollment):
+        return "reengaged", "stopped_reengaged", None
+
+    return None
 
 
 def _skip(
