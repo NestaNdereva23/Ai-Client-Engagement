@@ -20,6 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.audit.log import record_audit
+from app.campaigns.state_machine import transition_enrollment
 from app.config import get_settings
 from app.db.models.campaigns import CampaignStep, ContactEvent, Enrollment, TouchLog
 from app.db.models.models import Clients, PiiVault
@@ -144,8 +145,9 @@ def _skip(
         detail={"reason": reason, "detail": detail, "terminal": terminal},
     )
     if terminal:
-        enrollment.status = "excluded" if enrollment.current_step == 0 else terminal_status
-        session.flush()
+        assert terminal_status is not None, "terminal skips must name the status to land on"
+        to_status = "excluded" if enrollment.current_step == 0 else terminal_status
+        transition_enrollment(session, enrollment, to_status=to_status, reason=reason)
     return EligibilityResult(eligible=False, reason=reason, detail=detail)
 
 

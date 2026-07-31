@@ -169,7 +169,11 @@ def test_advance_enrollment_completes_the_enrollment_on_the_last_step(
 ) -> None:
     with SessionLocal() as session:
         enrollment = _make_enrollment(
-            session, campaign_id=campaign_with_steps, client_id=client_row, current_step=3
+            session,
+            campaign_id=campaign_with_steps,
+            client_id=client_row,
+            current_step=3,
+            status="in_progress",
         )
         advance_enrollment(session, enrollment, step_no=4, sent_at=datetime.now(UTC))
         session.commit()

@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.audit.log import record_audit
+from app.campaigns.state_machine import transition_enrollment
 from app.db.models.campaigns import CampaignStep, Enrollment
 
 DEFAULT_BATCH_LIMIT = 500
@@ -71,10 +72,10 @@ def advance_enrollment(
     if next_step is not None:
         delta_days = next_step.offset_days - (current.offset_days if current else 0)
         enrollment.next_due_at = sent_at + timedelta(days=max(delta_days, 0))
-        enrollment.status = "in_progress"
+        transition_enrollment(session, enrollment, to_status="in_progress", reason="touch_sent")
     else:
         enrollment.next_due_at = None
-        enrollment.status = "completed"
+        transition_enrollment(session, enrollment, to_status="completed", reason="all_touches_sent")
     session.flush()
 
     record_audit(

@@ -151,7 +151,11 @@ def test_a_suppressed_client_mid_sequence_lands_on_the_bounce_or_optout_state(
         session.add(Suppression(client_id=client_id, reason="hard bounce"))
         session.commit()
         enrollment = _make_enrollment(
-            session, campaign_id=campaign_with_step, client_id=client_id, current_step=1
+            session,
+            campaign_id=campaign_with_step,
+            client_id=client_id,
+            current_step=1,
+            status="in_progress",
         )
 
         check_eligibility(session, enrollment)
@@ -184,7 +188,11 @@ def test_an_opted_out_client_is_skipped_and_stopped(campaign_with_step: int, fun
         )
         session.commit()
         enrollment = _make_enrollment(
-            session, campaign_id=campaign_with_step, client_id=client_id, current_step=1
+            session,
+            campaign_id=campaign_with_step,
+            client_id=client_id,
+            current_step=1,
+            status="in_progress",
         )
 
         result = check_eligibility(session, enrollment)
@@ -274,6 +282,7 @@ def test_a_reply_since_the_last_touch_stops_the_sequence(
             campaign_id=campaign_with_step,
             client_id=client_id,
             current_step=1,
+            status="in_progress",
             enrolled_at=enrolled_at,
         )
         session.add(
@@ -299,7 +308,11 @@ def test_a_bounce_event_stops_the_sequence(campaign_with_step: int, fund: int) -
         _make_client(session, client_id)
         session.commit()
         enrollment = _make_enrollment(
-            session, campaign_id=campaign_with_step, client_id=client_id, current_step=1
+            session,
+            campaign_id=campaign_with_step,
+            client_id=client_id,
+            current_step=1,
+            status="in_progress",
         )
         session.add(ContactEvent(client_id=client_id, type="bounce", occurred_at=datetime.now(UTC)))
         session.commit()
@@ -326,6 +339,7 @@ def test_new_activity_reengages_the_client_and_stops_the_sequence(
             campaign_id=campaign_with_step,
             client_id=client_id,
             current_step=1,
+            status="in_progress",
             enrolled_at=datetime.now(UTC) - timedelta(days=10),
         )
         client = session.get(Clients, client_id)
