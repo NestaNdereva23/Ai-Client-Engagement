@@ -81,6 +81,10 @@ class Settings(BaseSettings):
         default="", validation_alias=AliasChoices("INTEGRATION_API_KEY")
     )
 
+    # Minimum days between two touches to the same client, across every
+    # campaign, checked by the eligibility gate before each send.
+    campaign_cooldown_days: int = 7
+
     @property
     def is_production(self) -> bool:
         """True when running in the production environment."""
