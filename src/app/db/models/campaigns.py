@@ -6,6 +6,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -68,6 +70,12 @@ class Enrollment(Base):
     current_step: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     next_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="enrolled")
+    # One client_id can be the same real person as another client_id on a
+    # different fund. Only their primary row ever gets a touch, so a person
+    # never receives one email per fund they happen to hold.
+    is_primary_contact_row: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
     enrolled_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
