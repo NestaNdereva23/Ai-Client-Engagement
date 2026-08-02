@@ -11,18 +11,27 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, text
+from sqlalchemy import delete, select, text
 
 from app.config import Settings
+from app.db.models.audit import AuditLog
 from app.db.models.llmops import GenerationRun
 from app.db.models.models import Clients, Funds, PiiVault
-from app.db.models.outreach import Campaign, OutreachMessage
+from app.db.models.outreach import Campaign, OutreachMessage, ReviewAction
 from app.db.session import SessionLocal
 from app.llmops.versions import persist_generation_run
 from app.services.review import (
+    EditedContentRequired,
+    InvalidOutcome,
+    MessageAlreadyDecided,
+    MessageNotFound,
     _fetch_client_name,
     _first_name_from_full_name,
     create_outreach_message,
+    decide,
+    get_message,
+    get_review_history,
+    list_pending_messages,
     personalize_content,
     resolve_placeholders,
 )
@@ -191,3 +200,155 @@ def test_create_outreach_message_falls_back_when_the_vault_has_no_name(scenario)
     with SessionLocal() as session:
         stored = session.get(OutreachMessage, message_id)
         assert "Valued Client" in stored.personalized_content["body"]
+
+
+@pytest.fixture
+def message(scenario):
+    """The scenario's run turned into a pending_review outreach_message."""
+    _client_id, run_id, campaign_id, _fund_id = scenario
+    with SessionLocal() as session:
+        run = session.get(GenerationRun, run_id)
+        created = create_outreach_message(session, run, campaign_id=campaign_id)
+        session.commit()
+        message_id = created.message_id
+
+    yield message_id
+
+    with SessionLocal() as session:
+        session.execute(delete(AuditLog).where(AuditLog.entity_id == message_id))
+        session.execute(delete(ReviewAction).where(ReviewAction.message_id == message_id))
+        session.commit()
+
+
+def test_list_pending_messages_returns_the_new_message(message) -> None:
+    with SessionLocal() as session:
+        pending = list_pending_messages(session)
+    assert message in [m.message_id for m in pending]
+
+
+def test_list_pending_messages_filters_by_campaign(message, scenario) -> None:
+    _client_id, _run_id, campaign_id, _fund_id = scenario
+    with SessionLocal() as session:
+        matched = list_pending_messages(session, campaign_id=campaign_id)
+        unmatched = list_pending_messages(session, campaign_id=campaign_id + 1)
+    assert message in [m.message_id for m in matched]
+    assert message not in [m.message_id for m in unmatched]
+
+
+def test_list_pending_messages_filters_by_status(message) -> None:
+    with SessionLocal() as session:
+        approved = list_pending_messages(session, status="approved")
+    assert message not in [m.message_id for m in approved]
+
+
+def test_get_message_raises_when_not_found() -> None:
+    with SessionLocal() as session, pytest.raises(MessageNotFound):
+        get_message(session, "not-a-real-id")
+
+
+def test_decide_approve_moves_status_to_approved(message) -> None:
+    with SessionLocal() as session:
+        decide(session, message, outcome="approve", reviewer_id="fa-1")
+        session.commit()
+
+    with SessionLocal() as session:
+        assert session.get(OutreachMessage, message).status == "approved"
+
+
+def test_decide_edit_approve_requires_edited_content(message) -> None:
+    with SessionLocal() as session, pytest.raises(EditedContentRequired):
+        decide(session, message, outcome="edit_approve", reviewer_id="fa-1")
+
+
+def test_decide_edit_approve_stores_the_edited_content_and_approves(message) -> None:
+    edited = {"subject": "Edited subject", "body": "Edited body"}
+    with SessionLocal() as session:
+        action = decide(
+            session, message, outcome="edit_approve", reviewer_id="fa-1", edited_content=edited
+        )
+        session.commit()
+        action_id = action.review_action_id
+
+    with SessionLocal() as session:
+        assert session.get(ReviewAction, action_id).edited_content == edited
+        assert session.get(OutreachMessage, message).status == "approved"
+
+
+def test_decide_reject_moves_status_to_rejected(message) -> None:
+    with SessionLocal() as session:
+        decide(session, message, outcome="reject", reviewer_id="fa-1", reason="not on brand")
+        session.commit()
+
+    with SessionLocal() as session:
+        assert session.get(OutreachMessage, message).status == "rejected"
+
+
+def test_decide_escalate_then_approve_is_allowed(message) -> None:
+    """escalate and hold are waypoints, not terminal states."""
+    with SessionLocal() as session:
+        decide(session, message, outcome="escalate", reviewer_id="fa-1")
+        session.commit()
+        assert session.get(OutreachMessage, message).status == "escalated"
+
+    with SessionLocal() as session:
+        decide(session, message, outcome="approve", reviewer_id="lead-1")
+        session.commit()
+        assert session.get(OutreachMessage, message).status == "approved"
+
+    with SessionLocal() as session:
+        history = get_review_history(session, message)
+    assert [a.outcome for a in history] == ["escalate", "approve"]
+
+
+def test_decide_on_an_already_approved_message_raises(message) -> None:
+    with SessionLocal() as session:
+        decide(session, message, outcome="approve", reviewer_id="fa-1")
+        session.commit()
+
+    with SessionLocal() as session, pytest.raises(MessageAlreadyDecided):
+        decide(session, message, outcome="reject", reviewer_id="fa-2")
+
+
+def test_decide_with_an_invalid_outcome_raises(message) -> None:
+    with SessionLocal() as session, pytest.raises(InvalidOutcome):
+        decide(session, message, outcome="not_a_real_outcome", reviewer_id="fa-1")
+
+
+def test_decide_edit_approve_keeps_both_the_ai_and_edited_versions(message) -> None:
+    """The AI draft is never overwritten; the edit lives alongside it, not in place of it."""
+    edited = {"subject": "Edited subject", "body": "Edited body"}
+    with SessionLocal() as session:
+        decide(session, message, outcome="edit_approve", reviewer_id="fa-1", edited_content=edited)
+        session.commit()
+
+    with SessionLocal() as session:
+        stored_message = session.get(OutreachMessage, message)
+        history = get_review_history(session, message)
+    assert stored_message.ai_draft_content == {
+        "subject": "Come back to {{fund_name}}",
+        "body": "Dear {{first_name}}, we miss you.",
+    }
+    assert history[-1].edited_content == edited
+
+
+@pytest.mark.parametrize("outcome", ["approve", "edit_approve", "reject", "escalate", "hold"])
+def test_decide_writes_a_matching_audit_row_for_every_outcome(message, outcome) -> None:
+    edited_content = {"subject": "s", "body": "b"} if outcome == "edit_approve" else None
+    with SessionLocal() as session:
+        decide(
+            session,
+            message,
+            outcome=outcome,
+            reviewer_id="fa-1",
+            edited_content=edited_content,
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        row = session.scalar(
+            select(AuditLog).where(AuditLog.entity_id == message, AuditLog.action == outcome)
+        )
+    assert row is not None
+    assert row.entity_type == "review_action"
+    assert row.actor_id == "fa-1"
+    assert row.detail["outcome"] == outcome

@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from app.api.middleware import CorrelationIdMiddleware
-from app.api.routers import health
+from app.api.routers import health, review
 from app.config import Settings, get_settings
 from app.logging_config import configure_logging
 
@@ -31,6 +31,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Routers
     app.include_router(health.router)
+    app.include_router(review.router)
 
     return app
 

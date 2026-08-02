@@ -1,12 +1,15 @@
-"""Server-side re-attachment: turn an accepted generation run into an
-outreach_message, injecting the client's real name and fund name into the
-draft's placeholders.
+"""The review workflow: re-attachment, the queue, and reviewer decisions.
 
-This runs entirely after generation and guardrails; nothing here calls the
-model, so the resolved values are never seen by it. The only read of
-pii_vault happens under the restricted role, scoped to that one lookup, in
-its own session so the rest of this module never even holds a connection
+Re-attachment runs entirely after generation and guardrails; nothing here
+calls the model, so the resolved values are never seen by it. The only read
+of pii_vault happens under the restricted role, scoped to that one lookup,
+in its own session so the rest of this module never even holds a connection
 with a grant on the vault.
+
+decide() is the one place a review_action gets written and an
+outreach_message's status changes; escalate and hold are waypoints, not
+endpoints, so a message stays decidable after either, while approve and
+reject are terminal.
 """
 
 from __future__ import annotations
@@ -14,18 +17,44 @@ from __future__ import annotations
 import uuid
 
 import structlog
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.audit.log import record_audit
 from app.db.models.llmops import GenerationRun
 from app.db.models.models import Clients, Funds, PiiVault
-from app.db.models.outreach import OutreachMessage
+from app.db.models.outreach import REVIEW_OUTCOMES, OutreachMessage, ReviewAction
 from app.db.session import restricted_session
 
 logger = structlog.get_logger(__name__)
 
 _FALLBACK_FIRST_NAME = "Valued Client"
 _FALLBACK_FUND_NAME = "your fund"
+
+_TERMINAL_STATUSES = ("approved", "rejected")
+_STATUS_FOR_OUTCOME = {
+    "approve": "approved",
+    "edit_approve": "approved",
+    "reject": "rejected",
+    "escalate": "escalated",
+    "hold": "held",
+}
+
+
+class MessageNotFound(Exception):
+    """No outreach_message exists with the given id."""
+
+
+class MessageAlreadyDecided(Exception):
+    """The message is already approved or rejected; deciding again is refused."""
+
+
+class EditedContentRequired(Exception):
+    """edit_approve was chosen without the reviewer's edited content."""
+
+
+class InvalidOutcome(Exception):
+    """outcome is not one of the five allowed review outcomes."""
 
 
 def _first_name_from_full_name(full_name: str | None) -> str:
@@ -111,3 +140,73 @@ def create_outreach_message(
     )
     session.flush()
     return message
+
+
+def list_pending_messages(
+    session: Session, *, status: str = "pending_review", campaign_id: int | None = None
+) -> list[OutreachMessage]:
+    """Messages in the given status, oldest first: the reviewer's queue."""
+    query = select(OutreachMessage).where(OutreachMessage.status == status)
+    if campaign_id is not None:
+        query = query.where(OutreachMessage.campaign_id == campaign_id)
+    query = query.order_by(OutreachMessage.created_at)
+    return list(session.scalars(query).all())
+
+
+def get_message(session: Session, message_id: str) -> OutreachMessage:
+    """One message, or raise MessageNotFound."""
+    message = session.get(OutreachMessage, message_id)
+    if message is None:
+        raise MessageNotFound(message_id)
+    return message
+
+
+def get_review_history(session: Session, message_id: str) -> list[ReviewAction]:
+    """Every decision made on one message, oldest first."""
+    return list(
+        session.scalars(
+            select(ReviewAction)
+            .where(ReviewAction.message_id == message_id)
+            .order_by(ReviewAction.created_at)
+        ).all()
+    )
+
+
+def decide(
+    session: Session,
+    message_id: str,
+    *,
+    outcome: str,
+    reviewer_id: str,
+    reason: str | None = None,
+    edited_content: dict | None = None,
+) -> ReviewAction:
+    """Record a reviewer's decision and move the message to the resulting status."""
+    if outcome not in REVIEW_OUTCOMES:
+        raise InvalidOutcome(outcome)
+    if outcome == "edit_approve" and not edited_content:
+        raise EditedContentRequired("edit_approve requires edited_content")
+
+    message = get_message(session, message_id)
+    if message.status in _TERMINAL_STATUSES:
+        raise MessageAlreadyDecided(f"{message_id} is already {message.status}")
+
+    action = ReviewAction(
+        message_id=message_id,
+        reviewer_id=reviewer_id,
+        outcome=outcome,
+        edited_content=edited_content,
+        reason=reason,
+    )
+    session.add(action)
+    message.status = _STATUS_FOR_OUTCOME[outcome]
+    record_audit(
+        session,
+        entity_type="review_action",
+        action=outcome,
+        entity_id=message_id,
+        actor_id=reviewer_id,
+        detail={"outcome": outcome, "reason": reason},
+    )
+    session.flush()
+    return action
