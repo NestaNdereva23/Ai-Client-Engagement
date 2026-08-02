@@ -2,19 +2,14 @@
 
 An accepted generation run becomes one outreach_message, holding both what
 the model saw (ai_draft_content) and what re-attachment produces
-(personalized_content, filled in separately). review_action is the
-append-only history of every human decision on a message; status is the
-current state, kept in step with the latest action so the review queue can
-filter without replaying history. campaign here is intentionally minimal,
-just enough for outreach_message to group under; M9 extends it with real
-cohort and scheduling columns.
+(personalized_content, filled in separately).
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Text, func
+from sqlalchemy import BigInteger, CheckConstraint, Date, DateTime, ForeignKey, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -38,7 +33,12 @@ class Campaign(Base):
     campaign_type: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="dormant_reengagement"
     )
+    # Allow-listed feature values (segment, tier, bucket) the cohort was selected
+    # on, not a free-text description, so enrollment can re-derive membership.
+    cohort_definition: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="draft")
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

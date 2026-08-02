@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 from app.agents.email_agent import REQUIRED_PLACEHOLDERS
 
 _PLACEHOLDER = re.compile(r"\{\{[^}]*\}\}")
+_CODE_FENCE = re.compile(r"^```[a-zA-Z]*\n?|\n?```$")
 
 
 class DraftValidationError(Exception):
@@ -49,12 +50,26 @@ class EmailDraft(BaseModel):
         return self
 
 
+def _strip_code_fence(raw: str) -> str:
+    # Drop a wrapping ```json ... ``` (or plain ``` ... ```) fence, if present."""
+    return _CODE_FENCE.sub("", raw.strip()).strip()
+
+
 def parse_email_draft(raw: str) -> EmailDraft:
-    """Parse and validate the model's raw output, raising DraftValidationError on any failure."""
+    """Parse and validate the model's raw output, raising DraftValidationError on any failure.
+
+    Tries the raw string first, a model that already returns clean JSON never
+    touches the fallback below. Only on failure does it retry once against a
+    markdown-code-fence-stripped version, since some models wrap otherwise
+    valid JSON in ```json ... ``` despite being told not to.
+    """
     try:
         payload: Any = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise DraftValidationError(f"draft was not valid JSON: {exc}") from exc
+        try:
+            payload = json.loads(_strip_code_fence(raw))
+        except json.JSONDecodeError:
+            raise DraftValidationError(f"draft was not valid JSON: {exc}") from exc
 
     try:
         return EmailDraft.model_validate(payload)

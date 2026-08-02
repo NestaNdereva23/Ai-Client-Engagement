@@ -56,9 +56,9 @@ class Settings(BaseSettings):
     # LLM provider for draft generation.
     llm_provider: str = "anthropic"
     anthropic_api_key: str = Field(default="", validation_alias=AliasChoices("ANTHROPIC_API_KEY"))
-    llm_model: str = "claude-haiku-4"
+    llm_model: str = "claude-haiku-4-5-20251001"
     llm_temperature: float | None = None
-    llm_max_tokens: int = 1024
+    llm_max_tokens: int = 4096
 
     ollama_base_url: str = "http://localhost:11434"
     ollama_timeout_seconds: float = 300.0
@@ -73,6 +73,17 @@ class Settings(BaseSettings):
     langfuse_base_url: str = ""
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
+
+    # Shared secret for the integration plane, a stopgap ahead of M8A.7's
+    # scoped API keys / OAuth client-credentials. Empty means integration
+    # endpoints refuse every request rather than run unprotected.
+    integration_api_key: str = Field(
+        default="", validation_alias=AliasChoices("INTEGRATION_API_KEY")
+    )
+
+    # Minimum days between two touches to the same client, across every
+    # campaign, checked by the eligibility gate before each send.
+    campaign_cooldown_days: int = 7
 
     @property
     def is_production(self) -> bool:

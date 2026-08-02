@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from app.api import v1
+from app.api.errors import register_error_handlers
+from app.api.idempotency import IdempotencyMiddleware
 from app.api.middleware import CorrelationIdMiddleware
-from app.api.routers import health, review
+from app.api.routers import health
 from app.config import Settings, get_settings
 from app.logging_config import configure_logging
 
@@ -27,11 +30,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings
 
+    register_error_handlers(app)
+    app.add_middleware(IdempotencyMiddleware)
     app.add_middleware(CorrelationIdMiddleware)
 
     # Routers
     app.include_router(health.router)
-    app.include_router(review.router)
+    app.include_router(v1.router)
 
     return app
 

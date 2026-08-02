@@ -222,23 +222,61 @@ def message(scenario):
 
 def test_list_pending_messages_returns_the_new_message(message) -> None:
     with SessionLocal() as session:
-        pending = list_pending_messages(session)
+        pending, _next_cursor = list_pending_messages(session)
     assert message in [m.message_id for m in pending]
 
 
 def test_list_pending_messages_filters_by_campaign(message, scenario) -> None:
     _client_id, _run_id, campaign_id, _fund_id = scenario
     with SessionLocal() as session:
-        matched = list_pending_messages(session, campaign_id=campaign_id)
-        unmatched = list_pending_messages(session, campaign_id=campaign_id + 1)
+        matched, _cursor = list_pending_messages(session, campaign_id=campaign_id)
+        unmatched, _cursor = list_pending_messages(session, campaign_id=campaign_id + 1)
     assert message in [m.message_id for m in matched]
     assert message not in [m.message_id for m in unmatched]
 
 
 def test_list_pending_messages_filters_by_status(message) -> None:
     with SessionLocal() as session:
-        approved = list_pending_messages(session, status="approved")
+        approved, _next_cursor = list_pending_messages(session, status="approved")
     assert message not in [m.message_id for m in approved]
+
+
+def test_list_pending_messages_paginates_across_two_pages(scenario) -> None:
+    """A page smaller than the result set returns a cursor that reaches the rest."""
+    client_id, run_id, campaign_id, _fund_id = scenario
+    with SessionLocal() as session:
+        run = session.get(GenerationRun, run_id)
+        first = create_outreach_message(session, run, campaign_id=campaign_id)
+        session.commit()
+        first_id = first.message_id
+
+    with SessionLocal() as session:
+        second_run = persist_generation_run(session, accepted_state(client_id), make_settings())
+        second = create_outreach_message(session, second_run, campaign_id=campaign_id)
+        session.commit()
+        second_run_id, second_id = second_run.run_id, second.message_id
+
+    try:
+        with SessionLocal() as session:
+            page_one, cursor_one = list_pending_messages(session, campaign_id=campaign_id, limit=1)
+            assert [m.message_id for m in page_one] == [first_id]
+            assert cursor_one is not None
+
+            page_two, cursor_two = list_pending_messages(
+                session, campaign_id=campaign_id, limit=1, cursor=cursor_one
+            )
+            assert [m.message_id for m in page_two] == [second_id]
+            assert cursor_two is None
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(ReviewAction).where(ReviewAction.message_id.in_([first_id, second_id]))
+            )
+            session.execute(
+                delete(OutreachMessage).where(OutreachMessage.message_id.in_([first_id, second_id]))
+            )
+            session.execute(delete(GenerationRun).where(GenerationRun.run_id == second_run_id))
+            session.commit()
 
 
 def test_get_message_raises_when_not_found() -> None:

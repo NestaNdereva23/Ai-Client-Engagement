@@ -20,7 +20,10 @@ _BASE_INSTRUCTIONS = (
     "Return ONLY one valid JSON object with exactly two fields: "
     '{"subject": "...", "body": "..."}. '
     "Do not return markdown, code fences, explanations, notes, or any text "
-    "before or after the JSON object. "
+    "before or after the JSON object. Here is an example of the correct raw output format:\n"
+    '{"subject": "....", "body": "...."}'
+    "avoid "
+    '```json{"subject": "....", "body": "...."}\n```'
     "PLACEHOLDERS: "
     "You may use {{first_name}} for the client's name and {{fund_name}} "
     "for the fund or product name. "
