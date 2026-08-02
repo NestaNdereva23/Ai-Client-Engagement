@@ -126,10 +126,6 @@ class OllamaLLMClient:
                     ],
                     "format": "json",
                     "stream": False,
-                    # A thinking-capable model (e.g. qwen3.5) otherwise spends
-                    # the whole token budget reasoning in a separate
-                    # "thinking" field and never reaches content; a model
-                    # without that capability just ignores this.
                     "think": False,
                     "options": options,
                 },

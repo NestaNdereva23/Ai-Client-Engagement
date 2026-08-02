@@ -1,11 +1,3 @@
-"""EmailDraft: the schema a raw model output must validate against.
-
-These prove a well-formed draft parses cleanly, malformed JSON and a missing
-field are both rejected, a dropped required placeholder and an invented one
-are both rejected, an unrelated extra field is rejected, and the exception
-always carries a useful reason rather than a bare parser traceback.
-"""
-
 from __future__ import annotations
 
 import json
@@ -27,6 +19,24 @@ def test_a_well_formed_draft_parses_cleanly() -> None:
     assert isinstance(result, EmailDraft)
     assert result.subject == "Come back to {{fund_name}}"
     assert result.body == "Dear {{first_name}}, we miss you."
+
+
+def test_a_draft_wrapped_in_a_json_code_fence_still_parses() -> None:
+    """Some models wrap otherwise valid JSON in ```json fences despite being told not to."""
+    fenced = "```json\n" + draft("Come back to {{fund_name}}", "Dear {{first_name}}.") + "\n```"
+    result = parse_email_draft(fenced)
+    assert result.subject == "Come back to {{fund_name}}"
+
+
+def test_a_draft_wrapped_in_a_plain_code_fence_still_parses() -> None:
+    fenced = "```\n" + draft("Come back to {{fund_name}}", "Dear {{first_name}}.") + "\n```"
+    result = parse_email_draft(fenced)
+    assert result.subject == "Come back to {{fund_name}}"
+
+
+def test_genuinely_malformed_content_inside_a_fence_is_still_rejected() -> None:
+    with pytest.raises(DraftValidationError, match="not valid JSON"):
+        parse_email_draft("```json\nthis is not json\n```")
 
 
 def test_malformed_json_is_rejected() -> None:

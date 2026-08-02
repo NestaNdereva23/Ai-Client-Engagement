@@ -1,10 +1,3 @@
-"""The integration inbound API: contacts, suppressions, and the ingestion trigger.
-
-Every route sits behind require_integration_key; get_settings is monkeypatched
-per test rather than touching the real environment, the same pattern
-test_api_ingestion.py already uses for the Cytonn-client 503 case.
-"""
-
 from __future__ import annotations
 
 import pytest
@@ -253,6 +246,8 @@ def test_trigger_via_integration_plane_completes(
     assert status.json()["state"] == "completed"
 
 
-def test_trigger_via_integration_plane_without_the_key_is_401(db, fake_client) -> None:
+def test_trigger_via_integration_plane_without_the_key_is_401(
+    db, configured_key, fake_client
+) -> None:
     response = client.post(TRIGGER, json={})
     assert response.status_code == 401

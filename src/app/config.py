@@ -56,9 +56,9 @@ class Settings(BaseSettings):
     # LLM provider for draft generation.
     llm_provider: str = "anthropic"
     anthropic_api_key: str = Field(default="", validation_alias=AliasChoices("ANTHROPIC_API_KEY"))
-    llm_model: str = "claude-haiku-4"
+    llm_model: str = "claude-haiku-4-5-20251001"
     llm_temperature: float | None = None
-    llm_max_tokens: int = 1024
+    llm_max_tokens: int = 4096
 
     ollama_base_url: str = "http://localhost:11434"
     ollama_timeout_seconds: float = 300.0
