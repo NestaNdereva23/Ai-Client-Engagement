@@ -36,7 +36,7 @@ from app.db.models.outreach import (
     ReviewAction,
 )
 from app.db.models.rag import RagChunk, RagDocument, RagDocumentVersion
-from app.db.models.rules import BusinessRule, ClientMessageIndicators
+from app.db.models.rules import BusinessRule, ClientMessageIndicators, MessageAngleCatalog
 from app.db.models.suppression import Suppression
 
 __all__ = [
@@ -61,6 +61,7 @@ __all__ = [
     "IdempotencyKey",
     "IngestionReject",
     "IngestionStatus",
+    "MessageAngleCatalog",
     "ModelVersion",
     "OutreachMessage",
     "PiiVault",

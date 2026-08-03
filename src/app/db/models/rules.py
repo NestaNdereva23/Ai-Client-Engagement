@@ -47,6 +47,41 @@ class BusinessRule(Base):
     )
 
 
+class MessageAngleCatalog(Base):
+    """The brief for one message angle: who it speaks to and what it may say.
+
+    Versioned and immutable like the rule set, so a message can be explained
+    months later against the exact wording that produced it. The router, the
+    prompt builder and the review queue all read this, so none of them can drift
+    from the others, and a changed prohibition changes everywhere at once.
+    """
+
+    __tablename__ = "message_angle_catalog"
+    __table_args__ = (
+        UniqueConstraint("version", "angle", name="uq_message_angle_catalog_version_angle"),
+    )
+
+    catalog_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    # The identifier a rule resolves to.
+    angle: Mapped[str] = mapped_column(Text, nullable=False)
+    # An internal guide to the angle, never sent as a subject line.
+    headline: Mapped[str] = mapped_column(Text, nullable=False)
+    # Which clients the angle addresses.
+    who: Mapped[str] = mapped_column(Text, nullable=False)
+    # What the message may state as true about them.
+    claim: Mapped[str] = mapped_column(Text, nullable=False)
+    # What it asks them to do.
+    ask: Mapped[str] = mapped_column(Text, nullable=False)
+    # The prohibition this angle carries on top of the campaign-wide ones.
+    never: Mapped[str] = mapped_column(Text, nullable=False)
+    valid_from: Mapped[date] = mapped_column(Date, nullable=False)
+    valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class ClientMessageIndicators(Base):
     """The resolved outreach angle for one client, with the winning rule recorded.
 
