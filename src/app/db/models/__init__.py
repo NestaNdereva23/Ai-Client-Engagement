@@ -18,6 +18,7 @@ from app.db.models.llmops import GenerationRun, ModelVersion, PromptVersion
 from app.db.models.models import (
     INGESTION_STATES,
     ClientFeatures,
+    ClientFund,
     Clients,
     Funds,
     IngestionReject,
@@ -35,7 +36,7 @@ from app.db.models.outreach import (
     ReviewAction,
 )
 from app.db.models.rag import RagChunk, RagDocument, RagDocumentVersion
-from app.db.models.rules import BusinessRule, ClientMessageIndicators
+from app.db.models.rules import BusinessRule, ClientMessageIndicators, MessageAngleCatalog
 from app.db.models.suppression import Suppression
 
 __all__ = [
@@ -50,6 +51,7 @@ __all__ = [
     "Campaign",
     "CampaignStep",
     "ClientFeatures",
+    "ClientFund",
     "ClientMessageIndicators",
     "Clients",
     "ContactEvent",
@@ -59,6 +61,7 @@ __all__ = [
     "IdempotencyKey",
     "IngestionReject",
     "IngestionStatus",
+    "MessageAngleCatalog",
     "ModelVersion",
     "OutreachMessage",
     "PiiVault",

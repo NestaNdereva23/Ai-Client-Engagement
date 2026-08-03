@@ -26,6 +26,7 @@ from sqlalchemy import inspect, select
 
 from app.db.models.models import (
     ClientFeatures,
+    ClientFund,
     Clients,
     Funds,
     IngestionStatus,
@@ -44,7 +45,7 @@ ANCHOR = datetime(2026, 7, 23, 9, 0, tzinfo=EAT)
 # Restricted fields that must never leave pii_vault, matched against column
 # names and against persisted string values.
 PII_COLUMNS = {"client_name", "contact_email", "contact_whatsapp", "opt_out_flag"}
-NON_VAULT_MODELS = [Funds, Clients, Transactions, ClientFeatures]
+NON_VAULT_MODELS = [Funds, Clients, ClientFund, Transactions, ClientFeatures]
 
 
 def _txn(rng: random.Random, txn_id: int, fund_id: int) -> dict[str, Any]:
@@ -285,6 +286,7 @@ def test_client_name_appears_in_no_persisted_row_outside_the_vault(
             session.execute(
                 ClientFeatures.__table__.delete().where(ClientFeatures.client_id == 91001)
             )
+            session.execute(ClientFund.__table__.delete().where(ClientFund.client_id == 91001))
             session.execute(PiiVault.__table__.delete().where(PiiVault.client_id == 91001))
             session.execute(Clients.__table__.delete().where(Clients.client_id == 91001))
             session.execute(Funds.__table__.delete().where(Funds.unit_fund_id == 910))

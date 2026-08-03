@@ -20,6 +20,7 @@ from sqlalchemy import delete, select
 from app.db.models.audit import AuditLog
 from app.db.models.models import (
     ClientFeatures,
+    ClientFund,
     Clients,
     Funds,
     IngestionStatus,
@@ -142,6 +143,7 @@ def seeded_cohort(db: None, cleanup_runs: list[str]):
     with SessionLocal() as session:
         session.execute(delete(Transactions).where(Transactions.client_id.in_(ids)))
         session.execute(delete(ClientFeatures).where(ClientFeatures.client_id.in_(ids)))
+        session.execute(delete(ClientFund).where(ClientFund.client_id.in_(ids)))
         session.execute(delete(PiiVault).where(PiiVault.client_id.in_(ids)))
         session.execute(delete(Clients).where(Clients.client_id.in_(ids)))
         session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))

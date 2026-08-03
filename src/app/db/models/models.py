@@ -128,6 +128,13 @@ class Funds(Base):
 
 
 class Clients(Base):
+    """One row per client, holding the figures of their largest relationship.
+
+    A client who holds several funds still gets a single row here, because a
+    person receives one message however many funds they held. n_funds says how
+    many they have; the per-fund detail is in client_fund.
+    """
+
     __tablename__ = "clients"
 
     client_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
@@ -144,11 +151,79 @@ class Clients(Base):
     total_sale_amount: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
     last_activity_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     days_since_last_activity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # No longer maintained. Purchases and sales are capped at different depths,
+    # so their difference measures the caps rather than a position: it comes out
+    # positive for clients whose balance is zero. Nothing reads it.
     net_flow: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
     computed_at: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # How many funds this client held. Their figures above come from the largest.
+    n_funds: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     # True when the purchase window is full, so older purchases are hidden.
     purchases_censored: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
+    )
+
+
+class ClientFund(Base):
+    """One row per client-fund relationship, holding the figures of that fund."""
+
+    __tablename__ = "client_fund"
+
+    client_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("clients.client_id"), primary_key=True, autoincrement=False
+    )
+    unit_fund_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("funds.unit_fund_id"), primary_key=True, autoincrement=False
+    )
+    client_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    balance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    n_purchases: Mapped[int] = mapped_column(Integer, nullable=False)
+    n_sales: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_purchase: Mapped[date | None] = mapped_column(Date, nullable=True)
+    last_sale: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # The later of the two dates above: when this relationship went quiet.
+    exit_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    days_cold: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Purchase value we can see. A floor, not a total, since older purchases
+    # fall outside the window the source returns.
+    observed_volume: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
+    purchases_censored: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    history_censored: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    # Set on the largest of a client's relationships, so one person is
+    # approached once rather than once per fund they happen to hold.
+    is_primary_contact_row: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
+    computed_at: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Measures of how this relationship was used. Null where the transactions
+    # cannot support them, which the bands read as unknown rather than as zero.
+    avg_ticket: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_ticket: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Median gap between purchases. Under a day means same-day top-ups.
+    rhythm_days: Mapped[float | None] = mapped_column(Float, nullable=True)
+    first_purchase: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # First to last visible purchase.
+    active_window_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Slope of log10 contribution size: positive means contributions were rising.
+    ticket_trend: Mapped[float | None] = mapped_column(Float, nullable=True)
+    first_sale: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Gap between the two visible sales; a wide one is a staged wind-down.
+    drawdown_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # How long the money stayed after the final top-up.
+    hold_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # How the final sale was recorded, which says whether leaving was a choice.
+    exit_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
 
@@ -194,6 +269,29 @@ class ClientFeatures(Base):
     history_censored: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )
+
+    # Behavioural bands describing the relationship this client is contacted on.
+    # Each carries an explicit unknown member rather than a null, so a rule that
+    # names a band never has to reason about a missing value.
+    n_funds: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    recency_band: Mapped[str] = mapped_column(Text, nullable=False, server_default="Unknown")
+    value_band: Mapped[str] = mapped_column(Text, nullable=False, server_default="Low")
+    cadence_band: Mapped[str] = mapped_column(Text, nullable=False, server_default="None")
+    hold_band: Mapped[str] = mapped_column(Text, nullable=False, server_default="Unknown")
+    purchase_depth: Mapped[str] = mapped_column(Text, nullable=False, server_default="none")
+    trend_band: Mapped[str] = mapped_column(Text, nullable=False, server_default="unknown")
+    exit_reason: Mapped[str] = mapped_column(Text, nullable=False, server_default="unknown")
+    fund_type: Mapped[str] = mapped_column(Text, nullable=False, server_default="other")
+    in_wave: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    has_depth: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    staged_exit: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    stale_contact: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    holds_other_funds: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

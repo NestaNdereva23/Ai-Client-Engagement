@@ -16,11 +16,24 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.models.rules import BusinessRule
+from app.transform.features import (
+    CADENCE_BANDS,
+    EXIT_REASONS,
+    FUND_TYPES,
+    HOLD_BANDS,
+    PURCHASE_DEPTHS,
+    RECENCY_BANDS,
+    TREND_BANDS,
+    VALUE_BANDS,
+)
 
-# Allow-listed match fields and the values each may take. Kept in step with the
-# feature buckets; boolean flags accept the strings "true" and "false".
+# Allow-listed match fields and the values each may take. The band vocabularies
+# come from the derivation itself, so a rule can only name a value that is
+# actually produced. Boolean flags accept the strings "true" and "false".
 _BOOL = {"true", "false"}
 RULE_FIELD_DOMAINS: dict[str, set[str]] = {
+    # The original buckets. They keep their meaning while rule sets using them
+    # are still in force, and retire only once nothing resolves against them.
     "archetype": {
         "None observed",
         "One-and-done",
@@ -39,11 +52,45 @@ RULE_FIELD_DOMAINS: dict[str, set[str]] = {
     "history_censored": _BOOL,
     "purchases_censored": _BOOL,
     "holds_other_funds": _BOOL,
+    # The behavioural bands. Their cut points sit where the angle rules need
+    # them, which is what lets an ordered set of equality matches express the
+    # whole router without the engine needing to compare numbers.
+    "recency_band": set(RECENCY_BANDS),
+    "value_band": set(VALUE_BANDS),
+    "cadence_band": set(CADENCE_BANDS),
+    "hold_band": set(HOLD_BANDS),
+    "purchase_depth": set(PURCHASE_DEPTHS),
+    "trend_band": set(TREND_BANDS),
+    "exit_reason": set(EXIT_REASONS),
+    "fund_type": set(FUND_TYPES),
+    "in_wave": _BOOL,
+    "has_depth": _BOOL,
+    "staged_exit": _BOOL,
+    "stale_contact": _BOOL,
 }
 
-MESSAGE_ANGLES = {"winback_habit", "winback_flexible"}
+# The twelve angles, plus the two the earlier rule sets resolve to. Kept in step
+# with message_angle_catalog, which holds the brief behind each one.
+MESSAGE_ANGLES = {
+    "winback_habit",
+    "winback_flexible",
+    "not_a_goodbye",
+    "wrong_shelf",
+    "see_what_changed",
+    "the_long_hold",
+    "your_next_deposit",
+    "second_try",
+    "you_wound_down",
+    "you_were_scaling",
+    "you_were_fading",
+    "back_on_schedule",
+    "onboarding_retry",
+    "pick_up_again",
+}
 URGENCIES = {"low", "medium", "high"}
-PRIORITY_TIERS = {"P1", "P2", "P3"}
+# T1 to T4 are derived from value and recency rather than set by a rule; the
+# older P tiers stay while the rule sets that name them are in force.
+PRIORITY_TIERS = {"P1", "P2", "P3", "T1", "T2", "T3", "T4"}
 
 
 class RuleValidationError(ValueError):

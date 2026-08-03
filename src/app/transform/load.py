@@ -1,24 +1,44 @@
-"""Persist flattened output into the normalized funds, clients, transactions."""
+"""Persist flattened output into the normalized funds, clients, transactions.
+
+Flatten produces one row per client and fund. Those land in client_fund, and
+each client is then projected to a single clients row taken from their largest
+relationship, because a person receives one message however many funds they
+held. Which relationship that is gets recorded rather than left to chance.
+"""
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+import structlog
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.db.models.models import (
     ClientFeatures,
+    ClientFund,
     Clients,
     Funds,
     IngestionStatus,
     PiiVault,
     Transactions,
 )
-from app.transform.features import FeatureRow, derive_features
+from app.transform.features import (
+    VALUE_BAND_CUTOFFS,
+    FeatureRow,
+    RelationshipMeasures,
+    derive_features,
+    derive_relationship_measures,
+    largest_first,
+    relationships_by_client,
+)
 from app.transform.flatten import ClientRow, FlattenResult, FundRow, TxnRow, flatten_run
+
+logger = structlog.get_logger(__name__)
 
 # Columns updated on conflict, one entry per table.
 _FUND_UPDATE = ["unit_fund_name", "inactive_client_count"]
@@ -34,9 +54,34 @@ _CLIENT_UPDATE = [
     "total_sale_amount",
     "last_activity_date",
     "days_since_last_activity",
-    "net_flow",
     "computed_at",
     "purchases_censored",
+    "n_funds",
+]
+_CLIENT_FUND_UPDATE = [
+    "client_code",
+    "balance",
+    "n_purchases",
+    "n_sales",
+    "last_purchase",
+    "last_sale",
+    "exit_date",
+    "days_cold",
+    "observed_volume",
+    "purchases_censored",
+    "history_censored",
+    "is_primary_contact_row",
+    "computed_at",
+    "avg_ticket",
+    "max_ticket",
+    "rhythm_days",
+    "first_purchase",
+    "active_window_days",
+    "ticket_trend",
+    "first_sale",
+    "drawdown_days",
+    "hold_days",
+    "exit_type",
 ]
 _TXN_UPDATE = [
     "txn_type",
@@ -61,6 +106,20 @@ _FEATURE_UPDATE = [
     "observed_volume",
     "purchases_censored",
     "history_censored",
+    "n_funds",
+    "recency_band",
+    "value_band",
+    "cadence_band",
+    "hold_band",
+    "purchase_depth",
+    "trend_band",
+    "exit_reason",
+    "fund_type",
+    "in_wave",
+    "has_depth",
+    "staged_exit",
+    "stale_contact",
+    "holds_other_funds",
 ]
 
 
@@ -70,6 +129,7 @@ class PersistCounts:
 
     funds: int = 0
     clients: int = 0
+    client_funds: int = 0
     transactions: int = 0
     vault: int = 0
     features: int = 0
@@ -83,7 +143,8 @@ def _fund_dict(f: FundRow) -> dict[str, Any]:
     }
 
 
-def _client_dict(c: ClientRow) -> dict[str, Any]:
+def _client_dict(c: ClientRow, n_funds: int) -> dict[str, Any]:
+    """The person-level row, taken from the client's largest relationship."""
     return {
         "client_id": c.client_id,
         "client_code": None if c.client_code is None else str(c.client_code),
@@ -97,9 +158,39 @@ def _client_dict(c: ClientRow) -> dict[str, Any]:
         "total_sale_amount": c.total_sale_amount,
         "last_activity_date": c.last_activity_date,
         "days_since_last_activity": c.days_since_last_activity,
-        "net_flow": c.net_flow,
         "computed_at": c.computed_at,
         "purchases_censored": c.purchases_censored,
+        "n_funds": n_funds,
+    }
+
+
+def _client_fund_dict(c: ClientRow, m: RelationshipMeasures, *, is_primary: bool) -> dict[str, Any]:
+    return {
+        "client_id": c.client_id,
+        "unit_fund_id": c.unit_fund_id,
+        "client_code": None if c.client_code is None else str(c.client_code),
+        "balance": c.balance,
+        "n_purchases": c.n_purchases_returned,
+        "n_sales": c.n_sales_returned,
+        "last_purchase": c.last_purchase_date,
+        "last_sale": c.last_sale_date,
+        "exit_date": c.last_activity_date,
+        "days_cold": c.days_since_last_activity,
+        "observed_volume": c.total_purchase_amount,
+        "purchases_censored": c.purchases_censored,
+        "history_censored": c.history_censored,
+        "is_primary_contact_row": is_primary,
+        "computed_at": c.computed_at,
+        "avg_ticket": m.avg_ticket,
+        "max_ticket": m.max_ticket,
+        "rhythm_days": m.rhythm_days,
+        "first_purchase": m.first_purchase,
+        "active_window_days": m.active_window_days,
+        "ticket_trend": m.ticket_trend,
+        "first_sale": m.first_sale,
+        "drawdown_days": m.drawdown_days,
+        "hold_days": m.hold_days,
+        "exit_type": m.exit_type,
     }
 
 
@@ -118,6 +209,30 @@ def _txn_dict(t: TxnRow) -> dict[str, Any]:
     }
 
 
+def _log_reconciliation(result: FlattenResult, by_client: dict[int, list[ClientRow]]) -> None:
+    """Report how the rows we kept compare with what the source described.
+
+    Neither gap is an error. Repeated pages are expected on a resumed pull, and
+    a fund can report a client count it does not return rows for; both are worth
+    counting so the shortfall is visible rather than inferred.
+    """
+    kept = sum(len(rows) for rows in by_client.values())
+    repeated = len(result.clients) - kept
+    if repeated:
+        logger.info("transform_repeated_relationships", collapsed=repeated, kept=kept)
+
+    per_fund = Counter(row.unit_fund_id for rows in by_client.values() for row in rows)
+    for fund in result.funds:
+        returned = per_fund.get(fund.unit_fund_id, 0)
+        if fund.inactive_client_count is not None and fund.inactive_client_count != returned:
+            logger.warning(
+                "transform_fund_count_mismatch",
+                unit_fund_id=fund.unit_fund_id,
+                reported=fund.inactive_client_count,
+                returned=returned,
+            )
+
+
 def _vault_dict(c: ClientRow, source: str | None) -> dict[str, Any]:
     # Only the name (and its source) is written here; contact channels stay null
     # until a contact source exists.
@@ -130,6 +245,20 @@ def _vault_dict(c: ClientRow, source: str | None) -> dict[str, Any]:
 
 def _feature_dict(f: FeatureRow) -> dict[str, Any]:
     return {
+        "n_funds": f.n_funds,
+        "recency_band": f.recency_band,
+        "value_band": f.value_band,
+        "cadence_band": f.cadence_band,
+        "hold_band": f.hold_band,
+        "purchase_depth": f.purchase_depth,
+        "trend_band": f.trend_band,
+        "exit_reason": f.exit_reason,
+        "fund_type": f.fund_type,
+        "in_wave": f.in_wave,
+        "has_depth": f.has_depth,
+        "staged_exit": f.staged_exit,
+        "stale_contact": f.stale_contact,
+        "holds_other_funds": f.holds_other_funds,
         "client_id": f.client_id,
         "archetype": f.archetype,
         "recency_bucket": f.recency_bucket,
@@ -153,18 +282,20 @@ def _upsert(
     session: Session,
     model: type,
     rows: list[dict[str, Any]],
-    key: str,
+    key: str | Sequence[str],
     update_columns: list[str],
     extra_set: dict[str, Any] | None = None,
 ) -> int:
     """Insert rows, updating the named columns when the key already exists.
 
-    Batched so a large run never builds a single INSERT past Postgres's
-    bind-parameter limit, however many columns the row carries.
+    key is one column name or several for a composite key. Batched so a large
+    run never builds a single INSERT past Postgres's bind-parameter limit,
+    however many columns the row carries.
     """
     if not rows:
         return 0
 
+    index_elements = [key] if isinstance(key, str) else list(key)
     batch_size = max(1, _MAX_BIND_PARAMS // len(rows[0]))
     for start in range(0, len(rows), batch_size):
         batch = rows[start : start + batch_size]
@@ -172,7 +303,7 @@ def _upsert(
         set_ = {col: getattr(stmt.excluded, col) for col in update_columns}
         if extra_set:
             set_.update(extra_set)
-        stmt = stmt.on_conflict_do_update(index_elements=[key], set_=set_)
+        stmt = stmt.on_conflict_do_update(index_elements=index_elements, set_=set_)
         session.execute(stmt)
     return len(rows)
 
@@ -182,16 +313,33 @@ def persist_result(
 ) -> PersistCounts:
     """Upsert a flattened result into funds, clients, transactions, vault, features.
 
-    Clients land before transactions and features so their foreign keys hold
-    within one transaction. client_name is written only to the vault, never to
-    clients. Rows are keyed into dicts first so a repeated natural key becomes a
-    single upsert.
+    Clients land before their relationships, transactions and features so the
+    foreign keys hold within one transaction. client_name is written only to the
+    vault, never to clients. Rows are keyed into dicts first so a repeated
+    natural key becomes a single upsert.
     """
+    by_client = relationships_by_client(result)
+    measures = derive_relationship_measures(result)
+    _log_reconciliation(result, by_client)
+
+    clients: list[dict[str, Any]] = []
+    client_funds: list[dict[str, Any]] = []
+    vault: list[dict[str, Any]] = []
+    for rows in by_client.values():
+        ordered = largest_first(rows)
+        primary = ordered[0]
+        clients.append(_client_dict(primary, n_funds=len(ordered)))
+        vault.append(_vault_dict(primary, source))
+        client_funds.extend(
+            _client_fund_dict(
+                row, measures[(row.client_id, row.unit_fund_id)], is_primary=row is primary
+            )
+            for row in ordered
+        )
+
     funds = {f.unit_fund_id: _fund_dict(f) for f in result.funds}
-    clients = {c.client_id: _client_dict(c) for c in result.clients}
     txns = {t.txn_id: _txn_dict(t) for t in result.transactions if t.txn_id is not None}
-    vault = {c.client_id: _vault_dict(c, source) for c in result.clients}
-    features = {f.client_id: _feature_dict(f) for f in derive_features(result)}
+    features = {f.client_id: _feature_dict(f) for f in derive_features(result, measures)}
 
     counts = PersistCounts()
     counts.funds = _upsert(
@@ -202,12 +350,20 @@ def persist_result(
         _FUND_UPDATE,
         extra_set={"updated_at": func.now()},
     )
-    counts.clients = _upsert(session, Clients, list(clients.values()), "client_id", _CLIENT_UPDATE)
+    counts.clients = _upsert(session, Clients, clients, "client_id", _CLIENT_UPDATE)
+    counts.client_funds = _upsert(
+        session,
+        ClientFund,
+        client_funds,
+        ("client_id", "unit_fund_id"),
+        _CLIENT_FUND_UPDATE,
+        extra_set={"updated_at": func.now()},
+    )
     counts.transactions = _upsert(session, Transactions, list(txns.values()), "txn_id", _TXN_UPDATE)
     counts.vault = _upsert(
         session,
         PiiVault,
-        list(vault.values()),
+        vault,
         "client_id",
         _VAULT_UPDATE,
         extra_set={"updated_at": func.now()},
@@ -219,6 +375,14 @@ def persist_result(
         "client_id",
         _FEATURE_UPDATE,
         extra_set={"updated_at": func.now()},
+    )
+    # The value cutoffs are frozen rather than recomputed, so recording them per
+    # run is what lets a band be explained back to a client months later.
+    logger.info(
+        "transform_features_derived",
+        clients=counts.clients,
+        relationships=counts.client_funds,
+        value_band_cutoffs=list(VALUE_BAND_CUTOFFS),
     )
     session.commit()
     return counts

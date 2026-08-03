@@ -44,9 +44,12 @@ def main(argv: list[str] | None = None) -> int:
         counts = transform_run(session, run_id)
 
     print(
-        f"funds={counts.funds} clients={counts.clients} transactions={counts.transactions} "
-        f"vault={counts.vault} features={counts.features}"
+        f"funds={counts.funds} clients={counts.clients} client_funds={counts.client_funds} "
+        f"transactions={counts.transactions} vault={counts.vault} features={counts.features}"
     )
+    if counts.client_funds > counts.clients:
+        held = counts.client_funds - counts.clients
+        print(f"{held} clients hold more than one fund; each is contacted on their largest")
     return 0
 
 

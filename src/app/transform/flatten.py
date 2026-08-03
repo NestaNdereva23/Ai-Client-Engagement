@@ -2,8 +2,12 @@
 
 The source nests clients under funds and transactions under clients, with the
 fund record repeated inside every transaction. This turns one payload into three
-flat lists and derives each client's activity fields (last dates, totals, net
-flow, days since last activity).
+flat lists and derives each client's activity fields (last dates, totals, days
+since last activity).
+
+One client row is produced per client and fund, since a client holding two funds
+appears once under each with a separate history. Collapsing them to one person
+happens later, when deciding who to contact.
 
 It reads from raw staging, never the source, so re-processing is free. Amounts
 arrive as strings and dates in mixed ISO formats; both are parsed leniently and
@@ -56,7 +60,6 @@ class ClientRow:
     total_sale_amount: float
     last_activity_date: date | None
     days_since_last_activity: int | None
-    net_flow: float
     computed_at: str | None
     purchases_censored: bool
     history_censored: bool
@@ -224,7 +227,6 @@ def flatten_payload(payload: dict[str, Any], reference_date: datetime) -> Flatte
                     total_sale_amount=total_sale,
                     last_activity_date=last_activity,
                     days_since_last_activity=(ref - last_activity).days if last_activity else None,
-                    net_flow=total_purchase - total_sale,
                     computed_at=client.computed_at,
                     purchases_censored=purchases_censored,
                     history_censored=history_censored,
