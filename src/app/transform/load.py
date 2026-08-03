@@ -8,7 +8,7 @@ held. Which relationship that is gets recorded rather than left to chance.
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -27,7 +27,15 @@ from app.db.models.models import (
     PiiVault,
     Transactions,
 )
-from app.transform.features import FeatureRow, derive_features
+from app.transform.features import (
+    VALUE_BAND_CUTOFFS,
+    FeatureRow,
+    RelationshipMeasures,
+    derive_features,
+    derive_relationship_measures,
+    largest_first,
+    relationships_by_client,
+)
 from app.transform.flatten import ClientRow, FlattenResult, FundRow, TxnRow, flatten_run
 
 logger = structlog.get_logger(__name__)
@@ -64,6 +72,16 @@ _CLIENT_FUND_UPDATE = [
     "history_censored",
     "is_primary_contact_row",
     "computed_at",
+    "avg_ticket",
+    "max_ticket",
+    "rhythm_days",
+    "first_purchase",
+    "active_window_days",
+    "ticket_trend",
+    "first_sale",
+    "drawdown_days",
+    "hold_days",
+    "exit_type",
 ]
 _TXN_UPDATE = [
     "txn_type",
@@ -88,6 +106,20 @@ _FEATURE_UPDATE = [
     "observed_volume",
     "purchases_censored",
     "history_censored",
+    "n_funds",
+    "recency_band",
+    "value_band",
+    "cadence_band",
+    "hold_band",
+    "purchase_depth",
+    "trend_band",
+    "exit_reason",
+    "fund_type",
+    "in_wave",
+    "has_depth",
+    "staged_exit",
+    "stale_contact",
+    "holds_other_funds",
 ]
 
 
@@ -132,7 +164,7 @@ def _client_dict(c: ClientRow, n_funds: int) -> dict[str, Any]:
     }
 
 
-def _client_fund_dict(c: ClientRow, *, is_primary: bool) -> dict[str, Any]:
+def _client_fund_dict(c: ClientRow, m: RelationshipMeasures, *, is_primary: bool) -> dict[str, Any]:
     return {
         "client_id": c.client_id,
         "unit_fund_id": c.unit_fund_id,
@@ -149,6 +181,16 @@ def _client_fund_dict(c: ClientRow, *, is_primary: bool) -> dict[str, Any]:
         "history_censored": c.history_censored,
         "is_primary_contact_row": is_primary,
         "computed_at": c.computed_at,
+        "avg_ticket": m.avg_ticket,
+        "max_ticket": m.max_ticket,
+        "rhythm_days": m.rhythm_days,
+        "first_purchase": m.first_purchase,
+        "active_window_days": m.active_window_days,
+        "ticket_trend": m.ticket_trend,
+        "first_sale": m.first_sale,
+        "drawdown_days": m.drawdown_days,
+        "hold_days": m.hold_days,
+        "exit_type": m.exit_type,
     }
 
 
@@ -165,30 +207,6 @@ def _txn_dict(t: TxnRow) -> dict[str, Any]:
         "fees_incurred": t.fees_incurred,
         "sale_type": t.sale_type,
     }
-
-
-def _largest_first(rows: list[ClientRow]) -> list[ClientRow]:
-    """One client's relationships, largest observed purchase volume first.
-
-    The lowest fund id breaks a tie, so the same input always picks the same
-    relationship to contact on.
-    """
-    return sorted(rows, key=lambda r: (-r.total_purchase_amount, r.unit_fund_id))
-
-
-def _relationships(result: FlattenResult) -> dict[int, list[ClientRow]]:
-    """Group the flattened rows by client, one entry per fund they hold.
-
-    A pair repeated across pages keeps its last occurrence, matching what the
-    upsert would leave behind.
-    """
-    unique: dict[tuple[int, int], ClientRow] = {
-        (row.client_id, row.unit_fund_id): row for row in result.clients
-    }
-    by_client: dict[int, list[ClientRow]] = defaultdict(list)
-    for row in unique.values():
-        by_client[row.client_id].append(row)
-    return by_client
 
 
 def _log_reconciliation(result: FlattenResult, by_client: dict[int, list[ClientRow]]) -> None:
@@ -227,6 +245,20 @@ def _vault_dict(c: ClientRow, source: str | None) -> dict[str, Any]:
 
 def _feature_dict(f: FeatureRow) -> dict[str, Any]:
     return {
+        "n_funds": f.n_funds,
+        "recency_band": f.recency_band,
+        "value_band": f.value_band,
+        "cadence_band": f.cadence_band,
+        "hold_band": f.hold_band,
+        "purchase_depth": f.purchase_depth,
+        "trend_band": f.trend_band,
+        "exit_reason": f.exit_reason,
+        "fund_type": f.fund_type,
+        "in_wave": f.in_wave,
+        "has_depth": f.has_depth,
+        "staged_exit": f.staged_exit,
+        "stale_contact": f.stale_contact,
+        "holds_other_funds": f.holds_other_funds,
         "client_id": f.client_id,
         "archetype": f.archetype,
         "recency_bucket": f.recency_bucket,
@@ -286,22 +318,28 @@ def persist_result(
     vault, never to clients. Rows are keyed into dicts first so a repeated
     natural key becomes a single upsert.
     """
-    by_client = _relationships(result)
+    by_client = relationships_by_client(result)
+    measures = derive_relationship_measures(result)
     _log_reconciliation(result, by_client)
 
     clients: list[dict[str, Any]] = []
     client_funds: list[dict[str, Any]] = []
     vault: list[dict[str, Any]] = []
     for rows in by_client.values():
-        ordered = _largest_first(rows)
+        ordered = largest_first(rows)
         primary = ordered[0]
         clients.append(_client_dict(primary, n_funds=len(ordered)))
         vault.append(_vault_dict(primary, source))
-        client_funds.extend(_client_fund_dict(row, is_primary=row is primary) for row in ordered)
+        client_funds.extend(
+            _client_fund_dict(
+                row, measures[(row.client_id, row.unit_fund_id)], is_primary=row is primary
+            )
+            for row in ordered
+        )
 
     funds = {f.unit_fund_id: _fund_dict(f) for f in result.funds}
     txns = {t.txn_id: _txn_dict(t) for t in result.transactions if t.txn_id is not None}
-    features = {f.client_id: _feature_dict(f) for f in derive_features(result)}
+    features = {f.client_id: _feature_dict(f) for f in derive_features(result, measures)}
 
     counts = PersistCounts()
     counts.funds = _upsert(
@@ -337,6 +375,14 @@ def persist_result(
         "client_id",
         _FEATURE_UPDATE,
         extra_set={"updated_at": func.now()},
+    )
+    # The value cutoffs are frozen rather than recomputed, so recording them per
+    # run is what lets a band be explained back to a client months later.
+    logger.info(
+        "transform_features_derived",
+        clients=counts.clients,
+        relationships=counts.client_funds,
+        value_band_cutoffs=list(VALUE_BAND_CUTOFFS),
     )
     session.commit()
     return counts

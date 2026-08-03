@@ -381,6 +381,124 @@ def test_transform_run_persists_client_features(
         assert feature.value_tier in {"Top", "High", "Mid", "Low"}
 
 
+def _measured_client() -> dict[str, Any]:
+    """Three rising contributions a month apart, withdrawn 400 days later.
+
+    Chosen so every measure lands on a value worth asserting rather than on a
+    default: a tight cadence, a clearly rising trend, and money that stayed a
+    year or more after the final top-up.
+    """
+    return _payload(
+        {
+            "unit_fund_id": 10,
+            "unit_fund_name": "Money Market Fund",
+            "inactive_client_count": 1,
+            "clients": [
+                {
+                    "client_id": 1001,
+                    "client_code": "C-1",
+                    "client_name": "Jane Doe",
+                    "balance": 0,
+                    "computed_at": "2026-07-20T08:00:00",
+                    "last_5_purchases": [
+                        {"id": 5001, "date": "2022-01-01", "number": "1000", "unit_fund_id": 10},
+                        {"id": 5002, "date": "2022-01-31", "number": "10000", "unit_fund_id": 10},
+                        {"id": 5003, "date": "2022-03-02", "number": "100000", "unit_fund_id": 10},
+                    ],
+                    "last_2_sales": [
+                        {
+                            "id": 5004,
+                            "date": "2023-04-06",
+                            "number": "111000",
+                            "unit_fund_id": 10,
+                            "sale_type": "unit_sale",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+
+@pytest.fixture
+def measured(db: None, cleanup_runs: list[str], normalized_ids):
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    normalized_ids["funds"].add(10)
+    normalized_ids["clients"].add(1001)
+    normalized_ids["txns"].update({5001, 5002, 5003, 5004})
+    with SessionLocal() as session:
+        _seed_run(session, run_id, _measured_client())
+        transform_run(session, run_id)
+    return run_id
+
+
+def test_relationship_measures_persist(measured) -> None:
+    with SessionLocal() as session:
+        (row,) = _funds_held(session, 1001)
+        assert row.avg_ticket == 37000
+        assert row.max_ticket == 100000
+        assert row.rhythm_days == 30
+        assert row.active_window_days == 60
+        assert row.hold_days == 400
+        assert row.drawdown_days == 0
+        assert row.exit_type == "unit_sale"
+        assert row.ticket_trend is not None and row.ticket_trend > 0
+
+
+def test_bands_persist_on_features(measured) -> None:
+    with SessionLocal() as session:
+        f = session.get(ClientFeatures, 1001)
+        assert f.hold_band == "Stayed years"
+        assert f.cadence_band == "Tight"
+        assert f.trend_band == "rising"
+        assert f.value_band == "High"
+        assert f.purchase_depth == "few"
+        assert f.fund_type == "money_market"
+        assert f.exit_reason == "client_sale"
+        assert f.has_depth is True
+        assert f.in_wave is False
+        assert f.staged_exit is False
+        assert f.stale_contact is True
+        assert f.holds_other_funds is False
+        assert f.n_funds == 1
+
+
+def test_the_v1_buckets_are_untouched_by_the_new_bands(measured) -> None:
+    """The old vocabulary keeps its own meaning until the rules move off it."""
+    with SessionLocal() as session:
+        f = session.get(ClientFeatures, 1001)
+        assert f.archetype == "Occasional (2-4)"
+        assert f.value_tier == "Mid"
+        assert f.rhythm_band == "Regular"
+        assert f.own_rhythm_days == 30
+
+
+def test_re_deriving_gives_the_same_measures(
+    db: None, cleanup_runs: list[str], normalized_ids
+) -> None:
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    normalized_ids["funds"].add(10)
+    normalized_ids["clients"].add(1001)
+    normalized_ids["txns"].update({5001, 5002, 5003, 5004})
+
+    with SessionLocal() as session:
+        _seed_run(session, run_id, _measured_client())
+        transform_run(session, run_id)
+    with SessionLocal() as session:
+        (first,) = _funds_held(session, 1001)
+        before = (first.avg_ticket, first.rhythm_days, first.ticket_trend, first.hold_days)
+
+    with SessionLocal() as session:
+        transform_run(session, run_id)
+    with SessionLocal() as session:
+        (second,) = _funds_held(session, 1001)
+        assert (second.avg_ticket, second.rhythm_days, second.ticket_trend, second.hold_days) == (
+            before
+        )
+
+
 def test_upsert_batches_to_stay_under_the_postgres_bind_param_limit(
     db: None, cleanup_runs: list[str], normalized_ids, monkeypatch: pytest.MonkeyPatch
 ) -> None:

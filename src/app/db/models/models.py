@@ -199,6 +199,26 @@ class ClientFund(Base):
         Boolean, nullable=False, server_default=text("true")
     )
     computed_at: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Measures of how this relationship was used. Null where the transactions
+    # cannot support them, which the bands read as unknown rather than as zero.
+    avg_ticket: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_ticket: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Median gap between purchases. Under a day means same-day top-ups.
+    rhythm_days: Mapped[float | None] = mapped_column(Float, nullable=True)
+    first_purchase: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # First to last visible purchase.
+    active_window_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Slope of log10 contribution size: positive means contributions were rising.
+    ticket_trend: Mapped[float | None] = mapped_column(Float, nullable=True)
+    first_sale: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Gap between the two visible sales; a wide one is a staged wind-down.
+    drawdown_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # How long the money stayed after the final top-up.
+    hold_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # How the final sale was recorded, which says whether leaving was a choice.
+    exit_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -249,6 +269,29 @@ class ClientFeatures(Base):
     history_censored: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )
+
+    # Behavioural bands describing the relationship this client is contacted on.
+    # Each carries an explicit unknown member rather than a null, so a rule that
+    # names a band never has to reason about a missing value.
+    n_funds: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    recency_band: Mapped[str] = mapped_column(Text, nullable=False, server_default="Unknown")
+    value_band: Mapped[str] = mapped_column(Text, nullable=False, server_default="Low")
+    cadence_band: Mapped[str] = mapped_column(Text, nullable=False, server_default="None")
+    hold_band: Mapped[str] = mapped_column(Text, nullable=False, server_default="Unknown")
+    purchase_depth: Mapped[str] = mapped_column(Text, nullable=False, server_default="none")
+    trend_band: Mapped[str] = mapped_column(Text, nullable=False, server_default="unknown")
+    exit_reason: Mapped[str] = mapped_column(Text, nullable=False, server_default="unknown")
+    fund_type: Mapped[str] = mapped_column(Text, nullable=False, server_default="other")
+    in_wave: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    has_depth: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    staged_exit: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    stale_contact: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    holds_other_funds: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
