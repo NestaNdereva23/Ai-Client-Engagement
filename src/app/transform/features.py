@@ -71,6 +71,18 @@ VALUE_BAND_CUTOFFS = (3_661.0, 10_750.0, 44_120.0)
 DEPTH_PURCHASES = 3
 DEPTH_WINDOW_DAYS = 180
 
+# The values each band can take. The rule store validates against these, so a
+# rule can only name a value the derivation actually produces. Each band carries
+# an explicit unknown member rather than allowing a null.
+RECENCY_BANDS = frozenset({"Under 1y", "1 to 3y", "3 to 6y", "Over 6y", "Unknown"})
+VALUE_BANDS = frozenset({"Low", "Medium", "High", "Top"})
+CADENCE_BANDS = frozenset({"None", "Tight", "Regular", "Periodic", "Infrequent"})
+HOLD_BANDS = frozenset({"Parked briefly", "Under 6m", "Stayed months", "Stayed years", "Unknown"})
+PURCHASE_DEPTHS = frozenset({"none", "single", "few", "capped"})
+TREND_BANDS = frozenset({"rising", "flat", "falling", "unknown"})
+EXIT_REASONS = frozenset({"client_sale", "charge_settled", "unknown"})
+FUND_TYPES = frozenset({"money_market", "high_yield", "other"})
+
 
 @dataclass
 class RelationshipMeasures:
