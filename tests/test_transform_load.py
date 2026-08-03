@@ -9,6 +9,7 @@ from sqlalchemy import delete, func, select
 
 from app.db.models.models import (
     ClientFeatures,
+    ClientFund,
     Clients,
     Funds,
     IngestionStatus,
@@ -23,7 +24,7 @@ EAT = timezone(timedelta(hours=3))
 ANCHOR = datetime(2026, 7, 23, 9, 0, tzinfo=EAT)
 
 
-def _client(client_id: int, fund_id: int, txn_id: int) -> dict[str, Any]:
+def _client(client_id: int, fund_id: int, txn_id: int, amount: str = "5000") -> dict[str, Any]:
     return {
         "client_id": client_id,
         "client_code": "C-1",
@@ -31,10 +32,28 @@ def _client(client_id: int, fund_id: int, txn_id: int) -> dict[str, Any]:
         "balance": 0,
         "computed_at": "2026-07-20T08:00:00",
         "last_5_purchases": [
-            {"id": txn_id, "date": "2026-07-01T00:00:00", "number": "5000", "unit_fund_id": fund_id}
+            {"id": txn_id, "date": "2026-07-01T00:00:00", "number": amount, "unit_fund_id": fund_id}
         ],
         "last_2_sales": [],
     }
+
+
+def _two_funds(small: str, large: str) -> dict[str, Any]:
+    """One client in two funds, fund 10 buying `small` and fund 20 buying `large`."""
+    return _payload(
+        {
+            "unit_fund_id": 10,
+            "unit_fund_name": "Money Market Fund",
+            "inactive_client_count": 1,
+            "clients": [_client(1001, 10, 5001, small)],
+        },
+        {
+            "unit_fund_id": 20,
+            "unit_fund_name": "Balanced Fund",
+            "inactive_client_count": 1,
+            "clients": [_client(1001, 20, 6001, large)],
+        },
+    )
 
 
 def _payload(*funds: dict[str, Any]) -> dict[str, Any]:
@@ -66,6 +85,7 @@ def normalized_ids():
     with SessionLocal() as session:
         session.execute(delete(Transactions).where(Transactions.txn_id.in_(ids["txns"])))
         session.execute(delete(ClientFeatures).where(ClientFeatures.client_id.in_(ids["clients"])))
+        session.execute(delete(ClientFund).where(ClientFund.client_id.in_(ids["clients"])))
         session.execute(delete(PiiVault).where(PiiVault.client_id.in_(ids["clients"])))
         session.execute(delete(Clients).where(Clients.client_id.in_(ids["clients"])))
         session.execute(delete(Funds).where(Funds.unit_fund_id.in_(ids["funds"])))
@@ -125,7 +145,90 @@ def test_transform_run_is_idempotent(db: None, cleanup_runs: list[str], normaliz
         assert _count(session, Transactions, 5001, Transactions.txn_id) == 1
 
 
-def test_multi_fund_client_collapses_to_one_row_keeping_transactions(
+@pytest.fixture
+def two_fund_client(db: None, cleanup_runs: list[str], normalized_ids):
+    """Transform one client holding two funds, with the amounts the test names."""
+
+    def run(small: str = "5000", large: str = "90000") -> None:
+        run_id = uuid4().hex
+        cleanup_runs.append(run_id)
+        normalized_ids["funds"].update({10, 20})
+        normalized_ids["clients"].add(1001)
+        normalized_ids["txns"].update({5001, 6001})
+        with SessionLocal() as session:
+            _seed_run(session, run_id, _two_funds(small, large))
+            transform_run(session, run_id)
+
+    return run
+
+
+def _funds_held(session, client_id: int) -> list[ClientFund]:
+    return list(
+        session.scalars(
+            select(ClientFund)
+            .where(ClientFund.client_id == client_id)
+            .order_by(ClientFund.unit_fund_id)
+        ).all()
+    )
+
+
+def test_a_client_in_two_funds_keeps_both_relationships(two_fund_client) -> None:
+    two_fund_client()
+
+    with SessionLocal() as session:
+        held = _funds_held(session, 1001)
+        assert [row.unit_fund_id for row in held] == [10, 20]
+        assert [row.observed_volume for row in held] == [5000, 90000]
+
+
+def test_a_client_in_two_funds_is_still_contacted_once(two_fund_client) -> None:
+    two_fund_client()
+
+    with SessionLocal() as session:
+        assert _count(session, Clients, 1001, Clients.client_id) == 1
+        primary = [r.unit_fund_id for r in _funds_held(session, 1001) if r.is_primary_contact_row]
+        assert primary == [20]
+
+
+def test_the_person_row_comes_from_the_largest_relationship(two_fund_client) -> None:
+    two_fund_client(small="5000", large="90000")
+
+    with SessionLocal() as session:
+        client = session.get(Clients, 1001)
+        assert client.unit_fund_id == 20
+        assert client.total_purchase_amount == 90000
+        assert client.n_funds == 2
+
+
+def test_the_smaller_fund_wins_nothing_whichever_order_it_arrives(two_fund_client) -> None:
+    """Fund 10 is the larger here, so it must win despite arriving first."""
+    two_fund_client(small="90000", large="5000")
+
+    with SessionLocal() as session:
+        client = session.get(Clients, 1001)
+        assert client.unit_fund_id == 10
+        primary = [r.unit_fund_id for r in _funds_held(session, 1001) if r.is_primary_contact_row]
+        assert primary == [10]
+
+
+def test_an_equal_tie_picks_the_same_relationship_every_time(two_fund_client) -> None:
+    two_fund_client(small="5000", large="5000")
+
+    with SessionLocal() as session:
+        assert session.get(Clients, 1001).unit_fund_id == 10
+
+
+def test_transactions_from_every_fund_survive(two_fund_client) -> None:
+    two_fund_client()
+
+    with SessionLocal() as session:
+        txns = session.scalars(
+            select(Transactions.txn_id).where(Transactions.client_id == 1001)
+        ).all()
+        assert set(txns) == {5001, 6001}
+
+
+def test_re_transforming_does_not_duplicate_relationships(
     db: None, cleanup_runs: list[str], normalized_ids
 ) -> None:
     run_id = uuid4().hex
@@ -134,30 +237,34 @@ def test_multi_fund_client_collapses_to_one_row_keeping_transactions(
     normalized_ids["clients"].add(1001)
     normalized_ids["txns"].update({5001, 6001})
 
-    payload = _payload(
-        {
-            "unit_fund_id": 10,
-            "unit_fund_name": "Money Market Fund",
-            "inactive_client_count": 1,
-            "clients": [_client(1001, 10, 5001)],
-        },
-        {
-            "unit_fund_id": 20,
-            "unit_fund_name": "Balanced Fund",
-            "inactive_client_count": 1,
-            "clients": [_client(1001, 20, 6001)],
-        },
-    )
     with SessionLocal() as session:
-        _seed_run(session, run_id, payload)
+        _seed_run(session, run_id, _two_funds("5000", "90000"))
         transform_run(session, run_id)
+        counts = transform_run(session, run_id)
+
+    assert (counts.clients, counts.client_funds) == (1, 2)
+    with SessionLocal() as session:
+        assert len(_funds_held(session, 1001)) == 2
+
+
+def test_a_single_fund_client_holds_one_relationship(
+    db: None, cleanup_runs: list[str], normalized_ids
+) -> None:
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    normalized_ids["funds"].add(10)
+    normalized_ids["clients"].add(1001)
+    normalized_ids["txns"].add(5001)
 
     with SessionLocal() as session:
-        assert _count(session, Clients, 1001, Clients.client_id) == 1
-        txns = session.scalars(
-            select(Transactions.txn_id).where(Transactions.client_id == 1001)
-        ).all()
-        assert set(txns) == {5001, 6001}
+        _seed_run(session, run_id, _one_fund_one_client())
+        counts = transform_run(session, run_id)
+
+    assert counts.client_funds == 1
+    with SessionLocal() as session:
+        (only,) = _funds_held(session, 1001)
+        assert only.is_primary_contact_row is True
+        assert session.get(Clients, 1001).n_funds == 1
 
 
 def test_client_name_lands_only_in_the_vault(

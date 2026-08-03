@@ -18,6 +18,7 @@ from app.db.models.llmops import GenerationRun, ModelVersion, PromptVersion
 from app.db.models.models import (
     INGESTION_STATES,
     ClientFeatures,
+    ClientFund,
     Clients,
     Funds,
     IngestionReject,
@@ -50,6 +51,7 @@ __all__ = [
     "Campaign",
     "CampaignStep",
     "ClientFeatures",
+    "ClientFund",
     "ClientMessageIndicators",
     "Clients",
     "ContactEvent",
