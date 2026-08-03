@@ -8,6 +8,7 @@ from app.privacy.boundary import (
     run_model_boundary,
     to_model_context,
 )
+from app.privacy.fact_block import ModelFactBlock, round_sig_figs
 from app.privacy.llm_client import (
     AnthropicLLMClient,
     LLMClient,
@@ -34,10 +35,12 @@ __all__ = [
     "LLMClient",
     "LLMClientError",
     "ModelCall",
+    "ModelFactBlock",
     "OllamaLLMClient",
     "OutboundLeak",
     "as_model_call",
     "get_llm_client",
+    "round_sig_figs",
     "run_model_boundary",
     "scan_inbound",
     "scan_outbound",

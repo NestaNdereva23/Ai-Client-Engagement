@@ -60,8 +60,68 @@ def test_inbound_blocks_a_known_client_name() -> None:
 
 
 def test_inbound_still_rejects_offlist_keys() -> None:
-    with pytest.raises(InboundLeak, match="allow-list"):
+    with pytest.raises(InboundLeak, match="fact-block"):
         scan_inbound({"client_name": "Jane"})
+
+
+# --- the wider fact-block path ---
+
+
+def test_inbound_passes_a_real_fact_block_payload() -> None:
+    payload = {
+        "recency_band": "Under 1y",
+        "fund_name": "Cytonn Money Market Fund",
+        "typical_contribution_kes": 150_000,
+    }
+    assert scan_inbound(payload) is None
+
+
+def test_inbound_blocks_a_band_value_outside_the_real_vocabulary() -> None:
+    with pytest.raises(InboundLeak, match="fact-block"):
+        scan_inbound({"recency_band": "made up value"})
+
+
+def test_inbound_blocks_a_key_the_fact_block_does_not_declare() -> None:
+    with pytest.raises(InboundLeak, match="fact-block"):
+        scan_inbound({"fund_name": "Cytonn Money Market Fund", "client_id": 1001})
+
+
+def test_inbound_blocks_mixing_the_legacy_and_wider_vocabularies() -> None:
+    """Neither shape recognises the other's keys, so a mix fails closed."""
+    with pytest.raises(InboundLeak):
+        scan_inbound({"archetype": "One-and-done", "fund_name": "Cytonn Money Market Fund"})
+
+
+def test_inbound_still_blocks_a_literal_identifier_in_a_fact_block_payload() -> None:
+    # "Low" is a legitimate value_band and also a real surname, so the literal
+    # check must fire on a schema-valid value too, not only a malformed one.
+    with pytest.raises(InboundLeak):
+        scan_inbound({"value_band": "Low"}, identifiers=["Low"])
+
+
+def test_an_exact_amount_is_rejected_even_though_it_is_a_valid_int() -> None:
+    """4,466,000 type-checks fine; only its rounded form may pass."""
+    with pytest.raises(InboundLeak, match="would have corrected"):
+        scan_inbound({"typical_contribution_kes": 4_466_000})
+
+
+def test_an_already_rounded_amount_passes() -> None:
+    assert scan_inbound({"typical_contribution_kes": 4_500_000}) is None
+
+
+def test_an_exact_years_since_exit_is_also_rejected() -> None:
+    with pytest.raises(InboundLeak, match="would have corrected"):
+        scan_inbound({"years_since_exit": 3.047})
+
+
+def test_a_cadence_fact_with_no_real_cadence_is_rejected() -> None:
+    """A caller who bypasses ModelFactBlock cannot smuggle a cadence in."""
+    with pytest.raises(InboundLeak, match="would have corrected"):
+        scan_inbound({"cadence_band": "None", "invested_every_n_days": 30})
+
+
+def test_a_real_cadence_still_passes() -> None:
+    assert scan_inbound({"cadence_band": "Tight", "invested_every_n_days": 30}) is None
 
 
 def test_outbound_allows_a_placeholder_draft() -> None:

@@ -18,7 +18,25 @@ from app.db.models.views import llm_client_context
 from app.db.session import SessionLocal
 
 SAFE = "ace_safe"
-ALLOWLIST = {"client_id", "archetype", "recency_bucket", "value_tier_label", "rhythm_band"}
+ALLOWLIST = {
+    "client_id",
+    "archetype",
+    "recency_bucket",
+    "value_tier_label",
+    "rhythm_band",
+    "recency_band",
+    "value_band",
+    "cadence_band",
+    "hold_band",
+    "purchase_depth",
+    "trend_band",
+    "exit_reason",
+    "fund_type",
+    "in_wave",
+    "has_depth",
+    "staged_exit",
+    "stale_contact",
+}
 # Feature columns that must never surface through the projection.
 FORBIDDEN = {
     "own_rhythm_days",
@@ -29,6 +47,9 @@ FORBIDDEN = {
     "value_tier",
     "client_name",
     "client_code",
+    "n_funds",
+    "holds_other_funds",
+    "priority_tier",
 }
 EAT = timezone(timedelta(hours=3))
 
@@ -116,6 +137,18 @@ def test_view_is_keyed_by_client_id_and_relabels_the_tier(view_present) -> None:
                 value_tier="High",
                 rhythm_band="Unknown",
                 observed_volume=1,
+                recency_band="Over 6y",
+                value_band="High",
+                cadence_band="None",
+                hold_band="Stayed years",
+                purchase_depth="single",
+                trend_band="unknown",
+                exit_reason="client_sale",
+                fund_type="money_market",
+                in_wave=False,
+                has_depth=False,
+                staged_exit=False,
+                stale_contact=True,
                 updated_at=datetime(2026, 7, 20, 8, 0, tzinfo=EAT),
             )
         )
@@ -125,7 +158,8 @@ def test_view_is_keyed_by_client_id_and_relabels_the_tier(view_present) -> None:
         with SessionLocal() as session:
             row = session.execute(
                 text(
-                    "SELECT client_id, archetype, value_tier_label, rhythm_band "
+                    "SELECT client_id, archetype, value_tier_label, rhythm_band, "
+                    "recency_band, value_band, fund_type, stale_contact "
                     "FROM llm_client_context WHERE client_id = :c"
                 ),
                 {"c": client_id},
@@ -135,6 +169,10 @@ def test_view_is_keyed_by_client_id_and_relabels_the_tier(view_present) -> None:
         # value_tier is surfaced under its label name, unchanged in value.
         assert row.value_tier_label == "High"
         assert row.rhythm_band == "Unknown"
+        assert row.recency_band == "Over 6y"
+        assert row.value_band == "High"
+        assert row.fund_type == "money_market"
+        assert row.stale_contact is True
     finally:
         with SessionLocal() as session:
             session.execute(

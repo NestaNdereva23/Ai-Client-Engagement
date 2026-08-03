@@ -83,7 +83,7 @@ def test_outbound_hit_aborts_after_the_call(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_scan_inbound_rejects_offlist_keys() -> None:
-    with pytest.raises(InboundLeak, match="allow-list"):
+    with pytest.raises(InboundLeak, match="fact-block"):
         scan_inbound({"client_name": "Jane"})
 
 
