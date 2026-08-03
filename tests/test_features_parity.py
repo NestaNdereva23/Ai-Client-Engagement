@@ -12,17 +12,23 @@ from __future__ import annotations
 
 import csv
 import os
+from collections import Counter
 from collections.abc import Iterator
+from datetime import date
 from pathlib import Path
 
 import pytest
 
+from app.db.session import SessionLocal
+from app.rules.engine import resolve
+from app.rules.store import load_active_rules
 from app.transform.features import (
     DRAWDOWN_DAYS,
     LONG_HOLD_DAYS,
     _cadence_band,
     _exit_reason,
     _fund_type,
+    _has_depth,
     _hold_band,
     _in_wave,
     _purchase_depth,
@@ -30,6 +36,27 @@ from app.transform.features import (
     _trend_band,
     _value_band,
 )
+
+# Inside the v3 rule set's window (its valid_from is deliberately after v2's,
+# so seeding it does not cut resolution over ahead of the rest of the uplift).
+V3_IN_FORCE = date(2026, 12, 15)
+
+# From angle_summary.csv. Pinned as a literal so the count assertion holds
+# even when the source file, which carries client names, is not available.
+EXPECTED_ANGLE_COUNTS = {
+    "see_what_changed": 1258,
+    "your_next_deposit": 733,
+    "the_long_hold": 543,
+    "onboarding_retry": 345,
+    "pick_up_again": 308,
+    "back_on_schedule": 300,
+    "you_wound_down": 275,
+    "wrong_shelf": 215,
+    "you_were_fading": 183,
+    "you_were_scaling": 169,
+    "second_try": 138,
+    "not_a_goodbye": 30,
+}
 
 # The analysis cuts hold time three ways. Production splits the middle band at
 # six months so a rule can name it, so the two agree only after collapsing.
@@ -204,3 +231,62 @@ def test_fund_type_covers_every_fund_in_the_source(rows) -> None:
 def test_staged_exit_threshold_holds(rows) -> None:
     staged = [r for r in rows if (_int(r["drawdown_days"]) or -1) >= DRAWDOWN_DAYS]
     assert all((_int(r["drawdown_days"]) or 0) >= DRAWDOWN_DAYS for r in staged)
+
+
+# --- the router, end to end: real bands, real seeded rules, real engine ---
+
+
+def _routing_features(row: dict[str, str]) -> dict[str, str]:
+
+    n_purchases = _int(row["n_purchases"]) or 0
+    drawdown = _int(row["drawdown_days"])
+    return {
+        "exit_reason": _exit_reason(row["exit_type"] or None),
+        "fund_type": _fund_type(row["unit_fund_name"]),
+        "hold_band": _hold_band(_int(row["hold_days"])),
+        "in_wave": "true" if _in_wave(_date(row["exit_date"])) else "false",
+        "has_depth": "true"
+        if _has_depth(n_purchases, _int(row["active_window_days"]))
+        else "false",
+        "purchase_depth": _purchase_depth(n_purchases),
+        "staged_exit": "true" if drawdown is not None and drawdown >= DRAWDOWN_DAYS else "false",
+        "trend_band": _trend_band(_num(row["ticket_trend"])),
+        "cadence_band": _cadence_band(_num(row["rhythm_days"])),
+    }
+
+
+@pytest.fixture
+def v3_rule_set(db: None):
+    # Function-scoped because it depends on the function-scoped db fixture;
+    # loading twelve rows is cheap enough that re-running it per test costs
+    # nothing worth caching.
+    with SessionLocal() as session:
+        rules = load_active_rules(session, at=V3_IN_FORCE)
+    assert rules, "the v3 rule set must be active on the date used for this harness"
+    return rules
+
+
+@pytest.fixture
+def routed(rows, v3_rule_set) -> list[tuple[dict[str, str], str]]:
+    """Every row alongside the angle the real engine assigns it, computed once."""
+    return [(row, resolve(_routing_features(row), v3_rule_set).message_angle) for row in rows]
+
+
+def test_every_row_routes_to_the_angle_the_analysis_assigned(routed) -> None:
+    bad = [
+        f"client {row['client_id']} fund {row['unit_fund_id']}: "
+        f"engine gave {got!r}, analysis gave {row['message_angle']!r}"
+        for row, got in routed
+        if got != row["message_angle"]
+    ]
+    assert not bad, f"{len(bad)} of {len(routed)} rows diverge\n" + "\n".join(bad[:10])
+
+
+def test_the_twelve_angle_counts_match_the_published_summary(routed) -> None:
+    got = Counter(angle for _row, angle in routed)
+    assert dict(got) == EXPECTED_ANGLE_COUNTS
+
+
+def test_every_row_gets_exactly_one_angle_from_the_catalogue(routed) -> None:
+    assert set(EXPECTED_ANGLE_COUNTS) == set(angle for _row, angle in routed)
+    assert sum(EXPECTED_ANGLE_COUNTS.values()) == len(routed)

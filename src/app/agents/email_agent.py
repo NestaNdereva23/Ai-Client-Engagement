@@ -6,8 +6,12 @@ carried as GenerationState.prompt_variant"""
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import date
+
+from sqlalchemy.orm import Session
 
 from app.rag.grounding import GroundingChunk
+from app.rules.catalog import load_angle
 
 # The only tokens a draft may use for anything client specific.
 REQUIRED_PLACEHOLDERS = ("{{first_name}}", "{{fund_name}}")
@@ -75,10 +79,9 @@ _BASE_INSTRUCTIONS = (
 )
 
 # One line of tone and framing per prompt variant, keyed by the exact string a
-# business rule resolves to (rules/store.py, seeded in the business_rules
-# migrations). An unknown variant, from a future rule version, falls back to
-# _DEFAULT_VARIANT_GUIDANCE rather than erroring, so a new rule ships without
-# a matching code change here.
+# business rule resolves to. A rule set that names its angle in the catalogue
+# reads its guidance from there instead; this dictionary is what an older rule
+# set, or a lookup with no catalogue entry, falls back to.
 _VARIANT_GUIDANCE: Mapping[str, str] = {
     "habit_premium": (
         "This client invested frequently and at a high value. Acknowledge "
@@ -119,10 +122,31 @@ _DEFAULT_VARIANT_GUIDANCE = (
 )
 
 
-def variant_guidance(prompt_variant: str | None) -> str:
-    """The tone and framing line for a prompt variant, or a safe default."""
+def _angle_guidance(angle) -> str:
+    """One line of tone and framing built from an angle's brief."""
+    return f"{angle.claim}. {angle.ask}."
+
+
+def variant_guidance(
+    prompt_variant: str | None,
+    *,
+    session: Session | None = None,
+    at: date | None = None,
+) -> str:
+    """The tone and framing line for a prompt variant, or a safe default.
+
+    A prompt variant set to an angle identifier resolves against the active
+    angle catalogue when a session and a reference date are given. Without
+    them, or when the catalogue carries no such angle, this falls back to the
+    fixed dictionary above, so a caller that predates the catalogue keeps
+    working exactly as before.
+    """
     if not prompt_variant:
         return _DEFAULT_VARIANT_GUIDANCE
+    if session is not None and at is not None:
+        angle = load_angle(session, prompt_variant, at)
+        if angle is not None:
+            return _angle_guidance(angle)
     return _VARIANT_GUIDANCE.get(prompt_variant, _DEFAULT_VARIANT_GUIDANCE)
 
 

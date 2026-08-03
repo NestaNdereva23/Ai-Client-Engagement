@@ -10,6 +10,7 @@ used by later milestones behaves as a pure structural rule.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 from app.agents.email_agent import (
     REQUIRED_PLACEHOLDERS,
@@ -17,6 +18,10 @@ from app.agents.email_agent import (
     has_required_placeholders,
     variant_guidance,
 )
+from app.db.session import SessionLocal
+
+# Inside the angle catalogue's seeded window.
+IN_FORCE = date(2026, 8, 2)
 
 
 @dataclass(frozen=True)
@@ -86,6 +91,49 @@ def test_facts_render_only_what_was_retrieved() -> None:
 def test_no_facts_retrieved_tells_the_model_not_to_cite_a_rate() -> None:
     prompt = build_system_prompt(angle="winback_habit", prompt_variant="habit_standard", chunks=())
     assert "do not cite a rate" in prompt
+
+
+def test_variant_guidance_ignores_the_catalogue_without_a_session() -> None:
+    """No session, no at: exactly the pre-catalogue behaviour, unchanged."""
+    assert variant_guidance("see_what_changed") == variant_guidance(None)
+
+
+def test_variant_guidance_ignores_the_catalogue_without_a_date(db: None) -> None:
+    with SessionLocal() as session:
+        assert variant_guidance("see_what_changed", session=session) == variant_guidance(None)
+
+
+def test_an_angle_identifier_resolves_from_the_catalogue(db: None) -> None:
+    with SessionLocal() as session:
+        guidance = variant_guidance("back_on_schedule", session=session, at=IN_FORCE)
+    assert "genuine, measurable savings rhythm" in guidance
+    assert "resume the exact cadence" in guidance.lower()
+
+
+def test_every_catalogued_angle_gets_its_own_distinct_guidance(db: None) -> None:
+    angles = [
+        "not_a_goodbye",
+        "wrong_shelf",
+        "see_what_changed",
+        "the_long_hold",
+        "your_next_deposit",
+        "second_try",
+        "you_wound_down",
+        "you_were_scaling",
+        "you_were_fading",
+        "back_on_schedule",
+        "onboarding_retry",
+        "pick_up_again",
+    ]
+    with SessionLocal() as session:
+        guidance = {a: variant_guidance(a, session=session, at=IN_FORCE) for a in angles}
+    assert len(set(guidance.values())) == len(angles)
+
+
+def test_a_variant_the_catalogue_does_not_carry_still_falls_back(db: None) -> None:
+    with SessionLocal() as session:
+        catalogued = variant_guidance("habit_standard", session=session, at=IN_FORCE)
+    assert catalogued == variant_guidance("habit_standard")
 
 
 def test_has_required_placeholders_true_only_when_both_tokens_present() -> None:
