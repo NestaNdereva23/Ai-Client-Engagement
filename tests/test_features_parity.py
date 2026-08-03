@@ -31,6 +31,7 @@ from app.transform.features import (
     _has_depth,
     _hold_band,
     _in_wave,
+    _priority_tier,
     _purchase_depth,
     _recency_band,
     _trend_band,
@@ -57,6 +58,9 @@ EXPECTED_ANGLE_COUNTS = {
     "second_try": 138,
     "not_a_goodbye": 30,
 }
+
+_TIER_DISPLAY = {"T1": "Tier 1 top", "T2": "Tier 2 high", "T3": "Tier 3 medium", "T4": "Tier 4 low"}
+EXPECTED_TIER_COUNTS = {"T1": 1003, "T2": 1207, "T3": 1108, "T4": 1179}
 
 # The analysis cuts hold time three ways. Production splits the middle band at
 # six months so a rule can name it, so the two agree only after collapsing.
@@ -231,6 +235,23 @@ def test_fund_type_covers_every_fund_in_the_source(rows) -> None:
 def test_staged_exit_threshold_holds(rows) -> None:
     staged = [r for r in rows if (_int(r["drawdown_days"]) or -1) >= DRAWDOWN_DAYS]
     assert all((_int(r["drawdown_days"]) or 0) >= DRAWDOWN_DAYS for r in staged)
+
+
+def _tier_of(row: dict[str, str]) -> str:
+    value_band = _value_band(_num(row["avg_ticket"]))
+    recency_band = _recency_band(_int(row["days_cold"]))
+    return _priority_tier(value_band, recency_band)
+
+
+def test_priority_tier_matches(rows) -> None:
+    _assert_matches(
+        rows, lambda r: _TIER_DISPLAY[_tier_of(r)], lambda r: r["priority_tier"], "priority_tier"
+    )
+
+
+def test_the_four_tier_counts_match_the_published_summary(rows) -> None:
+    got = Counter(_tier_of(r) for r in rows)
+    assert dict(got) == EXPECTED_TIER_COUNTS
 
 
 # --- the router, end to end: real bands, real seeded rules, real engine ---

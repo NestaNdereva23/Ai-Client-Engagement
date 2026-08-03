@@ -85,6 +85,10 @@ class Settings(BaseSettings):
     # campaign, checked by the eligibility gate before each send.
     campaign_cooldown_days: int = 7
 
+    # Off means every message needs review, regardless of tier. On means a
+    # tier's own human_approval / review_sample_rate is honoured instead.
+    tier_sampling_enabled: bool = False
+
     @property
     def is_production(self) -> bool:
         """True when running in the production environment."""

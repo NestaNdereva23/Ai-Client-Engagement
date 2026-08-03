@@ -82,6 +82,12 @@ PURCHASE_DEPTHS = frozenset({"none", "single", "few", "capped"})
 TREND_BANDS = frozenset({"rising", "flat", "falling", "unknown"})
 EXIT_REASONS = frozenset({"client_sale", "charge_settled", "unknown"})
 FUND_TYPES = frozenset({"money_market", "high_yield", "other"})
+PRIORITY_TIERS = frozenset({"T1", "T2", "T3", "T4"})
+
+# Points feeding the tier score: value counts double, so a large client outranks
+# a merely recent one.
+_VALUE_POINTS = {"Low": 0, "Medium": 1, "High": 2, "Top": 3}
+_RECENCY_POINTS = {"Unknown": 0, "Over 6y": 0, "3 to 6y": 1, "1 to 3y": 2, "Under 1y": 3}
 
 
 @dataclass
@@ -128,6 +134,7 @@ class FeatureRow:
     staged_exit: bool
     stale_contact: bool
     holds_other_funds: bool
+    priority_tier: str
 
 
 def _archetype(volume: int) -> str:
@@ -308,6 +315,18 @@ def _in_wave(exit_date: date | None) -> bool:
     return WAVE_START <= (exit_date.year, exit_date.month) <= WAVE_END
 
 
+def _priority_tier(value_band: str, recency_band: str) -> str:
+    """A pure lookup over the sixteen band combinations, not a population score."""
+    score = _VALUE_POINTS[value_band] * 2 + _RECENCY_POINTS[recency_band]
+    if score <= 2:
+        return "T4"
+    if score <= 4:
+        return "T3"
+    if score <= 6:
+        return "T2"
+    return "T1"
+
+
 def largest_first(rows: list[ClientRow]) -> list[ClientRow]:
     """One client's relationships, largest observed purchase volume first.
 
@@ -421,6 +440,8 @@ def derive_features(
         ]
         days_since = min(recencies) if recencies else None
         rhythm = _rhythm_days(purchase_dates.get(client_id, []))
+        recency_band = _recency_band(primary.days_since_last_activity)
+        value_band = _value_band(measure.avg_ticket)
 
         features.append(
             FeatureRow(
@@ -434,8 +455,8 @@ def derive_features(
                 purchases_censored=any(r.purchases_censored for r in ordered),
                 history_censored=any(r.history_censored for r in ordered),
                 n_funds=len(ordered),
-                recency_band=_recency_band(primary.days_since_last_activity),
-                value_band=_value_band(measure.avg_ticket),
+                recency_band=recency_band,
+                value_band=value_band,
                 cadence_band=_cadence_band(measure.rhythm_days),
                 hold_band=_hold_band(measure.hold_days),
                 purchase_depth=_purchase_depth(primary.n_purchases_returned),
@@ -449,6 +470,7 @@ def derive_features(
                 stale_contact=primary.days_since_last_activity is not None
                 and primary.days_since_last_activity > STALE_CONTACT_DAYS,
                 holds_other_funds=len(ordered) > 1,
+                priority_tier=_priority_tier(value_band, recency_band),
             )
         )
     return features
