@@ -54,13 +54,16 @@ def two_funds(db: None):
         session.commit()
 
 
-def _add_client(session, client_id: int, fund_id: int, name: str | None) -> None:
+def _add_client(
+    session, client_id: int, fund_id: int, name: str | None, total_purchase_amount: float = 0.0
+) -> None:
     session.add(
         Clients(
             client_id=client_id,
             unit_fund_id=fund_id,
             n_purchases_returned=0,
             n_sales_returned=0,
+            total_purchase_amount=total_purchase_amount,
         )
     )
     session.add(PiiVault(client_id=client_id, client_name=name))
@@ -73,6 +76,25 @@ def same_person_two_funds(two_funds):
     with SessionLocal() as session:
         _add_client(session, client_a, fund_a, "Jane Doe")
         _add_client(session, client_b, fund_b, "Jane Doe")
+        session.commit()
+
+    yield client_a, client_b
+
+    with SessionLocal() as session:
+        session.execute(delete(Enrollment).where(Enrollment.client_id.in_((client_a, client_b))))
+        session.execute(delete(PiiVault).where(PiiVault.client_id.in_((client_a, client_b))))
+        session.execute(delete(Clients).where(Clients.client_id.in_((client_a, client_b))))
+        session.commit()
+
+
+@pytest.fixture
+def same_person_unequal_relationships(two_funds):
+    """Two registrations of one person, the higher client_id holding more."""
+    fund_a, fund_b = two_funds
+    client_a, client_b = 98005, 98006
+    with SessionLocal() as session:
+        _add_client(session, client_a, fund_a, "Josphat Yego", total_purchase_amount=50_000)
+        _add_client(session, client_b, fund_b, "Josphat Yego", total_purchase_amount=500_000)
         session.commit()
 
     yield client_a, client_b
@@ -138,13 +160,32 @@ def test_enroll_cohort_is_idempotent_on_a_repeated_run(
 def test_same_person_on_two_funds_gets_exactly_one_primary_row(
     campaign: int, same_person_two_funds: tuple[int, int]
 ) -> None:
+    """Both hold nothing (value 0.0), so the lower client_id breaks the tie."""
     client_a, client_b = same_person_two_funds
     with SessionLocal() as session:
         created = enroll_cohort(session, campaign_id=campaign, client_ids=[client_a, client_b])
         session.commit()
 
     primary_ids = {row.client_id for row in created if row.is_primary_contact_row}
-    assert primary_ids == {client_a}, "the lower client_id should win the primary row"
+    assert primary_ids == {client_a}
+    assert len(created) == 2
+
+
+def test_the_larger_relationship_wins_the_primary_row_even_with_a_higher_client_id(
+    campaign: int, same_person_unequal_relationships: tuple[int, int]
+) -> None:
+    """A real re-registration case: the id order says nothing about value."""
+    smaller_id_smaller_value, larger_id_larger_value = same_person_unequal_relationships
+    with SessionLocal() as session:
+        created = enroll_cohort(
+            session,
+            campaign_id=campaign,
+            client_ids=[smaller_id_smaller_value, larger_id_larger_value],
+        )
+        session.commit()
+
+    primary_ids = {row.client_id for row in created if row.is_primary_contact_row}
+    assert primary_ids == {larger_id_larger_value}
     assert len(created) == 2
 
 

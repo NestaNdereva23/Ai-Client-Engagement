@@ -24,15 +24,23 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+import structlog
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.audit.log import record_audit
 from app.campaigns.eligibility import check_eligibility, check_stop_conditions
-from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT, advance_enrollment, select_due_enrollments
+from app.campaigns.scheduler import (
+    DEFAULT_BATCH_LIMIT,
+    advance_enrollment,
+    count_stale_contacts,
+    select_due_enrollments,
+)
 from app.db.models.campaigns import Enrollment, TouchLog
 from app.db.models.outreach import OutreachMessage
+
+logger = structlog.get_logger(__name__)
 
 GenerateFn = Callable[[Session, Enrollment, int], OutreachMessage]
 
@@ -126,8 +134,13 @@ def run_due_enrollments(
     the review queue picks it up. Sending and advancing happen in
     send_touch, once a human approves.
     """
+    due = select_due_enrollments(session, campaign_id=campaign_id, limit=limit)
+    stale = count_stale_contacts(session, due)
+    if stale:
+        logger.info("run_due_enrollments.stale_contacts", stale=stale, batch=len(due))
+
     outcomes = []
-    for enrollment in select_due_enrollments(session, campaign_id=campaign_id, limit=limit):
+    for enrollment in due:
         result = check_eligibility(session, enrollment)
         if not result.eligible:
             outcomes.append(

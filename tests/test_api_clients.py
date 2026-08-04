@@ -50,6 +50,7 @@ def two_clients(db: None):
                     recency_bucket="Exited 1 to 2y",
                     value_tier="High",
                     rhythm_band="Unknown",
+                    stale_contact=True,
                 ),
                 ClientFeatures(
                     client_id=second_id,
@@ -57,6 +58,7 @@ def two_clients(db: None):
                     recency_bucket="Exited 2 to 3y",
                     value_tier="Mid",
                     rhythm_band="Periodic",
+                    stale_contact=False,
                 ),
             ]
         )
@@ -124,3 +126,16 @@ def test_segments_counts_include_the_new_buckets(two_clients) -> None:
     archetypes = {row["key"]: row["count"] for row in body["by_archetype"]}
     assert archetypes.get("One-and-done", 0) >= 1
     assert archetypes.get("Occasional (2-4)", 0) >= 1
+
+
+def test_segments_stale_contact_count_reflects_the_stale_client(two_clients) -> None:
+    first_id, _second_id, _fund_id = two_clients
+    before = client.get(SEGMENTS).json()["stale_contact_count"]
+
+    with SessionLocal() as session:
+        row = session.get(ClientFeatures, first_id)
+        row.stale_contact = False
+        session.commit()
+
+    after = client.get(SEGMENTS).json()["stale_contact_count"]
+    assert after == before - 1

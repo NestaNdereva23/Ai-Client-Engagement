@@ -1,13 +1,14 @@
 """Enrolling a cohort of clients into a campaign, one row per client_id.
 
-A campaign's cohort is drawn at the client x fund grain, so the same real
-person can show up as more than one client_id if they hold more than one
-fund. Enrolling and sending from every one of those rows would mean that
-person gets a separate email per fund. is_primary_contact_row on Enrollment
-marks exactly one row per group of same-named clients as the one allowed to
-actually generate and send a touch; the rest stay enrolled, for record
-keeping and so the same idempotency rules apply to them, but never send.
-
+A real person can show up under more than one client_id: the source does not
+guarantee a stable id across registrations, so the same client sometimes gets
+a new client_id and client_code each time. Enrolling and sending from every
+one of those rows would mean that person gets a separate email per
+registration. is_primary_contact_row on Enrollment marks exactly one row per
+group of same-named clients as the one allowed to actually generate and send
+a touch, the one with the largest relationship; the rest stay enrolled, for
+record keeping and so the same idempotency rules apply to them, but never
+send.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.audit.log import record_audit
 from app.db.models.campaigns import Enrollment
-from app.db.models.models import PiiVault
+from app.db.models.models import Clients, PiiVault
 from app.db.session import restricted_session
 
 
@@ -44,14 +45,35 @@ def _fetch_client_names(client_ids: Sequence[int]) -> dict[int, str | None]:
     return {client_id: names.get(client_id) or None for client_id in client_ids}
 
 
+def _relationship_values(session: Session, client_ids: Sequence[int]) -> dict[int, float]:
+    """Each client_id's own relationship size, sourced from its primary fund.
+
+    Clients.total_purchase_amount already is that client_id's primary
+    client_fund row's own volume, projected up by the transform.
+    """
+    if not client_ids:
+        return {}
+    rows = session.execute(
+        select(Clients.client_id, Clients.total_purchase_amount).where(
+            Clients.client_id.in_(client_ids)
+        )
+    ).all()
+    return {row.client_id: row.total_purchase_amount or 0.0 for row in rows}
+
+
 def _resolve_primary_flags(
     session: Session, *, campaign_id: int, new_client_ids: Sequence[int]
 ) -> dict[int, bool]:
     """Decide which of new_client_ids should be the primary row for its person.
 
-    A person who already has a primary row in this campaign keeps it, so a
-    newly enrolling sibling client_id comes in as not primary. Among new
-    client_ids that share an unclaimed name, the lowest client_id wins.
+    A shared vault name usually means one real person registered more than
+    once (Cytonn's client_id is not stable across every registration), not a
+    coincidence, so this still dedupes by name. A person who already has a
+    primary row in this campaign keeps it. Among new client_ids that share an
+    unclaimed name, the one with the larger relationship wins, the same
+    largest-relationship-wins principle client_fund applies within one
+    client_id; a tied or missing value falls back to the lower client_id so
+    the outcome stays deterministic.
     """
     if not new_client_ids:
         return {}
@@ -67,10 +89,12 @@ def _resolve_primary_flags(
 
     names = _fetch_client_names([*already_primary_ids, *new_client_ids])
     claimed_names = {names[cid] for cid in already_primary_ids if names.get(cid)}
+    values = _relationship_values(session, new_client_ids)
 
     flags: dict[int, bool] = {}
     claimed_this_call: set[str] = set()
-    for client_id in sorted(new_client_ids):
+    ordered = sorted(new_client_ids, key=lambda cid: (-values.get(cid, 0.0), cid))
+    for client_id in ordered:
         name = names.get(client_id)
         if not name:
             flags[client_id] = True

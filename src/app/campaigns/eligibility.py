@@ -21,7 +21,7 @@ the next run.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -32,8 +32,10 @@ from app.config import get_settings
 from app.db.models.campaigns import CampaignStep, ContactEvent, Enrollment, TouchLog
 from app.db.models.models import Clients, PiiVault
 from app.db.models.outreach import Campaign, OutreachMessage
+from app.db.models.rules import ClientMessageIndicators
 from app.db.models.suppression import Suppression
 from app.db.session import restricted_session
+from app.rules.catalog import angle_is_held
 
 _UNRESOLVED_MESSAGE_STATUSES = ("pending_review", "escalated", "held")
 _STOPPING_EVENT_TYPES = ("bounce", "complaint")
@@ -102,11 +104,17 @@ def check_stop_conditions(session: Session, enrollment: Enrollment) -> Eligibili
     those are not repeated here. This only asks whether something has
     happened since generation that should stop delivery altogether: a
     suppression, an opt-out, a bounce or complaint, a reply, new client
-    activity, or the campaign itself having been paused in the meantime.
+    activity, the campaign itself having been paused in the meantime, or the
+    client's own angle being held. A hold is checked only here, never in
+    check_eligibility, so resolution, generation and review all proceed as
+    normal and only the send itself waits.
     """
     campaign = session.get(Campaign, enrollment.campaign_id)
     if campaign is None or campaign.status in ("paused", "completed"):
         return _skip(session, enrollment, reason="campaign_inactive", terminal=False)
+
+    if _angle_held(session, enrollment.client_id):
+        return _skip(session, enrollment, reason="angle_held", terminal=False)
 
     stop = _stop_reason(session, enrollment)
     if stop is not None:
@@ -121,6 +129,14 @@ def check_stop_conditions(session: Session, enrollment: Enrollment) -> Eligibili
         )
 
     return EligibilityResult(eligible=True)
+
+
+def _angle_held(session: Session, client_id: int) -> bool:
+    """Whether the angle this client resolved to is currently held from sending."""
+    indicators = session.get(ClientMessageIndicators, client_id)
+    if indicators is None:
+        return False
+    return angle_is_held(session, indicators.message_angle, date.today())
 
 
 def _stop_reason(session: Session, enrollment: Enrollment) -> tuple[str, str, str | None] | None:

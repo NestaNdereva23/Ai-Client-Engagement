@@ -70,4 +70,5 @@ def get_segments(session: Session = Depends(get_session)) -> SegmentDistribution
         by_message_angle=[
             SegmentBucketOut(key=k, count=c) for k, c in distribution["by_message_angle"]
         ],
+        stale_contact_count=distribution["stale_contact_count"],
     )

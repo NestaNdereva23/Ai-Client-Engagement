@@ -79,7 +79,7 @@ def list_clients(
     return rows, next_cursor
 
 
-def segment_distribution(session: Session) -> dict[str, list[tuple[str, int]]]:
+def segment_distribution(session: Session) -> dict[str, list[tuple[str, int]] | int]:
     """Client counts grouped by archetype, value tier, and message angle."""
 
     def _counts(column) -> list[tuple[str, int]]:
@@ -89,8 +89,16 @@ def segment_distribution(session: Session) -> dict[str, list[tuple[str, int]]]:
             ).all()
         )
 
+    stale_count = (
+        session.execute(
+            select(func.count()).select_from(ClientFeatures).where(ClientFeatures.stale_contact)
+        ).scalar_one()
+        or 0
+    )
+
     return {
         "by_archetype": _counts(ClientFeatures.archetype),
         "by_value_tier": _counts(ClientFeatures.value_tier),
         "by_message_angle": _counts(ClientMessageIndicators.message_angle),
+        "stale_contact_count": stale_count,
     }

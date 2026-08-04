@@ -20,6 +20,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -77,6 +78,9 @@ class MessageAngleCatalog(Base):
     ask: Mapped[str] = mapped_column(Text, nullable=False)
     # The prohibition this angle carries on top of the campaign-wide ones.
     never: Mapped[str] = mapped_column(Text, nullable=False)
+    # A client still resolves, generates, and reviews normally; only the
+    # final send is held. Lifted by a catalogue change, not a deploy.
+    held: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     valid_from: Mapped[date] = mapped_column(Date, nullable=False)
     valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
