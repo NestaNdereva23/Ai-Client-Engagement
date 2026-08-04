@@ -6,6 +6,8 @@ import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
+from decimal import Decimal
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -16,13 +18,16 @@ from sqlalchemy.orm import Session
 from app.agents.email_agent import build_system_prompt
 from app.agents.guardrails import DEFAULT_GUARDRAIL_CHECKS, GuardrailFailure
 from app.db.models.rules import ClientMessageIndicators
-from app.db.models.views import llm_client_context
+from app.db.models.views import llm_client_context, llm_client_numeric_facts
 from app.llmops.tracing import NullTracer, Tracer
 from app.privacy.boundary import AuditSink, run_model_boundary, to_model_context
+from app.privacy.fact_block import FUND_DISPLAY_NAMES, ModelFactBlock
 from app.privacy.llm_client import LLMClient, as_model_call
 from app.privacy.scanners import OutboundLeak
 from app.rag.grounding import GroundingChunk
 from app.rag.retrieve import retrieve_product_facts
+from app.rules.catalog import load_angle
+from app.rules.tier_contract import load_tier
 from app.schemas.email_draft import DraftValidationError, parse_email_draft
 
 # The default prompt builder is EmailAgent's.
@@ -31,15 +36,46 @@ PromptBuilder = Callable[..., str]
 # Guard against an endlessly retrying loop.
 DEFAULT_MAX_ATTEMPTS = 2
 
+# The two allow-listed views, split by which one carries each fact.
+_BAND_FACT_KEYS = (
+    "recency_band",
+    "value_band",
+    "cadence_band",
+    "hold_band",
+    "purchase_depth",
+    "trend_band",
+    "exit_reason",
+    "fund_type",
+    "in_wave",
+    "has_depth",
+    "staged_exit",
+    "stale_contact",
+)
+_NUMERIC_FACT_KEYS = (
+    "years_since_exit",
+    "typical_contribution_kes",
+    "largest_contribution_kes",
+    "invested_every_n_days",
+    "days_held_after_last_topup",
+    "month_they_left",
+)
+
 
 @dataclass(frozen=True)
 class ClientContext:
-    """Everything retrieve_context needs for one client: masked tiers, angle, facts."""
+    """Everything retrieve_context needs for one client: masked tiers, angle, facts.
+
+    brief, contract and facts stay optional so a loader that predates the
+    catalogue still satisfies this shape.
+    """
 
     raw_context: Mapping[str, Any]
     angle: str
     prompt_variant: str
     chunks: Sequence[GroundingChunk]
+    brief: Any | None = None
+    contract: Any | None = None
+    facts: Mapping[str, Any] | None = None
 
 
 # Loads a client's context; the caller binds a live session (e.g. via
@@ -58,12 +94,16 @@ class GenerationState(TypedDict, total=False):
     prompt_variant: str | None
     raw_context: Mapping[str, Any]
     chunks: Sequence[GroundingChunk]
+    brief: Any | None
+    contract: Any | None
+    facts: Mapping[str, Any] | None
     context: dict[str, Any]
     system_prompt: str
     draft: str | None  # the model's raw output, unparsed, as generated
     subject: str | None
     body: str | None
     raw_structured_output: dict[str, Any] | None  # EmailDraft.model_dump(), for audit
+    call_brief: str | None  # set for a tier whose contract adds one
     attempts: int
     status: str  # "pending" | "accepted" | "rejected"
     reason: str | None
@@ -94,7 +134,46 @@ def new_generation_state(*, client_id: int, product: str) -> GenerationState:
     }
 
 
-def load_client_context(session: Session, client_id: int, product: str) -> ClientContext:
+def load_client_facts(
+    session: Session, client_id: int, bands_row: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Assemble one client's fact block from the two allow-listed views.
+
+    Routed through ModelFactBlock rather than handed over raw, so the amounts
+    round and a cadence fact with no real cadence drops out before anything
+    downstream can quote it. None when the client has no numeric row yet.
+    """
+    numeric = (
+        session.execute(
+            select(llm_client_numeric_facts).where(
+                llm_client_numeric_facts.c.client_id == client_id
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if numeric is None:
+        return None
+
+    facts: dict[str, Any] = {
+        key: bands_row[key] for key in _BAND_FACT_KEYS if bands_row.get(key) is not None
+    }
+    for key in _NUMERIC_FACT_KEYS:
+        value = numeric.get(key)
+        if value is not None:
+            # Postgres returns a computed ratio as numeric, which would coerce
+            # to int and silently truncate.
+            facts[key] = float(value) if isinstance(value, Decimal) else value
+
+    fund_name = FUND_DISPLAY_NAMES.get(bands_row.get("fund_type") or "")
+    if fund_name is not None:
+        facts["fund_name"] = fund_name
+    return ModelFactBlock(**facts).to_dict()
+
+
+def load_client_context(
+    session: Session, client_id: int, product: str, *, at: date | None = None
+) -> ClientContext:
     """The default ContextLoader: read the masked view, resolved indicators, and RAG facts.
     Bind a session to get a ContextLoader
     """
@@ -113,11 +192,15 @@ def load_client_context(session: Session, client_id: int, product: str) -> Clien
         raise ValueError(f"no resolved message indicators for client {client_id!r}")
 
     chunks = retrieve_product_facts(session, product=product, angle=indicators.message_angle)
+    on = at or date.today()
     return ClientContext(
         raw_context=dict(row),
         angle=indicators.message_angle,
         prompt_variant=indicators.prompt_variant,
         chunks=chunks,
+        brief=load_angle(session, indicators.message_angle, on),
+        contract=load_tier(session, indicators.priority_tier, on),
+        facts=load_client_facts(session, client_id, dict(row)),
     )
 
 
@@ -210,15 +293,25 @@ def build_generation_graph(
             "angle": client_context.angle,
             "prompt_variant": client_context.prompt_variant,
             "chunks": client_context.chunks,
+            "brief": client_context.brief,
+            "contract": client_context.contract,
+            "facts": client_context.facts,
             "tool_calls": tool_calls,
         }
 
     def assemble_prompt(state: GenerationState) -> dict[str, Any]:
-        context = to_model_context(state["raw_context"])
+        # The fact block is the payload when there is one, so the client's own
+        # figures cross the boundary through the scanner rather than riding in
+        # the prompt text, which is never scanned.
+        facts = state.get("facts")
+        context = dict(facts) if facts else to_model_context(state["raw_context"])
         prompt = prompt_builder(
             angle=state.get("angle"),
             prompt_variant=state.get("prompt_variant"),
             chunks=state.get("chunks", ()),
+            brief=state.get("brief"),
+            contract=state.get("contract"),
+            facts=facts,
         )
         return {"context": context, "system_prompt": prompt}
 
@@ -285,7 +378,7 @@ def build_generation_graph(
         # JSON, or is missing a field or a required placeholder, never even
         # reaches the pluggable checks below.
         try:
-            structured = parse_email_draft(state.get("draft") or "")
+            structured = parse_email_draft(state.get("draft") or "", state.get("facts"))
         except DraftValidationError as failure:
             return _retry_or_reject(attempts, "structured_output", str(failure))
 

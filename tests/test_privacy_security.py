@@ -17,6 +17,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, select
 
+from app.agents.graph import load_client_facts
 from app.db.models.audit import AuditLog
 from app.db.models.models import (
     ClientFeatures,
@@ -28,10 +29,10 @@ from app.db.models.models import (
     RawStaging,
     Transactions,
 )
-from app.db.models.views import llm_client_context, llm_client_numeric_facts
+from app.db.models.views import llm_client_context
 from app.db.session import SessionLocal
 from app.privacy.boundary import run_model_boundary, to_model_context
-from app.privacy.fact_block import FUND_DISPLAY_NAMES, ModelFactBlock
+from app.privacy.fact_block import ModelFactBlock
 from app.privacy.scanners import InboundLeak, OutboundLeak
 
 EAT = timezone(timedelta(hours=3))
@@ -191,47 +192,16 @@ def test_every_outbound_payload_in_a_cohort_carries_no_pii(seeded_cohort) -> Non
 
 # --- the fact-block path: same guarantee, wider vocabulary -------------------
 
-_BAND_KEYS = (
-    "recency_band",
-    "value_band",
-    "cadence_band",
-    "hold_band",
-    "purchase_depth",
-    "trend_band",
-    "exit_reason",
-    "fund_type",
-    "in_wave",
-    "has_depth",
-    "staged_exit",
-    "stale_contact",
-)
 _EXACT_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
-def _fact_block_payload(bands_row: dict, numeric_row: dict) -> dict[str, Any]:
-    """Combine the two allow-listed views into one client's fact-block payload.
+def _fact_block_payload(session, client_id: int, bands_row: dict) -> dict[str, Any]:
+    """One client's fact-block payload, through the real assembly the graph uses.
 
-    Stands in for the real prompt-assembly wiring, which does not exist yet;
-    this is exactly the combination that wiring will eventually automate.
-    Routing through ModelFactBlock itself, not just its output shape, is what
-    also rounds the amounts and drops a cadence fact with no real cadence.
+    Calls production's own loader rather than a copy of it, so this cannot
+    keep passing against a stand-in after the real one drifts.
     """
-    facts = {key: bands_row[key] for key in _BAND_KEYS if bands_row.get(key) is not None}
-    for key in (
-        "years_since_exit",
-        "typical_contribution_kes",
-        "largest_contribution_kes",
-        "invested_every_n_days",
-        "days_held_after_last_topup",
-        "month_they_left",
-    ):
-        value = numeric_row.get(key)
-        if value is not None:
-            facts[key] = value
-    fund_name = FUND_DISPLAY_NAMES.get(bands_row.get("fund_type"))
-    if fund_name is not None:
-        facts["fund_name"] = fund_name
-    return ModelFactBlock(**facts).to_dict()
+    return load_client_facts(session, client_id, bands_row)
 
 
 def test_every_outbound_fact_block_payload_in_a_cohort_carries_no_pii(seeded_cohort) -> None:
@@ -246,16 +216,12 @@ def test_every_outbound_fact_block_payload_in_a_cohort_carries_no_pii(seeded_coh
                 select(llm_client_context).where(llm_client_context.c.client_id.in_(list(names)))
             ).mappings()
         }
-        numeric_rows = {
-            row["client_id"]: dict(row)
-            for row in session.execute(
-                select(llm_client_numeric_facts).where(
-                    llm_client_numeric_facts.c.client_id.in_(list(names))
-                )
-            ).mappings()
+        assert set(band_rows) == set(names)
+        payloads = {
+            client_id: _fact_block_payload(session, client_id, band_rows[client_id])
+            for client_id in names
         }
-    assert set(band_rows) == set(names)
-    assert set(numeric_rows) == set(names)
+    assert all(payload for payload in payloads.values())
 
     sent: list[dict[str, Any]] = []
 
@@ -264,9 +230,8 @@ def test_every_outbound_fact_block_payload_in_a_cohort_carries_no_pii(seeded_coh
         return _placeholder_draft(payload)
 
     for client_id in names:
-        payload = _fact_block_payload(band_rows[client_id], numeric_rows[client_id])
         draft = run_model_boundary(
-            payload,
+            payloads[client_id],
             capturing_model_call,
             identifiers=real_values,
             entity_id=str(client_id),
