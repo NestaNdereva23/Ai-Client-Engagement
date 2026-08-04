@@ -291,6 +291,8 @@ class ClientFeatures(Base):
     holds_other_funds: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )
+    # Derived from value_band and recency_band, not set by a rule.
+    priority_tier: Mapped[str] = mapped_column(Text, nullable=False, server_default="T4")
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

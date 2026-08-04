@@ -11,8 +11,10 @@ from datetime import date, datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     Text,
@@ -75,6 +77,34 @@ class MessageAngleCatalog(Base):
     ask: Mapped[str] = mapped_column(Text, nullable=False)
     # The prohibition this angle carries on top of the campaign-wide ones.
     never: Mapped[str] = mapped_column(Text, nullable=False)
+    valid_from: Mapped[date] = mapped_column(Date, nullable=False)
+    valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class TierContract(Base):
+    """The channel, format, and review policy for one priority tier.
+
+    Versioned and immutable like the angle catalogue. review_sample_rate is
+    the rate to honour once sampling is turned on; until then, review stays
+    mandatory regardless of what is stored here.
+    """
+
+    __tablename__ = "tier_contract"
+    __table_args__ = (UniqueConstraint("version", "tier", name="uq_tier_contract_version_tier"),)
+
+    contract_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    tier: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    primary_channel: Mapped[str] = mapped_column(Text, nullable=False)
+    secondary_channel: Mapped[str | None] = mapped_column(Text, nullable=True)
+    max_words: Mapped[int] = mapped_column(Integer, nullable=False)
+    sign_off: Mapped[str] = mapped_column(Text, nullable=False)
+    human_approval: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    review_sample_rate: Mapped[float] = mapped_column(Float, nullable=False)
     valid_from: Mapped[date] = mapped_column(Date, nullable=False)
     valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

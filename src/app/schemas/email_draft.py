@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, ValidationInfo, model_validator
 
-from app.agents.email_agent import REQUIRED_PLACEHOLDERS
+from app.agents.email_agent import REQUIRED_PLACEHOLDERS, required_placeholders
 
 _PLACEHOLDER = re.compile(r"\{\{[^}]*\}\}")
 _CODE_FENCE = re.compile(r"^```[a-zA-Z]*\n?|\n?```$")
@@ -33,12 +34,15 @@ class EmailDraft(BaseModel):
     body: str
 
     @model_validator(mode="after")
-    def _check_placeholders(self) -> EmailDraft:
+    def _check_placeholders(self, info: ValidationInfo) -> EmailDraft:
         if not self.subject.strip() or not self.body.strip():
             raise ValueError("subject and body must not be blank")
 
+        # Which tokens are still required depends on what the draft was told:
+        # a draft given the fund name as a fact writes it out instead.
+        facts = (info.context or {}).get("facts")
         combined = f"{self.subject}\n{self.body}"
-        missing = [token for token in REQUIRED_PLACEHOLDERS if token not in combined]
+        missing = [token for token in required_placeholders(facts) if token not in combined]
         if missing:
             raise ValueError(f"missing required placeholders: {missing}")
 
@@ -55,7 +59,7 @@ def _strip_code_fence(raw: str) -> str:
     return _CODE_FENCE.sub("", raw.strip()).strip()
 
 
-def parse_email_draft(raw: str) -> EmailDraft:
+def parse_email_draft(raw: str, facts: Mapping[str, Any] | None = None) -> EmailDraft:
     """Parse and validate the model's raw output, raising DraftValidationError on any failure.
 
     Tries the raw string first, a model that already returns clean JSON never
@@ -72,6 +76,6 @@ def parse_email_draft(raw: str) -> EmailDraft:
             raise DraftValidationError(f"draft was not valid JSON: {exc}") from exc
 
     try:
-        return EmailDraft.model_validate(payload)
+        return EmailDraft.model_validate(payload, context={"facts": facts})
     except ValidationError as exc:
         raise DraftValidationError(f"draft failed schema validation: {exc}") from exc

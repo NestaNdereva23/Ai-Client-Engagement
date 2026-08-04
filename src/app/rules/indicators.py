@@ -19,6 +19,7 @@ from app.db.models.models import ClientFeatures
 from app.db.models.rules import ClientMessageIndicators
 from app.rules.engine import Resolution, feature_view, resolve
 from app.rules.store import load_active_rules
+from app.transform.features import PRIORITY_TIERS
 
 # Columns refreshed when a client's row already exists. The key is excluded.
 _INDICATOR_UPDATE = [
@@ -31,13 +32,23 @@ _INDICATOR_UPDATE = [
     "rule_version",
 ]
 
+# A rule resolving to T1-T4 defers tier and urgency to the feature row rather
+# than naming a real value; older rule sets still emit a real P1-P3 and are
+# left untouched.
+_TIER_URGENCY = {"T1": "high", "T2": "medium", "T3": "medium", "T4": "low"}
 
-def _indicator_dict(client_id: int, resolution: Resolution) -> dict[str, Any]:
+
+def _indicator_dict(feature: ClientFeatures, resolution: Resolution) -> dict[str, Any]:
+    priority_tier = resolution.priority_tier
+    urgency = resolution.urgency
+    if priority_tier in PRIORITY_TIERS:
+        priority_tier = feature.priority_tier
+        urgency = _TIER_URGENCY[priority_tier]
     return {
-        "client_id": client_id,
+        "client_id": feature.client_id,
         "message_angle": resolution.message_angle,
-        "urgency": resolution.urgency,
-        "priority_tier": resolution.priority_tier,
+        "urgency": urgency,
+        "priority_tier": priority_tier,
         "prompt_variant": resolution.prompt_variant,
         "rule_id": resolution.rule_id,
         "rule_name": resolution.rule_name,
@@ -56,7 +67,7 @@ def populate_indicators(session: Session, at: date) -> int:
         raise ValueError(f"no active rule version for {at}")
 
     features = session.scalars(select(ClientFeatures)).all()
-    rows = [_indicator_dict(f.client_id, resolve(feature_view(f), rules)) for f in features]
+    rows = [_indicator_dict(f, resolve(feature_view(f), rules)) for f in features]
     if not rows:
         return 0
 

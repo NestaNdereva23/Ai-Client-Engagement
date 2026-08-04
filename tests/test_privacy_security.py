@@ -17,6 +17,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, select
 
+from app.agents.graph import load_client_facts
 from app.db.models.audit import AuditLog
 from app.db.models.models import (
     ClientFeatures,
@@ -31,6 +32,7 @@ from app.db.models.models import (
 from app.db.models.views import llm_client_context
 from app.db.session import SessionLocal
 from app.privacy.boundary import run_model_boundary, to_model_context
+from app.privacy.fact_block import ModelFactBlock
 from app.privacy.scanners import InboundLeak, OutboundLeak
 
 EAT = timezone(timedelta(hours=3))
@@ -186,3 +188,97 @@ def test_every_outbound_payload_in_a_cohort_carries_no_pii(seeded_cohort) -> Non
         assert "client_id" not in payload
         serialized = " ".join(str(value) for value in payload.values())
         assert not _carries_pii(serialized, real_values)
+
+
+# --- the fact-block path: same guarantee, wider vocabulary -------------------
+
+_EXACT_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _fact_block_payload(session, client_id: int, bands_row: dict) -> dict[str, Any]:
+    """One client's fact-block payload, through the real assembly the graph uses.
+
+    Calls production's own loader rather than a copy of it, so this cannot
+    keep passing against a stand-in after the real one drifts.
+    """
+    return load_client_facts(session, client_id, bands_row)
+
+
+def test_every_outbound_fact_block_payload_in_a_cohort_carries_no_pii(seeded_cohort) -> None:
+    fund_id, names = seeded_cohort
+    codes = [f"C-{cid}" for cid in names]
+    real_values = [*names.values(), *codes]
+
+    with SessionLocal() as session:
+        band_rows = {
+            row["client_id"]: dict(row)
+            for row in session.execute(
+                select(llm_client_context).where(llm_client_context.c.client_id.in_(list(names)))
+            ).mappings()
+        }
+        assert set(band_rows) == set(names)
+        payloads = {
+            client_id: _fact_block_payload(session, client_id, band_rows[client_id])
+            for client_id in names
+        }
+    assert all(payload for payload in payloads.values())
+
+    sent: list[dict[str, Any]] = []
+
+    def capturing_model_call(payload: dict[str, Any]) -> str:
+        sent.append(payload)
+        return _placeholder_draft(payload)
+
+    for client_id in names:
+        draft = run_model_boundary(
+            payloads[client_id],
+            capturing_model_call,
+            identifiers=real_values,
+            entity_id=str(client_id),
+        )
+        assert not _carries_pii(draft, real_values)
+
+    assert len(sent) == len(names)
+    for payload in sent:
+        # No name, code, or id: structurally, since none of these are keys
+        # ModelFactBlock declares, and by content, via the literal check above.
+        assert "client_id" not in payload
+        assert "client_code" not in payload
+        assert "client_name" not in payload
+        serialized = " ".join(str(value) for value in payload.values())
+        assert not _carries_pii(serialized, real_values)
+        # month_they_left (YYYY-MM) is fine; a full calendar date is not.
+        assert not _EXACT_DATE.search(serialized)
+
+
+def test_an_unrounded_amount_never_reaches_the_model_call() -> None:
+    called = False
+
+    def model_call(payload: dict) -> str:
+        nonlocal called
+        called = True
+        return "draft"
+
+    with pytest.raises(InboundLeak, match="would have corrected"):
+        run_model_boundary({"typical_contribution_kes": 4_466_000}, model_call)
+    assert called is False
+
+
+def test_a_cadence_fact_for_a_client_with_no_cadence_never_reaches_the_model_call() -> None:
+    called = False
+
+    def model_call(payload: dict) -> str:
+        nonlocal called
+        called = True
+        return "draft"
+
+    with pytest.raises(InboundLeak, match="would have corrected"):
+        run_model_boundary({"cadence_band": "None", "invested_every_n_days": 30}, model_call)
+    assert called is False
+
+
+def test_a_cadence_fact_built_through_modelfactblock_is_simply_absent() -> None:
+    """The well-behaved path: no cadence means the fact is never assembled."""
+    payload = ModelFactBlock(cadence_band="None", invested_every_n_days=30).to_dict()
+    assert "invested_every_n_days" not in payload
+    assert run_model_boundary(payload, lambda p: "draft") == "draft"

@@ -120,6 +120,7 @@ _FEATURE_UPDATE = [
     "staged_exit",
     "stale_contact",
     "holds_other_funds",
+    "priority_tier",
 ]
 
 
@@ -259,6 +260,7 @@ def _feature_dict(f: FeatureRow) -> dict[str, Any]:
         "staged_exit": f.staged_exit,
         "stale_contact": f.stale_contact,
         "holds_other_funds": f.holds_other_funds,
+        "priority_tier": f.priority_tier,
         "client_id": f.client_id,
         "archetype": f.archetype,
         "recency_bucket": f.recency_bucket,

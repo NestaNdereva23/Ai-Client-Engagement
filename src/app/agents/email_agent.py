@@ -1,12 +1,16 @@
-"""EmailAgent: turns a client's rule outcome into a placeholder only draft prompt.
+"""EmailAgent: one draft prompt assembled from three interchangeable slots.
 
-Prompt variant selection comes straight from the resolved business rule(Business Rule Module),
-carried as GenerationState.prompt_variant"""
+The angle brief says what may be claimed and asked for, the format contract
+says how long it runs and who signs it, and the prohibitions say what may
+never be said. The client's own figures are not here: they travel as the
+scanned payload, so nothing client-specific reaches the model unchecked.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import date
+from typing import Any, Protocol, runtime_checkable
 
 from sqlalchemy.orm import Session
 
@@ -15,6 +19,43 @@ from app.rules.catalog import load_angle
 
 # The only tokens a draft may use for anything client specific.
 REQUIRED_PLACEHOLDERS = ("{{first_name}}", "{{fund_name}}")
+# A draft given the fund name as a fact writes it directly, so only the name
+# the model never sees stays a placeholder.
+REQUIRED_PLACEHOLDERS_WITH_FACTS = ("{{first_name}}",)
+
+
+@runtime_checkable
+class AngleBrief(Protocol):
+    """The catalogue row for one angle."""
+
+    headline: str
+    who: str
+    claim: str
+    ask: str
+    never: str
+
+
+@runtime_checkable
+class FormatContract(Protocol):
+    """The tier row saying how a message on this tier is shaped."""
+
+    max_words: int
+    sign_off: str
+
+
+# Derived from the properties of the source data, not from taste. These are
+# claims the extract cannot support, so they ride on every prompt.
+CAMPAIGN_PROHIBITIONS = (
+    "Never state how many times the client invested. Only part of their history "
+    "is visible, so any count would be wrong for much of this population.",
+    "Never mention a balance, an amount still invested, or money waiting in an "
+    "account. Every client here holds none.",
+    "Never imply when the client first invested, or how long the relationship "
+    "lasted in total. Only their recent activity is visible.",
+    "Never state a number that is not in the facts you were given. Do not "
+    "calculate, round, or combine them into a new one.",
+    "Never promise a return, a rate, or a guarantee.",
+)
 
 _BASE_INSTRUCTIONS = (
     "You are an email drafting agent for dormant investment clients. "
@@ -50,6 +91,8 @@ _BASE_INSTRUCTIONS = (
     "If a rate or return is provided, reproduce it exactly as provided; "
     "do not rephrase, round, convert, or calculate it. "
     "If no rate or return is provided, do not mention one. "
+    "Write any incidental quantity as a word rather than a digit, so that "
+    "every digit in the message traces back to a fact you were given. "
     "CLIENT BEHAVIOR: "
     "Only describe the client's investment behavior using the specific "
     "behavioral classification and guidance provided by the system. "
@@ -161,6 +204,57 @@ def template_text(prompt_variant: str | None) -> str:
     return f"{_BASE_INSTRUCTIONS}\n\n{variant_guidance(prompt_variant)}"
 
 
+def conditional_prohibitions(facts: Mapping[str, Any] | None) -> list[str]:
+    """The prohibitions this one client's own situation adds.
+
+    Each is driven by a fact the schema already decided: an absent cadence
+    fact means the client demonstrably has no rhythm to reference.
+    """
+    if not facts:
+        return []
+
+    lines: list[str] = []
+    if not facts.get("invested_every_n_days"):
+        lines.append(
+            "This client has no measurable cadence. Never reference a rhythm, "
+            "a schedule, or a pattern of investing."
+        )
+    if facts.get("stale_contact"):
+        lines.append(
+            "Contact details for this client are over three years old. Open by "
+            "confirming you have reached the right person."
+        )
+    if facts.get("exit_reason") == "charge_settled":
+        lines.append(
+            "This client's balance settled to zero through a charge, not a "
+            "withdrawal they asked for. Never refer to a decision to leave."
+        )
+    return lines
+
+
+def _prohibitions_block(brief: AngleBrief | None, facts: Mapping[str, Any] | None) -> str:
+    lines = [*CAMPAIGN_PROHIBITIONS]
+    if brief is not None:
+        lines.append(brief.never)
+    lines.extend(conditional_prohibitions(facts))
+    return "\n".join(f"- {line}" for line in lines)
+
+
+def _brief_block(brief: AngleBrief) -> str:
+    return (
+        f"Angle: {brief.headline}\n"
+        f"What is true about this client: {brief.claim}\n"
+        f"What to ask them for: {brief.ask}"
+    )
+
+
+def _contract_block(contract: FormatContract) -> str:
+    return (
+        f"Write no more than {contract.max_words} words in the body. "
+        f"Sign the message off as {contract.sign_off}."
+    )
+
+
 def _render_facts(chunks: Sequence[GroundingChunk]) -> str:
     if not chunks:
         return "(no facts retrieved; do not cite a rate or return)"
@@ -172,17 +266,80 @@ def build_system_prompt(
     angle: str | None,
     prompt_variant: str | None,
     chunks: Sequence[GroundingChunk] = (),
+    brief: AngleBrief | None = None,
+    contract: FormatContract | None = None,
+    facts: Mapping[str, Any] | None = None,
 ) -> str:
-    """The full system prompt for one draft: the template, the angle, and the facts."""
-    return (
-        f"{template_text(prompt_variant)}\n\n"
-        f"Angle: {angle or 'winback'}\n\n"
-        f"Facts you may cite (only these, verbatim):\n{_render_facts(chunks)}"
-    )
+    """The full system prompt for one draft.
 
-
-def has_required_placeholders(draft: str) -> bool:
-    """True when every required placeholder token appears in the draft.
-    A pure structural check, not a guardrail on its own
+    brief, contract and facts are the three slots. Without them this returns
+    exactly the prompt it always did, so a caller that predates the catalogue
+    keeps working. facts is read only to decide which prohibitions apply; the
+    figures themselves reach the model as the scanned payload, never here.
     """
-    return all(token in draft for token in REQUIRED_PLACEHOLDERS)
+    sections = [template_text(prompt_variant)]
+
+    if brief is not None:
+        sections.append(_brief_block(brief))
+    else:
+        sections.append(f"Angle: {angle or 'winback'}")
+
+    if contract is not None:
+        sections.append(_contract_block(contract))
+
+    sections.append(f"You must never:\n{_prohibitions_block(brief, facts)}")
+
+    if facts:
+        sections.append(
+            "The client's own figures are given in the user message. Use only "
+            "those, exactly as written, and omit any claim you have no fact for."
+        )
+
+    sections.append(f"Facts you may cite (only these, verbatim):\n{_render_facts(chunks)}")
+    return "\n\n".join(sections)
+
+
+def render_call_brief(
+    *,
+    brief: AngleBrief,
+    facts: Mapping[str, Any],
+    contract: FormatContract | None = None,
+) -> str:
+    """The top tier's call brief, rendered from the same inputs as its email.
+
+    Not a second generation: no model call, no second set of claims. It is
+    written for the relationship manager, so it has no subject line and names
+    the client only as the placeholder the delivery layer resolves.
+    """
+    lines = [
+        f"Call brief: {brief.headline}",
+        "",
+        f"Who this is: {brief.who}",
+        f"What is true about them: {brief.claim}",
+        f"What to ask for: {brief.ask}",
+        "",
+        "What you must never say:",
+        _prohibitions_block(brief, facts),
+        "",
+        "What we know about them:",
+    ]
+    lines.extend(f"- {key}: {value}" for key, value in sorted(facts.items()))
+    if contract is not None:
+        lines.extend(["", f"Call as: {contract.sign_off}."])
+    return "\n".join(lines)
+
+
+def required_placeholders(facts: Mapping[str, Any] | None = None) -> tuple[str, ...]:
+    """The placeholders a draft must still carry, given what it was told.
+
+    A draft handed the fund name as a fact writes it directly, so only the
+    client's name, which the model never sees, has to stay a token.
+    """
+    if facts and facts.get("fund_name"):
+        return REQUIRED_PLACEHOLDERS_WITH_FACTS
+    return REQUIRED_PLACEHOLDERS
+
+
+def has_required_placeholders(draft: str, facts: Mapping[str, Any] | None = None) -> bool:
+    """True when every placeholder this draft still needs appears in it."""
+    return all(token in draft for token in required_placeholders(facts))

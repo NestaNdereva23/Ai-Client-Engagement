@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from app.agents.email_agent import build_system_prompt
+from app.agents.email_agent import build_system_prompt, render_call_brief
 from app.agents.graph import (
     DEFAULT_MAX_ATTEMPTS,
     ContextLoader,
@@ -27,6 +27,28 @@ from app.privacy.boundary import AuditSink
 from app.privacy.llm_client import LLMClient
 
 CHANNEL = "email"
+# What a tier contract names when its tier gets a brief as well as an email.
+CALL_BRIEF_CHANNEL = "call_brief"
+
+
+def attach_call_brief(state: GenerationState) -> GenerationState:
+    """Render the accompanying call brief for a tier whose contract adds one.
+
+    A second render of the draft that was already accepted, from the same
+    angle brief and the same facts, so the brief and the email cannot tell
+    the client two different stories.
+    """
+    contract = state.get("contract")
+    brief = state.get("brief")
+    if state.get("status") != "accepted" or contract is None or brief is None:
+        return state
+    if getattr(contract, "secondary_channel", None) != CALL_BRIEF_CHANNEL:
+        return state
+
+    state["call_brief"] = render_call_brief(
+        brief=brief, facts=state.get("facts") or {}, contract=contract
+    )
+    return state
 
 
 class EmailAgent:
@@ -59,6 +81,7 @@ class EmailAgent:
         """Run the graph for one client's draft and return the terminal state."""
         state = new_generation_state(client_id=client_id, product=product)
         try:
-            return self._graph.invoke(state)
+            final = self._graph.invoke(state)
         finally:
             self._tracer.flush()
+        return attach_call_brief(final)
