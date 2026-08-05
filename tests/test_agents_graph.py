@@ -32,10 +32,10 @@ from app.privacy.scanners import InboundLeak
 
 RAW_CONTEXT = {
     "client_id": 1001,
-    "archetype": "One-and-done",
-    "recency_bucket": "Exited 3y plus",
-    "value_tier_label": "High",
-    "rhythm_band": "Unknown",
+    "recency_band": "Over 6y",
+    "value_band": "High",
+    "cadence_band": "Regular",
+    "hold_band": "Unknown",
 }
 
 
@@ -54,8 +54,8 @@ def make_context_loader(chunks=()):
     def load(client_id: int, product: str) -> ClientContext:
         return ClientContext(
             raw_context=RAW_CONTEXT,
-            angle="winback_habit",
-            prompt_variant="habit_premium",
+            angle="back_on_schedule",
+            prompt_variant="back_on_schedule",
             chunks=chunks,
         )
 
@@ -100,7 +100,7 @@ def test_happy_path_runs_all_four_nodes_and_carries_run_and_trace_ids() -> None:
     # The angle and facts reached the model only via the system prompt, never
     # as extra keys in the boundary-scanned context.
     assert llm.calls[0]["system"].count("11.35%") == 1
-    assert "winback_habit" in llm.calls[0]["system"]
+    assert "back_on_schedule" in llm.calls[0]["system"]
 
     assert len(result["llm_calls"]) == 1
     call = result["llm_calls"][0]
@@ -231,7 +231,7 @@ def test_default_prompt_builder_is_email_agents_and_reflects_the_rule_outcome() 
     graph.invoke(new_generation_state(client_id=1001, product="money market"))
 
     assert llm.calls[0]["system"] == build_system_prompt(
-        angle="winback_habit", prompt_variant="habit_premium"
+        angle="back_on_schedule", prompt_variant="back_on_schedule"
     )
 
 
@@ -266,10 +266,10 @@ def test_boundary_context_carries_only_the_allowlisted_tiers() -> None:
 
     assert result["status"] == "accepted"
     assert seen_payloads[0] == {
-        "archetype": "One-and-done",
-        "recency_bucket": "Exited 3y plus",
-        "value_tier_label": "High",
-        "rhythm_band": "Unknown",
+        "recency_band": "Over 6y",
+        "value_band": "High",
+        "cadence_band": "Regular",
+        "hold_band": "Unknown",
     }
 
 
@@ -457,9 +457,9 @@ def test_a_boundary_leak_aborts_the_run_instead_of_being_treated_as_retryable() 
             # this can only be caught by the pattern scan on values, which is
             # exactly what must abort the run before the model is called.
             return ClientContext(
-                raw_context={**RAW_CONTEXT, "archetype": "reachable at jane@example.com"},
-                angle="winback_habit",
-                prompt_variant="habit_premium",
+                raw_context={**RAW_CONTEXT, "recency_band": "reachable at jane@example.com"},
+                angle="back_on_schedule",
+                prompt_variant="back_on_schedule",
                 chunks=(),
             )
 

@@ -98,11 +98,7 @@ _TXN_UPDATE = [
 # and opt-out arrive from a separate source
 _VAULT_UPDATE = ["client_name", "source"]
 _FEATURE_UPDATE = [
-    "archetype",
-    "recency_bucket",
-    "value_tier",
     "own_rhythm_days",
-    "rhythm_band",
     "observed_volume",
     "purchases_censored",
     "history_censored",
@@ -262,11 +258,7 @@ def _feature_dict(f: FeatureRow) -> dict[str, Any]:
         "holds_other_funds": f.holds_other_funds,
         "priority_tier": f.priority_tier,
         "client_id": f.client_id,
-        "archetype": f.archetype,
-        "recency_bucket": f.recency_bucket,
-        "value_tier": f.value_tier,
         "own_rhythm_days": f.own_rhythm_days,
-        "rhythm_band": f.rhythm_band,
         "observed_volume": f.observed_volume,
         "purchases_censored": f.purchases_censored,
         "history_censored": f.history_censored,

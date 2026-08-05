@@ -70,9 +70,15 @@ def get_or_create_prompt_version(
     prompt_variant: str,
     angle: str,
 ) -> PromptVersion:
-    """Look up the rendered instruction template for this variant, or register it."""
+    """Look up the rendered instruction template for this variant, or register it.
+
+    Hashed together with channel/prompt_variant/angle, not the rendered text
+    alone: with no per-variant guidance dictionary left, an uncatalogued
+    variant's rendered text is now the same generic default for every angle,
+    so text alone could no longer tell two different variants apart.
+    """
     text = template_text(prompt_variant or None)
-    template_hash = _hash(text)
+    template_hash = _hash(f"{channel}|{prompt_variant}|{angle}|{text}")
     existing = session.scalar(
         select(PromptVersion).where(PromptVersion.template_hash == template_hash)
     )

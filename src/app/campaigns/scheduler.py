@@ -111,6 +111,11 @@ def advance_enrollment(
         transition_enrollment(session, enrollment, to_status="in_progress", reason="touch_sent")
     else:
         enrollment.next_due_at = None
+        # A one-step campaign's only touch completes it on the enrollment's
+        # very first send: the state machine still requires the in_progress
+        # hop, since enrolled has no direct route to completed.
+        if enrollment.status == "enrolled":
+            transition_enrollment(session, enrollment, to_status="in_progress", reason="touch_sent")
         transition_enrollment(session, enrollment, to_status="completed", reason="all_touches_sent")
     session.flush()
 

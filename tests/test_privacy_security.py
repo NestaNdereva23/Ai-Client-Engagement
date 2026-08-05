@@ -58,13 +58,13 @@ def _placeholder_draft(payload: dict[str, Any]) -> str:
 
 
 def test_a_name_seeded_under_a_disallowed_key_is_blocked_inbound() -> None:
-    context = {"archetype": "One-and-done", "client_name": "Jane Wanjiru"}
+    context = {"value_band": "High", "client_name": "Jane Wanjiru"}
     with pytest.raises(InboundLeak):
         run_model_boundary(context, _placeholder_draft)
 
 
 def test_a_name_seeded_into_an_allowlisted_value_is_blocked_inbound() -> None:
-    context = {"archetype": "One-and-done", "value_tier_label": "High, Jane Wanjiru"}
+    context = {"value_band": "High, Jane Wanjiru"}
     called = False
 
     def model_call(payload: dict) -> str:
@@ -78,7 +78,7 @@ def test_a_name_seeded_into_an_allowlisted_value_is_blocked_inbound() -> None:
 
 
 def test_a_name_seeded_into_a_draft_is_blocked_outbound() -> None:
-    context = {"archetype": "One-and-done", "value_tier_label": "High"}
+    context = {"value_band": "High"}
     with pytest.raises(OutboundLeak):
         run_model_boundary(
             context,
@@ -88,7 +88,7 @@ def test_a_name_seeded_into_a_draft_is_blocked_outbound() -> None:
 
 
 def test_a_contact_channel_seeded_into_a_draft_is_blocked_outbound() -> None:
-    context = {"archetype": "One-and-done", "value_tier_label": "High"}
+    context = {"value_band": "High"}
     with pytest.raises(OutboundLeak):
         run_model_boundary(context, lambda payload: "Reply to jane@example.com to return.")
 

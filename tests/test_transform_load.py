@@ -376,9 +376,8 @@ def test_transform_run_persists_client_features(
     with SessionLocal() as session:
         feature = session.get(ClientFeatures, 1001)
         assert feature is not None
-        assert feature.archetype == "One-and-done"
         assert feature.history_censored is False
-        assert feature.value_tier in {"Top", "High", "Mid", "Low"}
+        assert feature.value_band in {"Low", "Medium", "High", "Top"}
 
 
 def _measured_client() -> dict[str, Any]:
@@ -462,16 +461,6 @@ def test_bands_persist_on_features(measured) -> None:
         assert f.stale_contact is True
         assert f.holds_other_funds is False
         assert f.n_funds == 1
-
-
-def test_the_v1_buckets_are_untouched_by_the_new_bands(measured) -> None:
-    """The old vocabulary keeps its own meaning until the rules move off it."""
-    with SessionLocal() as session:
-        f = session.get(ClientFeatures, 1001)
-        assert f.archetype == "Occasional (2-4)"
-        assert f.value_tier == "Mid"
-        assert f.rhythm_band == "Regular"
-        assert f.own_rhythm_days == 30
 
 
 def test_re_deriving_gives_the_same_measures(

@@ -151,10 +151,6 @@ class Clients(Base):
     total_sale_amount: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
     last_activity_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     days_since_last_activity: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # No longer maintained. Purchases and sales are capped at different depths,
-    # so their difference measures the caps rather than a position: it comes out
-    # positive for clients whose balance is zero. Nothing reads it.
-    net_flow: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
     computed_at: Mapped[str | None] = mapped_column(Text, nullable=True)
     # How many funds this client held. Their figures above come from the largest.
     n_funds: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
@@ -257,11 +253,7 @@ class ClientFeatures(Base):
     client_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("clients.client_id"), primary_key=True, autoincrement=False
     )
-    archetype: Mapped[str] = mapped_column(Text, nullable=False)
-    recency_bucket: Mapped[str] = mapped_column(Text, nullable=False)
-    value_tier: Mapped[str] = mapped_column(Text, nullable=False)
     own_rhythm_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    rhythm_band: Mapped[str] = mapped_column(Text, nullable=False)
     observed_volume: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     purchases_censored: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")

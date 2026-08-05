@@ -17,10 +17,10 @@ from app.privacy.boundary import run_model_boundary, to_model_context
 from app.privacy.scanners import InboundLeak, OutboundLeak, scan_inbound
 
 ALLOWLISTED = {
-    "archetype": "One-and-done",
-    "recency_bucket": "Exited 3y plus",
-    "value_tier_label": "High",
-    "rhythm_band": "Unknown",
+    "recency_band": "Over 6y",
+    "value_band": "High",
+    "cadence_band": "Regular",
+    "hold_band": "Unknown",
 }
 
 

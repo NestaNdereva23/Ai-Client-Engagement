@@ -32,23 +32,6 @@ from app.transform.features import (
 # actually produced. Boolean flags accept the strings "true" and "false".
 _BOOL = {"true", "false"}
 RULE_FIELD_DOMAINS: dict[str, set[str]] = {
-    # The original buckets. They keep their meaning while rule sets using them
-    # are still in force, and retire only once nothing resolves against them.
-    "archetype": {
-        "None observed",
-        "One-and-done",
-        "Occasional (2-4)",
-        "Frequent (5+, censored)",
-    },
-    "recency_bucket": {
-        "Unknown",
-        "Exited under 1y",
-        "Exited 1 to 2y",
-        "Exited 2 to 3y",
-        "Exited 3y plus",
-    },
-    "value_tier": {"Top", "High", "Mid", "Low"},
-    "rhythm_band": {"Unknown", "Regular", "Periodic", "Infrequent"},
     "history_censored": _BOOL,
     "purchases_censored": _BOOL,
     "holds_other_funds": _BOOL,
@@ -69,11 +52,9 @@ RULE_FIELD_DOMAINS: dict[str, set[str]] = {
     "stale_contact": _BOOL,
 }
 
-# The twelve angles, plus the two the earlier rule sets resolve to. Kept in step
-# with message_angle_catalog, which holds the brief behind each one.
+# The twelve angles. Kept in step with message_angle_catalog, which holds
+# the brief behind each one.
 MESSAGE_ANGLES = {
-    "winback_habit",
-    "winback_flexible",
     "not_a_goodbye",
     "wrong_shelf",
     "see_what_changed",
@@ -88,9 +69,8 @@ MESSAGE_ANGLES = {
     "pick_up_again",
 }
 URGENCIES = {"low", "medium", "high"}
-# T1 to T4 are derived from value and recency rather than set by a rule; the
-# older P tiers stay while the rule sets that name them are in force.
-PRIORITY_TIERS = {"P1", "P2", "P3", "T1", "T2", "T3", "T4"}
+# Derived from value and recency rather than set by a rule.
+PRIORITY_TIERS = {"T1", "T2", "T3", "T4"}
 
 
 class RuleValidationError(ValueError):
@@ -104,10 +84,10 @@ class RuleSpec:
     name: str
     priority: int
     match: Mapping[str, list[str]] = field(default_factory=dict)
-    message_angle: str = "winback_flexible"
+    message_angle: str = "pick_up_again"
     urgency: str = "low"
-    priority_tier: str = "P3"
-    prompt_variant: str = "flexible_standard"
+    priority_tier: str = "T4"
+    prompt_variant: str = "pick_up_again"
 
 
 def _covers(broad: Mapping[str, list[str]], narrow: Mapping[str, list[str]]) -> bool:

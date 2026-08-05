@@ -89,6 +89,35 @@ def _make_enrollment(session, *, campaign_id: int, client_id: int, **overrides) 
     return row
 
 
+@pytest.fixture
+def one_step_campaign(db: None):
+    """A single-touch campaign: step 1 is also the last step."""
+    with SessionLocal() as session:
+        campaign = Campaign(name="test one-step campaign")
+        session.add(campaign)
+        session.commit()
+        campaign_id = campaign.campaign_id
+        session.add(
+            CampaignStep(
+                campaign_id=campaign_id, step_no=1, offset_days=0, message_angle="winback_habit"
+            )
+        )
+        session.commit()
+
+    yield campaign_id
+
+    with SessionLocal() as session:
+        session.execute(
+            delete(AuditLog).where(
+                AuditLog.entity_type == "enrollment", AuditLog.action.in_(("advance", "transition"))
+            )
+        )
+        session.execute(delete(Enrollment).where(Enrollment.campaign_id == campaign_id))
+        session.execute(delete(CampaignStep).where(CampaignStep.campaign_id == campaign_id))
+        session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
+        session.commit()
+
+
 def test_a_fresh_enrollment_is_due_immediately(campaign_with_steps: int, client_row: int) -> None:
     with SessionLocal() as session:
         _make_enrollment(session, campaign_id=campaign_with_steps, client_id=client_row)
@@ -153,14 +182,8 @@ def three_clients(db: None):
                 )
             )
         session.commit()
-        base = {
-            "archetype": "One-and-done",
-            "recency_bucket": "Exited 3y plus",
-            "value_tier": "Low",
-            "rhythm_band": "Unknown",
-        }
-        session.add(ClientFeatures(client_id=fresh_id, stale_contact=False, **base))
-        session.add(ClientFeatures(client_id=stale_id, stale_contact=True, **base))
+        session.add(ClientFeatures(client_id=fresh_id, stale_contact=False))
+        session.add(ClientFeatures(client_id=stale_id, stale_contact=True))
         # unknown_id deliberately gets no ClientFeatures row.
         session.commit()
 
@@ -304,6 +327,26 @@ def test_advance_enrollment_completes_the_enrollment_on_the_last_step(
     with SessionLocal() as session:
         row = session.get(Enrollment, enrollment_id)
         assert row.current_step == 4
+        assert row.status == "completed"
+        assert row.next_due_at is None
+
+
+def test_advance_enrollment_completes_a_one_step_campaigns_first_touch(
+    one_step_campaign: int, client_row: int
+) -> None:
+    """A fresh enrollment (status enrolled) whose only step is also its last
+    must still pass through in_progress: the state machine has no direct
+    enrolled-to-completed move."""
+    with SessionLocal() as session:
+        enrollment = _make_enrollment(session, campaign_id=one_step_campaign, client_id=client_row)
+        assert enrollment.status == "enrolled"
+        advance_enrollment(session, enrollment, step_no=1, sent_at=datetime.now(UTC))
+        session.commit()
+        enrollment_id = enrollment.enrollment_id
+
+    with SessionLocal() as session:
+        row = session.get(Enrollment, enrollment_id)
+        assert row.current_step == 1
         assert row.status == "completed"
         assert row.next_due_at is None
 

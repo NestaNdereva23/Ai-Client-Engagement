@@ -121,45 +121,9 @@ _BASE_INSTRUCTIONS = (
     "When in doubt, say less rather than inventing information."
 )
 
-# One line of tone and framing per prompt variant, keyed by the exact string a
-# business rule resolves to. A rule set that names its angle in the catalogue
-# reads its guidance from there instead; this dictionary is what an older rule
-# set, or a lookup with no catalogue entry, falls back to.
-_VARIANT_GUIDANCE: Mapping[str, str] = {
-    "habit_premium": (
-        "This client invested frequently and at a high value. Acknowledge "
-        "the strong habit they built and invite them to resume it."
-    ),
-    "habit_standard": (
-        "This client invested frequently. Invite them to resume their regular investing rhythm."
-    ),
-    "habit_premium_soft": (
-        "This client invested frequently at a high value, though their full "
-        "purchase history is not completely known to us. Invite them to "
-        "resume investing without stating or implying an exact count or total."
-    ),
-    "habit_standard_soft": (
-        "This client invested frequently, though their full purchase history "
-        "is not completely known to us. Invite them to resume investing "
-        "without stating or implying an exact count or total."
-    ),
-    "flexible_premium": (
-        "This client invested once, at a high value. Offer a flexible, "
-        "low pressure way back in that respects their pace."
-    ),
-    "flexible_standard": (
-        "This client has invested occasionally. Offer a flexible, low pressure way back in."
-    ),
-    "flexible_minimal": (
-        "We have no observed investment activity for this client yet. Keep "
-        "the invitation light and exploratory, not a win back for a past habit."
-    ),
-    "flexible_soft": (
-        "This client's investment history is not completely known to us. "
-        "Offer a flexible, low pressure way back in without stating or "
-        "implying an exact count or total."
-    ),
-}
+# The one-vocabulary default: every prompt_variant is a v3 angle identifier
+# now, so its guidance always comes from the catalogue. This is only what a
+# variant with no catalogue entry falls back to, not a per-variant lookup.
 _DEFAULT_VARIANT_GUIDANCE = (
     "Offer a flexible, low pressure way back in, grounded only in the facts provided."
 )
@@ -178,11 +142,10 @@ def variant_guidance(
 ) -> str:
     """The tone and framing line for a prompt variant, or a safe default.
 
-    A prompt variant set to an angle identifier resolves against the active
-    angle catalogue when a session and a reference date are given. Without
-    them, or when the catalogue carries no such angle, this falls back to the
-    fixed dictionary above, so a caller that predates the catalogue keeps
-    working exactly as before.
+    A prompt variant is a v3 angle identifier, so this resolves against the
+    active angle catalogue when a session and a reference date are given.
+    Without them, or when the catalogue carries no such angle, this returns
+    the one generic default rather than a fixed per-variant dictionary.
     """
     if not prompt_variant:
         return _DEFAULT_VARIANT_GUIDANCE
@@ -190,7 +153,7 @@ def variant_guidance(
         angle = load_angle(session, prompt_variant, at)
         if angle is not None:
             return _angle_guidance(angle)
-    return _VARIANT_GUIDANCE.get(prompt_variant, _DEFAULT_VARIANT_GUIDANCE)
+    return _DEFAULT_VARIANT_GUIDANCE
 
 
 def template_text(prompt_variant: str | None) -> str:

@@ -85,14 +85,14 @@ def client(db: None):
         session.commit()
 
 
-def accepted_state(client_id: int, *, prompt_variant: str = "habit_premium") -> dict:
+def accepted_state(client_id: int, *, prompt_variant: str = "back_on_schedule") -> dict:
     run_id = str(uuid4())
     return {
         "run_id": run_id,
         "trace_id": str(uuid4()),
         "client_id": client_id,
         "product": "money market",
-        "angle": "winback_habit",
+        "angle": "back_on_schedule",
         "prompt_variant": prompt_variant,
         "status": "accepted",
         "attempts": 1,
@@ -170,29 +170,34 @@ def test_get_or_create_model_version_registers_a_new_row_on_a_real_change(db: No
 def test_get_or_create_prompt_version_dedupes_an_unchanged_variant(db: None) -> None:
     with SessionLocal() as session:
         first = get_or_create_prompt_version(
-            session, channel="email", prompt_variant="habit_premium", angle="winback_habit"
+            session, channel="email", prompt_variant="back_on_schedule", angle="back_on_schedule"
         )
         second = get_or_create_prompt_version(
-            session, channel="email", prompt_variant="habit_premium", angle="winback_habit"
+            session, channel="email", prompt_variant="back_on_schedule", angle="back_on_schedule"
         )
         session.commit()
 
     assert first.prompt_version_id == second.prompt_version_id
-    assert first.template_text == template_text("habit_premium")
+    assert first.template_text == template_text("back_on_schedule")
 
 
 def test_get_or_create_prompt_version_registers_a_new_row_per_distinct_variant(db: None) -> None:
+    """Two variants sharing the same rendered text (no catalogue entry for
+    either) must still register as two distinct versions: the row is keyed
+    on channel/variant/angle together with the text, not the text alone."""
     with SessionLocal() as session:
-        premium = get_or_create_prompt_version(
-            session, channel="email", prompt_variant="habit_premium", angle="winback_habit"
+        one = get_or_create_prompt_version(
+            session, channel="email", prompt_variant="back_on_schedule", angle="back_on_schedule"
         )
-        standard = get_or_create_prompt_version(
-            session, channel="email", prompt_variant="habit_standard", angle="winback_habit"
+        other = get_or_create_prompt_version(
+            session, channel="email", prompt_variant="pick_up_again", angle="pick_up_again"
         )
         session.commit()
 
-    assert premium.prompt_version_id != standard.prompt_version_id
-    assert premium.template_text != standard.template_text
+    assert one.prompt_version_id != other.prompt_version_id
+    assert one.template_text == other.template_text
+    assert one.prompt_variant == "back_on_schedule"
+    assert other.prompt_variant == "pick_up_again"
 
 
 def test_persist_generation_run_stamps_and_stores_an_accepted_draft(client: int) -> None:
@@ -212,7 +217,7 @@ def test_persist_generation_run_stamps_and_stores_an_accepted_draft(client: int)
     assert stored.status == "accepted"
     assert stored.client_id == client
     assert stored.ai_draft_content == state["raw_structured_output"]
-    assert prompt_version.prompt_variant == "habit_premium"
+    assert prompt_version.prompt_variant == "back_on_schedule"
     assert model_version.model_id == "claude-opus-5"
     assert model_version.max_tokens == 1024
 

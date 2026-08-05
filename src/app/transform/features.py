@@ -21,20 +21,6 @@ from statistics import median
 
 from app.transform.flatten import PURCHASE_CAP, ClientRow, FlattenResult
 
-# value_tier cutoffs on total purchase amount.
-VALUE_TIER_TOP = 1_000_000
-VALUE_TIER_HIGH = 250_000
-VALUE_TIER_MID = 50_000
-
-# recency_bucket cutoffs in days since last activity.
-RECENCY_1Y = 365
-RECENCY_2Y = 730
-RECENCY_3Y = 1095
-
-# rhythm_band cutoffs on the typical gap between purchases, in days.
-RHYTHM_REGULAR = 90
-RHYTHM_PERIODIC = 365
-
 # --- thresholds behind the behavioural bands. Retune here, nowhere else. ---
 
 # Months in which exits cluster far above the usual rate.
@@ -111,11 +97,7 @@ class RelationshipMeasures:
 @dataclass
 class FeatureRow:
     client_id: int
-    archetype: str
-    recency_bucket: str
-    value_tier: str
     own_rhythm_days: int | None
-    rhythm_band: str
     # A count of purchases, not a value. client_fund.observed_volume is the value.
     observed_volume: int
     purchases_censored: bool
@@ -137,38 +119,6 @@ class FeatureRow:
     priority_tier: str
 
 
-def _archetype(volume: int) -> str:
-    if volume >= PURCHASE_CAP:
-        return "Frequent (5+, censored)"
-    if volume >= 2:
-        return "Occasional (2-4)"
-    if volume == 1:
-        return "One-and-done"
-    return "None observed"
-
-
-def _recency_bucket(days: int | None) -> str:
-    if days is None:
-        return "Unknown"
-    if days < RECENCY_1Y:
-        return "Exited under 1y"
-    if days < RECENCY_2Y:
-        return "Exited 1 to 2y"
-    if days < RECENCY_3Y:
-        return "Exited 2 to 3y"
-    return "Exited 3y plus"
-
-
-def _value_tier(total_purchase: float) -> str:
-    if total_purchase >= VALUE_TIER_TOP:
-        return "Top"
-    if total_purchase >= VALUE_TIER_HIGH:
-        return "High"
-    if total_purchase >= VALUE_TIER_MID:
-        return "Mid"
-    return "Low"
-
-
 def _rhythm_days(dates: list[date]) -> int | None:
     """Typical gap in days between purchases, or None with fewer than two."""
     unique = sorted(set(dates))
@@ -176,16 +126,6 @@ def _rhythm_days(dates: list[date]) -> int | None:
         return None
     gaps = [(later - earlier).days for earlier, later in zip(unique, unique[1:], strict=False)]
     return int(median(gaps))
-
-
-def _rhythm_band(days: int | None) -> str:
-    if days is None:
-        return "Unknown"
-    if days <= RHYTHM_REGULAR:
-        return "Regular"
-    if days <= RHYTHM_PERIODIC:
-        return "Periodic"
-    return "Infrequent"
 
 
 def _median_gap(dates: list[date]) -> float | None:
@@ -434,11 +374,6 @@ def derive_features(
         measure = measures[(primary.client_id, primary.unit_fund_id)]
 
         observed_volume = sum(r.n_purchases_returned for r in ordered)
-        total_purchase = sum(r.total_purchase_amount for r in ordered)
-        recencies = [
-            r.days_since_last_activity for r in ordered if r.days_since_last_activity is not None
-        ]
-        days_since = min(recencies) if recencies else None
         rhythm = _rhythm_days(purchase_dates.get(client_id, []))
         recency_band = _recency_band(primary.days_since_last_activity)
         value_band = _value_band(measure.avg_ticket)
@@ -446,11 +381,7 @@ def derive_features(
         features.append(
             FeatureRow(
                 client_id=client_id,
-                archetype=_archetype(observed_volume),
-                recency_bucket=_recency_bucket(days_since),
-                value_tier=_value_tier(total_purchase),
                 own_rhythm_days=rhythm,
-                rhythm_band=_rhythm_band(rhythm),
                 observed_volume=observed_volume,
                 purchases_censored=any(r.purchases_censored for r in ordered),
                 history_censored=any(r.history_censored for r in ordered),
