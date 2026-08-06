@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.db.models.campaigns import Enrollment
-from app.db.models.models import Clients, Funds, PiiVault
+from app.db.models.models import ClientFeatures, Clients, Funds, PiiVault
 from app.db.models.outreach import Campaign
 from app.db.session import SessionLocal
 from app.main import app
@@ -85,3 +85,101 @@ def test_campaign_summary_counts_the_suppressed_row(campaign_with_a_suppressed_r
 def test_campaign_summary_404s_for_an_unknown_campaign(db: None) -> None:
     response = client.get(f"{CAMPAIGNS}/999999999/summary")
     assert response.status_code == 404
+
+
+def test_list_campaigns_carries_its_own_enrollment_counts(
+    campaign_with_a_suppressed_row,
+) -> None:
+    campaign_id = campaign_with_a_suppressed_row
+    response = client.get(CAMPAIGNS, params={"limit": 200})
+    assert response.status_code == 200
+    rows = {row["campaign_id"]: row for row in response.json()["items"]}
+    assert campaign_id in rows
+    row = rows[campaign_id]
+    assert row["total_enrolled"] == 2
+    assert row["primary_count"] == 1
+    assert row["suppressed_count"] == 1
+    assert row["name"] == "test summary campaign"
+
+
+@pytest.fixture
+def cohort_clients(db: None):
+    """Two clients matching a cohort filter, one that doesn't."""
+    fund_id = 97702
+    matching_a, matching_b, non_matching = 97720, 97721, 97722
+    with SessionLocal() as session:
+        session.add(Funds(unit_fund_id=fund_id, unit_fund_name="Test Fund"))
+        session.commit()
+        for client_id in (matching_a, matching_b, non_matching):
+            session.add(
+                Clients(
+                    client_id=client_id,
+                    unit_fund_id=fund_id,
+                    n_purchases_returned=0,
+                    n_sales_returned=0,
+                )
+            )
+        session.commit()
+        session.add_all(
+            [
+                ClientFeatures(client_id=matching_a, value_band="High"),
+                ClientFeatures(client_id=matching_b, value_band="High"),
+                ClientFeatures(client_id=non_matching, value_band="Low"),
+            ]
+        )
+        session.commit()
+
+    yield fund_id, matching_a, matching_b, non_matching
+
+    with SessionLocal() as session:
+        campaign_ids = session.scalars(
+            select(Campaign.campaign_id).where(Campaign.name == "cohort test campaign")
+        ).all()
+        if campaign_ids:
+            session.execute(delete(Enrollment).where(Enrollment.campaign_id.in_(campaign_ids)))
+            session.execute(delete(Campaign).where(Campaign.campaign_id.in_(campaign_ids)))
+        session.execute(
+            delete(ClientFeatures).where(
+                ClientFeatures.client_id.in_((matching_a, matching_b, non_matching))
+            )
+        )
+        session.execute(
+            delete(Clients).where(Clients.client_id.in_((matching_a, matching_b, non_matching)))
+        )
+        session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
+        session.commit()
+
+
+def test_create_campaign_enrolls_exactly_the_matching_cohort(cohort_clients) -> None:
+    fund_id, matching_a, matching_b, non_matching = cohort_clients
+    response = client.post(
+        CAMPAIGNS,
+        json={
+            "name": "cohort test campaign",
+            "cohort": {"fund_id": fund_id, "value_band": "High"},
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["enrolled_count"] == 2
+    assert body["cohort_definition"] == {
+        "fund_id": fund_id,
+        "value_band": "High",
+        "recency_band": None,
+        "purchase_depth": None,
+        "message_angle": None,
+    }
+
+    with SessionLocal() as session:
+        enrolled_ids = set(
+            session.scalars(
+                select(Enrollment.client_id).where(Enrollment.campaign_id == body["campaign_id"])
+            ).all()
+        )
+    assert enrolled_ids == {matching_a, matching_b}
+    assert non_matching not in enrolled_ids
+
+
+def test_create_campaign_rejects_an_empty_cohort(db: None) -> None:
+    response = client.post(CAMPAIGNS, json={"name": "empty cohort campaign", "cohort": {}})
+    assert response.status_code == 422

@@ -29,9 +29,9 @@ _CLIENT_COLUMNS = (
 )
 
 
-def _base_query():
+def _base_query(*columns):
     return (
-        select(*_CLIENT_COLUMNS)
+        select(*(columns or _CLIENT_COLUMNS))
         .select_from(Clients)
         .join(ClientFeatures, ClientFeatures.client_id == Clients.client_id, isouter=True)
         .join(
@@ -42,20 +42,22 @@ def _base_query():
     )
 
 
-def list_clients(
-    session: Session,
+def _apply_bucket_filters(
+    query,
     *,
-    fund_id: int | None = None,
-    value_band: str | None = None,
-    recency_band: str | None = None,
-    purchase_depth: str | None = None,
-    message_angle: str | None = None,
-    cursor: str | None = None,
-    limit: int = DEFAULT_LIMIT,
-) -> tuple[list[Row], str | None]:
-    """Clients matching the given bucket filters, oldest client_id first."""
-    limit = clamp_limit(limit)
-    query = _base_query()
+    client_id: int | None,
+    fund_id: int | None,
+    value_band: str | None,
+    recency_band: str | None,
+    purchase_depth: str | None,
+    message_angle: str | None,
+):
+    """The allow-listed bucket filters every client query accepts, applied in
+    one place so list_clients, get_client, and cohort resolution for a new
+    campaign can never drift apart on what "matching" means.
+    """
+    if client_id is not None:
+        query = query.where(Clients.client_id == client_id)
     if fund_id is not None:
         query = query.where(Clients.unit_fund_id == fund_id)
     if value_band is not None:
@@ -66,6 +68,36 @@ def list_clients(
         query = query.where(ClientFeatures.purchase_depth == purchase_depth)
     if message_angle is not None:
         query = query.where(ClientMessageIndicators.message_angle == message_angle)
+    return query
+
+
+class ClientNotFound(Exception):
+    """No client exists with the given id."""
+
+
+def list_clients(
+    session: Session,
+    *,
+    client_id: int | None = None,
+    fund_id: int | None = None,
+    value_band: str | None = None,
+    recency_band: str | None = None,
+    purchase_depth: str | None = None,
+    message_angle: str | None = None,
+    cursor: str | None = None,
+    limit: int = DEFAULT_LIMIT,
+) -> tuple[list[Row], str | None]:
+    """Clients matching the given bucket filters, oldest client_id first."""
+    limit = clamp_limit(limit)
+    query = _apply_bucket_filters(
+        _base_query(),
+        client_id=client_id,
+        fund_id=fund_id,
+        value_band=value_band,
+        recency_band=recency_band,
+        purchase_depth=purchase_depth,
+        message_angle=message_angle,
+    )
     if cursor is not None:
         after_id = decode_id_cursor(cursor)
         query = query.where(Clients.client_id > after_id)
@@ -77,6 +109,46 @@ def list_clients(
         rows = rows[:limit]
         next_cursor = encode_id_cursor(rows[-1].client_id)
     return rows, next_cursor
+
+
+def resolve_cohort_client_ids(
+    session: Session,
+    *,
+    fund_id: int | None = None,
+    value_band: str | None = None,
+    recency_band: str | None = None,
+    purchase_depth: str | None = None,
+    message_angle: str | None = None,
+) -> list[int]:
+    """Every client_id matching the given bucket filters, unpaginated.
+
+    A new campaign's cohort is the whole match, not one page of it, so this
+    is the one place a client query intentionally skips the cursor/limit
+    every console-facing list uses.
+    """
+    query = _apply_bucket_filters(
+        _base_query(Clients.client_id),
+        client_id=None,
+        fund_id=fund_id,
+        value_band=value_band,
+        recency_band=recency_band,
+        purchase_depth=purchase_depth,
+        message_angle=message_angle,
+    )
+    return list(session.scalars(query).all())
+
+
+def get_client(session: Session, client_id: int) -> Row:
+    """One client's buckets, or raise ClientNotFound.
+
+    Same non-PII projection as list_clients: a name still isn't re-attached
+    here, for the same reason the list endpoint never re-attaches one (see
+    module docstring).
+    """
+    row = session.execute(_base_query().where(Clients.client_id == client_id)).one_or_none()
+    if row is None:
+        raise ClientNotFound(client_id)
+    return row
 
 
 def segment_distribution(session: Session) -> dict[str, list[tuple[str, int]] | int]:

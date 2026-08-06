@@ -14,13 +14,27 @@ from sqlalchemy.orm import Session
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.clients import ClientSummaryOut, SegmentBucketOut, SegmentDistributionOut
-from app.services.clients import list_clients, segment_distribution
+from app.services.clients import ClientNotFound, get_client, list_clients, segment_distribution
 
 router = APIRouter(tags=["clients"])
 
 
+def _to_summary(row) -> ClientSummaryOut:
+    return ClientSummaryOut(
+        client_id=row.client_id,
+        unit_fund_id=row.unit_fund_id,
+        recency_band=row.recency_band,
+        value_band=row.value_band,
+        cadence_band=row.cadence_band,
+        hold_band=row.hold_band,
+        message_angle=row.message_angle,
+        priority_tier=row.priority_tier,
+    )
+
+
 @router.get("/clients", response_model=Page[ClientSummaryOut])
 def get_clients(
+    client_id: int | None = None,
     fund_id: int | None = None,
     value_band: str | None = None,
     recency_band: str | None = None,
@@ -34,6 +48,7 @@ def get_clients(
     try:
         rows, next_cursor = list_clients(
             session,
+            client_id=client_id,
             fund_id=fund_id,
             value_band=value_band,
             recency_band=recency_band,
@@ -44,20 +59,17 @@ def get_clients(
         )
     except InvalidCursor:
         raise HTTPException(status_code=400, detail="invalid cursor") from None
-    items = [
-        ClientSummaryOut(
-            client_id=r.client_id,
-            unit_fund_id=r.unit_fund_id,
-            recency_band=r.recency_band,
-            value_band=r.value_band,
-            cadence_band=r.cadence_band,
-            hold_band=r.hold_band,
-            message_angle=r.message_angle,
-            priority_tier=r.priority_tier,
-        )
-        for r in rows
-    ]
-    return Page(items=items, next_cursor=next_cursor)
+    return Page(items=[_to_summary(r) for r in rows], next_cursor=next_cursor)
+
+
+@router.get("/clients/{client_id}", response_model=ClientSummaryOut)
+def get_client_detail(client_id: int, session: Session = Depends(get_session)) -> ClientSummaryOut:
+    """One client's buckets. Buckets only, never a name (see module docstring)."""
+    try:
+        row = get_client(session, client_id)
+    except ClientNotFound:
+        raise HTTPException(status_code=404, detail="client not found") from None
+    return _to_summary(row)
 
 
 @router.get("/segments", response_model=SegmentDistributionOut)
