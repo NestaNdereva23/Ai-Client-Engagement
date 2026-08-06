@@ -15,7 +15,7 @@ import pytest
 
 from app.db.models.models import IngestionStatus, RawStaging
 from app.db.session import SessionLocal
-from app.transform.flatten import flatten_payload, flatten_run
+from app.transform.flatten import flatten_payload, flatten_run, latest_reference_date
 
 # A fixed EAT anchor and a known last-activity date, 22 days apart.
 EAT = timezone(timedelta(hours=3))
@@ -160,3 +160,51 @@ def test_flatten_run_is_deterministic_across_reruns(db: None, cleanup_runs: list
 def test_flatten_run_without_reference_ts_raises(db: None) -> None:
     with SessionLocal() as session, pytest.raises(ValueError, match="reference_ts"):
         flatten_run(session, "run-that-does-not-exist")
+
+
+def test_latest_reference_date_reads_the_most_recently_completed_run(
+    db: None, cleanup_runs: list[str]
+) -> None:
+    older_run = uuid4().hex
+    newer_run = uuid4().hex
+    still_running_run = uuid4().hex
+    cleanup_runs.extend([older_run, newer_run, still_running_run])
+    # Anchored far in the future (and off midnight, like ANCHOR above) so this
+    # test's ordering can't be disturbed by completed runs any other test
+    # happens to leave behind, or by a session-timezone round-trip shifting a
+    # midnight boundary onto the wrong calendar day.
+    older = datetime(2030, 1, 1, 9, 0, tzinfo=EAT)
+    newer = datetime(2030, 6, 1, 9, 0, tzinfo=EAT)
+    latest_but_unfinished = datetime(2030, 12, 1, 9, 0, tzinfo=EAT)
+    with SessionLocal() as session:
+        session.add(
+            IngestionStatus(
+                run_id=older_run,
+                endpoint="inactive-clients",
+                state="completed",
+                reference_ts=older,
+            )
+        )
+        session.add(
+            IngestionStatus(
+                run_id=newer_run,
+                endpoint="inactive-clients",
+                state="completed",
+                reference_ts=newer,
+            )
+        )
+        # A later pull that never finished must not count as the current data date.
+        session.add(
+            IngestionStatus(
+                run_id=still_running_run,
+                endpoint="inactive-clients",
+                state="running",
+                reference_ts=latest_but_unfinished,
+            )
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        result = latest_reference_date(session)
+
+    assert result == newer.date()

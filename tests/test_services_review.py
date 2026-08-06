@@ -27,6 +27,7 @@ from app.services.review import (
     MessageNotFound,
     _fetch_client_name,
     _first_name_from_full_name,
+    compute_edit_diff,
     create_outreach_message,
     decide,
     get_message,
@@ -89,6 +90,7 @@ def accepted_state(client_id: int, **overrides) -> dict:
         "client_id": client_id,
         "product": "money market",
         "angle": "winback_habit",
+        "priority_tier": "T2",
         "prompt_variant": "habit_premium",
         "status": "accepted",
         "attempts": 1,
@@ -367,6 +369,55 @@ def test_decide_edit_approve_keeps_both_the_ai_and_edited_versions(message) -> N
         "body": "Dear {{first_name}}, we miss you.",
     }
     assert history[-1].edited_content == edited
+
+
+def test_compute_edit_diff_only_includes_changed_fields() -> None:
+    ai_draft = {"subject": "Come back", "body": "Dear you, we miss you."}
+    edited = {"subject": "Come back", "body": "Dear Jane, we miss you."}
+    diff = compute_edit_diff(ai_draft, edited)
+    assert "subject" not in diff
+    assert "body" in diff
+    assert any("Jane" in line for line in diff["body"])
+
+
+def test_decide_stamps_message_angle_and_priority_tier_from_the_generation_run(message) -> None:
+    """The label describes the draft as generated, from the run, not from
+    whatever the client's indicators currently resolve to."""
+    with SessionLocal() as session:
+        action = decide(session, message, outcome="approve", reviewer_id="fa-1")
+        session.commit()
+        action_id = action.review_action_id
+
+    with SessionLocal() as session:
+        stored = session.get(ReviewAction, action_id)
+    assert stored.message_angle == "winback_habit"
+    assert stored.priority_tier == "T2"
+
+
+def test_decide_edit_approve_stores_a_per_field_edit_diff(message) -> None:
+    edited = {"subject": "Come back to {{fund_name}}", "body": "Dear Jane, we miss you dearly."}
+    with SessionLocal() as session:
+        action = decide(
+            session, message, outcome="edit_approve", reviewer_id="fa-1", edited_content=edited
+        )
+        session.commit()
+        action_id = action.review_action_id
+
+    with SessionLocal() as session:
+        stored = session.get(ReviewAction, action_id)
+    assert "subject" not in stored.edit_diff
+    assert "body" in stored.edit_diff
+
+
+def test_decide_approve_stores_no_edit_diff(message) -> None:
+    with SessionLocal() as session:
+        action = decide(session, message, outcome="approve", reviewer_id="fa-1")
+        session.commit()
+        action_id = action.review_action_id
+
+    with SessionLocal() as session:
+        stored = session.get(ReviewAction, action_id)
+    assert stored.edit_diff is None
 
 
 @pytest.mark.parametrize("outcome", ["approve", "edit_approve", "reject", "escalate", "hold"])

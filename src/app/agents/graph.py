@@ -29,6 +29,7 @@ from app.rag.retrieve import retrieve_product_facts
 from app.rules.catalog import load_angle
 from app.rules.tier_contract import load_tier
 from app.schemas.email_draft import DraftValidationError, parse_email_draft
+from app.transform.flatten import latest_reference_date
 
 # The default prompt builder is EmailAgent's.
 PromptBuilder = Callable[..., str]
@@ -65,8 +66,11 @@ _NUMERIC_FACT_KEYS = (
 class ClientContext:
     """Everything retrieve_context needs for one client: masked tiers, angle, facts.
 
-    brief, contract and facts stay optional so a loader that predates the
-    catalogue still satisfies this shape.
+    brief, contract, facts, priority_tier, rule_version, angle_catalog_version
+    and data_date all stay optional so a loader that predates the catalogue
+    (or a test fake) still satisfies this shape. The last three feed the
+    reproducibility stamp: which rule, which catalogue, and which data pull
+    produced this client's angle.
     """
 
     raw_context: Mapping[str, Any]
@@ -76,6 +80,10 @@ class ClientContext:
     brief: Any | None = None
     contract: Any | None = None
     facts: Mapping[str, Any] | None = None
+    priority_tier: str | None = None
+    rule_version: int | None = None
+    angle_catalog_version: int | None = None
+    data_date: date | None = None
 
 
 # Loads a client's context; the caller binds a live session (e.g. via
@@ -91,7 +99,11 @@ class GenerationState(TypedDict, total=False):
     run_id: str
     trace_id: str
     angle: str | None
+    priority_tier: str | None
     prompt_variant: str | None
+    rule_version: int | None
+    angle_catalog_version: int | None
+    data_date: date | None
     raw_context: Mapping[str, Any]
     chunks: Sequence[GroundingChunk]
     brief: Any | None
@@ -193,14 +205,19 @@ def load_client_context(
 
     chunks = retrieve_product_facts(session, product=product, angle=indicators.message_angle)
     on = at or date.today()
+    brief = load_angle(session, indicators.message_angle, on)
     return ClientContext(
         raw_context=dict(row),
         angle=indicators.message_angle,
         prompt_variant=indicators.prompt_variant,
         chunks=chunks,
-        brief=load_angle(session, indicators.message_angle, on),
+        brief=brief,
         contract=load_tier(session, indicators.priority_tier, on),
         facts=load_client_facts(session, client_id, dict(row)),
+        priority_tier=indicators.priority_tier,
+        rule_version=indicators.rule_version,
+        angle_catalog_version=brief.version if brief is not None else None,
+        data_date=latest_reference_date(session),
     )
 
 
@@ -291,11 +308,15 @@ def build_generation_graph(
         return {
             "raw_context": client_context.raw_context,
             "angle": client_context.angle,
+            "priority_tier": client_context.priority_tier,
             "prompt_variant": client_context.prompt_variant,
             "chunks": client_context.chunks,
             "brief": client_context.brief,
             "contract": client_context.contract,
             "facts": client_context.facts,
+            "rule_version": client_context.rule_version,
+            "angle_catalog_version": client_context.angle_catalog_version,
+            "data_date": client_context.data_date,
             "tool_calls": tool_calls,
         }
 

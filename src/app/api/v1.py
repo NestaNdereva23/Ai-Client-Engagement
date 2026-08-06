@@ -11,6 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api.routers import (
+    admin,
     audit,
     campaigns,
     clients,
@@ -32,3 +33,4 @@ router.include_router(rules.router)
 router.include_router(audit.router)
 router.include_router(rag.router)
 router.include_router(integration.router)
+router.include_router(admin.router)
