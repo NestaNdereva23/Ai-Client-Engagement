@@ -47,6 +47,9 @@ class ReviewActionOut(BaseModel):
     reviewer_id: str
     outcome: str
     edited_content: dict | None
+    message_angle: str | None
+    priority_tier: str | None
+    edit_diff: dict | None
     reason: str | None
     created_at: datetime
 

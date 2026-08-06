@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import date
 
 import pytest
 
@@ -233,6 +234,47 @@ def test_default_prompt_builder_is_email_agents_and_reflects_the_rule_outcome() 
     assert llm.calls[0]["system"] == build_system_prompt(
         angle="back_on_schedule", prompt_variant="back_on_schedule"
     )
+
+
+def test_retrieve_context_carries_the_reproducibility_stamp_into_state() -> None:
+    """Whatever the loader resolved for rule/catalogue version and data date
+    survives into the terminal state, ready for persist_generation_run.
+    """
+
+    def load(client_id: int, product: str) -> ClientContext:
+        return ClientContext(
+            raw_context=RAW_CONTEXT,
+            angle="back_on_schedule",
+            prompt_variant="back_on_schedule",
+            chunks=(),
+            rule_version=5,
+            angle_catalog_version=3,
+            data_date=date(2026, 7, 23),
+        )
+
+    llm = ScriptedLLMClient([draft_json(body="Dear {{first_name}}, welcome back.")])
+    graph = build_generation_graph(context_loader=load, llm_client=llm)
+
+    result = graph.invoke(new_generation_state(client_id=1001, product="money market"))
+
+    assert result["rule_version"] == 5
+    assert result["angle_catalog_version"] == 3
+    assert result["data_date"] == date(2026, 7, 23)
+
+
+def test_retrieve_context_leaves_the_stamp_null_for_a_loader_that_predates_it() -> None:
+    """A minimal loader (or a test fake) that never sets the new fields
+    still satisfies ClientContext's shape, and the graph reports them as null
+    rather than raising.
+    """
+    llm = ScriptedLLMClient([draft_json(body="Dear {{first_name}}, welcome back.")])
+    graph = build_generation_graph(context_loader=make_context_loader(), llm_client=llm)
+
+    result = graph.invoke(new_generation_state(client_id=1001, product="money market"))
+
+    assert result["rule_version"] is None
+    assert result["angle_catalog_version"] is None
+    assert result["data_date"] is None
 
 
 def test_prompt_builder_is_injectable_for_a_future_channel() -> None:

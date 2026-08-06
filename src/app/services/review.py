@@ -9,11 +9,15 @@ with a grant on the vault.
 decide() is the one place a review_action gets written and an
 outreach_message's status changes; escalate and hold are waypoints, not
 endpoints, so a message stays decidable after either, while approve and
-reject are terminal.
+reject are terminal. Every review_action also carries the angle and tier its
+draft was generated under, and edit_approve additionally carries a per-field
+diff: together these are the ground-truth label a judge-agreement analysis
+joins against.
 """
 
 from __future__ import annotations
 
+import difflib
 import uuid
 
 import structlog
@@ -21,7 +25,7 @@ from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
 from app.audit.log import record_audit
-from app.db.models.llmops import GenerationRun
+from app.db.models.llmops import GenerationRun, PromptVersion
 from app.db.models.models import Clients, Funds, PiiVault
 from app.db.models.outreach import REVIEW_OUTCOMES, OutreachMessage, ReviewAction
 from app.db.session import restricted_session
@@ -186,6 +190,41 @@ def get_message(session: Session, message_id: str) -> OutreachMessage:
     return message
 
 
+def _label_for_message(session: Session, message: OutreachMessage) -> tuple[str | None, str | None]:
+    """The (angle, tier) this message's draft was actually generated under.
+
+    Read from the generation run rather than the client's current
+    client_message_indicators row, which is upserted per client and may have
+    since resolved to a different angle or tier: the label has to describe
+    the draft being reviewed, not whatever the client looks like today.
+    """
+    run = session.get(GenerationRun, message.generation_run_id)
+    if run is None:
+        return None, None
+    prompt_version = session.get(PromptVersion, run.prompt_version_id)
+    angle = prompt_version.angle if prompt_version else None
+    return angle, run.priority_tier
+
+
+def _diff_lines(before: str, after: str) -> list[str]:
+    return list(
+        difflib.unified_diff(str(before).splitlines(), str(after).splitlines(), lineterm="")
+    )
+
+
+def compute_edit_diff(ai_draft_content: dict, edited_content: dict) -> dict[str, list[str]]:
+    """A per-field unified diff between what the model wrote and what the
+    reviewer changed it to; only fields the reviewer actually touched appear,
+    so an edit that only ever changed the subject shows no body diff.
+    """
+    diff: dict[str, list[str]] = {}
+    for field, after in edited_content.items():
+        before = ai_draft_content.get(field, "")
+        if before != after:
+            diff[field] = _diff_lines(before, after)
+    return diff
+
+
 def get_review_history(session: Session, message_id: str) -> list[ReviewAction]:
     """Every decision made on one message, oldest first."""
     return list(
@@ -216,11 +255,21 @@ def decide(
     if message.status in _TERMINAL_STATUSES:
         raise MessageAlreadyDecided(f"{message_id} is already {message.status}")
 
+    message_angle, priority_tier = _label_for_message(session, message)
+    edit_diff = (
+        compute_edit_diff(message.ai_draft_content, edited_content)
+        if outcome == "edit_approve"
+        else None
+    )
+
     action = ReviewAction(
         message_id=message_id,
         reviewer_id=reviewer_id,
         outcome=outcome,
         edited_content=edited_content,
+        message_angle=message_angle,
+        priority_tier=priority_tier,
+        edit_diff=edit_diff,
         reason=reason,
     )
     session.add(action)

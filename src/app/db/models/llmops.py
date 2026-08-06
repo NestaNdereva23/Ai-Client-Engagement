@@ -10,9 +10,9 @@ the content itself.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, Text, func
+from sqlalchemy import BigInteger, Date, DateTime, Float, ForeignKey, Integer, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -62,6 +62,19 @@ class GenerationRun(Base):
         BigInteger, ForeignKey("clients.client_id"), nullable=False, index=True
     )
     product: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The client's resolved tier at generation time, snapshotted here because
+    # client_message_indicators is upserted per client and can move on to a
+    # different tier later; the angle is snapshotted the same way, on
+    # prompt_versions.angle.
+    priority_tier: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    # The reproducibility stamp: which data pull, rule set, and angle
+    # catalogue produced this message, so it can still be explained months
+    # later even after all three have since moved on. Set once at persist
+    # time and never updated afterward, the same as every other field on
+    # this row.
+    data_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    rule_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    angle_catalog_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     prompt_version_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("prompt_versions.prompt_version_id"), nullable=False
     )

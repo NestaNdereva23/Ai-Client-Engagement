@@ -10,6 +10,7 @@ same version rows rather than duplicating the registry.
 
 from __future__ import annotations
 
+from datetime import date
 from uuid import uuid4
 
 import pytest
@@ -93,6 +94,10 @@ def accepted_state(client_id: int, *, prompt_variant: str = "back_on_schedule") 
         "client_id": client_id,
         "product": "money market",
         "angle": "back_on_schedule",
+        "priority_tier": "T2",
+        "rule_version": 3,
+        "angle_catalog_version": 2,
+        "data_date": date(2026, 7, 23),
         "prompt_variant": prompt_variant,
         "status": "accepted",
         "attempts": 1,
@@ -216,10 +221,35 @@ def test_persist_generation_run_stamps_and_stores_an_accepted_draft(client: int)
 
     assert stored.status == "accepted"
     assert stored.client_id == client
+    assert stored.priority_tier == "T2"
+    assert stored.rule_version == 3
+    assert stored.angle_catalog_version == 2
+    assert stored.data_date == date(2026, 7, 23)
     assert stored.ai_draft_content == state["raw_structured_output"]
     assert prompt_version.prompt_variant == "back_on_schedule"
     assert model_version.model_id == "claude-opus-5"
     assert model_version.max_tokens == 1024
+
+
+def test_persist_generation_run_leaves_the_stamp_null_when_the_state_never_carried_it(
+    client: int,
+) -> None:
+    state = accepted_state(client)
+    del state["rule_version"]
+    del state["angle_catalog_version"]
+    del state["data_date"]
+
+    with SessionLocal() as session:
+        run = persist_generation_run(session, state, make_settings())
+        session.commit()
+        run_id = run.run_id
+
+    with SessionLocal() as session:
+        stored = session.get(GenerationRun, run_id)
+
+    assert stored.rule_version is None
+    assert stored.angle_catalog_version is None
+    assert stored.data_date is None
 
 
 def test_persist_generation_run_stores_a_null_draft_when_nothing_was_ever_validated(
