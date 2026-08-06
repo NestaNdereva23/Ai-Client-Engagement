@@ -22,9 +22,9 @@ router = APIRouter(tags=["clients"])
 @router.get("/clients", response_model=Page[ClientSummaryOut])
 def get_clients(
     fund_id: int | None = None,
-    archetype: str | None = None,
-    value_tier: str | None = None,
-    recency_bucket: str | None = None,
+    value_band: str | None = None,
+    recency_band: str | None = None,
+    purchase_depth: str | None = None,
     message_angle: str | None = None,
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
@@ -35,9 +35,9 @@ def get_clients(
         rows, next_cursor = list_clients(
             session,
             fund_id=fund_id,
-            archetype=archetype,
-            value_tier=value_tier,
-            recency_bucket=recency_bucket,
+            value_band=value_band,
+            recency_band=recency_band,
+            purchase_depth=purchase_depth,
             message_angle=message_angle,
             cursor=cursor,
             limit=limit,
@@ -48,10 +48,10 @@ def get_clients(
         ClientSummaryOut(
             client_id=r.client_id,
             unit_fund_id=r.unit_fund_id,
-            archetype=r.archetype,
-            recency_bucket=r.recency_bucket,
-            value_tier=r.value_tier,
-            rhythm_band=r.rhythm_band,
+            recency_band=r.recency_band,
+            value_band=r.value_band,
+            cadence_band=r.cadence_band,
+            hold_band=r.hold_band,
             message_angle=r.message_angle,
             priority_tier=r.priority_tier,
         )
@@ -62,12 +62,15 @@ def get_clients(
 
 @router.get("/segments", response_model=SegmentDistributionOut)
 def get_segments(session: Session = Depends(get_session)) -> SegmentDistributionOut:
-    """Client counts grouped by archetype, value tier, and message angle."""
+    """Client counts grouped by purchase depth, value band, and message angle."""
     distribution = segment_distribution(session)
     return SegmentDistributionOut(
-        by_archetype=[SegmentBucketOut(key=k, count=c) for k, c in distribution["by_archetype"]],
-        by_value_tier=[SegmentBucketOut(key=k, count=c) for k, c in distribution["by_value_tier"]],
+        by_purchase_depth=[
+            SegmentBucketOut(key=k, count=c) for k, c in distribution["by_purchase_depth"]
+        ],
+        by_value_band=[SegmentBucketOut(key=k, count=c) for k, c in distribution["by_value_band"]],
         by_message_angle=[
             SegmentBucketOut(key=k, count=c) for k, c in distribution["by_message_angle"]
         ],
+        stale_contact_count=distribution["stale_contact_count"],
     )

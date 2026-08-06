@@ -72,20 +72,6 @@ CASES = {
 }
 
 
-def test_v3_is_not_yet_the_active_version() -> None:
-    """Seeding v3 must not silently cut resolution over before it is ready.
-
-    Ties on valid_from break toward the higher version, so v3 has to start
-    strictly after v2's own window or it would win the moment this migration
-    runs, ahead of the tier derivation and prompt work it depends on.
-    """
-    with SessionLocal() as session:
-        # A date safely inside v2's window and before v3's.
-        active = load_active_rules(session, at=date(2026, 9, 1))
-    assert active
-    assert {r.version for r in active} == {2}
-
-
 def test_the_seed_ships_all_twelve_angles_at_version_3() -> None:
     with SessionLocal() as session:
         active = load_active_rules(session, at=IN_FORCE)

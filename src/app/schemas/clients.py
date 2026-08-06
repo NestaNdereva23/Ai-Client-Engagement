@@ -10,10 +10,10 @@ class ClientSummaryOut(BaseModel):
 
     client_id: int
     unit_fund_id: int
-    archetype: str | None
-    recency_bucket: str | None
-    value_tier: str | None
-    rhythm_band: str | None
+    recency_band: str | None
+    value_band: str | None
+    cadence_band: str | None
+    hold_band: str | None
     message_angle: str | None
     priority_tier: str | None
 
@@ -24,6 +24,9 @@ class SegmentBucketOut(BaseModel):
 
 
 class SegmentDistributionOut(BaseModel):
-    by_archetype: list[SegmentBucketOut]
-    by_value_tier: list[SegmentBucketOut]
+    by_purchase_depth: list[SegmentBucketOut]
+    by_value_band: list[SegmentBucketOut]
     by_message_angle: list[SegmentBucketOut]
+    # A contact over three years stale never blocks a send; this is visibility
+    # into the ramp a batch should ease into, not a count of anything held.
+    stale_contact_count: int

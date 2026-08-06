@@ -36,13 +36,13 @@ def active_version(db: None):
             _TEST_VERSION,
             [
                 RuleSpec(
-                    name="frequent",
+                    name="capped",
                     priority=10,
-                    match={"archetype": ["Frequent (5+, censored)"]},
-                    message_angle="winback_habit",
+                    match={"purchase_depth": ["capped"]},
+                    message_angle="back_on_schedule",
                     urgency="high",
-                    priority_tier="P1",
-                    prompt_variant="habit_premium",
+                    priority_tier="T1",
+                    prompt_variant="back_on_schedule",
                 ),
                 RuleSpec(name="catch_all", priority=20),
             ],
@@ -69,25 +69,23 @@ def test_get_rule_versions_reports_the_window_and_rule_count(active_version) -> 
 def test_preview_resolves_the_matching_rule(active_version) -> None:
     response = client.post(
         f"{RULES}/preview",
-        json={"archetype": "Frequent (5+, censored)", "at": _PREVIEW_AT},
+        json={"purchase_depth": "capped", "at": _PREVIEW_AT},
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["message_angle"] == "winback_habit"
-    assert body["rule_name"] == "frequent"
+    assert body["message_angle"] == "back_on_schedule"
+    assert body["rule_name"] == "capped"
     assert body["version"] == active_version
 
 
 def test_preview_falls_through_to_the_catch_all(active_version) -> None:
-    response = client.post(
-        f"{RULES}/preview", json={"archetype": "One-and-done", "at": _PREVIEW_AT}
-    )
+    response = client.post(f"{RULES}/preview", json={"purchase_depth": "single", "at": _PREVIEW_AT})
     assert response.status_code == 200
     assert response.json()["rule_name"] == "catch_all"
 
 
 def test_preview_422s_when_no_rule_set_is_active(active_version) -> None:
     response = client.post(
-        f"{RULES}/preview", json={"archetype": "One-and-done", "at": "1900-01-01"}
+        f"{RULES}/preview", json={"purchase_depth": "single", "at": "1900-01-01"}
     )
     assert response.status_code == 422

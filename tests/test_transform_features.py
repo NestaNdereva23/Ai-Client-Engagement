@@ -9,8 +9,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import pytest
-
 from app.transform.features import derive_features
 from app.transform.flatten import flatten_payload
 
@@ -54,33 +52,6 @@ def _only(payload: dict[str, Any]):
     return features[0]
 
 
-def test_archetype_one_and_done() -> None:
-    f = _only(_payload([(1, "2020-01-01T00:00:00", "1000")]))
-    assert f.archetype == "One-and-done"
-    assert f.observed_volume == 1
-
-
-def test_archetype_frequent_is_censored() -> None:
-    purchases = [(i, "2024-01-01T00:00:00", "1000") for i in range(5)]
-    f = _only(_payload(purchases))
-    assert f.archetype == "Frequent (5+, censored)"
-    assert f.purchases_censored is True
-    assert f.history_censored is True
-
-
-def test_value_tier_from_total_purchase() -> None:
-    # 5 purchases summing past the Top cutoff of 1,000,000.
-    purchases = [(i, "2024-01-01T00:00:00", "300000") for i in range(5)]
-    assert _only(_payload(purchases)).value_tier == "Top"
-    assert _only(_payload([(1, "2024-01-01T00:00:00", "1000")])).value_tier == "Low"
-
-
-def test_recency_bucket_uses_anchor() -> None:
-    # Last activity in 2020 is more than 3 years before the 2026 anchor.
-    f = _only(_payload([(1, "2020-01-01T00:00:00", "1000")]))
-    assert f.recency_bucket == "Exited 3y plus"
-
-
 def test_rhythm_from_gaps_between_purchases() -> None:
     purchases = [
         (1, "2024-01-01T00:00:00", "100"),
@@ -89,13 +60,11 @@ def test_rhythm_from_gaps_between_purchases() -> None:
     ]
     f = _only(_payload(purchases))
     assert f.own_rhythm_days == 30
-    assert f.rhythm_band == "Regular"
 
 
 def test_rhythm_unknown_with_single_purchase() -> None:
     f = _only(_payload([(1, "2024-01-01T00:00:00", "100")]))
     assert f.own_rhythm_days is None
-    assert f.rhythm_band == "Unknown"
 
 
 def test_history_censored_when_sales_window_full() -> None:
@@ -114,26 +83,3 @@ def test_derivation_is_deterministic() -> None:
     first = derive_features(flatten_payload(payload, ANCHOR))
     second = derive_features(flatten_payload(payload, ANCHOR))
     assert first == second
-
-
-@pytest.mark.parametrize("attr", ["archetype", "recency_bucket", "value_tier", "rhythm_band"])
-def test_label_columns_are_from_known_buckets(attr: str) -> None:
-    known = {
-        "archetype": {
-            "None observed",
-            "One-and-done",
-            "Occasional (2-4)",
-            "Frequent (5+, censored)",
-        },
-        "recency_bucket": {
-            "Unknown",
-            "Exited under 1y",
-            "Exited 1 to 2y",
-            "Exited 2 to 3y",
-            "Exited 3y plus",
-        },
-        "value_tier": {"Top", "High", "Mid", "Low"},
-        "rhythm_band": {"Unknown", "Regular", "Periodic", "Infrequent"},
-    }
-    f = _only(_payload([(1, "2024-01-01T00:00:00", "100")]))
-    assert getattr(f, attr) in known[attr]

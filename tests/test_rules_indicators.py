@@ -1,6 +1,6 @@
 """Populating client_message_indicators from the rule engine.
 
-Seeds a small cohort through the transform, resolves it against the seeded v1
+Seeds a small cohort through the transform, resolves it against the seeded v3
 rules, and checks one traceable row per client, an idempotent re-run, and a
 refresh when the resolution changes.
 """
@@ -30,7 +30,8 @@ from app.rules.indicators import populate_indicators
 
 EAT = timezone(timedelta(hours=3))
 ANCHOR = datetime(2026, 7, 23, 9, 0, tzinfo=EAT)
-AT = date(2026, 7, 25)
+# Comfortably inside v3's window (2026-08-04 onward).
+AT = date(2026, 8, 10)
 
 
 def _client(cid: int, purchases: list[tuple[int, str]]) -> dict[str, Any]:
@@ -50,23 +51,24 @@ def _client(cid: int, purchases: list[tuple[int, str]]) -> dict[str, Any]:
 
 @pytest.fixture
 def cohort(db: None, cleanup_runs: list[str]):
-    """Seed a frequent high-value client and a one-and-done client, then clean up."""
+    """Seed a capped-depth client and a single-purchase client, then clean up."""
     from app.transform.load import transform_run
 
     run_id = uuid4().hex
     cleanup_runs.append(run_id)
     fund_id = 800
-    # 80001: five purchases over the Top cutoff -> Frequent, Top.
-    # 80002: a single small purchase -> One-and-done, Low.
-    frequent = _client(80001, [(80100 + i, "300000") for i in range(5)])
-    one_off = _client(80002, [(80200, "1000")])
+    # 80001: five purchases fills the window -> purchase_depth "capped", no
+    # other rule condition matches, so it falls through to the catch-all.
+    # 80002: a single purchase -> purchase_depth "single" -> onboarding_retry.
+    capped = _client(80001, [(80100 + i, "300000") for i in range(5)])
+    single = _client(80002, [(80200, "1000")])
     payload = {
         "data": [
             {
                 "unit_fund_id": fund_id,
                 "unit_fund_name": "Money Market Fund",
                 "inactive_client_count": 2,
-                "clients": [frequent, one_off],
+                "clients": [capped, single],
             }
         ]
     }
@@ -103,18 +105,17 @@ def test_populate_writes_one_traceable_row_per_client(cohort) -> None:
     assert count >= 2
 
     with SessionLocal() as session:
-        frequent = session.get(ClientMessageIndicators, 80001)
-        one_off = session.get(ClientMessageIndicators, 80002)
+        capped = session.get(ClientMessageIndicators, 80001)
+        single = session.get(ClientMessageIndicators, 80002)
 
-    assert frequent.message_angle == "winback_habit"
-    assert frequent.priority_tier == "P1"
-    assert frequent.rule_name == "frequent_high_value"
+    assert capped.message_angle == "pick_up_again"
+    assert capped.rule_name == "pick_up_again"
     # The winning rule id and version are recorded for traceability.
-    assert frequent.rule_id is not None
-    assert frequent.rule_version == 1
+    assert capped.rule_id is not None
+    assert capped.rule_version == 3
 
-    assert one_off.message_angle == "winback_flexible"
-    assert one_off.rule_name == "one_and_done_default"
+    assert single.message_angle == "onboarding_retry"
+    assert single.rule_name == "onboarding_retry"
 
 
 def test_populate_is_idempotent_keyed_by_client(cohort) -> None:
@@ -137,19 +138,19 @@ def test_populate_refreshes_the_row_when_resolution_changes(cohort) -> None:
     with SessionLocal() as session:
         populate_indicators(session, at=AT)
 
-    # Force a different resolution: drop the frequent client to Low value.
+    # Force a different resolution: the capped client now looks single-depth.
     with SessionLocal() as session:
         feature = session.get(ClientFeatures, 80001)
-        feature.value_tier = "Low"
+        feature.purchase_depth = "single"
         session.commit()
 
     with SessionLocal() as session:
         populate_indicators(session, at=AT)
         refreshed = session.get(ClientMessageIndicators, 80001)
 
-    # No longer the high-value rule; now the frequent default.
-    assert refreshed.rule_name == "frequent_default"
-    assert refreshed.priority_tier == "P2"
+    # No longer the catch-all; now the same rule the single-purchase client hits.
+    assert refreshed.rule_name == "onboarding_retry"
+    assert refreshed.message_angle == "onboarding_retry"
 
 
 def test_populate_without_active_rules_raises() -> None:

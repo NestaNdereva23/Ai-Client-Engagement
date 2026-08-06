@@ -31,7 +31,7 @@ class FakeChunk:
 
 
 def test_system_prompt_always_states_the_placeholder_contract() -> None:
-    prompt = build_system_prompt(angle="winback_habit", prompt_variant="habit_standard")
+    prompt = build_system_prompt(angle="back_on_schedule", prompt_variant="back_on_schedule")
     for token in REQUIRED_PLACEHOLDERS:
         assert token in prompt
     assert "real person's name" in prompt
@@ -39,8 +39,8 @@ def test_system_prompt_always_states_the_placeholder_contract() -> None:
 
 
 def test_system_prompt_carries_the_angle() -> None:
-    prompt = build_system_prompt(angle="winback_flexible", prompt_variant="flexible_standard")
-    assert "Angle: winback_flexible" in prompt
+    prompt = build_system_prompt(angle="pick_up_again", prompt_variant="pick_up_again")
+    assert "Angle: pick_up_again" in prompt
 
 
 def test_system_prompt_defaults_the_angle_when_missing() -> None:
@@ -48,48 +48,27 @@ def test_system_prompt_defaults_the_angle_when_missing() -> None:
     assert "Angle: winback" in prompt
 
 
-def test_known_prompt_variants_each_get_distinct_guidance() -> None:
-    variants = [
-        "habit_premium",
-        "habit_standard",
-        "habit_premium_soft",
-        "habit_standard_soft",
-        "flexible_premium",
-        "flexible_standard",
-        "flexible_minimal",
-        "flexible_soft",
-    ]
-    guidance = {variant_guidance(v) for v in variants}
-    # Every seeded rule variant (rules/store.py, v1 and v2 seeds) resolves to
-    # its own line, not a shared fallback.
-    assert len(guidance) == len(variants)
-
-
-def test_soft_variants_warn_against_asserting_an_exact_count_or_total() -> None:
-    for variant in ("habit_premium_soft", "habit_standard_soft", "flexible_soft"):
-        guidance = variant_guidance(variant)
-        assert "exact count or total" in guidance
-
-
 def test_unknown_prompt_variant_falls_back_without_erroring() -> None:
     fallback = variant_guidance("some_future_variant_not_seeded_yet")
     assert fallback == variant_guidance(None)
     # A future rule version can ship a new prompt_variant string with no
     # matching code change here.
-    prompt = build_system_prompt(angle="winback_habit", prompt_variant="brand_new_variant")
+    prompt = build_system_prompt(angle="back_on_schedule", prompt_variant="brand_new_variant")
     assert fallback in prompt
 
 
 def test_facts_render_only_what_was_retrieved() -> None:
     chunks = [FakeChunk(chunk_id=1, text="the fund yielded 11.35% this week")]
     prompt = build_system_prompt(
-        angle="winback_habit", prompt_variant="habit_standard", chunks=chunks
+        angle="back_on_schedule", prompt_variant="back_on_schedule", chunks=chunks
     )
     assert "11.35%" in prompt
 
 
 def test_no_facts_retrieved_tells_the_model_not_to_cite_a_rate() -> None:
-    prompt = build_system_prompt(angle="winback_habit", prompt_variant="habit_standard", chunks=())
+    prompt = build_system_prompt(
+        angle="back_on_schedule", prompt_variant="back_on_schedule", chunks=()
+    )
     assert "do not cite a rate" in prompt
 
 

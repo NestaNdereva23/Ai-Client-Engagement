@@ -10,31 +10,34 @@ from __future__ import annotations
 import pytest
 
 from app.privacy.scanners import InboundLeak, OutboundLeak, scan_inbound, scan_outbound
+from app.transform.features import (
+    CADENCE_BANDS,
+    EXIT_REASONS,
+    FUND_TYPES,
+    HOLD_BANDS,
+    PURCHASE_DEPTHS,
+    RECENCY_BANDS,
+    TREND_BANDS,
+    VALUE_BANDS,
+)
 
-# Every label the model-facing buckets can take. None may trip a detector.
-BUCKET_VALUES = [
-    "None observed",
-    "One-and-done",
-    "Occasional (2-4)",
-    "Frequent (5+, censored)",
-    "Unknown",
-    "Exited under 1y",
-    "Exited 1 to 2y",
-    "Exited 2 to 3y",
-    "Exited 3y plus",
-    "Top",
-    "High",
-    "Mid",
-    "Low",
-    "Regular",
-    "Periodic",
-    "Infrequent",
-]
+# Every label the model-facing bands can take, paired with its own field. None
+# may trip a detector.
+BUCKET_VALUES = (
+    [("recency_band", v) for v in sorted(RECENCY_BANDS)]
+    + [("value_band", v) for v in sorted(VALUE_BANDS)]
+    + [("cadence_band", v) for v in sorted(CADENCE_BANDS)]
+    + [("hold_band", v) for v in sorted(HOLD_BANDS)]
+    + [("purchase_depth", v) for v in sorted(PURCHASE_DEPTHS)]
+    + [("trend_band", v) for v in sorted(TREND_BANDS)]
+    + [("exit_reason", v) for v in sorted(EXIT_REASONS)]
+    + [("fund_type", v) for v in sorted(FUND_TYPES)]
+)
 
 
-@pytest.mark.parametrize("value", BUCKET_VALUES)
-def test_inbound_passes_the_bucket_vocabulary(value: str) -> None:
-    assert scan_inbound({"archetype": value}) is None
+@pytest.mark.parametrize(("field", "value"), BUCKET_VALUES)
+def test_inbound_passes_the_bucket_vocabulary(field: str, value: str) -> None:
+    assert scan_inbound({field: value}) is None
 
 
 @pytest.mark.parametrize(
@@ -51,12 +54,12 @@ def test_inbound_passes_the_bucket_vocabulary(value: str) -> None:
 )
 def test_inbound_blocks_a_real_value_in_an_allowlisted_field(leaked: str) -> None:
     with pytest.raises(InboundLeak):
-        scan_inbound({"value_tier_label": leaked})
+        scan_inbound({"value_band": leaked})
 
 
 def test_inbound_blocks_a_known_client_name() -> None:
     with pytest.raises(InboundLeak):
-        scan_inbound({"archetype": "One-and-done Wangari"}, identifiers=["Wangari"])
+        scan_inbound({"value_band": "Top Wangari"}, identifiers=["Wangari"])
 
 
 def test_inbound_still_rejects_offlist_keys() -> None:
@@ -78,18 +81,12 @@ def test_inbound_passes_a_real_fact_block_payload() -> None:
 
 def test_inbound_blocks_a_band_value_outside_the_real_vocabulary() -> None:
     with pytest.raises(InboundLeak, match="fact-block"):
-        scan_inbound({"recency_band": "made up value"})
+        scan_inbound({"recency_band": "made up value", "fund_name": "Cytonn Money Market Fund"})
 
 
 def test_inbound_blocks_a_key_the_fact_block_does_not_declare() -> None:
     with pytest.raises(InboundLeak, match="fact-block"):
         scan_inbound({"fund_name": "Cytonn Money Market Fund", "client_id": 1001})
-
-
-def test_inbound_blocks_mixing_the_legacy_and_wider_vocabularies() -> None:
-    """Neither shape recognises the other's keys, so a mix fails closed."""
-    with pytest.raises(InboundLeak):
-        scan_inbound({"archetype": "One-and-done", "fund_name": "Cytonn Money Market Fund"})
 
 
 def test_inbound_still_blocks_a_literal_identifier_in_a_fact_block_payload() -> None:
@@ -102,26 +99,44 @@ def test_inbound_still_blocks_a_literal_identifier_in_a_fact_block_payload() -> 
 def test_an_exact_amount_is_rejected_even_though_it_is_a_valid_int() -> None:
     """4,466,000 type-checks fine; only its rounded form may pass."""
     with pytest.raises(InboundLeak, match="would have corrected"):
-        scan_inbound({"typical_contribution_kes": 4_466_000})
+        scan_inbound(
+            {"typical_contribution_kes": 4_466_000, "fund_name": "Cytonn Money Market Fund"}
+        )
 
 
 def test_an_already_rounded_amount_passes() -> None:
-    assert scan_inbound({"typical_contribution_kes": 4_500_000}) is None
+    payload = {"typical_contribution_kes": 4_500_000, "fund_name": "Cytonn Money Market Fund"}
+    assert scan_inbound(payload) is None
 
 
 def test_an_exact_years_since_exit_is_also_rejected() -> None:
     with pytest.raises(InboundLeak, match="would have corrected"):
-        scan_inbound({"years_since_exit": 3.047})
+        scan_inbound({"years_since_exit": 3.047, "fund_name": "Cytonn Money Market Fund"})
 
 
 def test_a_cadence_fact_with_no_real_cadence_is_rejected() -> None:
     """A caller who bypasses ModelFactBlock cannot smuggle a cadence in."""
     with pytest.raises(InboundLeak, match="would have corrected"):
-        scan_inbound({"cadence_band": "None", "invested_every_n_days": 30})
+        scan_inbound(
+            {
+                "cadence_band": "None",
+                "invested_every_n_days": 30,
+                "fund_name": "Cytonn Money Market Fund",
+            }
+        )
 
 
 def test_a_real_cadence_still_passes() -> None:
-    assert scan_inbound({"cadence_band": "Tight", "invested_every_n_days": 30}) is None
+    assert (
+        scan_inbound(
+            {
+                "cadence_band": "Tight",
+                "invested_every_n_days": 30,
+                "fund_name": "Cytonn Money Market Fund",
+            }
+        )
+        is None
+    )
 
 
 def test_outbound_allows_a_placeholder_draft() -> None:

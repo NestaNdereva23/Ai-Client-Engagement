@@ -30,7 +30,11 @@ class CatalogValidationError(ValueError):
 
 @dataclass(frozen=True)
 class AngleSpec:
-    """One angle's brief: who it addresses, what it may say, what it may not."""
+    """One angle's brief: who it addresses, what it may say, what it may not.
+
+    held stops a client's message from sending while everything upstream of
+    that, resolution, generation, review, still runs normally.
+    """
 
     angle: str
     headline: str
@@ -38,6 +42,7 @@ class AngleSpec:
     claim: str
     ask: str
     never: str
+    held: bool = False
 
 
 def validate_angles(angles: Sequence[AngleSpec]) -> None:
@@ -83,6 +88,7 @@ def save_catalog_version(
             claim=spec.claim,
             ask=spec.ask,
             never=spec.never,
+            held=spec.held,
             valid_from=valid_from,
             valid_to=valid_to,
         )
@@ -121,3 +127,13 @@ def load_active_angles(session: Session, at: date) -> dict[str, MessageAngleCata
 def load_angle(session: Session, angle: str, at: date) -> MessageAngleCatalog | None:
     """One angle's brief from the catalogue in force on `at`."""
     return load_active_angles(session, at).get(angle)
+
+
+def angle_is_held(session: Session, angle: str, at: date) -> bool:
+    """Whether this angle's messages are currently held from sending.
+
+    An angle with no catalogue entry (an older rule set's angle, or one not
+    yet catalogued) is never held; only an explicit row can hold one.
+    """
+    row = load_angle(session, angle, at)
+    return bool(row is not None and row.held)

@@ -46,29 +46,31 @@ def two_clients(db: None):
             [
                 ClientFeatures(
                     client_id=first_id,
-                    archetype="One-and-done",
-                    recency_bucket="Exited 1 to 2y",
-                    value_tier="High",
-                    rhythm_band="Unknown",
+                    purchase_depth="single",
+                    recency_band="1 to 3y",
+                    value_band="High",
+                    cadence_band="Unknown",
+                    stale_contact=True,
                 ),
                 ClientFeatures(
                     client_id=second_id,
-                    archetype="Occasional (2-4)",
-                    recency_bucket="Exited 2 to 3y",
-                    value_tier="Mid",
-                    rhythm_band="Periodic",
+                    purchase_depth="few",
+                    recency_band="3 to 6y",
+                    value_band="Medium",
+                    cadence_band="Periodic",
+                    stale_contact=False,
                 ),
             ]
         )
         session.add(
             ClientMessageIndicators(
                 client_id=first_id,
-                message_angle="winback_habit",
+                message_angle="onboarding_retry",
                 urgency="high",
-                priority_tier="P1",
-                prompt_variant="habit_premium",
-                rule_name="frequent",
-                rule_version=1,
+                priority_tier="T1",
+                prompt_variant="onboarding_retry",
+                rule_name="onboarding_retry",
+                rule_version=3,
             )
         )
         session.commit()
@@ -101,9 +103,9 @@ def test_list_clients_returns_buckets_and_never_a_name(two_clients) -> None:
         assert "name" not in row
 
 
-def test_list_clients_filters_by_archetype(two_clients) -> None:
+def test_list_clients_filters_by_purchase_depth(two_clients) -> None:
     first_id, second_id, fund_id = two_clients
-    response = client.get(CLIENTS, params={"fund_id": fund_id, "archetype": "One-and-done"})
+    response = client.get(CLIENTS, params={"fund_id": fund_id, "purchase_depth": "single"})
     ids = [row["client_id"] for row in response.json()["items"]]
     assert first_id in ids
     assert second_id not in ids
@@ -111,7 +113,7 @@ def test_list_clients_filters_by_archetype(two_clients) -> None:
 
 def test_list_clients_filters_by_message_angle(two_clients) -> None:
     first_id, second_id, fund_id = two_clients
-    response = client.get(CLIENTS, params={"fund_id": fund_id, "message_angle": "winback_habit"})
+    response = client.get(CLIENTS, params={"fund_id": fund_id, "message_angle": "onboarding_retry"})
     ids = [row["client_id"] for row in response.json()["items"]]
     assert first_id in ids
     assert second_id not in ids
@@ -121,6 +123,19 @@ def test_segments_counts_include_the_new_buckets(two_clients) -> None:
     response = client.get(SEGMENTS)
     assert response.status_code == 200
     body = response.json()
-    archetypes = {row["key"]: row["count"] for row in body["by_archetype"]}
-    assert archetypes.get("One-and-done", 0) >= 1
-    assert archetypes.get("Occasional (2-4)", 0) >= 1
+    depths = {row["key"]: row["count"] for row in body["by_purchase_depth"]}
+    assert depths.get("single", 0) >= 1
+    assert depths.get("few", 0) >= 1
+
+
+def test_segments_stale_contact_count_reflects_the_stale_client(two_clients) -> None:
+    first_id, _second_id, _fund_id = two_clients
+    before = client.get(SEGMENTS).json()["stale_contact_count"]
+
+    with SessionLocal() as session:
+        row = session.get(ClientFeatures, first_id)
+        row.stale_contact = False
+        session.commit()
+
+    after = client.get(SEGMENTS).json()["stale_contact_count"]
+    assert after == before - 1

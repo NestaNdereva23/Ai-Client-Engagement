@@ -33,6 +33,7 @@ from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
 from app.db.models.llmops import GenerationRun
 from app.db.models.models import Clients, Funds, PiiVault
 from app.db.models.outreach import Campaign, OutreachMessage
+from app.db.models.rules import ClientMessageIndicators
 from app.db.models.suppression import Suppression
 from app.db.session import SessionLocal
 from app.llmops.versions import persist_generation_run
@@ -182,6 +183,65 @@ def client_row(db: None):
         session.commit()
 
 
+@pytest.fixture
+def second_client_row(db: None):
+    """A second client_id, a different fund, standing in for the same real person."""
+    fund_id = 998
+    client_id = 99702
+    with SessionLocal() as session:
+        session.add(Funds(unit_fund_id=fund_id, unit_fund_name="Test Fund 2"))
+        session.commit()
+        session.add(
+            Clients(
+                client_id=client_id,
+                unit_fund_id=fund_id,
+                n_purchases_returned=0,
+                n_sales_returned=0,
+            )
+        )
+        session.add(
+            PiiVault(
+                client_id=client_id, client_name="Test Client Two", contact_email="b@example.com"
+            )
+        )
+        session.commit()
+
+    yield client_id
+
+    with SessionLocal() as session:
+        # Mirrors client_row's teardown: an outreach_message or generation_run
+        # this client's own touch produced must go before the campaign, client,
+        # and fund it references, or the FKs block every delete after it.
+        session.execute(delete(Suppression).where(Suppression.client_id == client_id))
+        enrollment_ids = session.scalars(
+            select(Enrollment.enrollment_id).where(Enrollment.client_id == client_id)
+        ).all()
+        if enrollment_ids:
+            session.execute(delete(TouchLog).where(TouchLog.enrollment_id.in_(enrollment_ids)))
+        session.execute(delete(Enrollment).where(Enrollment.client_id == client_id))
+        message_ids = session.scalars(
+            select(OutreachMessage.message_id).where(OutreachMessage.client_id == client_id)
+        ).all()
+        if message_ids:
+            session.execute(delete(TouchLog).where(TouchLog.message_id.in_(message_ids)))
+        run_ids = session.scalars(
+            select(GenerationRun.run_id).where(
+                GenerationRun.run_id.in_(
+                    select(OutreachMessage.generation_run_id).where(
+                        OutreachMessage.client_id == client_id
+                    )
+                )
+            )
+        ).all()
+        session.execute(delete(OutreachMessage).where(OutreachMessage.client_id == client_id))
+        if run_ids:
+            session.execute(delete(GenerationRun).where(GenerationRun.run_id.in_(run_ids)))
+        session.execute(delete(PiiVault).where(PiiVault.client_id == client_id))
+        session.execute(delete(Clients).where(Clients.client_id == client_id))
+        session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
+        session.commit()
+
+
 def _make_enrollment(session, *, campaign_id: int, client_id: int, **overrides) -> Enrollment:
     row = Enrollment(campaign_id=campaign_id, client_id=client_id, **overrides)
     session.add(row)
@@ -263,6 +323,44 @@ def test_run_due_enrollments_generates_a_pending_review_message_without_advancin
         assert touch.sent_at is None
         message = session.get(OutreachMessage, touch.message_id)
         assert message.status == "pending_review"
+
+
+def test_run_due_enrollments_generates_exactly_one_touch_for_a_dual_fund_client(
+    campaign_with_steps: int, client_row: int, second_client_row: int
+) -> None:
+    """Two enrollment rows for the same real person, one per fund: only the
+    primary row's touch is ever generated, matching is_primary_contact_row."""
+    calls = []
+
+    def fake_generate(session, enrollment, step_no):
+        calls.append(enrollment.enrollment_id)
+        return _make_message(
+            session, campaign_id=campaign_with_steps, client_id=enrollment.client_id
+        )
+
+    with SessionLocal() as session:
+        primary = _make_enrollment(
+            session,
+            campaign_id=campaign_with_steps,
+            client_id=client_row,
+            is_primary_contact_row=True,
+        )
+        _make_enrollment(
+            session,
+            campaign_id=campaign_with_steps,
+            client_id=second_client_row,
+            is_primary_contact_row=False,
+        )
+        outcomes = run_due_enrollments(
+            session, campaign_id=campaign_with_steps, generate=fake_generate
+        )
+        session.commit()
+        primary_id = primary.enrollment_id
+
+    generated = [o for o in outcomes if o.generated]
+    assert len(generated) == 1
+    assert generated[0].enrollment_id == primary_id
+    assert calls == [primary_id]
 
 
 def test_run_due_enrollments_records_a_skip_reason_without_generating(
@@ -378,6 +476,69 @@ def test_send_touch_is_blocked_by_a_suppression_that_arrived_after_approval(
         row = session.get(Enrollment, enrollment_id)
         assert row.current_step == 1
         assert row.status == "stopped_optout"
+
+
+def test_a_held_angle_generates_but_does_not_send(
+    campaign_with_steps: int, client_row: int
+) -> None:
+    """see_what_changed is held pending the business decision on its exit
+    window: resolution, generation, and review all proceed as normal, and
+    only the send itself is blocked."""
+    with SessionLocal() as session:
+        session.add(
+            ClientMessageIndicators(
+                client_id=client_row,
+                message_angle="see_what_changed",
+                urgency="low",
+                priority_tier="P3",
+                prompt_variant="see_what_changed_default",
+                rule_name="held_angle_test",
+                rule_version=1,
+            )
+        )
+        session.commit()
+
+        enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=client_row
+        )
+        outcomes = run_due_enrollments(
+            session,
+            campaign_id=campaign_with_steps,
+            generate=lambda s, e, step_no: _make_message(
+                s, campaign_id=campaign_with_steps, client_id=client_row
+            ),
+        )
+        session.commit()
+        enrollment_id = enrollment.enrollment_id
+
+    assert len(outcomes) == 1
+    assert outcomes[0].generated is True
+
+    with SessionLocal() as session:
+        touch = session.scalar(
+            select(TouchLog).where(TouchLog.enrollment_id == enrollment_id, TouchLog.step_no == 1)
+        )
+        message = session.get(OutreachMessage, touch.message_id)
+        message.status = "approved"
+        session.commit()
+
+        with pytest.raises(SendBlocked) as excinfo:
+            send_touch(session, touch)
+        assert excinfo.value.reason == "angle_held"
+        session.commit()
+        touch_id = touch.touch_id
+
+    with SessionLocal() as session:
+        assert session.get(TouchLog, touch_id).sent_at is None
+        row = session.get(Enrollment, enrollment_id)
+        assert row.current_step == 0
+        assert row.status == "enrolled"
+
+    with SessionLocal() as session:
+        session.execute(
+            delete(ClientMessageIndicators).where(ClientMessageIndicators.client_id == client_row)
+        )
+        session.commit()
 
 
 def test_reconcile_enrollment_catches_current_step_up_after_a_simulated_crash(

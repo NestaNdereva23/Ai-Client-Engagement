@@ -41,10 +41,10 @@ from app.privacy.scanners import scan_outbound
 
 RAW_CONTEXT = {
     "client_id": 90101,
-    "archetype": "Frequent (5+, censored)",
-    "recency_bucket": "Exited 1 to 2y",
-    "value_tier_label": "High",
-    "rhythm_band": "Regular",
+    "recency_band": "Under 1y",
+    "value_band": "High",
+    "cadence_band": "Regular",
+    "hold_band": "Stayed months",
 }
 
 
@@ -62,8 +62,8 @@ def make_context_loader(chunks=()):
     def load(client_id: int, product: str) -> ClientContext:
         return ClientContext(
             raw_context=RAW_CONTEXT,
-            angle="winback_habit",
-            prompt_variant="habit_premium",
+            angle="back_on_schedule",
+            prompt_variant="back_on_schedule",
             chunks=chunks,
         )
 
@@ -177,7 +177,7 @@ def test_a_good_draft_is_accepted_with_placeholders_no_pii_and_stamped_versions(
 
     assert stored.prompt_version_id is not None
     assert stored.model_version_id is not None
-    assert prompt_version.prompt_variant == "habit_premium"
+    assert prompt_version.prompt_variant == "back_on_schedule"
     assert model_version.model_id == "claude-opus-5"
 
     assert len(requests) == 1

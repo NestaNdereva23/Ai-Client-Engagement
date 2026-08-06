@@ -20,10 +20,10 @@ from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_id_cursor, encode_
 _CLIENT_COLUMNS = (
     Clients.client_id,
     Clients.unit_fund_id,
-    ClientFeatures.archetype,
-    ClientFeatures.recency_bucket,
-    ClientFeatures.value_tier,
-    ClientFeatures.rhythm_band,
+    ClientFeatures.recency_band,
+    ClientFeatures.value_band,
+    ClientFeatures.cadence_band,
+    ClientFeatures.hold_band,
     ClientMessageIndicators.message_angle,
     ClientMessageIndicators.priority_tier,
 )
@@ -46,9 +46,9 @@ def list_clients(
     session: Session,
     *,
     fund_id: int | None = None,
-    archetype: str | None = None,
-    value_tier: str | None = None,
-    recency_bucket: str | None = None,
+    value_band: str | None = None,
+    recency_band: str | None = None,
+    purchase_depth: str | None = None,
     message_angle: str | None = None,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
@@ -58,12 +58,12 @@ def list_clients(
     query = _base_query()
     if fund_id is not None:
         query = query.where(Clients.unit_fund_id == fund_id)
-    if archetype is not None:
-        query = query.where(ClientFeatures.archetype == archetype)
-    if value_tier is not None:
-        query = query.where(ClientFeatures.value_tier == value_tier)
-    if recency_bucket is not None:
-        query = query.where(ClientFeatures.recency_bucket == recency_bucket)
+    if value_band is not None:
+        query = query.where(ClientFeatures.value_band == value_band)
+    if recency_band is not None:
+        query = query.where(ClientFeatures.recency_band == recency_band)
+    if purchase_depth is not None:
+        query = query.where(ClientFeatures.purchase_depth == purchase_depth)
     if message_angle is not None:
         query = query.where(ClientMessageIndicators.message_angle == message_angle)
     if cursor is not None:
@@ -79,8 +79,8 @@ def list_clients(
     return rows, next_cursor
 
 
-def segment_distribution(session: Session) -> dict[str, list[tuple[str, int]]]:
-    """Client counts grouped by archetype, value tier, and message angle."""
+def segment_distribution(session: Session) -> dict[str, list[tuple[str, int]] | int]:
+    """Client counts grouped by purchase depth, value band, and message angle."""
 
     def _counts(column) -> list[tuple[str, int]]:
         return list(
@@ -89,8 +89,16 @@ def segment_distribution(session: Session) -> dict[str, list[tuple[str, int]]]:
             ).all()
         )
 
+    stale_count = (
+        session.execute(
+            select(func.count()).select_from(ClientFeatures).where(ClientFeatures.stale_contact)
+        ).scalar_one()
+        or 0
+    )
+
     return {
-        "by_archetype": _counts(ClientFeatures.archetype),
-        "by_value_tier": _counts(ClientFeatures.value_tier),
+        "by_purchase_depth": _counts(ClientFeatures.purchase_depth),
+        "by_value_band": _counts(ClientFeatures.value_band),
         "by_message_angle": _counts(ClientMessageIndicators.message_angle),
+        "stale_contact_count": stale_count,
     }

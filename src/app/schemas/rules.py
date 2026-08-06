@@ -18,10 +18,18 @@ class RuleVersionOut(BaseModel):
 class RulePreviewRequest(BaseModel):
     """A feature tuple to dry-run through the active rule set."""
 
-    archetype: str | None = None
-    recency_bucket: str | None = None
-    value_tier: str | None = None
-    rhythm_band: str | None = None
+    recency_band: str | None = None
+    value_band: str | None = None
+    cadence_band: str | None = None
+    hold_band: str | None = None
+    purchase_depth: str | None = None
+    trend_band: str | None = None
+    exit_reason: str | None = None
+    fund_type: str | None = None
+    in_wave: bool | None = None
+    has_depth: bool | None = None
+    staged_exit: bool | None = None
+    stale_contact: bool | None = None
     history_censored: bool | None = None
     purchases_censored: bool | None = None
     holds_other_funds: bool | None = None

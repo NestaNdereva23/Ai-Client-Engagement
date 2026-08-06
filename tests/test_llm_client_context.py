@@ -20,10 +20,6 @@ from app.db.session import SessionLocal
 SAFE = "ace_safe"
 ALLOWLIST = {
     "client_id",
-    "archetype",
-    "recency_bucket",
-    "value_tier_label",
-    "rhythm_band",
     "recency_band",
     "value_band",
     "cadence_band",
@@ -44,7 +40,6 @@ FORBIDDEN = {
     "purchases_censored",
     "history_censored",
     "updated_at",
-    "value_tier",
     "client_name",
     "client_code",
     "n_funds",
@@ -114,7 +109,7 @@ def test_safe_role_cannot_read_the_underlying_feature_table(view_present) -> Non
         session.execute(text("RESET ROLE"))
 
 
-def test_view_is_keyed_by_client_id_and_relabels_the_tier(view_present) -> None:
+def test_view_is_keyed_by_client_id_and_surfaces_the_bands(view_present) -> None:
     fund_id, client_id = 990, 99001
     with SessionLocal() as session:
         # Each parent is committed before its child so the foreign keys hold.
@@ -132,10 +127,6 @@ def test_view_is_keyed_by_client_id_and_relabels_the_tier(view_present) -> None:
         session.add(
             ClientFeatures(
                 client_id=client_id,
-                archetype="One-and-done",
-                recency_bucket="Exited 3y plus",
-                value_tier="High",
-                rhythm_band="Unknown",
                 observed_volume=1,
                 recency_band="Over 6y",
                 value_band="High",
@@ -158,17 +149,12 @@ def test_view_is_keyed_by_client_id_and_relabels_the_tier(view_present) -> None:
         with SessionLocal() as session:
             row = session.execute(
                 text(
-                    "SELECT client_id, archetype, value_tier_label, rhythm_band, "
-                    "recency_band, value_band, fund_type, stale_contact "
+                    "SELECT client_id, recency_band, value_band, fund_type, stale_contact "
                     "FROM llm_client_context WHERE client_id = :c"
                 ),
                 {"c": client_id},
             ).one()
         assert row.client_id == client_id
-        assert row.archetype == "One-and-done"
-        # value_tier is surfaced under its label name, unchanged in value.
-        assert row.value_tier_label == "High"
-        assert row.rhythm_band == "Unknown"
         assert row.recency_band == "Over 6y"
         assert row.value_band == "High"
         assert row.fund_type == "money_market"

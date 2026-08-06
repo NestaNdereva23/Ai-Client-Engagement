@@ -17,10 +17,26 @@ from app.privacy.fact_block import ModelFactBlock
 
 logger = structlog.get_logger(__name__)
 
-# The original tier-and-bucket allow-list. A payload shaped exactly like this
-# is checked the same way it always was; anything else validates against
-# ModelFactBlock instead, which is the wider, typed replacement for this set.
-MODEL_ALLOWED_KEYS = frozenset({"archetype", "recency_bucket", "value_tier_label", "rhythm_band"})
+# The bucket allow-list: every non-numeric column llm_client_context exposes,
+# minus client_id. A payload shaped exactly like this is checked the same way
+# it always was, a pattern sweep; anything else (a raw figure payload) validates
+# against ModelFactBlock instead, the wider, typed path for real numbers.
+MODEL_ALLOWED_KEYS = frozenset(
+    {
+        "recency_band",
+        "value_band",
+        "cadence_band",
+        "hold_band",
+        "purchase_depth",
+        "trend_band",
+        "exit_reason",
+        "fund_type",
+        "in_wave",
+        "has_depth",
+        "staged_exit",
+        "stale_contact",
+    }
+)
 
 # Patterns for values that could only come from real client data. Tuned not to
 # fire on the fixed bucket vocabulary, which carries only small bare integers.

@@ -1,8 +1,8 @@
 """Validation and versioning for the business-rule store.
 
 The pure tests exercise validate_rules; the database tests prove a version is
-written once, never mutated, and that the seeded v1 set loads and is itself
-valid.
+written once, never mutated, and that a later version supersedes an earlier
+one at the right date.
 """
 
 from __future__ import annotations
@@ -26,13 +26,13 @@ from app.rules.store import (
 def _good_rules() -> list[RuleSpec]:
     return [
         RuleSpec(
-            name="frequent",
+            name="high_value",
             priority=10,
-            match={"archetype": ["Frequent (5+, censored)"]},
-            message_angle="winback_habit",
+            match={"value_band": ["Top"]},
+            message_angle="back_on_schedule",
             urgency="high",
-            priority_tier="P1",
-            prompt_variant="habit_premium",
+            priority_tier="T1",
+            prompt_variant="back_on_schedule",
         ),
         RuleSpec(name="catch_all", priority=20),
     ]
@@ -49,7 +49,7 @@ def test_unknown_match_field_is_rejected() -> None:
 
 
 def test_value_outside_a_fields_range_is_rejected() -> None:
-    rules = [RuleSpec(name="bad", priority=10, match={"value_tier": ["Platinum"]})]
+    rules = [RuleSpec(name="bad", priority=10, match={"value_band": ["Platinum"]})]
     with pytest.raises(RuleValidationError, match="outside its range"):
         validate_rules(rules)
 
@@ -68,11 +68,11 @@ def test_duplicate_priority_is_rejected() -> None:
 
 def test_a_rule_shadowed_by_an_earlier_broader_rule_is_unreachable() -> None:
     rules = [
-        RuleSpec(name="broad", priority=10, match={"archetype": ["One-and-done"]}),
+        RuleSpec(name="broad", priority=10, match={"value_band": ["Top"]}),
         RuleSpec(
             name="narrow",
             priority=20,
-            match={"archetype": ["One-and-done"], "value_tier": ["Top"]},
+            match={"value_band": ["Top"], "recency_band": ["Under 1y"]},
         ),
     ]
     with pytest.raises(RuleValidationError, match="unreachable"):
@@ -82,7 +82,7 @@ def test_a_rule_shadowed_by_an_earlier_broader_rule_is_unreachable() -> None:
 def test_a_wildcard_before_other_rules_makes_them_unreachable() -> None:
     rules = [
         RuleSpec(name="catch_all", priority=10),
-        RuleSpec(name="specific", priority=20, match={"archetype": ["None observed"]}),
+        RuleSpec(name="specific", priority=20, match={"value_band": ["Low"]}),
     ]
     with pytest.raises(RuleValidationError, match="unreachable"):
         validate_rules(rules)
@@ -93,9 +93,9 @@ def test_specific_before_broad_is_reachable() -> None:
         RuleSpec(
             name="narrow",
             priority=10,
-            match={"archetype": ["One-and-done"], "value_tier": ["Top"]},
+            match={"value_band": ["Top"], "recency_band": ["Under 1y"]},
         ),
-        RuleSpec(name="broad", priority=20, match={"archetype": ["One-and-done"]}),
+        RuleSpec(name="broad", priority=20, match={"value_band": ["Top"]}),
     ]
     assert validate_rules(rules) is None
 
@@ -135,7 +135,7 @@ def test_save_version_writes_and_refuses_to_mutate_a_shipped_version(temp_versio
 def test_a_later_version_supersedes_the_one_before_it(temp_versions) -> None:
     temp_versions.extend([50, 51])
     superseding = [
-        RuleSpec(name="only", priority=10, match={"archetype": ["One-and-done"]}),
+        RuleSpec(name="only", priority=10, match={"value_band": ["Top"]}),
         RuleSpec(name="catch_all", priority=20),
     ]
     with SessionLocal() as session:
@@ -148,26 +148,3 @@ def test_a_later_version_supersedes_the_one_before_it(temp_versions) -> None:
         after = load_active_rules(session, at=date(2050, 9, 1))
     assert {r.version for r in before} == {50}
     assert {r.version for r in after} == {51}
-
-
-def test_the_seeded_v1_set_loads_and_is_valid() -> None:
-    with SessionLocal() as session:
-        active = load_active_rules(session, at=date(2026, 7, 25))
-    assert active, "the v1 seed should be active in 2026"
-    assert {r.version for r in active} == {1}
-    # Priorities come back ordered, and the set the seed shipped is itself valid.
-    assert [r.priority for r in active] == sorted(r.priority for r in active)
-    specs = [
-        RuleSpec(
-            name=r.name,
-            priority=r.priority,
-            match=r.match,
-            message_angle=r.message_angle,
-            urgency=r.urgency,
-            priority_tier=r.priority_tier,
-            prompt_variant=r.prompt_variant,
-        )
-        for r in active
-    ]
-    assert validate_rules(specs) is None
-    assert specs[-1].match == {}  # a wildcard keeps every client covered
