@@ -383,6 +383,69 @@ def test_run_due_enrollments_records_a_skip_reason_without_generating(
     assert outcomes[0].reason == "suppressed"
 
 
+def test_run_due_enrollments_reports_a_rejected_generation_with_no_message(
+    campaign_with_steps: int, client_row: int
+) -> None:
+    def reject_generate(session, enrollment, step_no):
+        return None
+
+    with SessionLocal() as session:
+        enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=client_row
+        )
+        outcomes = run_due_enrollments(
+            session, campaign_id=campaign_with_steps, generate=reject_generate
+        )
+        session.commit()
+        enrollment_id = enrollment.enrollment_id
+
+    assert len(outcomes) == 1
+    assert outcomes[0].generated is False
+    assert outcomes[0].reason == "guardrail_rejected"
+
+    with SessionLocal() as session:
+        touch = session.scalar(
+            select(TouchLog).where(TouchLog.enrollment_id == enrollment_id, TouchLog.step_no == 1)
+        )
+        assert touch is not None
+        assert touch.message_id is None
+
+
+def test_a_second_batch_run_after_a_rejection_does_not_re_attempt_the_same_step(
+    campaign_with_steps: int, client_row: int
+) -> None:
+    """Documents the current gate behaviour rather than asserting a retry
+    that doesn't exist: check_eligibility's already_touched check counts any
+    touch_log row, message or not, so a rejected step stays put rather than
+    being retried automatically. Unsticking it is what the regenerate
+    endpoint is for, once a message exists to regenerate from -- a fully
+    automatic retry of a message-less rejection is a gap this change does
+    not close.
+    """
+    attempts = []
+
+    def reject_generate(session, enrollment, step_no):
+        attempts.append(step_no)
+        return None
+
+    with SessionLocal() as session:
+        _make_enrollment(session, campaign_id=campaign_with_steps, client_id=client_row)
+        first = run_due_enrollments(
+            session, campaign_id=campaign_with_steps, generate=reject_generate
+        )
+        session.commit()
+        second = run_due_enrollments(
+            session, campaign_id=campaign_with_steps, generate=reject_generate
+        )
+        session.commit()
+
+    assert first[0].generated is False
+    assert first[0].reason == "guardrail_rejected"
+    assert second[0].generated is False
+    assert second[0].reason == "already_touched"
+    assert attempts == [1]  # generate was never called a second time
+
+
 def test_send_touch_advances_the_enrollment_and_audits_the_send(
     campaign_with_steps: int, client_row: int
 ) -> None:

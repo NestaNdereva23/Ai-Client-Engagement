@@ -89,6 +89,15 @@ class Settings(BaseSettings):
     # tier's own human_approval / review_sample_rate is honoured instead.
     tier_sampling_enabled: bool = False
 
+    # On (the only safe setting once real contact data exists) means the
+    # eligibility gate refuses to generate or send for a client with no
+    # contact_email/contact_whatsapp on file. Off is a local-development-only
+    # escape hatch, for exercising generation before /integration/contacts has
+    # ever been called for a test client -- the parent system that will push
+    # real contact data isn't live yet, so nothing can satisfy this gate in
+    # dev without it.
+    require_deliverable_contact: bool = True
+
     @property
     def is_production(self) -> bool:
         """True when running in the production environment."""

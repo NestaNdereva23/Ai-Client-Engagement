@@ -82,3 +82,34 @@ class CampaignCreateOut(BaseModel):
     end_date: date | None
     created_at: datetime
     enrolled_count: int
+
+
+class CampaignStepCreateRequest(BaseModel):
+    """One step to append to a campaign's send sequence.
+
+    step_no is assigned server-side (one past whatever already exists), so
+    building a sequence is calling this once per step in order rather than
+    naming a position.
+    """
+
+    offset_days: int
+    message_angle: str
+    template_ref: str | None = None
+
+
+class CampaignStepOut(BaseModel):
+    step_id: int
+    campaign_id: int
+    step_no: int
+    offset_days: int
+    message_angle: str
+    template_ref: str | None
+
+
+class TouchOutcomeOut(BaseModel):
+    """What happened to one due enrollment during a generation run."""
+
+    enrollment_id: int
+    generated: bool
+    reason: str | None
+    touch_id: int | None

@@ -14,7 +14,9 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 from sqlalchemy import delete, select
 
+import app.campaigns.eligibility as eligibility
 from app.campaigns.eligibility import check_eligibility
+from app.config import Settings
 from app.db.models.audit import AuditLog
 from app.db.models.campaigns import CampaignStep, ContactEvent, Enrollment, TouchLog
 from app.db.models.models import Clients, Funds, PiiVault
@@ -206,8 +208,14 @@ def test_an_opted_out_client_is_skipped_and_stopped(campaign_with_step: int, fun
 
 
 def test_a_client_with_no_deliverable_contact_is_skipped_and_excluded(
-    campaign_with_step: int, fund: int
+    monkeypatch, campaign_with_step: int, fund: int
 ) -> None:
+    """Forces the gate on regardless of the local .env, since a developer's
+    REQUIRE_DELIVERABLE_CONTACT=false bypass (for exercising generation
+    locally) must never make this test pass for the wrong reason."""
+    monkeypatch.setattr(
+        eligibility, "get_settings", lambda: Settings(require_deliverable_contact=True)
+    )
     client_id = 99505
     with SessionLocal() as session:
         _make_client(session, client_id, contact_email=None)
@@ -221,6 +229,30 @@ def test_a_client_with_no_deliverable_contact_is_skipped_and_excluded(
     assert result.reason == "no_deliverable_contact"
     with SessionLocal() as session:
         assert session.get(Enrollment, enrollment_id).status == "excluded"
+    _cleanup_client(client_id)
+
+
+def test_the_deliverable_contact_gate_can_be_bypassed_for_local_testing(
+    monkeypatch, campaign_with_step: int, fund: int
+) -> None:
+    """require_deliverable_contact=False is a local-dev-only escape hatch,
+    for exercising the pipeline before /integration/contacts has ever run
+    for a test client.
+    """
+    monkeypatch.setattr(
+        eligibility, "get_settings", lambda: Settings(require_deliverable_contact=False)
+    )
+
+    client_id = 99506
+    with SessionLocal() as session:
+        _make_client(session, client_id, contact_email=None)
+        session.commit()
+        enrollment = _make_enrollment(session, campaign_id=campaign_with_step, client_id=client_id)
+
+        result = check_eligibility(session, enrollment)
+        session.commit()
+
+    assert result.eligible is True
     _cleanup_client(client_id)
 
 

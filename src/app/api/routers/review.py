@@ -1,11 +1,20 @@
-"""Review queue: list pending messages, open one, and decide."""
+"""Review queue: list pending messages, open one, decide, or regenerate."""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.agents.email_channel import build_default_agent
+from app.campaigns.generation import (
+    MessageNotRegenerable,
+    RegenerationRejected,
+    model_boundary_audit_sink,
+    regenerate_message,
+)
+from app.config import get_settings
 from app.db.session import get_session
+from app.llmops.tracing import get_shared_tracer
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.review import (
     DecideRequest,
@@ -96,3 +105,53 @@ def decide_review(
         raise HTTPException(status_code=422, detail=str(exc)) from None
 
     return ReviewActionOut.model_validate(action)
+
+
+@router.post("/{message_id}/regenerate", response_model=OutreachMessageDetail)
+def regenerate_review(
+    message_id: str, session: Session = Depends(get_session)
+) -> OutreachMessageDetail:
+    """Replace a still-pending message's draft with a freshly generated one.
+
+    Only pending_review may be regenerated; a message already decided
+    keeps the draft its review_action history actually refers to. The
+    message_id changes (the old row is replaced, not edited in place), so
+    the response is the new message to switch the reviewer's view to.
+    """
+    tracer = get_shared_tracer()
+    agent = build_default_agent(session, audit=model_boundary_audit_sink(session), tracer=tracer)
+    try:
+        fresh = regenerate_message(
+            session, message_id, agent=agent, settings=get_settings(), tracer=tracer
+        )
+        session.commit()
+    except MessageNotFound:
+        session.rollback()
+        raise HTTPException(status_code=404, detail="message not found") from None
+    except MessageNotRegenerable as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=409, detail=f"message is already {exc.status}; cannot regenerate"
+        ) from None
+    except RegenerationRejected:
+        session.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "the fresh draft was rejected by every guardrail retry; "
+                "the original message is unchanged"
+            ),
+        ) from None
+
+    return OutreachMessageDetail(
+        message_id=fresh.message_id,
+        campaign_id=fresh.campaign_id,
+        client_id=fresh.client_id,
+        channel=fresh.channel,
+        status=fresh.status,
+        created_at=fresh.created_at,
+        ai_draft_content=fresh.ai_draft_content,
+        personalized_content=fresh.personalized_content,
+        updated_at=fresh.updated_at,
+        history=[],
+    )

@@ -16,6 +16,7 @@ misuse (a bad argument, an unpicklable value in state).
 
 from __future__ import annotations
 
+import functools
 from typing import Any, Protocol
 
 import structlog
@@ -161,7 +162,11 @@ class LangfuseTracer:
 
 
 def get_tracer(settings: Settings | None = None) -> Tracer:
-    """NullTracer unless a full Langfuse endpoint is configured."""
+    """NullTracer unless a full Langfuse endpoint is configured.
+
+    Builds a new client on every call, which suits a script that traces one
+    run and exits. Long-lived callers want get_shared_tracer instead.
+    """
     settings = settings or get_settings()
     if not settings.langfuse_enabled:
         return NullTracer()
@@ -170,3 +175,24 @@ def get_tracer(settings: Settings | None = None) -> Tracer:
         public_key=settings.langfuse_public_key,
         secret_key=settings.langfuse_secret_key,
     )
+
+
+@functools.lru_cache(maxsize=1)
+def get_shared_tracer() -> Tracer:
+    """The one tracer a long-lived process traces every run through.
+
+    Each LangfuseTracer owns a Langfuse client with its own background
+    export thread, so building one per request would leak a thread per
+    request. Request handlers depend on this instead and never shut it
+    down themselves; the agent's own flush is enough to get a run's spans
+    out, and the process releases the thread once at shutdown.
+    """
+    return get_tracer()
+
+
+def shutdown_shared_tracer() -> None:
+    """Release the shared tracer's export thread, if one was ever built."""
+    if get_shared_tracer.cache_info().currsize == 0:
+        return
+    get_shared_tracer().shutdown()
+    get_shared_tracer.cache_clear()

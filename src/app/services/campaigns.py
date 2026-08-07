@@ -1,16 +1,25 @@
 """Campaign console reads and creation: enrollment counts, the campaign
-table, and turning a cohort filter into a real, enrolled campaign.
+table, turning a cohort filter into a real, enrolled campaign, defining its
+send sequence, and running generation for whatever is due.
 """
 
 from __future__ import annotations
 
+import functools
+
 from sqlalchemy import Row, func, select
 from sqlalchemy.orm import Session
 
+from app.agents.orchestrator import ChannelAgent
 from app.audit.log import record_audit
 from app.campaigns.enrollment import enroll_cohort
-from app.db.models.campaigns import Enrollment
+from app.campaigns.generation import generate_for_enrollment
+from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT
+from app.campaigns.touch import TouchRunOutcome, run_due_enrollments
+from app.config import Settings
+from app.db.models.campaigns import CampaignStep, Enrollment
 from app.db.models.outreach import Campaign
+from app.llmops.tracing import Tracer
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_id_cursor, encode_id_cursor
 from app.services.clients import resolve_cohort_client_ids
 
@@ -134,3 +143,73 @@ def create_campaign(
     )
     session.flush()
     return campaign, len(client_ids)
+
+
+def add_campaign_step(
+    session: Session,
+    campaign_id: int,
+    *,
+    offset_days: int,
+    message_angle: str,
+    template_ref: str | None = None,
+) -> CampaignStep:
+    """Append the next step in a campaign's send sequence.
+
+    step_no is assigned as one past whatever already exists, so building a
+    sequence is just calling this once per step in order; the eligibility
+    gate refuses to generate a step for which no CampaignStep row exists
+    yet, so a campaign with none is enrolled but permanently idle.
+    """
+    if session.get(Campaign, campaign_id) is None:
+        raise CampaignNotFound(campaign_id)
+
+    next_step_no = (
+        session.execute(
+            select(func.max(CampaignStep.step_no)).where(CampaignStep.campaign_id == campaign_id)
+        ).scalar_one()
+        or 0
+    ) + 1
+
+    step = CampaignStep(
+        campaign_id=campaign_id,
+        step_no=next_step_no,
+        offset_days=offset_days,
+        message_angle=message_angle,
+        template_ref=template_ref,
+    )
+    session.add(step)
+    session.flush()
+    record_audit(
+        session,
+        entity_type="campaign_step",
+        action="create",
+        entity_id=str(step.step_id),
+        detail={"campaign_id": campaign_id, "step_no": next_step_no, "offset_days": offset_days},
+    )
+    return step
+
+
+def run_campaign_generation(
+    session: Session,
+    campaign_id: int,
+    *,
+    agent: ChannelAgent,
+    settings: Settings,
+    tracer: Tracer | None = None,
+    limit: int = DEFAULT_BATCH_LIMIT,
+) -> list[TouchRunOutcome]:
+    """Generate a touch for every one of this campaign's due, eligible
+    enrollments, using the given channel agent for the actual drafting.
+
+    A thin binding over run_due_enrollments: this module owns nothing about
+    generation itself, only wires generate_for_enrollment's extra
+    (agent, settings, tracer) arguments in as the GenerateFn campaigns.touch
+    expects.
+    """
+    if session.get(Campaign, campaign_id) is None:
+        raise CampaignNotFound(campaign_id)
+
+    generate = functools.partial(
+        generate_for_enrollment, agent=agent, settings=settings, tracer=tracer
+    )
+    return run_due_enrollments(session, campaign_id=campaign_id, generate=generate, limit=limit)

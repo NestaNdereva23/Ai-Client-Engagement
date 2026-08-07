@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from app.api import v1
@@ -10,9 +13,21 @@ from app.api.idempotency import IdempotencyMiddleware
 from app.api.middleware import CorrelationIdMiddleware
 from app.api.routers import health
 from app.config import Settings, get_settings
+from app.llmops.tracing import shutdown_shared_tracer
 from app.logging_config import configure_logging
 
 __version__ = "0.1.0"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Release the shared tracer's background export thread on shutdown.
+
+    Nothing to set up: the tracer is built on the first request that needs
+    one, and a deployment with Langfuse unconfigured never builds one at all.
+    """
+    yield
+    shutdown_shared_tracer()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -27,6 +42,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         version=__version__,
         docs_url="/docs",
         openapi_url="/openapi.json",
+        lifespan=lifespan,
     )
     app.state.settings = settings
 

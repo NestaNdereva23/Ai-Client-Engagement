@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 
-from app.db.models.campaigns import Enrollment
+from app.db.models.campaigns import CampaignStep, Enrollment
 from app.db.models.models import ClientFeatures, Clients, Funds, PiiVault
 from app.db.models.outreach import Campaign
 from app.db.session import SessionLocal
@@ -182,4 +182,117 @@ def test_create_campaign_enrolls_exactly_the_matching_cohort(cohort_clients) -> 
 
 def test_create_campaign_rejects_an_empty_cohort(db: None) -> None:
     response = client.post(CAMPAIGNS, json={"name": "empty cohort campaign", "cohort": {}})
+    assert response.status_code == 422
+
+
+@pytest.fixture
+def bare_campaign(db: None):
+    """A campaign with no steps yet, for exercising step creation on its own."""
+    with SessionLocal() as session:
+        row = Campaign(name="step creation test campaign")
+        session.add(row)
+        session.commit()
+        campaign_id = row.campaign_id
+
+    yield campaign_id
+
+    with SessionLocal() as session:
+        session.execute(delete(CampaignStep).where(CampaignStep.campaign_id == campaign_id))
+        session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
+        session.commit()
+
+
+def test_post_campaign_step_assigns_sequential_step_numbers(bare_campaign: int) -> None:
+    first = client.post(
+        f"{CAMPAIGNS}/{bare_campaign}/steps",
+        json={"offset_days": 0, "message_angle": "winback_habit"},
+    )
+    assert first.status_code == 201
+    assert first.json()["step_no"] == 1
+
+    second = client.post(
+        f"{CAMPAIGNS}/{bare_campaign}/steps",
+        json={"offset_days": 7, "message_angle": "winback_value"},
+    )
+    assert second.status_code == 201
+    assert second.json()["step_no"] == 2
+    assert second.json()["campaign_id"] == bare_campaign
+
+
+def test_post_campaign_step_404s_for_an_unknown_campaign(db: None) -> None:
+    response = client.post(
+        f"{CAMPAIGNS}/999999999/steps",
+        json={"offset_days": 0, "message_angle": "winback_habit"},
+    )
+    assert response.status_code == 404
+
+
+@pytest.fixture
+def two_due_enrollments(db: None, monkeypatch):
+    """A stepless campaign with two due enrollments, and no real agent.
+
+    No steps means the gate skips every enrollment on no_next_step before
+    generation is ever reached, so the batch size can be checked without a
+    model call; build_default_agent is stubbed so the endpoint does not need
+    a configured provider either.
+    """
+    monkeypatch.setattr(
+        "app.api.routers.campaigns.build_default_agent", lambda session, **kwargs: None
+    )
+
+    fund_id = 97703
+    client_ids = (97730, 97731)
+    with SessionLocal() as session:
+        row = Campaign(name="batch limit test campaign")
+        session.add(row)
+        session.add(Funds(unit_fund_id=fund_id, unit_fund_name="Test Fund"))
+        session.commit()
+        campaign_id = row.campaign_id
+
+        for client_id in client_ids:
+            session.add(
+                Clients(
+                    client_id=client_id,
+                    unit_fund_id=fund_id,
+                    n_purchases_returned=0,
+                    n_sales_returned=0,
+                )
+            )
+        session.commit()
+        session.add_all(
+            [
+                Enrollment(
+                    campaign_id=campaign_id, client_id=client_id, is_primary_contact_row=True
+                )
+                for client_id in client_ids
+            ]
+        )
+        session.commit()
+
+    yield campaign_id
+
+    with SessionLocal() as session:
+        session.execute(delete(Enrollment).where(Enrollment.campaign_id == campaign_id))
+        session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
+        session.execute(delete(Clients).where(Clients.client_id.in_(client_ids)))
+        session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
+        session.commit()
+
+
+def test_generate_attempts_every_due_enrollment_by_default(two_due_enrollments: int) -> None:
+    response = client.post(f"{CAMPAIGNS}/{two_due_enrollments}/generate")
+    assert response.status_code == 200
+    outcomes = response.json()
+    assert len(outcomes) == 2
+    assert {o["reason"] for o in outcomes} == {"no_next_step"}
+
+
+def test_generate_limit_caps_the_batch(two_due_enrollments: int) -> None:
+    response = client.post(f"{CAMPAIGNS}/{two_due_enrollments}/generate", params={"limit": 1})
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+
+
+def test_generate_rejects_a_limit_below_one(two_due_enrollments: int) -> None:
+    response = client.post(f"{CAMPAIGNS}/{two_due_enrollments}/generate", params={"limit": 0})
     assert response.status_code == 422
