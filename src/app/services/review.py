@@ -87,20 +87,63 @@ def _fetch_client_name(client_id: int) -> str | None:
         return vault.client_name if vault else None
 
 
-def resolve_placeholders(text: str, *, first_name: str, fund_name: str) -> str:
-    """Substitute the two placeholders EmailAgent is allowed to use."""
-    return text.replace("{{first_name}}", first_name).replace("{{fund_name}}", fund_name)
+def resolve_placeholders(
+    text: str,
+    *,
+    first_name: str,
+    fund_name: str,
+    typical_contribution: str | None = None,
+    largest_contribution: str | None = None,
+    years_since_exit: str | None = None,
+    days_held_after_last_topup: str | None = None,
+    month_they_left: str | None = None,
+) -> str:
+    """Substitute every placeholder this draft has a value for.
+
+    first_name and fund_name are the two every draft has always needed, so
+    they stay required. The rest are set only once a bucketed template
+    references them (ST5), and are skipped rather than blanked out when
+    absent, since a draft that never used e.g. {{years_since_exit}} needs
+    nothing supplied for it.
+    """
+    resolved = text.replace("{{first_name}}", first_name).replace("{{fund_name}}", fund_name)
+    placeholder_facts = {
+        "typical_contribution": typical_contribution,
+        "largest_contribution": largest_contribution,
+        "years_since_exit": years_since_exit,
+        "days_held_after_last_topup": days_held_after_last_topup,
+        "month_they_left": month_they_left,
+    }
+    for field, value in placeholder_facts.items():
+        if value is not None:
+            resolved = resolved.replace(f"{{{{{field}}}}}", str(value))
+    return resolved
 
 
-def personalize_content(ai_draft_content: dict, *, first_name: str, fund_name: str) -> dict:
+def personalize_content(
+    ai_draft_content: dict,
+    *,
+    first_name: str,
+    fund_name: str,
+    typical_contribution: str | None = None,
+    largest_contribution: str | None = None,
+    years_since_exit: str | None = None,
+    days_held_after_last_topup: str | None = None,
+    month_they_left: str | None = None,
+) -> dict:
     """The subject/body pair with real values injected in place of placeholders."""
+    kwargs = {
+        "first_name": first_name,
+        "fund_name": fund_name,
+        "typical_contribution": typical_contribution,
+        "largest_contribution": largest_contribution,
+        "years_since_exit": years_since_exit,
+        "days_held_after_last_topup": days_held_after_last_topup,
+        "month_they_left": month_they_left,
+    }
     return {
-        "subject": resolve_placeholders(
-            ai_draft_content["subject"], first_name=first_name, fund_name=fund_name
-        ),
-        "body": resolve_placeholders(
-            ai_draft_content["body"], first_name=first_name, fund_name=fund_name
-        ),
+        "subject": resolve_placeholders(ai_draft_content["subject"], **kwargs),
+        "body": resolve_placeholders(ai_draft_content["body"], **kwargs),
     }
 
 

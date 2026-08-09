@@ -71,6 +71,51 @@ def test_personalize_content_applies_to_subject_and_body() -> None:
     assert result == {"subject": "Hi Jane", "body": "About MMF, Jane."}
 
 
+def test_resolve_placeholders_substitutes_placeholder_filled_facts_when_given() -> None:
+    result = resolve_placeholders(
+        "Dear {{first_name}}, your typical contribution was {{typical_contribution}} "
+        "and you left in {{month_they_left}}.",
+        first_name="Jane",
+        fund_name="MMF",
+        typical_contribution="KES 5,000",
+        month_they_left="March 2025",
+    )
+    assert result == (
+        "Dear Jane, your typical contribution was KES 5,000 and you left in March 2025."
+    )
+
+
+def test_resolve_placeholders_leaves_an_unsupplied_placeholder_fact_untouched() -> None:
+    """Not every draft uses all five new tokens; one left unsupplied stays
+    literal rather than being blanked out, so a rendering gap is visible
+    instead of silently disappearing."""
+    result = resolve_placeholders(
+        "Dear {{first_name}}, you last topped up {{days_held_after_last_topup}} days before.",
+        first_name="Jane",
+        fund_name="MMF",
+    )
+    assert result == "Dear Jane, you last topped up {{days_held_after_last_topup}} days before."
+
+
+def test_personalize_content_applies_placeholder_filled_facts_to_subject_and_body() -> None:
+    draft = {
+        "subject": "Your fund, {{first_name}}",
+        "body": "You held for {{years_since_exit}} years, largest contribution "
+        "{{largest_contribution}}.",
+    }
+    result = personalize_content(
+        draft,
+        first_name="Jane",
+        fund_name="MMF",
+        years_since_exit="2.5",
+        largest_contribution="KES 20,000",
+    )
+    assert result == {
+        "subject": "Your fund, Jane",
+        "body": "You held for 2.5 years, largest contribution KES 20,000.",
+    }
+
+
 def make_settings(**overrides) -> Settings:
     defaults = {
         "llm_provider": "anthropic",

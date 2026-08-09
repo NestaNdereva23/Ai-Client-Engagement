@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import date
 
 from app.agents.email_agent import (
+    ALLOWED_PLACEHOLDERS,
+    PLACEHOLDER_FACT_FIELDS,
     REQUIRED_PLACEHOLDERS,
     build_system_prompt,
     build_system_prompt_blocks,
@@ -172,3 +174,30 @@ def test_has_required_placeholders_true_only_when_both_tokens_present() -> None:
     assert has_required_placeholders("Dear {{first_name}}, your {{fund_name}} awaits.")
     assert not has_required_placeholders("Dear {{first_name}}, welcome back.")
     assert not has_required_placeholders("Dear Jane, your fund awaits.")
+
+
+def test_allowed_placeholders_carries_one_token_per_placeholder_fact_field() -> None:
+    """The five placeholder-filled facts each get exactly one token, on top
+    of the two every draft has always been able to use."""
+    assert set(REQUIRED_PLACEHOLDERS) <= set(ALLOWED_PLACEHOLDERS)
+    for field in PLACEHOLDER_FACT_FIELDS:
+        assert f"{{{{{field}}}}}" in ALLOWED_PLACEHOLDERS
+    assert len(ALLOWED_PLACEHOLDERS) == 2 + len(PLACEHOLDER_FACT_FIELDS)
+
+
+def test_system_prompt_states_every_allowed_placeholder() -> None:
+    """A template draft may use any of these; the model has to be told all
+    of them are valid, not just the original two."""
+    prompt = build_system_prompt(angle="pick_up_again", prompt_variant="pick_up_again")
+    for token in ALLOWED_PLACEHOLDERS:
+        assert token in prompt
+
+
+def test_required_placeholders_does_not_widen_with_the_new_vocabulary() -> None:
+    """Not every draft uses all five new tokens; only first_name (and
+    fund_name, when withheld) is ever mandatory, whether or not a draft
+    also happens to use one of the new ones."""
+    assert has_required_placeholders("Dear {{first_name}}, {{fund_name}} awaits.")
+    assert has_required_placeholders(
+        "Dear {{first_name}}, {{fund_name}} awaits. Contribution: {{typical_contribution}}."
+    )
