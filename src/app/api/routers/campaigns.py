@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.agents.email_channel import build_default_agent
+from app.campaigns.batch_generation import BatchNotFound
 from app.campaigns.generation import model_boundary_audit_sink
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT
 from app.config import get_settings
@@ -15,12 +16,15 @@ from app.db.session import get_session
 from app.llmops.tracing import get_shared_tracer
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.campaigns import (
+    BatchIngestOutcomeOut,
+    BatchIngestResultOut,
     CampaignCreateOut,
     CampaignCreateRequest,
     CampaignListItemOut,
     CampaignStepCreateRequest,
     CampaignStepOut,
     CampaignSummaryOut,
+    GenerationBatchOut,
     TouchOutcomeOut,
 )
 from app.services.campaigns import (
@@ -28,8 +32,11 @@ from app.services.campaigns import (
     add_campaign_step,
     campaign_summary,
     create_campaign,
+    get_campaign_batch,
+    ingest_campaign_batch,
     list_campaigns,
     run_campaign_generation,
+    submit_campaign_batch,
 )
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
@@ -178,3 +185,97 @@ def post_campaign_generate(
         )
         for o in outcomes
     ]
+
+
+def _batch_out(batch) -> GenerationBatchOut:
+    return GenerationBatchOut(
+        generation_batch_id=batch.generation_batch_id,
+        campaign_id=batch.campaign_id,
+        provider=batch.provider,
+        provider_batch_id=batch.provider_batch_id,
+        status=batch.status,
+        requested_limit=batch.requested_limit,
+        requested_count=batch.requested_count,
+        succeeded_count=batch.succeeded_count,
+        errored_count=batch.errored_count,
+        submitted_at=batch.submitted_at,
+        ended_at=batch.ended_at,
+        ingested_at=batch.ingested_at,
+        created_at=batch.created_at,
+    )
+
+
+@router.post("/{campaign_id}/generate/batch", response_model=GenerationBatchOut, status_code=201)
+def post_campaign_generate_batch(
+    campaign_id: int,
+    limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=DEFAULT_BATCH_LIMIT),
+    session: Session = Depends(get_session),
+) -> GenerationBatchOut:
+    """Submit this campaign's due, eligible enrollments to the model
+    provider's batch endpoint in one call, instead of drafting each one
+    synchronously. Nothing is reviewable yet: the provider drafts the whole
+    cohort off the request path, and POST .../batches/{id}/ingest turns the
+    results into pending-review messages once it reports the batch ended.
+
+    limit caps how many enrollments this one submission can include, the
+    same knob /generate already exposes; whatever is left over stays due
+    for the next call, either to /generate or to this endpoint again.
+    """
+    try:
+        batch = submit_campaign_batch(
+            session,
+            campaign_id,
+            settings=get_settings(),
+            limit=limit,
+            tracer=get_shared_tracer(),
+        )
+        session.commit()
+    except CampaignNotFound:
+        session.rollback()
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    return _batch_out(batch)
+
+
+@router.get("/{campaign_id}/batches/{generation_batch_id}", response_model=GenerationBatchOut)
+def get_campaign_batch_status(
+    campaign_id: int, generation_batch_id: str, session: Session = Depends(get_session)
+) -> GenerationBatchOut:
+    """One batch submission's current state: still with the provider, ended
+    and waiting to be ingested, or already turned into review-queue messages.
+    """
+    try:
+        batch = get_campaign_batch(session, campaign_id, generation_batch_id)
+    except BatchNotFound:
+        raise HTTPException(status_code=404, detail="batch not found") from None
+    return _batch_out(batch)
+
+
+@router.post(
+    "/{campaign_id}/batches/{generation_batch_id}/ingest", response_model=BatchIngestResultOut
+)
+def post_campaign_batch_ingest(
+    campaign_id: int, generation_batch_id: str, session: Session = Depends(get_session)
+) -> BatchIngestResultOut:
+    """Check the provider for this batch's results and, once it reports the
+    batch ended, turn each result into the same pending-review message the
+    synchronous /generate path produces. Safe to call before the provider
+    is done -- it just returns the batch's current status with no outcomes
+    -- and safe to call again after ingestion, which is a no-op the second
+    time.
+    """
+    tracer = get_shared_tracer()
+    try:
+        result = ingest_campaign_batch(
+            session, campaign_id, generation_batch_id, settings=get_settings(), tracer=tracer
+        )
+        session.commit()
+    except BatchNotFound:
+        session.rollback()
+        raise HTTPException(status_code=404, detail="batch not found") from None
+    return BatchIngestResultOut(
+        batch=_batch_out(result.batch),
+        outcomes=[
+            BatchIngestOutcomeOut(custom_id=o.custom_id, status=o.status, reason=o.reason)
+            for o in result.outcomes
+        ],
+    )

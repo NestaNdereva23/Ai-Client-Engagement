@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.db.models.rag import RagChunk, RagDocumentVersion
 from app.rag.embedding import Embedder, get_embedder
 
@@ -63,9 +64,14 @@ def retrieve(
     sections: list[str] | None = None,
     active_only: bool = True,
     k: int = 5,
+    min_score: float | None = None,
     embedder: Embedder | None = None,
 ) -> list[Retrieved]:
-    """Rank chunks by similarity to the query, filtered by section and active version."""
+    """Rank chunks by similarity to the query, filtered by section and active version.
+
+    min_score drops hits below a similarity floor. Leave it None to see the
+    whole ranked tail, which is what an admin probing the corpus wants.
+    """
     embedder = embedder or get_embedder()
     query_vec = embedder.embed([query])[0]
     distance = RagChunk.embedding.cosine_distance(query_vec)
@@ -79,7 +85,7 @@ def retrieve(
         stmt = stmt.where(RagChunk.chunk_metadata["section"].astext.in_(sections))
     stmt = stmt.order_by(distance).limit(k)
 
-    return [
+    hits = [
         Retrieved(
             chunk_id=chunk.chunk_id,
             text=chunk.text,
@@ -89,6 +95,9 @@ def retrieve(
         )
         for chunk, dist in session.execute(stmt).all()
     ]
+    if min_score is not None:
+        hits = [hit for hit in hits if hit.score >= min_score]
+    return hits
 
 
 def retrieve_product_facts(
@@ -96,16 +105,24 @@ def retrieve_product_facts(
     *,
     product: str,
     angle: str | None = None,
-    k: int = 5,
+    k: int | None = None,
+    min_score: float | None = None,
     active_only: bool = True,
     embedder: Embedder | None = None,
 ) -> list[Retrieved]:
-    """Retrieve facts for a client's product and angle: filter by section, rank by similarity."""
+    """Retrieve facts for a client's product and angle: filter by section, rank by similarity.
+
+    k and the similarity floor default to the configured retrieval settings.
+    This is the path that feeds a draft, so it stays deliberately narrow: a
+    passage the model never sees is a figure it can never misuse.
+    """
+    settings = get_settings()
     return retrieve(
         session,
         build_query(product, angle),
         sections=sections_for_product(product),
         active_only=active_only,
-        k=k,
+        k=settings.rag_retrieval_k if k is None else k,
+        min_score=settings.rag_min_score if min_score is None else min_score,
         embedder=embedder,
     )

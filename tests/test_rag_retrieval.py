@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import delete, func, select
 
+from app.config import get_settings
 from app.db.models.rag import RagChunk, RagDocument, RagDocumentVersion
 from app.db.session import SessionLocal
 from app.rag.chunking import ReportChunk
@@ -109,6 +110,25 @@ def test_a_query_matching_a_chunk_scores_near_one(indexed) -> None:
             k=1,
         )
     assert hits[0].score > 0.99
+
+
+def test_a_draft_is_grounded_on_only_the_configured_few(indexed) -> None:
+    # A section filter will happily return every chunk in its sections, so the
+    # draft path caps how many of them reach the model.
+    settings = get_settings()
+    with SessionLocal() as session:
+        hits = retrieve_product_facts(
+            session, product="Balanced Fund", angle="winback_habit", embedder=EMB
+        )
+    assert len(hits) <= settings.rag_retrieval_k
+
+
+def test_weak_matches_are_dropped_below_the_floor(indexed) -> None:
+    with SessionLocal() as session:
+        unfiltered = retrieve(session, "current yield", embedder=EMB, k=10)
+        filtered = retrieve(session, "current yield", embedder=EMB, k=10, min_score=0.5)
+    assert len(filtered) < len(unfiltered)
+    assert all(hit.score >= 0.5 for hit in filtered)
 
 
 def test_only_the_active_version_is_served(indexed) -> None:

@@ -113,3 +113,38 @@ class TouchOutcomeOut(BaseModel):
     generated: bool
     reason: str | None
     touch_id: int | None
+
+
+class GenerationBatchOut(BaseModel):
+    """One submission to the model provider's async batch endpoint."""
+
+    generation_batch_id: str
+    campaign_id: int
+    provider: str
+    provider_batch_id: str | None
+    status: str
+    requested_limit: int
+    requested_count: int
+    succeeded_count: int | None
+    errored_count: int | None
+    submitted_at: datetime | None
+    ended_at: datetime | None
+    ingested_at: datetime | None
+    created_at: datetime
+
+
+class BatchIngestOutcomeOut(BaseModel):
+    """What happened to one client's request when its batch was ingested."""
+
+    custom_id: str
+    status: str
+    reason: str | None
+
+
+class BatchIngestResultOut(BaseModel):
+    """The result of one ingest call: the batch's current state, plus
+    whatever this call actually turned into a reviewable message.
+    """
+
+    batch: GenerationBatchOut
+    outcomes: list[BatchIngestOutcomeOut]

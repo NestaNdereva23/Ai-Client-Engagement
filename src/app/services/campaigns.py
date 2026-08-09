@@ -12,12 +12,16 @@ from sqlalchemy.orm import Session
 
 from app.agents.orchestrator import ChannelAgent
 from app.audit.log import record_audit
+from app.campaigns.batch_generation import BatchIngestResult, BatchNotFound
+from app.campaigns.batch_generation import ingest_batch as ingest_campaign_batch_run
+from app.campaigns.batch_generation import submit_batch as submit_campaign_batch_run
 from app.campaigns.enrollment import enroll_cohort
 from app.campaigns.generation import generate_for_enrollment
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT
 from app.campaigns.touch import TouchRunOutcome, run_due_enrollments
 from app.config import Settings
 from app.db.models.campaigns import CampaignStep, Enrollment
+from app.db.models.generation_batch import GenerationBatch
 from app.db.models.outreach import Campaign
 from app.llmops.tracing import Tracer
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_id_cursor, encode_id_cursor
@@ -213,3 +217,54 @@ def run_campaign_generation(
         generate_for_enrollment, agent=agent, settings=settings, tracer=tracer
     )
     return run_due_enrollments(session, campaign_id=campaign_id, generate=generate, limit=limit)
+
+
+def submit_campaign_batch(
+    session: Session,
+    campaign_id: int,
+    *,
+    settings: Settings,
+    limit: int = DEFAULT_BATCH_LIMIT,
+    tracer: Tracer | None = None,
+) -> GenerationBatch:
+    """Submit this campaign's due, eligible enrollments to the model
+    provider's batch endpoint in one call, an alternative to
+    run_campaign_generation for a cohort too large to draft one request at
+    a time. Raises CampaignNotFound the same way run_campaign_generation
+    does; campaigns.batch_generation.submit_batch does the rest.
+    """
+    if session.get(Campaign, campaign_id) is None:
+        raise CampaignNotFound(campaign_id)
+    return submit_campaign_batch_run(
+        session, campaign_id, settings=settings, limit=limit, tracer=tracer
+    )
+
+
+def ingest_campaign_batch(
+    session: Session,
+    campaign_id: int,
+    generation_batch_id: str,
+    *,
+    settings: Settings,
+    tracer: Tracer | None = None,
+) -> BatchIngestResult:
+    """Turn a submitted batch's results into pending-review messages, once
+    the provider reports it has ended. Raises BatchNotFound both when no
+    such batch exists and when it exists under a different campaign, since
+    either way it names nothing this campaign's endpoint can act on -- checked
+    before any ingestion work runs, not after.
+    """
+    batch = session.get(GenerationBatch, generation_batch_id)
+    if batch is None or batch.campaign_id != campaign_id:
+        raise BatchNotFound(generation_batch_id)
+    return ingest_campaign_batch_run(session, generation_batch_id, settings=settings, tracer=tracer)
+
+
+def get_campaign_batch(
+    session: Session, campaign_id: int, generation_batch_id: str
+) -> GenerationBatch:
+    """One batch submission, scoped to the campaign it was submitted under."""
+    batch = session.get(GenerationBatch, generation_batch_id)
+    if batch is None or batch.campaign_id != campaign_id:
+        raise BatchNotFound(generation_batch_id)
+    return batch
