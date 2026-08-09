@@ -8,6 +8,8 @@ from typing import Any, Protocol, runtime_checkable
 import anthropic
 import httpx
 import structlog
+from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
+from anthropic.types.messages.batch_create_params import Request as BatchRequest
 
 from app.config import Settings, get_settings
 from app.privacy.boundary import ModelCall
@@ -218,6 +220,16 @@ def get_judge_llm_client(settings: Settings | None = None) -> LLMClient:
     )
 
 
+def render_model_context(payload: dict[str, Any]) -> str:
+    """The user-turn text for one allow-listed, already-scanned payload.
+
+    The one place this rendering happens, so the synchronous path (through
+    as_model_call) and the batch path (through campaigns.batch_generation)
+    send the model byte-for-byte the same framing for the same facts.
+    """
+    return "\n".join(f"{key}: {value}" for key, value in sorted(payload.items()))
+
+
 def as_model_call(client: LLMClient, *, system: str) -> ModelCall:
     """Adapt an LLMClient into the ModelCall run_model_boundary expects.
 
@@ -227,7 +239,66 @@ def as_model_call(client: LLMClient, *, system: str) -> ModelCall:
     """
 
     def call(payload: dict[str, Any]) -> str:
-        user = "\n".join(f"{key}: {value}" for key, value in sorted(payload.items()))
-        return client.generate(system=system, user=user)
+        return client.generate(system=system, user=render_model_context(payload))
 
     return call
+
+
+def get_anthropic_batch_client(settings: Settings | None = None) -> anthropic.Anthropic:
+    """The raw Anthropic client, for the batch endpoints the LLMClient
+    protocol has no concept of (no other provider here has a batch API).
+
+    Only the client construction is shared with get_llm_client; the
+    resulting object is used solely by campaigns.batch_generation to call
+    client.messages.batches.*, never to draft outside the model boundary.
+    """
+    settings = settings or get_settings()
+    if settings.llm_provider != "anthropic":
+        raise ValueError(
+            f"batch generation needs the anthropic provider, not {settings.llm_provider!r}"
+        )
+    return anthropic.Anthropic(api_key=settings.anthropic_api_key)
+
+
+def build_batch_request(
+    *,
+    custom_id: str,
+    system_cached: str,
+    system_dynamic: str = "",
+    user: str,
+    settings: Settings | None = None,
+) -> BatchRequest:
+    """One client's entry for client.messages.batches.create(requests=[...]).
+
+    The one place a batch request is shaped, so campaigns.batch_generation
+    (and anything else that submits a batch) never imports the provider SDK
+    directly -- the same rule the rest of this module already enforces for
+    a single synchronous call.
+
+    system_cached carries the ephemeral cache_control breakpoint, so every
+    request in a batch that shares the same angle, tier, and product (the
+    only things system_cached depends on) can hit the same cache entry --
+    the Message Batches API caches per request, best-effort, only when the
+    marked block is byte-for-byte identical across requests. It is always
+    the first system block, since caching covers everything up to and
+    including the marked block: put system_dynamic (this one client's own
+    facts) after it, never before, or nothing before it would be cached
+    either. system_dynamic is omitted entirely when empty, rather than
+    sent as an empty text block.
+    """
+    settings = settings or get_settings()
+    system_blocks: list[dict[str, Any]] = [
+        {"type": "text", "text": system_cached, "cache_control": {"type": "ephemeral"}}
+    ]
+    if system_dynamic:
+        system_blocks.append({"type": "text", "text": system_dynamic})
+
+    params: dict[str, Any] = {
+        "model": settings.llm_model,
+        "max_tokens": settings.llm_max_tokens,
+        "system": system_blocks,
+        "messages": [{"role": "user", "content": user}],
+    }
+    if settings.llm_temperature is not None:
+        params["temperature"] = settings.llm_temperature
+    return BatchRequest(custom_id=custom_id, params=MessageCreateParamsNonStreaming(**params))

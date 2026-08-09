@@ -15,6 +15,7 @@ from datetime import date
 from app.agents.email_agent import (
     REQUIRED_PLACEHOLDERS,
     build_system_prompt,
+    build_system_prompt_blocks,
     has_required_placeholders,
     variant_guidance,
 )
@@ -75,6 +76,58 @@ def test_no_facts_retrieved_tells_the_model_not_to_cite_a_rate() -> None:
 def test_variant_guidance_ignores_the_catalogue_without_a_session() -> None:
     """No session, no at: exactly the pre-catalogue behaviour, unchanged."""
     assert variant_guidance("see_what_changed") == variant_guidance(None)
+
+
+def test_prompt_blocks_cached_half_carries_everything_but_one_clients_own_facts() -> None:
+    """The split is for prompt caching, not a content cut: everything a
+    plain build_system_prompt call states must still be stated somewhere,
+    just divided between the two halves.
+    """
+    chunks = [FakeChunk(chunk_id=1, text="the fund yielded 11.35% this week")]
+    blocks = build_system_prompt_blocks(
+        angle="back_on_schedule", prompt_variant="back_on_schedule", chunks=chunks
+    )
+    for token in REQUIRED_PLACEHOLDERS:
+        assert token in blocks.cached
+    assert "Angle: back_on_schedule" in blocks.cached
+    assert "11.35%" in blocks.cached
+
+
+def test_prompt_blocks_dynamic_half_carries_this_clients_conditional_caveats() -> None:
+    no_cadence_facts = {"stale_contact": False}
+    blocks = build_system_prompt_blocks(
+        angle="back_on_schedule", prompt_variant="back_on_schedule", facts=no_cadence_facts
+    )
+    assert "no measurable cadence" in blocks.dynamic
+    assert "no measurable cadence" not in blocks.cached
+
+
+def test_prompt_blocks_dynamic_half_is_empty_with_no_facts_and_no_caveats() -> None:
+    blocks = build_system_prompt_blocks(angle="back_on_schedule", prompt_variant="back_on_schedule")
+    assert blocks.dynamic == ""
+
+
+def test_prompt_blocks_cached_half_is_identical_for_two_clients_who_only_differ_in_facts() -> None:
+    """This is the property prompt caching on Message Batches depends on:
+    two different clients on the same angle, tier, and retrieved chunks
+    must get byte-identical cached text, even though their own facts (and
+    so their dynamic half) differ.
+    """
+    chunks = [FakeChunk(chunk_id=1, text="the fund yielded 11.35% this week")]
+    client_a = build_system_prompt_blocks(
+        angle="back_on_schedule",
+        prompt_variant="back_on_schedule",
+        chunks=chunks,
+        facts={"stale_contact": True},
+    )
+    client_b = build_system_prompt_blocks(
+        angle="back_on_schedule",
+        prompt_variant="back_on_schedule",
+        chunks=chunks,
+        facts={"invested_every_n_days": 30},
+    )
+    assert client_a.cached == client_b.cached
+    assert client_a.dynamic != client_b.dynamic
 
 
 def test_variant_guidance_ignores_the_catalogue_without_a_date(db: None) -> None:

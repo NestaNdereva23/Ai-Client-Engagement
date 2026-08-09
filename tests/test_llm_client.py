@@ -21,6 +21,8 @@ from app.privacy.llm_client import (
     LLMClientError,
     OllamaLLMClient,
     as_model_call,
+    build_batch_request,
+    get_anthropic_batch_client,
     get_judge_llm_client,
     get_llm_client,
     resolve_judge_model_config,
@@ -363,3 +365,71 @@ def test_as_model_call_is_usable_directly_by_run_model_boundary() -> None:
     assert stub.calls[0]["system"] == "draft a win-back email"
     for key, value in ALLOWLISTED.items():
         assert f"{key}: {value}" in stub.calls[0]["user"]
+
+
+def test_get_anthropic_batch_client_refuses_a_non_anthropic_provider() -> None:
+    settings = make_settings(llm_provider="ollama")
+    with pytest.raises(ValueError, match="anthropic"):
+        get_anthropic_batch_client(settings)
+
+
+def test_build_batch_request_puts_the_cache_breakpoint_on_the_first_system_block() -> None:
+    settings = make_settings()
+    request = build_batch_request(
+        custom_id="run-1",
+        system_cached="shared instructions",
+        system_dynamic="this client's own caveats",
+        user="recency_band: Over 6y",
+        settings=settings,
+    )
+
+    assert request["custom_id"] == "run-1"
+    system = request["params"]["system"]
+    assert len(system) == 2
+    assert system[0] == {
+        "type": "text",
+        "text": "shared instructions",
+        "cache_control": {"type": "ephemeral"},
+    }
+    assert system[1] == {"type": "text", "text": "this client's own caveats"}
+    assert request["params"]["model"] == settings.llm_model
+    assert request["params"]["max_tokens"] == settings.llm_max_tokens
+    assert request["params"]["messages"] == [{"role": "user", "content": "recency_band: Over 6y"}]
+
+
+def test_build_batch_request_omits_an_empty_dynamic_block() -> None:
+    request = build_batch_request(
+        custom_id="run-2",
+        system_cached="shared instructions",
+        system_dynamic="",
+        user="recency_band: Over 6y",
+        settings=make_settings(),
+    )
+
+    assert len(request["params"]["system"]) == 1
+
+
+def test_build_batch_request_is_identical_across_clients_sharing_the_same_cached_half() -> None:
+    """The whole point of the cache_control breakpoint: two different
+    clients on the same angle, tier, and product must produce byte-for-byte
+    the same first system block, or the provider has nothing to cache a hit
+    against. Only the dynamic block and the user turn may differ.
+    """
+    settings = make_settings()
+    first = build_batch_request(
+        custom_id="run-a",
+        system_cached="shared instructions",
+        system_dynamic="client A's caveats",
+        user="recency_band: Over 6y",
+        settings=settings,
+    )
+    second = build_batch_request(
+        custom_id="run-b",
+        system_cached="shared instructions",
+        system_dynamic="client B's caveats",
+        user="recency_band: Under 1y",
+        settings=settings,
+    )
+
+    assert first["params"]["system"][0] == second["params"]["system"][0]
+    assert first["params"]["system"][1] != second["params"]["system"][1]

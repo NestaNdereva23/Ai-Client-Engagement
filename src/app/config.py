@@ -43,6 +43,16 @@ class Settings(BaseSettings):
     embedding_model: str = "dev-hashing"
     embedding_batch_size: int = 64
 
+    # How many report passages a draft is grounded on. Kept small on purpose:
+    # every passage handed to the model is a passage it may quote a figure
+    # from, so a long tail of weakly related market commentary is a licence to
+    # cite something the email was never about.
+    rag_retrieval_k: int = 3
+    # Similarity below which a passage is dropped even if it is in the top k.
+    # A section filter always returns its best few candidates, however unrelated
+    # they are to the query, so rank alone is not evidence of relevance.
+    rag_min_score: float = 0.1
+
     # Cy client data API. Reads CY_API_BASE_URL / CY_API_KEY
     cytonn_api_base_url: str = Field(
         default="",

@@ -14,6 +14,12 @@ from app.db.models.campaigns import (
     Enrollment,
     TouchLog,
 )
+from app.db.models.generation_batch import (
+    GENERATION_BATCH_ITEM_STATUSES,
+    GENERATION_BATCH_STATUSES,
+    GenerationBatch,
+    GenerationBatchItem,
+)
 from app.db.models.llmops import GenerationRun, ModelVersion, PromptVersion
 from app.db.models.models import (
     INGESTION_STATES,
@@ -48,6 +54,8 @@ __all__ = [
     "CAMPAIGN_STATUSES",
     "CONTACT_EVENT_TYPES",
     "ENROLLMENT_STATUSES",
+    "GENERATION_BATCH_ITEM_STATUSES",
+    "GENERATION_BATCH_STATUSES",
     "INGESTION_STATES",
     "MESSAGE_STATUSES",
     "REVIEW_OUTCOMES",
@@ -62,6 +70,8 @@ __all__ = [
     "ContactEvent",
     "Enrollment",
     "Funds",
+    "GenerationBatch",
+    "GenerationBatchItem",
     "GenerationRun",
     "IdempotencyKey",
     "IngestionReject",

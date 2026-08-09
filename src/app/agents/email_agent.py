@@ -9,6 +9,7 @@ scanned payload, so nothing client-specific reaches the model unchecked.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date
 from typing import Any, Protocol, runtime_checkable
 
@@ -260,6 +261,79 @@ def build_system_prompt(
 
     sections.append(f"Facts you may cite (only these, verbatim):\n{_render_facts(chunks)}")
     return "\n\n".join(sections)
+
+
+@dataclass(frozen=True)
+class SystemPromptBlocks:
+    """The same prompt build_system_prompt assembles, cut at the boundary
+    between what every client sharing this angle, tier, and product sees
+    identically, and what this one client's own facts add.
+
+    cached is everything determined by (angle, tier, product): the base
+    instructions, the angle's brief, the tier's format contract, the
+    campaign- and angle-level prohibitions, and the retrieved chunks --
+    none of it varies for another client on the same angle, tier and
+    product. dynamic is this client's own conditional prohibitions (no
+    measurable cadence, stale contact, a charge-settled exit) plus the note
+    that their figures follow in the user turn; both depend on this one
+    client's facts and would break a cache hit if folded into cached.
+    """
+
+    cached: str
+    dynamic: str
+
+
+def build_system_prompt_blocks(
+    *,
+    angle: str | None,
+    prompt_variant: str | None,
+    chunks: Sequence[GroundingChunk] = (),
+    brief: AngleBrief | None = None,
+    contract: FormatContract | None = None,
+    facts: Mapping[str, Any] | None = None,
+) -> SystemPromptBlocks:
+    """build_system_prompt, split for prompt caching rather than joined.
+
+    Written for campaigns.batch_generation: the Message Batches API caches
+    per request, on a marked content block, so many clients' requests only
+    earn a cache hit if the cached half is byte-for-byte identical across
+    them. Concatenating cached and dynamic (in that order, with a blank
+    line between) covers the same ground build_system_prompt does; the
+    client-specific clauses move to the end instead of sitting between the
+    prohibitions and the facts block, which changes nothing the model is
+    told, only where in the prompt it is told.
+    """
+    cached_sections = [template_text(prompt_variant)]
+
+    if brief is not None:
+        cached_sections.append(_brief_block(brief))
+    else:
+        cached_sections.append(f"Angle: {angle or 'winback'}")
+
+    if contract is not None:
+        cached_sections.append(_contract_block(contract))
+
+    # facts=None here on purpose: the campaign- and angle-level prohibitions
+    # only, so this block stays identical for every client on this angle
+    # and tier. This client's own conditional prohibitions go in dynamic.
+    cached_sections.append(f"You must never:\n{_prohibitions_block(brief, None)}")
+    cached_sections.append(f"Facts you may cite (only these, verbatim):\n{_render_facts(chunks)}")
+
+    dynamic_sections = []
+    conditional = conditional_prohibitions(facts)
+    if conditional:
+        dynamic_sections.append(
+            "This client also must never:\n" + "\n".join(f"- {line}" for line in conditional)
+        )
+    if facts:
+        dynamic_sections.append(
+            "The client's own figures are given in the user message. Use only "
+            "those, exactly as written, and omit any claim you have no fact for."
+        )
+
+    return SystemPromptBlocks(
+        cached="\n\n".join(cached_sections), dynamic="\n\n".join(dynamic_sections)
+    )
 
 
 def render_call_brief(

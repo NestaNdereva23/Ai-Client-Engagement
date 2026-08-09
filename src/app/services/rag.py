@@ -104,11 +104,14 @@ def search(
 
     q, when given, replaces the constructed query entirely rather than adding
     to it, so an admin can test the corpus against arbitrary text instead of
-    only the angle-shaped queries generation itself builds.
+    only the angle-shaped queries generation itself builds. A raw probe returns
+    the whole ranked tail, unfiltered, since seeing the weak matches is the
+    point of probing; the product path mirrors a draft and so inherits the
+    configured breadth and similarity floor.
     """
     if q is not None:
         sections = sections_for_product(product) if product else None
         return retrieve(session, q, sections=sections, k=k)
     if product is not None:
-        return retrieve_product_facts(session, product=product, angle=angle, k=k)
+        return retrieve_product_facts(session, product=product, angle=angle)
     raise ValueError("either product or q is required")
