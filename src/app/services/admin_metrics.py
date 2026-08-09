@@ -13,11 +13,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import date, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.models.llmops import (
+    Evaluation,
     GenerationRun,
     LLMRequest,
     LLMResponse,
@@ -25,6 +27,7 @@ from app.db.models.llmops import (
     PromptVersion,
     TokenUsage,
 )
+from app.db.models.outreach import MESSAGE_STATUSES, OutreachMessage
 from app.llmops.pricing import estimate_cost_usd
 
 _REJECTED = "rejected"
@@ -55,6 +58,49 @@ class GuardrailFailureRow:
     fail_count: int
     run_count: int
     failure_rate: float
+
+
+@dataclass(frozen=True)
+class JudgeScoreRow:
+    """One (angle, tier) slice's average judge scores, across every run it has scored."""
+
+    message_angle: str | None
+    priority_tier: str | None
+    evaluation_count: int
+    avg_tone: float
+    avg_compliance: float
+    avg_grounding: float
+    avg_personalization: float
+
+
+@dataclass(frozen=True)
+class FunnelCounts:
+    """Book-wide counts through the pipeline that actually exists today.
+
+    Stops at review, not send: there is no delivery tracking yet, so a
+    "sent" stage would be invented, not measured. guardrail_rejected and
+    review_rejected are kept apart because they are two different kinds of
+    rejection (an unguarded draft vs. a human's call on a fine one) that
+    happen to share a status string on two different tables.
+    """
+
+    generated: int
+    accepted: int
+    guardrail_rejected: int
+    pending_review: int
+    approved: int
+    review_rejected: int
+    escalated: int
+    held: int
+
+
+@dataclass(frozen=True)
+class DailyCountRow:
+    """One day's generation-run throughput."""
+
+    day: date
+    generated: int
+    accepted: int
 
 
 def run_metrics(
@@ -202,3 +248,114 @@ def guardrail_failure_rates(
         )
         for (angle, guardrail), count in sorted(fails.items(), key=sort_key)
     ]
+
+
+def judge_score_metrics(
+    session: Session,
+    *,
+    message_angle: str | None = None,
+    priority_tier: str | None = None,
+) -> list[JudgeScoreRow]:
+    """Average judge scores per angle and tier, across every evaluation so far.
+
+    Unscored runs never enter this average (there is no evaluations row to
+    join), which is exactly what ground_truth_rows already surfaces as a
+    coverage gap; this endpoint answers a different question, "how good are
+    the scored drafts", not "how many drafts got scored".
+    """
+    query = (
+        select(
+            PromptVersion.angle,
+            GenerationRun.priority_tier,
+            Evaluation.tone,
+            Evaluation.compliance,
+            Evaluation.grounding,
+            Evaluation.personalization,
+        )
+        .select_from(Evaluation)
+        .join(GenerationRun, Evaluation.run_id == GenerationRun.run_id)
+        .join(PromptVersion, GenerationRun.prompt_version_id == PromptVersion.prompt_version_id)
+    )
+    if message_angle is not None:
+        query = query.where(PromptVersion.angle == message_angle)
+    if priority_tier is not None:
+        query = query.where(GenerationRun.priority_tier == priority_tier)
+
+    groups: dict[tuple[str | None, str | None], list[tuple[int, int, int, int]]] = defaultdict(list)
+    for angle, tier, tone, compliance, grounding, personalization in session.execute(query).all():
+        groups[(angle, tier)].append((tone, compliance, grounding, personalization))
+
+    def sort_key(entry: tuple[tuple[str | None, str | None], list]) -> tuple[str, str]:
+        (angle, tier), _scores = entry
+        return (angle or "", tier or "")
+
+    rows = []
+    for (angle, tier), scores in sorted(groups.items(), key=sort_key):
+        count = len(scores)
+        rows.append(
+            JudgeScoreRow(
+                message_angle=angle,
+                priority_tier=tier,
+                evaluation_count=count,
+                avg_tone=sum(s[0] for s in scores) / count,
+                avg_compliance=sum(s[1] for s in scores) / count,
+                avg_grounding=sum(s[2] for s in scores) / count,
+                avg_personalization=sum(s[3] for s in scores) / count,
+            )
+        )
+    return rows
+
+
+def funnel_counts(session: Session) -> FunnelCounts:
+    """Book-wide counts at every stage the pipeline has today: generated,
+    guardrail-accepted or rejected, then a message's own review outcome.
+    """
+    generated = session.execute(select(func.count()).select_from(GenerationRun)).scalar_one()
+    accepted = session.execute(
+        select(func.count()).select_from(GenerationRun).where(GenerationRun.status == "accepted")
+    ).scalar_one()
+    guardrail_rejected = session.execute(
+        select(func.count()).select_from(GenerationRun).where(GenerationRun.status == "rejected")
+    ).scalar_one()
+
+    message_counts = dict(
+        session.execute(
+            select(OutreachMessage.status, func.count()).group_by(OutreachMessage.status)
+        ).all()
+    )
+    by_status = {status: message_counts.get(status, 0) for status in MESSAGE_STATUSES}
+
+    return FunnelCounts(
+        generated=generated,
+        accepted=accepted,
+        guardrail_rejected=guardrail_rejected,
+        pending_review=by_status["pending_review"],
+        approved=by_status["approved"],
+        review_rejected=by_status["rejected"],
+        escalated=by_status["escalated"],
+        held=by_status["held"],
+    )
+
+
+def daily_generation_counts(session: Session, *, days: int = 30) -> list[DailyCountRow]:
+    """Per-day generation counts for the last `days` days, oldest first.
+
+    Bucketed on the day GenerationRun.created_at falls on in the session's
+    configured time zone (see app.db.session), the same anchor every other
+    date derivation in this codebase uses, rather than UTC.
+    """
+    since = date.today() - timedelta(days=days - 1)
+    day = func.date(GenerationRun.created_at)
+    is_accepted = GenerationRun.status == "accepted"
+    query = (
+        select(
+            day.label("day"),
+            func.count().label("generated"),
+            func.count().filter(is_accepted).label("accepted"),
+        )
+        .where(day >= since)
+        .group_by(day)
+        .order_by(day)
+    )
+    rows = session.execute(query).all()
+    return [DailyCountRow(day=r.day, generated=r.generated, accepted=r.accepted) for r in rows]

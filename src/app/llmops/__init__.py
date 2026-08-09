@@ -2,7 +2,14 @@
 
 from app.llmops.judge import build_judge_prompt, judge_draft, rubric_text
 from app.llmops.telemetry import persist_generation_telemetry
-from app.llmops.tracing import LangfuseTracer, NullTracer, Tracer, get_tracer
+from app.llmops.tracing import (
+    LangfuseTracer,
+    NullTracer,
+    Tracer,
+    get_shared_tracer,
+    get_tracer,
+    shutdown_shared_tracer,
+)
 from app.llmops.versions import (
     EMAIL_CHANNEL,
     get_or_create_model_version,
@@ -21,10 +28,12 @@ __all__ = [
     "get_or_create_model_version",
     "get_or_create_prompt_version",
     "get_or_create_rubric_version",
+    "get_shared_tracer",
     "get_tracer",
     "judge_draft",
     "persist_evaluation",
     "persist_generation_run",
     "persist_generation_telemetry",
     "rubric_text",
+    "shutdown_shared_tracer",
 ]

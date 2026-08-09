@@ -151,7 +151,7 @@ def _stop_reason(session: Session, enrollment: Enrollment) -> tuple[str, str, st
     opted_out, has_contact = _vault_signals(enrollment.client_id)
     if opted_out:
         return "opted_out", "stopped_optout", None
-    if not has_contact:
+    if not has_contact and get_settings().require_deliverable_contact:
         return "no_deliverable_contact", "excluded", None
 
     stopping_event = _latest_event_type(session, enrollment.client_id, _STOPPING_EVENT_TYPES)

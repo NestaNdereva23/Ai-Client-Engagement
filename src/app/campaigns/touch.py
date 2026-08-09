@@ -42,7 +42,7 @@ from app.db.models.outreach import OutreachMessage
 
 logger = structlog.get_logger(__name__)
 
-GenerateFn = Callable[[Session, Enrollment, int], OutreachMessage]
+GenerateFn = Callable[[Session, Enrollment, int], OutreachMessage | None]
 
 
 class SendBlocked(Exception):
@@ -106,17 +106,24 @@ def generate_touch(
 
     The touch_log row is written first, before generate runs, so a crash
     mid-generation leaves a touch row with no message yet rather than a
-    message nothing recorded happening for; retrying finds the same row
-    and can pick generation back up instead of creating a second touch for
-    the same step.
+    message nothing recorded happening for. generate returning None (every
+    guardrail retry was rejected) leaves touch.message_id null the same
+    way. This is a known, unresolved limitation, not a retry mechanism: the
+    eligibility gate's already_touched check counts any touch_log row for
+    the step, message or not, so a message-less row here leaves the step
+    stuck rather than retried on the next batch run, and there is no
+    message yet for a regenerate call to act on either. Surfacing this
+    cleanly (an explicit re-attempt path for a rejected, message-less
+    step) is follow-up work, not solved here.
     """
     touch = record_touch(session, enrollment, step_no)
     if touch.message_id is not None:
         return touch
 
     message = generate(session, enrollment, step_no)
-    touch.message_id = message.message_id
-    session.flush()
+    if message is not None:
+        touch.message_id = message.message_id
+        session.flush()
     return touch
 
 
@@ -150,9 +157,23 @@ def run_due_enrollments(
 
         step_no = enrollment.current_step + 1
         touch = generate_touch(session, enrollment, step_no, generate=generate)
-        outcomes.append(
-            TouchRunOutcome(enrollment.enrollment_id, generated=True, touch_id=touch.touch_id)
-        )
+        if touch.message_id is not None:
+            outcomes.append(
+                TouchRunOutcome(enrollment.enrollment_id, generated=True, touch_id=touch.touch_id)
+            )
+        else:
+            # Every guardrail retry was rejected; the touch is still logged
+            # (distinguishing this from a crash before generate ever ran),
+            # but there is no message to review, and the step is not
+            # retried automatically -- see generate_touch's docstring.
+            outcomes.append(
+                TouchRunOutcome(
+                    enrollment.enrollment_id,
+                    generated=False,
+                    reason="guardrail_rejected",
+                    touch_id=touch.touch_id,
+                )
+            )
     return outcomes
 
 

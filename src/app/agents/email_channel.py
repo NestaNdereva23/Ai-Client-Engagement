@@ -10,7 +10,10 @@ a different channel from reusing the graph machinery.
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Sequence
+
+from sqlalchemy.orm import Session
 
 from app.agents.email_agent import build_system_prompt, render_call_brief
 from app.agents.graph import (
@@ -19,12 +22,14 @@ from app.agents.graph import (
     GenerationState,
     GuardrailCheck,
     build_generation_graph,
+    load_client_context,
     new_generation_state,
 )
 from app.agents.guardrails import DEFAULT_GUARDRAIL_CHECKS
+from app.config import Settings, get_settings
 from app.llmops.tracing import NullTracer, Tracer
 from app.privacy.boundary import AuditSink
-from app.privacy.llm_client import LLMClient
+from app.privacy.llm_client import LLMClient, get_llm_client
 
 CHANNEL = "email"
 # What a tier contract names when its tier gets a brief as well as an email.
@@ -85,3 +90,24 @@ class EmailAgent:
         finally:
             self._tracer.flush()
         return attach_call_brief(final)
+
+
+def build_default_agent(
+    session: Session,
+    settings: Settings | None = None,
+    *,
+    audit: AuditSink | None = None,
+    tracer: Tracer | None = None,
+) -> EmailAgent:
+    """The production EmailAgent: a real configured LLM client, context reads
+    bound to this session. The one place a caller outside a test builds a
+    real ChannelAgent, so a campaign batch run and a reviewer's regenerate
+    request both go through the identical wiring.
+    """
+    settings = settings or get_settings()
+    return EmailAgent(
+        context_loader=functools.partial(load_client_context, session),
+        llm_client=get_llm_client(settings),
+        audit=audit,
+        tracer=tracer,
+    )

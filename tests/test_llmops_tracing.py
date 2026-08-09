@@ -11,7 +11,13 @@ thread.
 from __future__ import annotations
 
 from app.config import Settings
-from app.llmops.tracing import LangfuseTracer, NullTracer, get_tracer
+from app.llmops.tracing import (
+    LangfuseTracer,
+    NullTracer,
+    get_shared_tracer,
+    get_tracer,
+    shutdown_shared_tracer,
+)
 
 
 def make_settings(**overrides) -> Settings:
@@ -93,6 +99,19 @@ def test_get_tracer_builds_a_langfuse_tracer_when_fully_configured() -> None:
         assert isinstance(tracer, LangfuseTracer)
     finally:
         tracer.shutdown()
+
+
+def test_shared_tracer_is_built_once_and_reused() -> None:
+    shutdown_shared_tracer()
+    try:
+        assert get_shared_tracer() is get_shared_tracer()
+    finally:
+        shutdown_shared_tracer()
+
+
+def test_shutting_down_the_shared_tracer_never_built_is_a_no_op() -> None:
+    shutdown_shared_tracer()
+    shutdown_shared_tracer()
 
 
 def test_start_span_and_end_span_reach_the_underlying_client() -> None:

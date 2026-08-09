@@ -103,6 +103,31 @@ def test_list_clients_returns_buckets_and_never_a_name(two_clients) -> None:
         assert "name" not in row
 
 
+def test_list_clients_filters_by_client_id(two_clients) -> None:
+    first_id, second_id, fund_id = two_clients
+    response = client.get(CLIENTS, params={"fund_id": fund_id, "client_id": first_id})
+    ids = [row["client_id"] for row in response.json()["items"]]
+    assert ids == [first_id]
+    assert second_id not in ids
+
+
+def test_get_client_detail_returns_the_same_bucket_shape(two_clients) -> None:
+    first_id, _second_id, _fund_id = two_clients
+    response = client.get(f"{CLIENTS}/{first_id}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["client_id"] == first_id
+    assert body["value_band"] == "High"
+    assert body["message_angle"] == "onboarding_retry"
+    assert "client_name" not in body
+    assert "name" not in body
+
+
+def test_get_client_detail_404s_for_an_unknown_client(db: None) -> None:
+    response = client.get(f"{CLIENTS}/9999999")
+    assert response.status_code == 404
+
+
 def test_list_clients_filters_by_purchase_depth(two_clients) -> None:
     first_id, second_id, fund_id = two_clients
     response = client.get(CLIENTS, params={"fund_id": fund_id, "purchase_depth": "single"})
