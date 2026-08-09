@@ -691,7 +691,13 @@ def test_submit_batch_gives_two_clients_on_the_same_angle_an_identical_cached_bl
             )
         session.commit()
         for client_id in client_ids:
-            session.add(PiiVault(client_id=client_id, client_name=f"Client {client_id}"))
+            session.add(
+                PiiVault(
+                    client_id=client_id,
+                    client_name=f"Client {client_id}",
+                    contact_email=f"client{client_id}@example.com",
+                )
+            )
             session.add(ClientFeatures(client_id=client_id, fund_type="money_market"))
         session.commit()
 
