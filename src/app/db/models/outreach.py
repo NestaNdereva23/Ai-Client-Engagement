@@ -1,8 +1,11 @@
 """The outreach workflow: campaign, outreach_message, review_action.
 
-An accepted generation run becomes one outreach_message, holding both what
-the model saw (ai_draft_content) and what re-attachment produces
-(personalized_content, filled in separately).
+An accepted generation run becomes one or more outreach_message rows, each
+holding both what the model saw (ai_draft_content) and what re-attachment
+produces (personalized_content, filled in separately). Most runs still back
+exactly one message, drafted for that one client. A run behind a
+message_template backs many: one instantiated message per client in the
+bucket, all sharing template_id.
 """
 
 from __future__ import annotations
@@ -58,7 +61,12 @@ class OutreachMessage(Base):
         BigInteger, ForeignKey("campaign.campaign_id"), nullable=False, index=True
     )
     generation_run_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("generation_runs.run_id"), nullable=False, unique=True
+        Text, ForeignKey("generation_runs.run_id"), nullable=False
+    )
+    # Set only when this message was filled in from an approved
+    # message_template rather than drafted individually.
+    template_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("message_template.template_id"), nullable=True, index=True
     )
     client_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("clients.client_id"), nullable=False, index=True

@@ -1,9 +1,12 @@
-"""The outreach workflow schema: campaign, outreach_message, review_action.
+"""The outreach workflow schema: campaign, outreach_message, review_action,
+message_template.
 
 These prove each CHECK constraint rejects a value outside its enumerated
 set, an outreach_message round-trips both content columns, a generation run
-can back at most one outreach_message, and review_action accumulates a full
-history for one message rather than being limited to a single row.
+can back more than one outreach_message (the bucketed-template case),
+message_template round-trips its profile and draft, and review_action
+accumulates a full history for one message rather than being limited to a
+single row.
 """
 
 from __future__ import annotations
@@ -11,11 +14,12 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.config import Settings
 from app.db.models.llmops import GenerationRun
+from app.db.models.message_template import MessageTemplate
 from app.db.models.models import Clients, Funds
 from app.db.models.outreach import Campaign, OutreachMessage, ReviewAction
 from app.db.session import SessionLocal
@@ -85,6 +89,7 @@ def generation_run(db: None):
             session.execute(
                 delete(OutreachMessage).where(OutreachMessage.message_id.in_(message_ids))
             )
+        session.execute(delete(MessageTemplate).where(MessageTemplate.generation_run_id == run_id))
         session.execute(delete(GenerationRun).where(GenerationRun.run_id == run_id))
         session.execute(delete(Clients).where(Clients.client_id == client_id))
         session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
@@ -185,7 +190,11 @@ def test_outreach_message_status_check_constraint_rejects_an_invalid_value(
         session.commit()
 
 
-def test_a_generation_run_backs_at_most_one_outreach_message(campaign: int, generation_run) -> None:
+def test_a_generation_run_can_back_more_than_one_outreach_message(
+    campaign: int, generation_run
+) -> None:
+    """The bucketed-template case: one template's run fills many clients'
+    messages, so generation_run_id is no longer unique on outreach_message."""
     client_id, run_id = generation_run
     with SessionLocal() as session:
         session.add(
@@ -197,9 +206,6 @@ def test_a_generation_run_backs_at_most_one_outreach_message(campaign: int, gene
                 ai_draft_content={"subject": "s", "body": "b"},
             )
         )
-        session.commit()
-
-    with SessionLocal() as session, pytest.raises(IntegrityError):
         session.add(
             OutreachMessage(
                 message_id=uuid4().hex,
@@ -210,6 +216,142 @@ def test_a_generation_run_backs_at_most_one_outreach_message(campaign: int, gene
             )
         )
         session.commit()
+
+    with SessionLocal() as session:
+        count = session.scalar(
+            select(func.count())
+            .select_from(OutreachMessage)
+            .where(OutreachMessage.generation_run_id == run_id)
+        )
+        assert count == 2
+
+
+def test_outreach_message_template_id_may_start_null(campaign: int, generation_run) -> None:
+    """A message drafted the old, per-client way has no template at all."""
+    client_id, run_id = generation_run
+    message_id = uuid4().hex
+    with SessionLocal() as session:
+        session.add(
+            OutreachMessage(
+                message_id=message_id,
+                campaign_id=campaign,
+                generation_run_id=run_id,
+                client_id=client_id,
+                ai_draft_content={"subject": "s", "body": "b"},
+            )
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        assert session.get(OutreachMessage, message_id).template_id is None
+
+
+def test_message_template_round_trips_profile_and_draft(campaign: int, generation_run) -> None:
+    _, run_id = generation_run
+    template_id = uuid4().hex
+    profile_key = {
+        "message_angle": "pick_up_again",
+        "priority_tier": "T3",
+        "product": "money market",
+        "has_cadence": False,
+        "stale_contact": False,
+        "exit_reason": None,
+    }
+    with SessionLocal() as session:
+        session.add(
+            MessageTemplate(
+                template_id=template_id,
+                campaign_id=campaign,
+                generation_run_id=run_id,
+                profile_key=profile_key,
+                ai_draft_content={"subject": "s", "body": "Dear {{first_name}}"},
+            )
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        stored = session.get(MessageTemplate, template_id)
+        assert stored.profile_key == profile_key
+        assert stored.ai_draft_content == {"subject": "s", "body": "Dear {{first_name}}"}
+        assert stored.status == "pending_review"
+
+
+def test_message_template_status_check_constraint_rejects_an_invalid_value(
+    campaign: int, generation_run
+) -> None:
+    _, run_id = generation_run
+    with SessionLocal() as session, pytest.raises(IntegrityError):
+        session.add(
+            MessageTemplate(
+                template_id=uuid4().hex,
+                campaign_id=campaign,
+                generation_run_id=run_id,
+                profile_key={},
+                ai_draft_content={"subject": "s", "body": "b"},
+                status="not_a_real_status",
+            )
+        )
+        session.commit()
+
+
+def test_a_generation_run_backs_at_most_one_message_template(campaign: int, generation_run) -> None:
+    _, run_id = generation_run
+    with SessionLocal() as session:
+        session.add(
+            MessageTemplate(
+                template_id=uuid4().hex,
+                campaign_id=campaign,
+                generation_run_id=run_id,
+                profile_key={},
+                ai_draft_content={"subject": "s", "body": "b"},
+            )
+        )
+        session.commit()
+
+    with SessionLocal() as session, pytest.raises(IntegrityError):
+        session.add(
+            MessageTemplate(
+                template_id=uuid4().hex,
+                campaign_id=campaign,
+                generation_run_id=run_id,
+                profile_key={},
+                ai_draft_content={"subject": "s", "body": "b"},
+            )
+        )
+        session.commit()
+
+
+def test_outreach_message_can_reference_an_approved_template(campaign: int, generation_run) -> None:
+    client_id, run_id = generation_run
+    template_id = uuid4().hex
+    message_id = uuid4().hex
+    with SessionLocal() as session:
+        session.add(
+            MessageTemplate(
+                template_id=template_id,
+                campaign_id=campaign,
+                generation_run_id=run_id,
+                profile_key={},
+                ai_draft_content={"subject": "s", "body": "Dear {{first_name}}"},
+                status="approved",
+            )
+        )
+        session.commit()
+
+        session.add(
+            OutreachMessage(
+                message_id=message_id,
+                campaign_id=campaign,
+                generation_run_id=run_id,
+                template_id=template_id,
+                client_id=client_id,
+                ai_draft_content={"subject": "s", "body": "Dear Jane"},
+            )
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        assert session.get(OutreachMessage, message_id).template_id == template_id
 
 
 def test_review_action_outcome_check_constraint_rejects_an_invalid_value(

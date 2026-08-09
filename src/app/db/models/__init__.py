@@ -21,6 +21,7 @@ from app.db.models.generation_batch import (
     GenerationBatchItem,
 )
 from app.db.models.llmops import GenerationRun, ModelVersion, PromptVersion
+from app.db.models.message_template import MESSAGE_TEMPLATE_STATUSES, MessageTemplate
 from app.db.models.models import (
     INGESTION_STATES,
     ClientFeatures,
@@ -58,6 +59,7 @@ __all__ = [
     "GENERATION_BATCH_STATUSES",
     "INGESTION_STATES",
     "MESSAGE_STATUSES",
+    "MESSAGE_TEMPLATE_STATUSES",
     "REVIEW_OUTCOMES",
     "AuditLog",
     "BusinessRule",
@@ -77,6 +79,7 @@ __all__ = [
     "IngestionReject",
     "IngestionStatus",
     "MessageAngleCatalog",
+    "MessageTemplate",
     "ModelVersion",
     "OutreachMessage",
     "PiiVault",
