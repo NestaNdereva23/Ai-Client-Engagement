@@ -250,6 +250,22 @@ def _load_reference_ts(session: Session, run_id: str) -> datetime:
     return ref
 
 
+def latest_reference_date(session: Session) -> date | None:
+    """The most recently completed ingestion run's reference date.
+
+    This is the data date a generated message can be explained against
+    months later: which pull's client figures were current when the message
+    went out. None when no run has ever completed.
+    """
+    ref = session.execute(
+        select(IngestionStatus.reference_ts)
+        .where(IngestionStatus.state == "completed")
+        .order_by(IngestionStatus.reference_ts.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    return ref.date() if ref is not None else None
+
+
 def flatten_run(
     session: Session, run_id: str, reference_date: datetime | None = None
 ) -> FlattenResult:

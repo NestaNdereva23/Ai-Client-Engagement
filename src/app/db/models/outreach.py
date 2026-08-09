@@ -96,6 +96,15 @@ class ReviewAction(Base):
     reviewer_id: Mapped[str] = mapped_column(Text, nullable=False)
     outcome: Mapped[str] = mapped_column(Text, nullable=False)
     edited_content: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Stamped from the message's generation run at decide() time, so this
+    # decision stays a ground-truth label for the angle and tier it was
+    # actually made under, even after the client's own indicators move on.
+    message_angle: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    priority_tier: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    # Per-field unified diff between ai_draft_content and edited_content, set
+    # only for edit_approve; what a reviewer changes is the signal for which
+    # angle brief is weak, not just that they changed something.
+    edit_diff: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
