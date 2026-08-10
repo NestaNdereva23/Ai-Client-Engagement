@@ -1,11 +1,9 @@
 """The outreach workflow: campaign, outreach_message, review_action.
 
 An accepted generation run becomes one or more outreach_message rows, each
-holding both what the model saw (ai_draft_content) and what re-attachment
-produces (personalized_content, filled in separately). Most runs still back
-exactly one message, drafted for that one client. A run behind a
-message_template backs many: one instantiated message per client in the
-bucket, all sharing template_id.
+holding what the model saw (ai_draft_content) and what re-attachment
+produces (personalized_content). A run behind a message_template backs
+many messages, all sharing template_id.
 """
 
 from __future__ import annotations
@@ -74,6 +72,9 @@ class OutreachMessage(Base):
     channel: Mapped[str] = mapped_column(Text, nullable=False, server_default="email")
     ai_draft_content: Mapped[dict] = mapped_column(JSONB, nullable=False)
     personalized_content: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Set only for a tier whose contract adds a secondary call_brief channel
+    # (today, T1). Carries no PII and needs no personalization.
+    call_brief: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="pending_review", index=True
     )

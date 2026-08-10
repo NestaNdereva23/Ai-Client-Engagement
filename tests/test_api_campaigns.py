@@ -296,3 +296,32 @@ def test_generate_limit_caps_the_batch(two_due_enrollments: int) -> None:
 def test_generate_rejects_a_limit_below_one(two_due_enrollments: int) -> None:
     response = client.post(f"{CAMPAIGNS}/{two_due_enrollments}/generate", params={"limit": 0})
     assert response.status_code == 422
+
+
+def test_draft_templates_drafts_nothing_when_no_step_makes_anyone_eligible(
+    two_due_enrollments: int,
+) -> None:
+    """Same no-CampaignStep trick as two_due_enrollments, so this proves the
+    wiring without needing a configured model provider."""
+    response = client.post(f"{CAMPAIGNS}/{two_due_enrollments}/templates/draft")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["drafted_count"] == 0
+    assert body["templates"] == []
+
+
+def test_draft_templates_404s_for_an_unknown_campaign(db: None) -> None:
+    response = client.post(f"{CAMPAIGNS}/9999999/templates/draft")
+    assert response.status_code == 404
+
+
+def test_instantiate_template_404s_for_an_unknown_campaign(db: None) -> None:
+    response = client.post(f"{CAMPAIGNS}/9999999/templates/not-a-real-id/instantiate")
+    assert response.status_code == 404
+
+
+def test_instantiate_template_404s_for_a_template_outside_the_campaign(
+    two_due_enrollments: int,
+) -> None:
+    response = client.post(f"{CAMPAIGNS}/{two_due_enrollments}/templates/not-a-real-id/instantiate")
+    assert response.status_code == 404

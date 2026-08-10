@@ -4,6 +4,9 @@ Never returns a name or any other PII; that stays behind pii_vault and the
 restricted role. Re-attaching a name for an authorized reviewer is part of
 the design (§9A.3), but no session or role exists yet (M8.5 is still open),
 so this never re-attaches one until that lands.
+
+The one exception is call_brief, on the single-client detail read only: it
+carries no name and no PII to begin with, so this is not name re-attachment.
 """
 
 from __future__ import annotations
@@ -14,12 +17,18 @@ from sqlalchemy.orm import Session
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.clients import ClientSummaryOut, SegmentBucketOut, SegmentDistributionOut
-from app.services.clients import ClientNotFound, get_client, list_clients, segment_distribution
+from app.services.clients import (
+    ClientNotFound,
+    get_client,
+    latest_call_brief,
+    list_clients,
+    segment_distribution,
+)
 
 router = APIRouter(tags=["clients"])
 
 
-def _to_summary(row) -> ClientSummaryOut:
+def _to_summary(row, *, call_brief: str | None = None) -> ClientSummaryOut:
     return ClientSummaryOut(
         client_id=row.client_id,
         unit_fund_id=row.unit_fund_id,
@@ -29,6 +38,7 @@ def _to_summary(row) -> ClientSummaryOut:
         hold_band=row.hold_band,
         message_angle=row.message_angle,
         priority_tier=row.priority_tier,
+        call_brief=call_brief,
     )
 
 
@@ -64,12 +74,13 @@ def get_clients(
 
 @router.get("/clients/{client_id}", response_model=ClientSummaryOut)
 def get_client_detail(client_id: int, session: Session = Depends(get_session)) -> ClientSummaryOut:
-    """One client's buckets. Buckets only, never a name (see module docstring)."""
+    """One client's buckets, plus their latest approved call_brief if one
+    exists (see module docstring for why that is not PII re-attachment)."""
     try:
         row = get_client(session, client_id)
     except ClientNotFound:
         raise HTTPException(status_code=404, detail="client not found") from None
-    return _to_summary(row)
+    return _to_summary(row, call_brief=latest_call_brief(session, client_id))
 
 
 @router.get("/segments", response_model=SegmentDistributionOut)

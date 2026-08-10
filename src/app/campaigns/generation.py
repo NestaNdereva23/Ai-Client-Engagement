@@ -103,7 +103,9 @@ def _generate_and_persist(
 
     if state.get("status") != "accepted":
         return None
-    return create_outreach_message(session, run, campaign_id=campaign_id)
+    return create_outreach_message(
+        session, run, campaign_id=campaign_id, call_brief=state.get("call_brief")
+    )
 
 
 def generate_for_enrollment(

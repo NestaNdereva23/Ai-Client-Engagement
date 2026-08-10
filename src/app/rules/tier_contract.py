@@ -8,6 +8,7 @@ catalogue, so all three stay in step when moved together.
 
 from __future__ import annotations
 
+import random
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -135,3 +136,15 @@ def mandatory_review(tier: TierContract, *, sampling_enabled: bool) -> bool:
     if not sampling_enabled:
         return True
     return tier.human_approval
+
+
+def instance_needs_review(tier: TierContract | None, *, sampling_enabled: bool) -> bool:
+    """Whether one particular instantiated message needs a human look.
+
+    No tier row at all defaults to reviewed. Otherwise mandatory_review is
+    checked first; only once that says not every message needs review does
+    review_sample_rate get a say, as a probability, not a hard cutoff.
+    """
+    if tier is None or mandatory_review(tier, sampling_enabled=sampling_enabled):
+        return True
+    return random.random() < tier.review_sample_rate

@@ -1,11 +1,12 @@
 """One drafted template per bucket, reviewed once and instantiated per client.
 
-A bucket is a group of clients who share the same profile-defining facts:
-the angle, tier, and product that decide what a message may claim, plus the
-handful of booleans that add or drop a prohibition. message_template holds
-the one draft written for that shared profile; outreach_message rows filled
-from it (one per client in the bucket) point back to it through template_id.
-A message drafted the old, per-client way has no template at all.
+outreach_message rows filled from a template point back to it through
+template_id. A message drafted the old, per-client way has no template.
+
+message_template_review_action is its own table, not a reuse of
+review_action: a template decision is a content judgment, mandatory for
+every tier; an instantiated message's own review_action is a separate,
+sampled, mostly substitution-correctness check.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
 MESSAGE_TEMPLATE_STATUSES = ("pending_review", "approved", "rejected", "escalated", "held")
+TEMPLATE_REVIEW_OUTCOMES = ("approve", "edit_approve", "reject", "escalate", "hold")
 
 
 class MessageTemplate(Base):
@@ -40,9 +42,7 @@ class MessageTemplate(Base):
         Text, ForeignKey("generation_runs.run_id"), nullable=False, unique=True
     )
     # The profile-defining facts every client in the bucket shares: angle,
-    # tier, product, and the conditional-prohibition booleans from
-    # app.agents.email_agent.conditional_prohibitions. Not one client's
-    # facts, the shape a client has to match to be filled from this template.
+    # tier, product, and the conditional-prohibition booleans.
     profile_key: Mapped[dict] = mapped_column(JSONB, nullable=False)
     ai_draft_content: Mapped[dict] = mapped_column(JSONB, nullable=False)
     status: Mapped[str] = mapped_column(
@@ -56,4 +56,35 @@ class MessageTemplate(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+class TemplateReviewAction(Base):
+    """One reviewer decision on one template.
+
+    message_angle/priority_tier are stamped from the template's own
+    profile_key at decide time, so the label survives later catalogue changes.
+    """
+
+    __tablename__ = "message_template_review_action"
+    __table_args__ = (
+        CheckConstraint(
+            "outcome IN ('approve', 'edit_approve', 'reject', 'escalate', 'hold')",
+            name="ck_message_template_review_action_outcome",
+        ),
+    )
+
+    review_action_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    template_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("message_template.template_id"), nullable=False, index=True
+    )
+    reviewer_id: Mapped[str] = mapped_column(Text, nullable=False)
+    outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    edited_content: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    message_angle: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    priority_tier: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    edit_diff: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )

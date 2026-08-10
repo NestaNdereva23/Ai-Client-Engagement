@@ -6,6 +6,13 @@ so this module's only job is pairing that label with the judge's own scores
 on the same generation run: the pairing a judge-agreement analysis needs. A
 run the judge never scored still appears, with null scores, because a
 missing evaluation is itself a coverage gap worth seeing, not a row to drop.
+
+Two ground-truth sources exist, on purpose. The judge only ever scores a
+template's own draft, once, never an instantiated message. So a
+content-quality analysis wants template_ground_truth_rows, a clean 1:1
+against the template's own review decision. ground_truth_rows (unchanged)
+reflects instance-level outcomes, where several rows can legitimately share
+one judge score -- a different question (rendering correctness, not content).
 """
 
 from __future__ import annotations
@@ -16,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models.llmops import Evaluation
+from app.db.models.message_template import MessageTemplate, TemplateReviewAction
 from app.db.models.outreach import OutreachMessage, ReviewAction
 
 # escalate and hold are waypoints, not a reviewer's final word on a draft;
@@ -67,6 +75,67 @@ def ground_truth_rows(
         GroundTruthRow(
             review_action_id=action.review_action_id,
             message_id=action.message_id,
+            run_id=run_id,
+            message_angle=action.message_angle,
+            priority_tier=action.priority_tier,
+            outcome=action.outcome,
+            edit_diff=action.edit_diff,
+            reviewer_id=action.reviewer_id,
+            tone=evaluation.tone if evaluation else None,
+            compliance=evaluation.compliance if evaluation else None,
+            grounding=evaluation.grounding if evaluation else None,
+            personalization=evaluation.personalization if evaluation else None,
+        )
+        for action, run_id, evaluation in rows
+    ]
+
+
+@dataclass(frozen=True)
+class TemplateGroundTruthRow:
+    """One terminal template-review decision, its edit diff, and the judge's
+    scores on the same run."""
+
+    review_action_id: int
+    template_id: str
+    run_id: str
+    message_angle: str | None
+    priority_tier: str | None
+    outcome: str
+    edit_diff: dict | None
+    reviewer_id: str
+    tone: int | None
+    compliance: int | None
+    grounding: int | None
+    personalization: int | None
+
+
+def template_ground_truth_rows(
+    session: Session,
+    *,
+    message_angle: str | None = None,
+    priority_tier: str | None = None,
+) -> list[TemplateGroundTruthRow]:
+    """Every terminal template-review decision, optionally sliced by angle
+    and/or tier, left-joined to its judge evaluation. Always a clean 1:1
+    against generation_runs, unlike ground_truth_rows.
+    """
+    query = (
+        select(TemplateReviewAction, MessageTemplate.generation_run_id, Evaluation)
+        .join(MessageTemplate, TemplateReviewAction.template_id == MessageTemplate.template_id)
+        .outerjoin(Evaluation, Evaluation.run_id == MessageTemplate.generation_run_id)
+        .where(TemplateReviewAction.outcome.in_(_TERMINAL_OUTCOMES))
+        .order_by(TemplateReviewAction.created_at)
+    )
+    if message_angle is not None:
+        query = query.where(TemplateReviewAction.message_angle == message_angle)
+    if priority_tier is not None:
+        query = query.where(TemplateReviewAction.priority_tier == priority_tier)
+
+    rows = session.execute(query).all()
+    return [
+        TemplateGroundTruthRow(
+            review_action_id=action.review_action_id,
+            template_id=action.template_id,
             run_id=run_id,
             message_angle=action.message_angle,
             priority_tier=action.priority_tier,

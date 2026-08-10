@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
+from sqlalchemy import delete, text
 
+from app.config import Settings
+from app.db.models.llmops import GenerationRun
 from app.db.models.models import ClientFeatures, Clients, Funds
+from app.db.models.outreach import Campaign, OutreachMessage
 from app.db.models.rules import ClientMessageIndicators
 from app.db.session import SessionLocal
+from app.llmops.versions import persist_generation_run
 from app.main import app
+from app.services.review import create_outreach_message
 
 client = TestClient(app)
 
@@ -18,7 +25,15 @@ SEGMENTS = "/api/v1/segments"
 
 
 @pytest.fixture
-def two_clients(db: None):
+def roles(db: None):
+    with SessionLocal() as session:
+        exists = session.scalar(text("SELECT 1 FROM pg_roles WHERE rolname = 'ace_restricted'"))
+    if not exists:
+        pytest.skip("boundary roles not present; run alembic upgrade head")
+
+
+@pytest.fixture
+def two_clients(roles):
     """Two clients in one fund, different buckets, one with a resolved angle."""
     fund_id = 974
     first_id, second_id = 97401, 97402
@@ -89,6 +104,87 @@ def two_clients(db: None):
         session.execute(delete(Clients).where(Clients.client_id.in_([first_id, second_id])))
         session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
         session.commit()
+
+
+def _make_settings() -> Settings:
+    return Settings(
+        llm_provider="anthropic",
+        anthropic_api_key="test-key",
+        llm_model="claude-opus-5",
+        llm_temperature=None,
+        llm_max_tokens=1024,
+    )
+
+
+@pytest.fixture
+def approved_call_brief(two_clients):
+    """An approved outreach_message carrying a call_brief for the first client."""
+    first_id, _second_id, _fund_id = two_clients
+    with SessionLocal() as session:
+        campaign = Campaign(name="call brief api test campaign")
+        session.add(campaign)
+        session.commit()
+        campaign_id = campaign.campaign_id
+
+        run = persist_generation_run(
+            session,
+            {
+                "run_id": str(uuid4()),
+                "trace_id": uuid4().hex,
+                "client_id": first_id,
+                "product": "money market",
+                "angle": "onboarding_retry",
+                "priority_tier": "T1",
+                "prompt_variant": "onboarding_retry",
+                "status": "accepted",
+                "attempts": 1,
+                "failed_guardrail": None,
+                "reason": None,
+                "raw_structured_output": {
+                    "subject": "Come back to {{fund_name}}",
+                    "body": "Dear {{first_name}}, we miss you.",
+                },
+            },
+            _make_settings(),
+        )
+        session.commit()
+        message = create_outreach_message(
+            session, run, campaign_id=campaign_id, call_brief="Call brief: text"
+        )
+        message.status = "approved"
+        session.commit()
+        message_id = message.message_id
+
+    yield first_id
+
+    with SessionLocal() as session:
+        session.execute(delete(OutreachMessage).where(OutreachMessage.message_id == message_id))
+        session.execute(delete(GenerationRun).where(GenerationRun.run_id == run.run_id))
+        session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
+        session.commit()
+
+
+def test_get_client_detail_returns_the_latest_approved_call_brief(approved_call_brief) -> None:
+    first_id = approved_call_brief
+    response = client.get(f"{CLIENTS}/{first_id}")
+    assert response.status_code == 200
+    assert response.json()["call_brief"] == "Call brief: text"
+
+
+def test_get_client_detail_call_brief_is_null_with_no_approved_message(two_clients) -> None:
+    first_id, _second_id, _fund_id = two_clients
+    response = client.get(f"{CLIENTS}/{first_id}")
+    assert response.status_code == 200
+    assert response.json()["call_brief"] is None
+
+
+def test_list_clients_never_includes_a_call_brief(approved_call_brief) -> None:
+    first_id = approved_call_brief
+    response = client.get(CLIENTS, params={"client_id": first_id})
+    items = response.json()["items"]
+    assert items
+    for row in items:
+        assert row.get("call_brief") is None
 
 
 def test_list_clients_returns_buckets_and_never_a_name(two_clients) -> None:

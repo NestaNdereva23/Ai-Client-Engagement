@@ -18,17 +18,15 @@ from sqlalchemy.orm import Session
 from app.rag.grounding import GroundingChunk
 from app.rules.catalog import load_angle
 
-# The five placeholder-filled facts a bucketed template may stand in for
-# with a token instead of a real number, since one template's draft is
-# shared by clients who each have their own value for these. An individual
-# client's draft never needs them: it is given the real number as a fact
-# and writes that directly, the same as it always has.
+# Facts a bucketed template stands in with a token instead of a real number,
+# since its draft is shared by clients who each have their own value.
 PLACEHOLDER_FACT_FIELDS = (
     "typical_contribution",
     "largest_contribution",
     "years_since_exit",
     "days_held_after_last_topup",
     "month_they_left",
+    "cadence_interval_days",
 )
 
 # Every token a draft may ever use for anything client specific: the two a
@@ -98,13 +96,13 @@ _BASE_INSTRUCTIONS = (
     "You may use {{first_name}} for the client's name and {{fund_name}} "
     "for the fund or product name. "
     "If a fact you were given for typical contribution, largest "
-    "contribution, years since exit, days held after the last top-up, or "
-    "the month they left is itself one of the tokens {{typical_contribution}}, "
-    "{{largest_contribution}}, {{years_since_exit}}, "
-    "{{days_held_after_last_topup}}, or {{month_they_left}}, reproduce that "
-    "token exactly as given instead of a number: it stands in for a value "
-    "that is filled in per client after review, not a number you calculated "
-    "or omitted. "
+    "contribution, years since exit, days held after the last top-up, the "
+    "month they left, or their cadence interval is itself one of the tokens "
+    "{{typical_contribution}}, {{largest_contribution}}, {{years_since_exit}}, "
+    "{{days_held_after_last_topup}}, {{month_they_left}}, or "
+    "{{cadence_interval_days}}, reproduce that token exactly as given instead "
+    "of a number: it stands in for a value that is filled in per client "
+    "after review, not a number you calculated or omitted. "
     "These, plus {{first_name}} and {{fund_name}}, are the ONLY placeholders "
     "allowed. Do not create, modify, or use any other placeholder. "
     "FACTUAL ACCURACY: "
@@ -396,6 +394,17 @@ def render_call_brief(
     if contract is not None:
         lines.extend(["", f"Call as: {contract.sign_off}."])
     return "\n".join(lines)
+
+
+def placeholder_token(field: str) -> str:
+    """The token text for one placeholder-filled fact, e.g. "typical_contribution"
+    -> "{{typical_contribution}}". Raises for any field outside
+    PLACEHOLDER_FACT_FIELDS, so a typo fails at the call site, not silently
+    in the rendered draft.
+    """
+    if field not in PLACEHOLDER_FACT_FIELDS:
+        raise ValueError(f"{field!r} is not a placeholder-filled fact")
+    return f"{{{{{field}}}}}"
 
 
 def required_placeholders(facts: Mapping[str, Any] | None = None) -> tuple[str, ...]:

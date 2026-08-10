@@ -6,6 +6,10 @@ of truth for a client's bucket; no query here ever touches pii_vault. A
 client's name is deliberately never re-attached: that step is gated on an
 authorized role in the design, and no role or session exists yet (M8.5 is
 still open), so the safe default until then is to never re-attach one.
+
+latest_call_brief is the one exception: it carries no name or PII to begin
+with (agents.email_agent.render_call_brief never takes any), so surfacing
+it here re-exposes nothing new.
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ from sqlalchemy import Row, func, select
 from sqlalchemy.orm import Session
 
 from app.db.models.models import ClientFeatures, Clients
+from app.db.models.outreach import OutreachMessage
 from app.db.models.rules import ClientMessageIndicators
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_id_cursor, encode_id_cursor
 
@@ -149,6 +154,20 @@ def get_client(session: Session, client_id: int) -> Row:
     if row is None:
         raise ClientNotFound(client_id)
     return row
+
+
+def latest_call_brief(session: Session, client_id: int) -> str | None:
+    """This client's most recent approved call_brief, if any."""
+    return session.scalar(
+        select(OutreachMessage.call_brief)
+        .where(
+            OutreachMessage.client_id == client_id,
+            OutreachMessage.status == "approved",
+            OutreachMessage.call_brief.isnot(None),
+        )
+        .order_by(OutreachMessage.created_at.desc())
+        .limit(1)
+    )
 
 
 def segment_distribution(session: Session) -> dict[str, list[tuple[str, int]] | int]:

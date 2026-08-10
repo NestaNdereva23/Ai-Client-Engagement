@@ -21,6 +21,7 @@ from app.rules.tier_contract import (
     TierContractValidationError,
     TierSpec,
     active_tier_contract_version,
+    instance_needs_review,
     load_active_tiers,
     load_tier,
     mandatory_review,
@@ -208,6 +209,52 @@ def test_sampling_on_defers_to_the_tiers_own_policy(db: None) -> None:
     assert mandatory_review(tiers["T1"], sampling_enabled=True) is True
     assert mandatory_review(tiers["T2"], sampling_enabled=True) is False
     assert mandatory_review(tiers["T4"], sampling_enabled=True) is False
+
+
+# --- instance-level sampling ---
+
+
+def test_instance_needs_review_is_always_true_with_no_tier_row_at_all() -> None:
+    assert instance_needs_review(None, sampling_enabled=True) is True
+    assert instance_needs_review(None, sampling_enabled=False) is True
+
+
+def test_instance_needs_review_is_always_true_with_sampling_off(db: None) -> None:
+    with SessionLocal() as session:
+        tiers = load_active_tiers(session, IN_FORCE)
+    for row in tiers.values():
+        assert instance_needs_review(row, sampling_enabled=False) is True
+
+
+def test_instance_needs_review_is_always_true_for_a_mandatory_tier(db: None) -> None:
+    with SessionLocal() as session:
+        tiers = load_active_tiers(session, IN_FORCE)
+    assert instance_needs_review(tiers["T1"], sampling_enabled=True) is True
+
+
+def test_instance_needs_review_follows_the_tiers_own_rate_once_not_mandatory(
+    db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SessionLocal() as session:
+        tiers = load_active_tiers(session, IN_FORCE)
+    t3 = tiers["T3"]
+    assert 0.0 < t3.review_sample_rate < 1.0
+
+    monkeypatch.setattr("app.rules.tier_contract.random.random", lambda: t3.review_sample_rate / 2)
+    assert instance_needs_review(t3, sampling_enabled=True) is True
+
+    monkeypatch.setattr(
+        "app.rules.tier_contract.random.random", lambda: min(t3.review_sample_rate * 2, 0.999999)
+    )
+    assert instance_needs_review(t3, sampling_enabled=True) is False
+
+
+def test_instance_needs_review_is_never_true_for_a_zero_rate_tier(db: None) -> None:
+    with SessionLocal() as session:
+        tiers = load_active_tiers(session, IN_FORCE)
+    t4 = tiers["T4"]
+    assert t4.review_sample_rate == 0.0
+    assert instance_needs_review(t4, sampling_enabled=True) is False
 
 
 # --- indicator resolution ---

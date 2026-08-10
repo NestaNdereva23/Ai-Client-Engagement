@@ -1,12 +1,5 @@
 """The outreach workflow schema: campaign, outreach_message, review_action,
 message_template.
-
-These prove each CHECK constraint rejects a value outside its enumerated
-set, an outreach_message round-trips both content columns, a generation run
-can back more than one outreach_message (the bucketed-template case),
-message_template round-trips its profile and draft, and review_action
-accumulates a full history for one message rather than being limited to a
-single row.
 """
 
 from __future__ import annotations

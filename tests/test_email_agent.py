@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
+import pytest
+
 from app.agents.email_agent import (
     ALLOWED_PLACEHOLDERS,
     PLACEHOLDER_FACT_FIELDS,
@@ -19,6 +21,7 @@ from app.agents.email_agent import (
     build_system_prompt,
     build_system_prompt_blocks,
     has_required_placeholders,
+    placeholder_token,
     variant_guidance,
 )
 from app.db.session import SessionLocal
@@ -177,12 +180,22 @@ def test_has_required_placeholders_true_only_when_both_tokens_present() -> None:
 
 
 def test_allowed_placeholders_carries_one_token_per_placeholder_fact_field() -> None:
-    """The five placeholder-filled facts each get exactly one token, on top
-    of the two every draft has always been able to use."""
+    """Every placeholder-filled fact gets exactly one token, on top of the
+    two every draft has always been able to use."""
     assert set(REQUIRED_PLACEHOLDERS) <= set(ALLOWED_PLACEHOLDERS)
     for field in PLACEHOLDER_FACT_FIELDS:
         assert f"{{{{{field}}}}}" in ALLOWED_PLACEHOLDERS
     assert len(ALLOWED_PLACEHOLDERS) == 2 + len(PLACEHOLDER_FACT_FIELDS)
+
+
+def test_placeholder_token_matches_the_allowed_vocabulary() -> None:
+    for field in PLACEHOLDER_FACT_FIELDS:
+        assert placeholder_token(field) in ALLOWED_PLACEHOLDERS
+
+
+def test_placeholder_token_rejects_a_field_outside_the_vocabulary() -> None:
+    with pytest.raises(ValueError):
+        placeholder_token("balance")
 
 
 def test_system_prompt_states_every_allowed_placeholder() -> None:

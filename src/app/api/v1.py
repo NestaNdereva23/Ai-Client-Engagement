@@ -21,6 +21,7 @@ from app.api.routers import (
     rag,
     review,
     rules,
+    templates,
 )
 
 router = APIRouter(prefix="/api/v1")
@@ -29,6 +30,7 @@ router.include_router(ingestion.router)
 router.include_router(data_quality.router)
 router.include_router(clients.router)
 router.include_router(campaigns.router)
+router.include_router(templates.router)
 router.include_router(rules.router)
 router.include_router(audit.router)
 router.include_router(rag.router)

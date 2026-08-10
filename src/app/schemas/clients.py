@@ -6,7 +6,11 @@ from pydantic import BaseModel
 
 
 class ClientSummaryOut(BaseModel):
-    """One client's buckets: no name, no code, no raw figures."""
+    """One client's buckets: no name, no code, no raw figures.
+
+    call_brief is the one exception, only ever populated on the
+    single-client detail read, never the list.
+    """
 
     client_id: int
     unit_fund_id: int
@@ -16,6 +20,7 @@ class ClientSummaryOut(BaseModel):
     hold_band: str | None
     message_angle: str | None
     priority_tier: str | None
+    call_brief: str | None = None
 
 
 class SegmentBucketOut(BaseModel):

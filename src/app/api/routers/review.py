@@ -74,6 +74,7 @@ def get_review(message_id: str, session: Session = Depends(get_session)) -> Outr
         created_at=message.created_at,
         ai_draft_content=message.ai_draft_content,
         personalized_content=message.personalized_content,
+        call_brief=message.call_brief,
         updated_at=message.updated_at,
         history=[ReviewActionOut.model_validate(a) for a in history],
     )
@@ -152,6 +153,7 @@ def regenerate_review(
         created_at=fresh.created_at,
         ai_draft_content=fresh.ai_draft_content,
         personalized_content=fresh.personalized_content,
+        call_brief=fresh.call_brief,
         updated_at=fresh.updated_at,
         history=[],
     )

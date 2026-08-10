@@ -21,7 +21,12 @@ from app.db.models.generation_batch import (
     GenerationBatchItem,
 )
 from app.db.models.llmops import GenerationRun, ModelVersion, PromptVersion
-from app.db.models.message_template import MESSAGE_TEMPLATE_STATUSES, MessageTemplate
+from app.db.models.message_template import (
+    MESSAGE_TEMPLATE_STATUSES,
+    TEMPLATE_REVIEW_OUTCOMES,
+    MessageTemplate,
+    TemplateReviewAction,
+)
 from app.db.models.models import (
     INGESTION_STATES,
     ClientFeatures,
@@ -61,6 +66,7 @@ __all__ = [
     "MESSAGE_STATUSES",
     "MESSAGE_TEMPLATE_STATUSES",
     "REVIEW_OUTCOMES",
+    "TEMPLATE_REVIEW_OUTCOMES",
     "AuditLog",
     "BusinessRule",
     "Campaign",
@@ -90,6 +96,7 @@ __all__ = [
     "RawStaging",
     "ReviewAction",
     "Suppression",
+    "TemplateReviewAction",
     "TierContract",
     "TouchLog",
     "Transactions",
