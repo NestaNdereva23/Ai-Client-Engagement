@@ -2,8 +2,12 @@
 
 Importing this package registers every model on ``Base.metadata`` so migrations
 and ``create_all`` see them.
+
+risk, fa_assignment, complaints, and digest are scaffolded but still empty;
+their imports land here once each ships its first model.
 """
 
+from app.db.models.active_clients import ActiveClientFund
 from app.db.models.api import IdempotencyKey
 from app.db.models.audit import AuditLog
 from app.db.models.campaigns import (
@@ -67,6 +71,7 @@ __all__ = [
     "MESSAGE_TEMPLATE_STATUSES",
     "REVIEW_OUTCOMES",
     "TEMPLATE_REVIEW_OUTCOMES",
+    "ActiveClientFund",
     "AuditLog",
     "BusinessRule",
     "Campaign",

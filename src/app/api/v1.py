@@ -13,13 +13,16 @@ from fastapi import APIRouter
 from app.api.routers import (
     admin,
     audit,
+    briefing,
     campaigns,
     clients,
     data_quality,
+    digest,
     ingestion,
     integration,
     rag,
     review,
+    risk,
     rules,
     templates,
 )
@@ -36,3 +39,6 @@ router.include_router(audit.router)
 router.include_router(rag.router)
 router.include_router(integration.router)
 router.include_router(admin.router)
+router.include_router(risk.router)
+router.include_router(digest.router)
+router.include_router(briefing.router)

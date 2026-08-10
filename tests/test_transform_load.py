@@ -400,9 +400,14 @@ def _measured_client() -> dict[str, Any]:
                     "balance": 0,
                     "computed_at": "2026-07-20T08:00:00",
                     "last_5_purchases": [
-                        {"id": 5001, "date": "2022-01-01", "number": "1000", "unit_fund_id": 10},
-                        {"id": 5002, "date": "2022-01-31", "number": "10000", "unit_fund_id": 10},
-                        {"id": 5003, "date": "2022-03-02", "number": "100000", "unit_fund_id": 10},
+                        {"id": 5001, "date": "2022-01-01", "number": "100000", "unit_fund_id": 10},
+                        {"id": 5002, "date": "2022-01-31", "number": "1000000", "unit_fund_id": 10},
+                        {
+                            "id": 5003,
+                            "date": "2022-03-02",
+                            "number": "10000000",
+                            "unit_fund_id": 10,
+                        },
                     ],
                     "last_2_sales": [
                         {
@@ -435,8 +440,8 @@ def measured(db: None, cleanup_runs: list[str], normalized_ids):
 def test_relationship_measures_persist(measured) -> None:
     with SessionLocal() as session:
         (row,) = _funds_held(session, 1001)
-        assert row.avg_ticket == 37000
-        assert row.max_ticket == 100000
+        assert row.avg_ticket == 3700000
+        assert row.max_ticket == 10000000
         assert row.rhythm_days == 30
         assert row.active_window_days == 60
         assert row.hold_days == 400

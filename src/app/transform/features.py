@@ -50,7 +50,12 @@ STALE_CONTACT_DAYS = 1095
 # once and frozen. Recomputing them per run would move a client between bands
 # without their behaviour changing. Boundaries are right-closed: a value sitting
 # exactly on one belongs to the band below.
-VALUE_BAND_CUTOFFS = (3_661.0, 10_750.0, 44_120.0)
+#
+# The source amounts from Cytonn's API are in KES, so the boundaries are kept
+# in KES too, rather than converting each client's amount to USD at
+# classification time. These figures are the original USD quartiles
+# (3,661 / 10,750 / 44,120) converted at ~129 KES per USD and rounded.
+VALUE_BAND_CUTOFFS = (470_000.0, 1_390_000.0, 5_690_000.0)
 
 # A client's history counts as deep at three purchases, or at six months
 # between the first and last one we can see.

@@ -104,7 +104,7 @@ class FlattenResult:
     counters: FlattenCounters = field(default_factory=FlattenCounters)
 
 
-def _parse_date(value: Any, counters: FlattenCounters) -> date | None:
+def parse_date(value: Any, counters: FlattenCounters) -> date | None:
     """Parse a mixed ISO date to a calendar date, counting anything unparseable."""
     if not value:
         return None
@@ -115,7 +115,7 @@ def _parse_date(value: Any, counters: FlattenCounters) -> date | None:
         return None
 
 
-def _parse_amount(value: Any, counters: FlattenCounters) -> float:
+def parse_amount(value: Any, counters: FlattenCounters) -> float:
     """Parse a string amount to a float, counting anything unparseable as zero."""
     if value in (None, ""):
         return 0.0
@@ -126,7 +126,7 @@ def _parse_amount(value: Any, counters: FlattenCounters) -> float:
         return 0.0
 
 
-def _max_date(dates: list[date | None]) -> date | None:
+def max_date(dates: list[date | None]) -> date | None:
     present = [d for d in dates if d is not None]
     return max(present) if present else None
 
@@ -148,8 +148,8 @@ def _txn_row(
         client_code=client.client_code,
         unit_fund_id=txn.get("unit_fund_id", fund_id),
         fund_short_name=embedded.get("short_name"),
-        date=_parse_date(txn.get("date"), counters),
-        amount=_parse_amount(txn.get("number"), counters),
+        date=parse_date(txn.get("date"), counters),
+        amount=parse_amount(txn.get("number"), counters),
         unit_price=txn.get("unit_price"),
         fees_incurred=txn.get("fees_incurred"),
         sale_type=txn.get("sale_type"),
@@ -201,9 +201,9 @@ def flatten_payload(payload: dict[str, Any], reference_date: datetime) -> Flatte
             result.transactions.extend(purchase_rows)
             result.transactions.extend(sale_rows)
 
-            last_purchase = _max_date([r.date for r in purchase_rows])
-            last_sale = _max_date([r.date for r in sale_rows])
-            last_activity = _max_date([last_purchase, last_sale])
+            last_purchase = max_date([r.date for r in purchase_rows])
+            last_sale = max_date([r.date for r in sale_rows])
+            last_activity = max_date([last_purchase, last_sale])
             total_purchase = sum(r.amount for r in purchase_rows)
             total_sale = sum(r.amount for r in sale_rows)
 

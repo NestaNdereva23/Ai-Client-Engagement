@@ -62,6 +62,12 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("CY_API_KEY", "CYTONN_API_KEY"),
     )
+    # The active-clients feed lives at a different path than the dormant one
+    # above; CytonnClient itself is unchanged, only the URL it is pointed at.
+    cytonn_active_clients_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("CY_ACTIVE_CLIENTS_URL", "CYTONN_ACTIVE_CLIENTS_URL"),
+    )
 
     # LLM provider for draft generation.
     llm_provider: str = "anthropic"
