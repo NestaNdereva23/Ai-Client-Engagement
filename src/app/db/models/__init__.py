@@ -3,8 +3,8 @@
 Importing this package registers every model on ``Base.metadata`` so migrations
 and ``create_all`` see them.
 
-risk, fa_assignment, complaints, and digest are scaffolded but still empty;
-their imports land here once each ships its first model.
+risk, fa_assignment, and digest are scaffolded but still empty; their
+imports land here once each ships its first model.
 """
 
 from app.db.models.active_clients import ActiveClientFund
@@ -17,6 +17,12 @@ from app.db.models.campaigns import (
     ContactEvent,
     Enrollment,
     TouchLog,
+)
+from app.db.models.complaints import (
+    COMPLAINT_CATEGORIES,
+    COMPLAINT_CHANNELS,
+    COMPLAINT_STATUSES,
+    ClientComplaint,
 )
 from app.db.models.generation_batch import (
     GENERATION_BATCH_ITEM_STATUSES,
@@ -62,6 +68,9 @@ from app.db.models.suppression import Suppression
 
 __all__ = [
     "CAMPAIGN_STATUSES",
+    "COMPLAINT_CATEGORIES",
+    "COMPLAINT_CHANNELS",
+    "COMPLAINT_STATUSES",
     "CONTACT_EVENT_TYPES",
     "ENROLLMENT_STATUSES",
     "GENERATION_BATCH_ITEM_STATUSES",
@@ -76,6 +85,7 @@ __all__ = [
     "BusinessRule",
     "Campaign",
     "CampaignStep",
+    "ClientComplaint",
     "ClientFeatures",
     "ClientFund",
     "ClientMessageIndicators",

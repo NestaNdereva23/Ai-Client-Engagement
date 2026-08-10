@@ -1,15 +1,3 @@
-"""The complaints source: a contract fixed now so a real source can swap in
-later with no change to whoever calls it.
-
-Cytonn has no complaints endpoint today, so StubComplaintsSource is the only
-implementation: it is honest about being a stub, always answering "nothing
-open". Every caller downstream -- the six-signal engine, the router, the
-briefing renderer -- depends only on the ComplaintsSource protocol, never on
-StubComplaintsSource directly, so the day a real complaints feed or a CRM
-export exists, a new class implementing fetch_open_complaints and one line in
-app/config.py is the whole change.
-"""
-
 from __future__ import annotations
 
 import json
@@ -46,16 +34,6 @@ class ComplaintsSource(Protocol):
 
 
 class StubComplaintsSource:
-    """Returns no complaints, which is the honest current state: Cytonn has
-    confirmed no complaints data is available.
-
-    An optional local fixture file lets tests exercise the downstream code
-    paths that depend on an open complaint before real data exists. The
-    fixture is a test seam, not a production behaviour: the app's own
-    factory (app.config) never passes fixture_path, so it can only ever be
-    set by a test constructing this class directly.
-    """
-
     def __init__(self, fixture_path: str | Path | None = None) -> None:
         self._records: list[ComplaintRecord] = []
         if fixture_path is not None:

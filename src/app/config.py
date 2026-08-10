@@ -90,6 +90,11 @@ class Settings(BaseSettings):
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
 
+    # Which ComplaintsSource implementation app.ingestion.complaints_source
+    # builds. "stub" is the only real option today, since Cytonn has no
+    # complaints endpoint; a later source registers here under its own name.
+    complaints_source: str = "stub"
+
     # Shared secret for the integration plane, a stopgap ahead of M8A.7's
     # scoped API keys / OAuth client-credentials. Empty means integration
     # endpoints refuse every request rather than run unprotected.
