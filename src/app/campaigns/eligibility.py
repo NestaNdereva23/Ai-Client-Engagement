@@ -159,6 +159,15 @@ def _stop_reason(session: Session, enrollment: Enrollment) -> tuple[str, str, st
         return stopping_event, "stopped_bounce", None
 
     since = _last_touch_sent_at(session, enrollment)
+    _reply_debug = session.execute(
+        select(ContactEvent.occurred_at)
+        .where(ContactEvent.client_id == enrollment.client_id, ContactEvent.type == "reply")
+        .order_by(ContactEvent.occurred_at.desc())
+        .limit(1)
+    ).scalar()
+    import sys
+
+    print(f"DEBUG since={since!r} reply_occurred_at={_reply_debug!r}", file=sys.stderr)
     if _latest_event_type(session, enrollment.client_id, ("reply",), since=since) is not None:
         return "replied", "stopped_reply", None
 

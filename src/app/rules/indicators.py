@@ -12,7 +12,6 @@ from datetime import date
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.db.models.models import ClientFeatures
@@ -20,6 +19,7 @@ from app.db.models.rules import ClientMessageIndicators
 from app.rules.engine import Resolution, feature_view, resolve
 from app.rules.store import load_active_rules
 from app.transform.features import PRIORITY_TIERS
+from app.transform.load import upsert
 
 # Columns refreshed when a client's row already exists. The key is excluded.
 _INDICATOR_UPDATE = [
@@ -71,10 +71,13 @@ def populate_indicators(session: Session, at: date) -> int:
     if not rows:
         return 0
 
-    stmt = pg_insert(ClientMessageIndicators).values(rows)
-    set_ = {col: getattr(stmt.excluded, col) for col in _INDICATOR_UPDATE}
-    set_["resolved_at"] = func.now()
-    stmt = stmt.on_conflict_do_update(index_elements=["client_id"], set_=set_)
-    session.execute(stmt)
+    count = upsert(
+        session,
+        ClientMessageIndicators,
+        rows,
+        "client_id",
+        _INDICATOR_UPDATE,
+        extra_set={"resolved_at": func.now()},
+    )
     session.commit()
-    return len(rows)
+    return count

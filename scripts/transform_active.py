@@ -53,10 +53,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"transforming active-clients run {run_id}")
         counts = transform_active_run(session, run_id)
 
-    print(
-        f"client_funds={counts.client_funds} "
-        f"transactions={counts.transactions} vault={counts.vault}"
-    )
+    print(f"client_funds={counts.client_funds} vault={counts.vault}")
     return 0
 
 

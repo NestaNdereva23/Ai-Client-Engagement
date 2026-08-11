@@ -20,6 +20,7 @@ from datetime import date, datetime
 from statistics import median
 
 from app.transform.active_flatten import ActiveFlattenResult, ActiveTxnRow
+from app.transform.flatten import SALE_CAP
 
 # The source has no transaction type code for sales yet, so a real client
 # redemption can't be told apart from a system fee posting directly. This
@@ -27,15 +28,34 @@ from app.transform.active_flatten import ActiveFlattenResult, ActiveTxnRow
 # posting, anything above it as a real withdrawal. It is a guess, not a
 # measurement -- the day the real transaction type code is available, this
 # heuristic should be deleted, not retuned.
+#
+# This is already a KES figure, not a USD one converted like
+# VALUE_BAND_CUTOFFS: the observed automatic fee postings sit around KES 50,
+# so KES 100 is a cap set just above that, read directly off the KES sale
+# amounts.
 SYSTEM_SALE_MAX = 100.0
+
+# The observed recurring deduction, KES, same reasoning as SYSTEM_SALE_MAX:
+# read directly off the KES sale amounts, not a per-client average. Every
+# client's fee runway is measured against this one figure, not their own
+# fee postings, since a single client rarely has enough visible fee history
+# (at most two sale slots) to average reliably.
+FEE_PER_MONTH = 50.0
 
 
 @dataclass
 class ActiveFeatureMeasures:
-    """One client-fund's derived behaviour, before any bucketing."""
+    """One client-fund's derived behaviour, before any bucketing.
+
+    balance and n_purchases are carried straight through from the flattened
+    row, alongside the derived measures, so the risk signals have everything
+    they need from one object.
+    """
 
     client_id: int
     unit_fund_id: int
+    balance: float | None
+    n_purchases: int
     rhythm_days: float | None
     avg_ticket: float | None
     max_ticket: float | None
@@ -83,21 +103,13 @@ def _log_slope(amounts: list[float]) -> float | None:
     return covariance / variance
 
 
-def _classify_sales(
-    sales: list[ActiveTxnRow], system_sale_max: float
-) -> tuple[float | None, float | None]:
-    """Split a client's visible sales into a real redemption and a fee estimate.
-
-    A sale at or under system_sale_max is a system fee posting, not something
-    the client asked for. If every visible sale is a fee posting, no real
-    redemption is visible at all -- largest_real_sale comes back None even
-    though the sale slots may be full.
+def _largest_real_sale(sales: list[ActiveTxnRow], system_sale_max: float) -> float | None:
+    """The largest sale worth more than system_sale_max, or None if every
+    visible sale is at or under it -- a system fee posting, not something
+    the client asked for.
     """
     real = [s.amount for s in sales if s.amount > system_sale_max]
-    fees = [s.amount for s in sales if s.amount <= system_sale_max]
-    largest_real_sale = max(real) if real else None
-    avg_fee = (sum(fees) / len(fees)) if fees else None
-    return largest_real_sale, avg_fee
+    return max(real) if real else None
 
 
 def _drawdown_ratio(largest_real_sale: float | None, balance: float | None) -> float | None:
@@ -114,11 +126,11 @@ def _drawdown_ratio(largest_real_sale: float | None, balance: float | None) -> f
     return largest_real_sale / implied_prior_balance
 
 
-def _fee_runway_months(balance: float | None, avg_fee: float | None) -> float | None:
-    """How many months the balance covers at the observed recurring deduction."""
-    if balance is None or avg_fee is None or avg_fee <= 0:
+def _fee_runway_months(balance: float | None, fee_per_month: float) -> float | None:
+    """How many months the balance covers at the recurring deduction rate."""
+    if balance is None or fee_per_month <= 0:
         return None
-    return balance / avg_fee
+    return balance / fee_per_month
 
 
 def _last_ticket(purchases: list[ActiveTxnRow]) -> float | None:
@@ -133,16 +145,19 @@ def _days_since_purchase(last_purchase: date | None, reference_date: date | None
 
     A sale doesn't reset this: a client who only ever withdraws is not
     "recently active" in the sense that matters for a win-back signal.
+    Clipped at zero, so a purchase dated after the reference point (a data
+    quirk, not a real future purchase) never reads as negative.
     """
     if last_purchase is None or reference_date is None:
         return None
-    return (reference_date - last_purchase).days
+    return max(0, (reference_date - last_purchase).days)
 
 
 def derive_active_measures(
     result: ActiveFlattenResult,
     reference_date: datetime | None = None,
     system_sale_max: float = SYSTEM_SALE_MAX,
+    fee_per_month: float = FEE_PER_MONTH,
 ) -> dict[tuple[int, int], ActiveFeatureMeasures]:
     """Measure each client-fund relationship in the active book.
 
@@ -171,11 +186,17 @@ def derive_active_measures(
         amounts = [t.amount for t in bought]
         buy_dates = [t.date for t in bought]
 
-        largest_real_sale, avg_fee = _classify_sales(sold, system_sale_max)
+        largest_real_sale = _largest_real_sale(sold, system_sale_max)
+        # Blind only when the sale window is full and, on top of that, not one
+        # of the sales it shows is a real redemption -- a full window with at
+        # least one real sale visible is truncated, not blind.
+        redemption_history_blind = len(sold) >= SALE_CAP and largest_real_sale is None
 
         measures[key] = ActiveFeatureMeasures(
             client_id=row.client_id,
             unit_fund_id=row.unit_fund_id,
+            balance=row.balance,
+            n_purchases=row.n_purchases,
             rhythm_days=_rhythm_days(buy_dates),
             avg_ticket=(sum(amounts) / len(amounts)) if amounts else None,
             max_ticket=max(amounts) if amounts else None,
@@ -183,9 +204,9 @@ def derive_active_measures(
             ticket_trend=_log_slope(amounts),
             largest_real_sale=largest_real_sale,
             drawdown_ratio=_drawdown_ratio(largest_real_sale, row.balance),
-            fee_runway_months=_fee_runway_months(row.balance, avg_fee),
+            fee_runway_months=_fee_runway_months(row.balance, fee_per_month),
             days_since_purchase=_days_since_purchase(row.last_purchase, ref),
             purchases_censored=row.purchases_censored,
-            redemption_history_blind=row.redemption_history_blind,
+            redemption_history_blind=redemption_history_blind,
         )
     return measures
