@@ -15,6 +15,7 @@ from app.config import get_settings
 from app.db.session import get_session
 from app.llmops.tracing import get_shared_tracer
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
+from app.privacy.llm_client import get_llm_client
 from app.schemas.campaigns import (
     BatchIngestOutcomeOut,
     BatchIngestResultOut,
@@ -27,17 +28,27 @@ from app.schemas.campaigns import (
     GenerationBatchOut,
     TouchOutcomeOut,
 )
+from app.schemas.review import OutreachMessageSummary
+from app.schemas.templates import (
+    DraftTemplatesResult,
+    InstantiateTemplateResult,
+    MessageTemplateSummary,
+)
 from app.services.campaigns import (
     CampaignNotFound,
     add_campaign_step,
     campaign_summary,
     create_campaign,
+    draft_campaign_templates,
     get_campaign_batch,
     ingest_campaign_batch,
+    instantiate_campaign_template,
     list_campaigns,
     run_campaign_generation,
     submit_campaign_batch,
 )
+from app.services.review import TemplateNotApproved
+from app.services.template_review import TemplateNotFound
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
@@ -278,4 +289,70 @@ def post_campaign_batch_ingest(
             BatchIngestOutcomeOut(custom_id=o.custom_id, status=o.status, reason=o.reason)
             for o in result.outcomes
         ],
+    )
+
+
+@router.post("/{campaign_id}/templates/draft", response_model=DraftTemplatesResult)
+def post_campaign_templates_draft(
+    campaign_id: int,
+    limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=DEFAULT_BATCH_LIMIT),
+    session: Session = Depends(get_session),
+) -> DraftTemplatesResult:
+    """Group this campaign's due, eligible enrollments into buckets and draft
+    one template per bucket -- a third path alongside /generate and
+    /generate/batch. Nothing is instantiated yet: each template needs its
+    own review at GET/POST /templates first.
+    """
+    try:
+        templates = draft_campaign_templates(
+            session,
+            campaign_id,
+            settings=get_settings(),
+            llm_client=get_llm_client(get_settings()),
+            limit=limit,
+            tracer=get_shared_tracer(),
+        )
+        session.commit()
+    except CampaignNotFound:
+        session.rollback()
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    return DraftTemplatesResult(
+        drafted_count=len(templates),
+        templates=[MessageTemplateSummary.model_validate(t) for t in templates],
+    )
+
+
+@router.post(
+    "/{campaign_id}/templates/{template_id}/instantiate",
+    response_model=InstantiateTemplateResult,
+)
+def post_campaign_template_instantiate(
+    campaign_id: int,
+    template_id: str,
+    limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=DEFAULT_BATCH_LIMIT),
+    session: Session = Depends(get_session),
+) -> InstantiateTemplateResult:
+    """Fill in every due, eligible client currently matching an approved
+    template's profile, each as its own outreach_message (pending_review or
+    auto-approved, per this tier's sampling policy). Safe to call again
+    later: an already-instantiated client is skipped, and one who becomes
+    due afterwards is picked up then.
+    """
+    try:
+        messages = instantiate_campaign_template(session, campaign_id, template_id, limit=limit)
+        session.commit()
+    except CampaignNotFound:
+        session.rollback()
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    except TemplateNotFound:
+        session.rollback()
+        raise HTTPException(status_code=404, detail="template not found") from None
+    except TemplateNotApproved:
+        session.rollback()
+        raise HTTPException(
+            status_code=409, detail="template is not approved; nothing to instantiate"
+        ) from None
+    return InstantiateTemplateResult(
+        instantiated_count=len(messages),
+        messages=[OutreachMessageSummary.model_validate(m) for m in messages],
     )

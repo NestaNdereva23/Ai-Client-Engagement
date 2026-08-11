@@ -19,17 +19,34 @@ from __future__ import annotations
 
 import difflib
 import uuid
+from collections.abc import Mapping
+from datetime import date, datetime
+from typing import Any
 
 import structlog
 from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
+from app.agents.email_agent import render_call_brief
+from app.agents.email_channel import CALL_BRIEF_CHANNEL
+from app.agents.graph import load_client_facts
+from app.agents.guardrails import (
+    GuardrailFailure,
+    check_no_unresolved_placeholders,
+    instance_numeric_traceability_check,
+)
 from app.audit.log import record_audit
+from app.config import get_settings
 from app.db.models.llmops import GenerationRun, PromptVersion
+from app.db.models.message_template import MessageTemplate
 from app.db.models.models import Clients, Funds, PiiVault
 from app.db.models.outreach import REVIEW_OUTCOMES, OutreachMessage, ReviewAction
+from app.db.models.rules import TierContract
+from app.db.models.views import llm_client_context
 from app.db.session import restricted_session
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_cursor, encode_cursor
+from app.rules.catalog import load_angle
+from app.rules.tier_contract import instance_needs_review, load_tier
 
 logger = structlog.get_logger(__name__)
 
@@ -62,6 +79,10 @@ class InvalidOutcome(Exception):
     """outcome is not one of the five allowed review outcomes."""
 
 
+class TemplateNotApproved(Exception):
+    """Instantiation was attempted against a message_template that is not approved."""
+
+
 def _first_name_from_full_name(full_name: str | None) -> str:
     """The greeting name from a stored full name, or a safe fallback when
     there is nothing on file; a real client should never receive a blank or
@@ -87,40 +108,96 @@ def _fetch_client_name(client_id: int) -> str | None:
         return vault.client_name if vault else None
 
 
-def resolve_placeholders(text: str, *, first_name: str, fund_name: str) -> str:
-    """Substitute the two placeholders EmailAgent is allowed to use."""
-    return text.replace("{{first_name}}", first_name).replace("{{fund_name}}", fund_name)
+def resolve_placeholders(
+    text: str,
+    *,
+    first_name: str,
+    fund_name: str,
+    typical_contribution: str | None = None,
+    largest_contribution: str | None = None,
+    years_since_exit: str | None = None,
+    days_held_after_last_topup: str | None = None,
+    month_they_left: str | None = None,
+    cadence_interval_days: str | None = None,
+) -> str:
+    """Substitute every placeholder this draft has a value for.
+
+    first_name and fund_name stay required. The rest are skipped rather
+    than blanked out when absent, since a draft that never used one needs
+    nothing supplied for it.
+    """
+    resolved = text.replace("{{first_name}}", first_name).replace("{{fund_name}}", fund_name)
+    placeholder_facts = {
+        "typical_contribution": typical_contribution,
+        "largest_contribution": largest_contribution,
+        "years_since_exit": years_since_exit,
+        "days_held_after_last_topup": days_held_after_last_topup,
+        "month_they_left": month_they_left,
+        "cadence_interval_days": cadence_interval_days,
+    }
+    for field, value in placeholder_facts.items():
+        if value is not None:
+            resolved = resolved.replace(f"{{{{{field}}}}}", str(value))
+    return resolved
 
 
-def personalize_content(ai_draft_content: dict, *, first_name: str, fund_name: str) -> dict:
+def personalize_content(
+    ai_draft_content: dict,
+    *,
+    first_name: str,
+    fund_name: str,
+    typical_contribution: str | None = None,
+    largest_contribution: str | None = None,
+    years_since_exit: str | None = None,
+    days_held_after_last_topup: str | None = None,
+    month_they_left: str | None = None,
+    cadence_interval_days: str | None = None,
+) -> dict:
     """The subject/body pair with real values injected in place of placeholders."""
+    kwargs = {
+        "first_name": first_name,
+        "fund_name": fund_name,
+        "typical_contribution": typical_contribution,
+        "largest_contribution": largest_contribution,
+        "years_since_exit": years_since_exit,
+        "days_held_after_last_topup": days_held_after_last_topup,
+        "month_they_left": month_they_left,
+        "cadence_interval_days": cadence_interval_days,
+    }
     return {
-        "subject": resolve_placeholders(
-            ai_draft_content["subject"], first_name=first_name, fund_name=fund_name
-        ),
-        "body": resolve_placeholders(
-            ai_draft_content["body"], first_name=first_name, fund_name=fund_name
-        ),
+        "subject": resolve_placeholders(ai_draft_content["subject"], **kwargs),
+        "body": resolve_placeholders(ai_draft_content["body"], **kwargs),
     }
 
 
+def _resolve_fund_name(session: Session, client_id: int) -> str:
+    """This client's real fund name, read after the model boundary -- safe
+    to use directly, unlike the restricted display-name vocabulary a draft
+    is allowed to cite."""
+    client = session.get(Clients, client_id)
+    fund = session.get(Funds, client.unit_fund_id) if client else None
+    return fund.unit_fund_name if fund else _FALLBACK_FUND_NAME
+
+
+def _resolve_first_name(client_id: int) -> str:
+    full_name = _fetch_client_name(client_id)
+    first_name = _first_name_from_full_name(full_name)
+    if full_name is None:
+        logger.warning("personalization.no_client_name", client_id=client_id)
+    return first_name
+
+
 def create_outreach_message(
-    session: Session, run: GenerationRun, *, campaign_id: int
+    session: Session, run: GenerationRun, *, campaign_id: int, call_brief: str | None = None
 ) -> OutreachMessage:
     """Re-attach real values to an accepted run and store the result.
 
     ai_draft_content is copied from the run unchanged; personalized_content
-    is computed fresh here. run must be accepted (has ai_draft_content); a
-    run with nothing else to review has no message to create.
+    is computed fresh here. call_brief, when given, is stored as-is -- it
+    carries no placeholder, so there is nothing to personalize.
     """
-    client = session.get(Clients, run.client_id)
-    fund = session.get(Funds, client.unit_fund_id) if client else None
-    fund_name = fund.unit_fund_name if fund else _FALLBACK_FUND_NAME
-
-    full_name = _fetch_client_name(run.client_id)
-    first_name = _first_name_from_full_name(full_name)
-    if full_name is None:
-        logger.warning("personalization.no_client_name", client_id=run.client_id)
+    fund_name = _resolve_fund_name(session, run.client_id)
+    first_name = _resolve_first_name(run.client_id)
 
     personalized = personalize_content(
         run.ai_draft_content, first_name=first_name, fund_name=fund_name
@@ -133,6 +210,7 @@ def create_outreach_message(
         client_id=run.client_id,
         ai_draft_content=run.ai_draft_content,
         personalized_content=personalized,
+        call_brief=call_brief,
     )
     session.add(message)
     record_audit(
@@ -142,6 +220,158 @@ def create_outreach_message(
         entity_id=message.message_id,
         run_id=run.run_id,
         trace_id=run.trace_id,
+    )
+    session.flush()
+    return message
+
+
+def _format_amount(value: int | float) -> str:
+    if float(value).is_integer():
+        return f"{int(value):,}"
+    return f"{value:,.2f}"
+
+
+def _format_month(value: str) -> str:
+    """ "YYYY-MM" -> "March 2025", the way a real email would read it."""
+    return datetime.strptime(value, "%Y-%m").strftime("%B %Y")
+
+
+def _placeholder_facts_for_client(
+    session: Session, client_id: int
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """This client's raw fact values, and the formatted strings
+    personalize_content substitutes them with. A client with no numeric row
+    yet gets nothing to substitute.
+    """
+    row = (
+        session.execute(
+            select(llm_client_context).where(llm_client_context.c.client_id == client_id)
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None:
+        return {}, {}
+    raw = load_client_facts(session, client_id, dict(row)) or {}
+
+    formatted: dict[str, str] = {}
+    if raw.get("typical_contribution_kes") is not None:
+        formatted["typical_contribution"] = _format_amount(raw["typical_contribution_kes"])
+    if raw.get("largest_contribution_kes") is not None:
+        formatted["largest_contribution"] = _format_amount(raw["largest_contribution_kes"])
+    if raw.get("years_since_exit") is not None:
+        formatted["years_since_exit"] = f"{raw['years_since_exit']:g}"
+    if raw.get("days_held_after_last_topup") is not None:
+        formatted["days_held_after_last_topup"] = str(raw["days_held_after_last_topup"])
+    if raw.get("month_they_left") is not None:
+        formatted["month_they_left"] = _format_month(raw["month_they_left"])
+    if raw.get("invested_every_n_days") is not None:
+        formatted["cadence_interval_days"] = str(raw["invested_every_n_days"])
+    return raw, formatted
+
+
+def _load_template_tier(session: Session, template: MessageTemplate) -> TierContract | None:
+    priority_tier = (template.profile_key or {}).get("priority_tier")
+    return load_tier(session, priority_tier, date.today()) if priority_tier else None
+
+
+def _instance_status(tier: TierContract | None) -> str:
+    """pending_review, unless this tier's sampling policy says this instance
+    does not need a human look. Never touches whether the template itself
+    was reviewed -- that is mandatory and already enforced elsewhere.
+    """
+    settings = get_settings()
+    needs_review = instance_needs_review(tier, sampling_enabled=settings.tier_sampling_enabled)
+    return "pending_review" if needs_review else "approved"
+
+
+def _call_brief_for_instance(
+    session: Session,
+    template: MessageTemplate,
+    tier: TierContract | None,
+    client_facts: Mapping[str, Any],
+) -> str | None:
+    """This client's own call brief, when the tier's contract calls for one.
+    Built from the angle's own brief text and this client's real facts,
+    the same way an individual client's own draft builds it. A template
+    never renders one at draft time -- only here, per client.
+    """
+    if tier is None or tier.secondary_channel != CALL_BRIEF_CHANNEL:
+        return None
+    angle = (template.profile_key or {}).get("message_angle")
+    if not angle:
+        return None
+    brief = load_angle(session, angle, date.today())
+    if brief is None:
+        return None
+    return render_call_brief(brief=brief, facts=client_facts, contract=tier)
+
+
+def instantiate_message(
+    session: Session, template: MessageTemplate, client_id: int, *, campaign_id: int
+) -> OutreachMessage | None:
+    """Approved template + one client's own facts -> an outreach_message, or
+    None if the post-instantiation guardrail re-check fails.
+
+    Raises TemplateNotApproved if the template itself has not been
+    approved. A guardrail failure is logged and returns None -- no message,
+    no automatic retry.
+    """
+    if template.status != "approved":
+        raise TemplateNotApproved(template.template_id)
+
+    tier = _load_template_tier(session, template)
+    fund_name = _resolve_fund_name(session, client_id)
+    first_name = _resolve_first_name(client_id)
+    client_raw_facts, placeholder_kwargs = _placeholder_facts_for_client(session, client_id)
+
+    personalized = personalize_content(
+        template.ai_draft_content,
+        first_name=first_name,
+        fund_name=fund_name,
+        **placeholder_kwargs,
+    )
+
+    try:
+        check_no_unresolved_placeholders(personalized["subject"], personalized["body"])
+        instance_numeric_traceability_check(
+            template_body=template.ai_draft_content.get("body", ""),
+            resolved_body=personalized["body"],
+            client_facts=client_raw_facts,
+        )
+    except GuardrailFailure as failure:
+        record_audit(
+            session,
+            entity_type="message_template",
+            action="instantiation_rejected",
+            entity_id=template.template_id,
+            detail={
+                "client_id": client_id,
+                "guardrail": failure.guardrail,
+                "reason": str(failure),
+            },
+        )
+        return None
+
+    message = OutreachMessage(
+        message_id=uuid.uuid4().hex,
+        campaign_id=campaign_id,
+        generation_run_id=template.generation_run_id,
+        template_id=template.template_id,
+        client_id=client_id,
+        ai_draft_content=template.ai_draft_content,
+        personalized_content=personalized,
+        call_brief=_call_brief_for_instance(session, template, tier, client_raw_facts),
+        status=_instance_status(tier),
+    )
+    session.add(message)
+    record_audit(
+        session,
+        entity_type="outreach_message",
+        action="create",
+        entity_id=message.message_id,
+        run_id=template.generation_run_id,
+        detail={"template_id": template.template_id, "status": message.status},
     )
     session.flush()
     return message

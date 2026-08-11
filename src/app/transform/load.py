@@ -272,7 +272,7 @@ def _feature_dict(f: FeatureRow) -> dict[str, Any]:
 _MAX_BIND_PARAMS = 65535
 
 
-def _upsert(
+def upsert(
     session: Session,
     model: type,
     rows: list[dict[str, Any]],
@@ -336,7 +336,7 @@ def persist_result(
     features = {f.client_id: _feature_dict(f) for f in derive_features(result, measures)}
 
     counts = PersistCounts()
-    counts.funds = _upsert(
+    counts.funds = upsert(
         session,
         Funds,
         list(funds.values()),
@@ -344,8 +344,8 @@ def persist_result(
         _FUND_UPDATE,
         extra_set={"updated_at": func.now()},
     )
-    counts.clients = _upsert(session, Clients, clients, "client_id", _CLIENT_UPDATE)
-    counts.client_funds = _upsert(
+    counts.clients = upsert(session, Clients, clients, "client_id", _CLIENT_UPDATE)
+    counts.client_funds = upsert(
         session,
         ClientFund,
         client_funds,
@@ -353,8 +353,8 @@ def persist_result(
         _CLIENT_FUND_UPDATE,
         extra_set={"updated_at": func.now()},
     )
-    counts.transactions = _upsert(session, Transactions, list(txns.values()), "txn_id", _TXN_UPDATE)
-    counts.vault = _upsert(
+    counts.transactions = upsert(session, Transactions, list(txns.values()), "txn_id", _TXN_UPDATE)
+    counts.vault = upsert(
         session,
         PiiVault,
         vault,
@@ -362,7 +362,7 @@ def persist_result(
         _VAULT_UPDATE,
         extra_set={"updated_at": func.now()},
     )
-    counts.features = _upsert(
+    counts.features = upsert(
         session,
         ClientFeatures,
         list(features.values()),

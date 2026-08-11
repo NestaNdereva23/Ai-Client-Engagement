@@ -2,8 +2,12 @@
 
 Importing this package registers every model on ``Base.metadata`` so migrations
 and ``create_all`` see them.
+
+risk and digest are scaffolded but still empty; their imports land here
+once each ships its first model.
 """
 
+from app.db.models.active_clients import ActiveClientFund
 from app.db.models.api import IdempotencyKey
 from app.db.models.audit import AuditLog
 from app.db.models.campaigns import (
@@ -14,6 +18,13 @@ from app.db.models.campaigns import (
     Enrollment,
     TouchLog,
 )
+from app.db.models.complaints import (
+    COMPLAINT_CATEGORIES,
+    COMPLAINT_CHANNELS,
+    COMPLAINT_STATUSES,
+    ClientComplaint,
+)
+from app.db.models.fa_assignment import FaAssignment
 from app.db.models.generation_batch import (
     GENERATION_BATCH_ITEM_STATUSES,
     GENERATION_BATCH_STATUSES,
@@ -21,6 +32,12 @@ from app.db.models.generation_batch import (
     GenerationBatchItem,
 )
 from app.db.models.llmops import GenerationRun, ModelVersion, PromptVersion
+from app.db.models.message_template import (
+    MESSAGE_TEMPLATE_STATUSES,
+    TEMPLATE_REVIEW_OUTCOMES,
+    MessageTemplate,
+    TemplateReviewAction,
+)
 from app.db.models.models import (
     INGESTION_STATES,
     ClientFeatures,
@@ -52,23 +69,31 @@ from app.db.models.suppression import Suppression
 
 __all__ = [
     "CAMPAIGN_STATUSES",
+    "COMPLAINT_CATEGORIES",
+    "COMPLAINT_CHANNELS",
+    "COMPLAINT_STATUSES",
     "CONTACT_EVENT_TYPES",
     "ENROLLMENT_STATUSES",
     "GENERATION_BATCH_ITEM_STATUSES",
     "GENERATION_BATCH_STATUSES",
     "INGESTION_STATES",
     "MESSAGE_STATUSES",
+    "MESSAGE_TEMPLATE_STATUSES",
     "REVIEW_OUTCOMES",
+    "TEMPLATE_REVIEW_OUTCOMES",
+    "ActiveClientFund",
     "AuditLog",
     "BusinessRule",
     "Campaign",
     "CampaignStep",
+    "ClientComplaint",
     "ClientFeatures",
     "ClientFund",
     "ClientMessageIndicators",
     "Clients",
     "ContactEvent",
     "Enrollment",
+    "FaAssignment",
     "Funds",
     "GenerationBatch",
     "GenerationBatchItem",
@@ -77,6 +102,7 @@ __all__ = [
     "IngestionReject",
     "IngestionStatus",
     "MessageAngleCatalog",
+    "MessageTemplate",
     "ModelVersion",
     "OutreachMessage",
     "PiiVault",
@@ -87,6 +113,7 @@ __all__ = [
     "RawStaging",
     "ReviewAction",
     "Suppression",
+    "TemplateReviewAction",
     "TierContract",
     "TouchLog",
     "Transactions",

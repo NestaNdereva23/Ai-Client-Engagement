@@ -1,8 +1,9 @@
 """The outreach workflow: campaign, outreach_message, review_action.
 
-An accepted generation run becomes one outreach_message, holding both what
-the model saw (ai_draft_content) and what re-attachment produces
-(personalized_content, filled in separately).
+An accepted generation run becomes one or more outreach_message rows, each
+holding what the model saw (ai_draft_content) and what re-attachment
+produces (personalized_content). A run behind a message_template backs
+many messages, all sharing template_id.
 """
 
 from __future__ import annotations
@@ -58,7 +59,12 @@ class OutreachMessage(Base):
         BigInteger, ForeignKey("campaign.campaign_id"), nullable=False, index=True
     )
     generation_run_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("generation_runs.run_id"), nullable=False, unique=True
+        Text, ForeignKey("generation_runs.run_id"), nullable=False
+    )
+    # Set only when this message was filled in from an approved
+    # message_template rather than drafted individually.
+    template_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("message_template.template_id"), nullable=True, index=True
     )
     client_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("clients.client_id"), nullable=False, index=True
@@ -66,6 +72,9 @@ class OutreachMessage(Base):
     channel: Mapped[str] = mapped_column(Text, nullable=False, server_default="email")
     ai_draft_content: Mapped[dict] = mapped_column(JSONB, nullable=False)
     personalized_content: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Set only for a tier whose contract adds a secondary call_brief channel
+    # (today, T1). Carries no PII and needs no personalization.
+    call_brief: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="pending_review", index=True
     )

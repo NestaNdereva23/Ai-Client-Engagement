@@ -36,6 +36,10 @@ class OutreachMessageSummary(BaseModel):
     channel: str
     status: str
     created_at: datetime
+    # Set when this message came from instantiating an approved
+    # message_template rather than being drafted individually; lets the
+    # review UI show it was already reviewed once at the template level.
+    template_id: str | None = None
 
 
 class ReviewActionOut(BaseModel):
@@ -59,5 +63,8 @@ class OutreachMessageDetail(OutreachMessageSummary):
 
     ai_draft_content: dict
     personalized_content: dict | None
+    # Set only for a tier whose contract adds a secondary call_brief
+    # channel (today, T1); carries no PII (agents.email_agent.render_call_brief).
+    call_brief: str | None = None
     updated_at: datetime
     history: list[ReviewActionOut]

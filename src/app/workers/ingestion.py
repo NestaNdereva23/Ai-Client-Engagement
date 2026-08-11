@@ -14,7 +14,7 @@ from typing import Any
 from uuid import uuid4
 
 import structlog
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
@@ -62,6 +62,10 @@ class IngestionWorker:
         fetch_path: str | None = None,
         max_pages: int = 1000,
         page_fetcher: PageFetcher | None = None,
+        fund_model: type[BaseModel] = FundRecord,
+        client_model: type[BaseModel] = ClientRecord,
+        schema_drift_fn: Callable[[dict[str, Any]], set[str]] = schema_drift,
+        count_field: str = "inactive_client_count",
     ) -> None:
         self._client = client
         self._session_factory = session_factory
@@ -69,6 +73,14 @@ class IngestionWorker:
         self._fetch_path = "" if fetch_path is None else fetch_path
         self._max_pages = max_pages
         self._page_fetcher = page_fetcher
+        # Which contract set to validate against, and which field on the fund
+        # record carries the source's own headcount for reconciliation. The
+        # active-clients feed passes contracts_active's models and
+        # "client_count" here; everything else about a run is identical.
+        self._fund_model = fund_model
+        self._client_model = client_model
+        self._schema_drift_fn = schema_drift_fn
+        self._count_field = count_field
 
     def run(self, run_id: str | None = None) -> IngestionResult:
         """Ingest all pages. Resumes if run_id names a run that did not finish."""
@@ -167,27 +179,28 @@ class IngestionWorker:
         self, session: Session, status: IngestionStatus, payload: dict[str, Any]
     ) -> None:
         """Validate one page: count records, save rejects, and note any shortfall."""
-        drift = schema_drift(payload)
+        drift = self._schema_drift_fn(payload)
         if drift:
             logger.warning("ingestion.schema_drift", keys=sorted(drift))
 
         env = RawEnvelope.model_validate(payload)
         for fund_raw in sorted(env.data, key=lambda f: f.get("unit_fund_id") or 0):
             try:
-                fund = FundRecord.model_validate(fund_raw)
+                fund = self._fund_model.model_validate(fund_raw)
             except ValidationError as exc:
                 self._reject(session, status, fund_raw, self._reason("fund", exc))
                 continue
 
             returned = len(fund.clients)
-            if fund.inactive_client_count is not None:
-                gap = fund.inactive_client_count - returned
+            expected = getattr(fund, self._count_field, None)
+            if expected is not None:
+                gap = expected - returned
                 if gap > 0:
                     status.shortfall += gap
                     logger.info(
                         "ingestion.reconciliation",
                         fund_id=fund.unit_fund_id,
-                        expected=fund.inactive_client_count,
+                        expected=expected,
                         returned=returned,
                         shortfall=gap,
                     )
@@ -195,7 +208,7 @@ class IngestionWorker:
             for client_raw in fund.clients:
                 status.records_seen += 1
                 try:
-                    ClientRecord.model_validate(client_raw)
+                    self._client_model.model_validate(client_raw)
                 except ValidationError as exc:
                     self._reject(session, status, client_raw, self._reason("client", exc))
                     continue

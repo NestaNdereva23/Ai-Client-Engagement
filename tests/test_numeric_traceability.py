@@ -14,8 +14,10 @@ import pytest
 from app.agents.guardrails import (
     MAX_BODY_LENGTH,
     GuardrailFailure,
+    check_no_unresolved_placeholders,
     default_format_check,
     default_numeric_traceability_check,
+    instance_numeric_traceability_check,
     traceable_numbers,
 )
 
@@ -178,3 +180,59 @@ def test_a_tiered_message_is_not_also_held_to_the_character_bound() -> None:
 def test_the_minimum_body_length_still_applies_to_a_tiered_message() -> None:
     with pytest.raises(GuardrailFailure, match="minimum"):
         _format("too short", contract=FakeContract())
+
+
+# --- the post-instantiation re-check ---
+
+
+def test_check_no_unresolved_placeholders_passes_a_fully_resolved_message() -> None:
+    check_no_unresolved_placeholders("Come back to Cytonn MMF", "Dear Jane, we miss you.")
+
+
+def test_check_no_unresolved_placeholders_catches_a_leftover_token() -> None:
+    with pytest.raises(GuardrailFailure) as exc:
+        check_no_unresolved_placeholders(
+            "Hi Jane", "Your typical contribution of {{typical_contribution}}."
+        )
+    assert exc.value.guardrail == "unresolved_placeholder"
+    assert "{{typical_contribution}}" in str(exc.value)
+
+
+def test_instance_check_passes_a_figure_already_in_the_template() -> None:
+    """A number the template itself already carried (a real chunk-grounded
+    claim, unchanged by personalization) needs no client fact to back it."""
+    instance_numeric_traceability_check(
+        template_body="Dear {{first_name}}, your fund returned 11.35% last week.",
+        resolved_body="Dear Jane, your fund returned 11.35% last week.",
+        client_facts=None,
+    )
+
+
+def test_instance_check_passes_a_substituted_client_figure() -> None:
+    instance_numeric_traceability_check(
+        template_body="Dear {{first_name}}, your contribution was {{typical_contribution}}.",
+        resolved_body="Dear Jane, your contribution was 5,000.",
+        client_facts={"typical_contribution_kes": 5000},
+    )
+
+
+def test_instance_check_catches_a_number_that_traces_to_nothing() -> None:
+    with pytest.raises(GuardrailFailure) as exc:
+        instance_numeric_traceability_check(
+            template_body="Dear {{first_name}}, come back to us.",
+            resolved_body="Dear Jane, you invested 450,000 with us.",
+            client_facts={"typical_contribution_kes": 5000},
+        )
+    assert exc.value.guardrail == "instance_numeric_traceability"
+    assert "450,000" in str(exc.value)
+
+
+def test_instance_check_catches_the_wrong_clients_figure() -> None:
+    """The substituted number must trace to *this* client's own fact, not
+    just any number that happens to look plausible."""
+    with pytest.raises(GuardrailFailure, match="trace to no template fact"):
+        instance_numeric_traceability_check(
+            template_body="Dear {{first_name}}, your contribution was {{typical_contribution}}.",
+            resolved_body="Dear Jane, your contribution was 9,999.",
+            client_facts={"typical_contribution_kes": 5000},
+        )

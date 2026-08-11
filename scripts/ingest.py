@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from app.config import get_settings  # noqa: E402
 from app.ingestion.api_client import CytonnClient  # noqa: E402
+from app.ingestion.endpoints import resolve_endpoint  # noqa: E402
 from app.workers.ingestion import IngestionAborted, IngestionWorker  # noqa: E402
 
 
@@ -41,8 +42,18 @@ def main(argv: list[str] | None = None) -> int:
     if not settings.cytonn_api_base_url or not settings.cytonn_api_key:
         parser.error("CY_API_BASE_URL and CY_API_KEY must be set in the environment.")
 
+    config = resolve_endpoint(args.endpoint, settings)
     client = CytonnClient(settings.cytonn_api_base_url, settings.cytonn_api_key)
-    worker = IngestionWorker(client, endpoint=args.endpoint, max_pages=args.max_pages)
+    worker = IngestionWorker(
+        client,
+        endpoint=args.endpoint,
+        fetch_path=config.fetch_path,
+        max_pages=args.max_pages,
+        fund_model=config.fund_model,
+        client_model=config.client_model,
+        schema_drift_fn=config.schema_drift_fn,
+        count_field=config.count_field,
+    )
 
     try:
         result = worker.run(run_id=args.run_id)

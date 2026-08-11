@@ -15,7 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError, ValidationInfo, model_validator
 
-from app.agents.email_agent import REQUIRED_PLACEHOLDERS, required_placeholders
+from app.agents.email_agent import ALLOWED_PLACEHOLDERS, required_placeholders
 
 _PLACEHOLDER = re.compile(r"\{\{[^}]*\}\}")
 _CODE_FENCE = re.compile(r"^```[a-zA-Z]*\n?|\n?```$")
@@ -47,7 +47,7 @@ class EmailDraft(BaseModel):
             raise ValueError(f"missing required placeholders: {missing}")
 
         used = set(_PLACEHOLDER.findall(combined))
-        unexpected = sorted(used - set(REQUIRED_PLACEHOLDERS))
+        unexpected = sorted(used - set(ALLOWED_PLACEHOLDERS))
         if unexpected:
             raise ValueError(f"unexpected placeholder tokens: {unexpected}")
 

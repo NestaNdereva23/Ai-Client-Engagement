@@ -134,3 +134,35 @@ DEFAULT_GUARDRAIL_CHECKS: Sequence[Any] = (
     default_numeric_traceability_check,
     default_format_check,
 )
+
+
+def check_no_unresolved_placeholders(subject: str, body: str) -> None:
+    """Every placeholder token in a resolved message must have been filled in.
+    A token still present is a substitution bug, not a hallucination.
+    """
+    leftover = sorted(set(_PLACEHOLDER.findall(f"{subject}\n{body}")))
+    if leftover:
+        raise GuardrailFailure(
+            f"resolved message still carries unresolved placeholders: {leftover}",
+            guardrail="unresolved_placeholder",
+        )
+
+
+def instance_numeric_traceability_check(
+    *, template_body: str, resolved_body: str, client_facts: Mapping[str, Any] | None
+) -> None:
+    """The post-instantiation counterpart to default_numeric_traceability_check.
+
+    Every number in the resolved body must either already have been in the
+    template's own drafted text, or trace to this client's own substituted
+    figure.
+    """
+    already_allowed = set(_numbers_in(_PLACEHOLDER.sub(" ", template_body)))
+    allowed = already_allowed | traceable_numbers(client_facts)
+    untraceable = sorted({number for number in _numbers_in(resolved_body) if number not in allowed})
+    if untraceable:
+        raise GuardrailFailure(
+            "resolved body carries numbers that trace to no template fact or this "
+            f"client's own facts: {untraceable}",
+            guardrail="instance_numeric_traceability",
+        )

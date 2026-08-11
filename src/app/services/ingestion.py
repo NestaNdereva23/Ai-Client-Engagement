@@ -14,7 +14,9 @@ from typing import Any
 from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.db.models.models import IngestionStatus
+from app.ingestion.endpoints import resolve_endpoint
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_cursor, encode_cursor
 from app.workers.ingestion import IngestionWorker
 
@@ -25,7 +27,17 @@ class RunNotFound(Exception):
 
 def run_in_background(client: Any, *, run_id: str, endpoint: str, max_pages: int) -> None:
     """Run one ingestion pass and always release the client afterward."""
-    worker = IngestionWorker(client, endpoint=endpoint, max_pages=max_pages)
+    config = resolve_endpoint(endpoint, get_settings())
+    worker = IngestionWorker(
+        client,
+        endpoint=endpoint,
+        fetch_path=config.fetch_path,
+        max_pages=max_pages,
+        fund_model=config.fund_model,
+        client_model=config.client_model,
+        schema_drift_fn=config.schema_drift_fn,
+        count_field=config.count_field,
+    )
     try:
         worker.run(run_id=run_id)
     finally:

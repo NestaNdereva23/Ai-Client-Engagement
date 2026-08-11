@@ -21,7 +21,7 @@ IN_FORCE = date(2026, 8, 2)
 # Each band, its declared vocabulary, and the function that produces it.
 _BANDS = [
     ("recency_band", feat.RECENCY_BANDS, feat._recency_band, [None, 0, 365, 366, 1095, 2190, 5000]),
-    ("value_band", feat.VALUE_BANDS, feat._value_band, [None, 0, 3_661, 10_750, 44_120, 1e9]),
+    ("value_band", feat.VALUE_BANDS, feat._value_band, [None, 0, *feat.VALUE_BAND_CUTOFFS, 1e9]),
     ("cadence_band", feat.CADENCE_BANDS, feat._cadence_band, [None, 0, 0.5, 1, 45, 90, 365, 400]),
     ("hold_band", feat.HOLD_BANDS, feat._hold_band, [None, 0, 60, 180, 364, 365, 4000]),
     ("purchase_depth", feat.PURCHASE_DEPTHS, feat._purchase_depth, [0, 1, 2, 4, 5, 9]),

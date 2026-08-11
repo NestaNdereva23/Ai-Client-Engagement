@@ -71,6 +71,63 @@ def test_personalize_content_applies_to_subject_and_body() -> None:
     assert result == {"subject": "Hi Jane", "body": "About MMF, Jane."}
 
 
+def test_resolve_placeholders_substitutes_placeholder_filled_facts_when_given() -> None:
+    result = resolve_placeholders(
+        "Dear {{first_name}}, your typical contribution was {{typical_contribution}} "
+        "and you left in {{month_they_left}}.",
+        first_name="Jane",
+        fund_name="MMF",
+        typical_contribution="KES 5,000",
+        month_they_left="March 2025",
+    )
+    assert result == (
+        "Dear Jane, your typical contribution was KES 5,000 and you left in March 2025."
+    )
+
+
+def test_resolve_placeholders_leaves_an_unsupplied_placeholder_fact_untouched() -> None:
+    """Not every draft uses all five new tokens; one left unsupplied stays
+    literal rather than being blanked out, so a rendering gap is visible
+    instead of silently disappearing."""
+    result = resolve_placeholders(
+        "Dear {{first_name}}, you last topped up {{days_held_after_last_topup}} days before.",
+        first_name="Jane",
+        fund_name="MMF",
+    )
+    assert result == "Dear Jane, you last topped up {{days_held_after_last_topup}} days before."
+
+
+def test_resolve_placeholders_substitutes_the_cadence_interval() -> None:
+    """back_on_schedule's own claim names the interval; a bucket draft stands
+    it in as a token the same way it does the other five."""
+    result = resolve_placeholders(
+        "Dear {{first_name}}, resume your {{cadence_interval_days}}-day rhythm.",
+        first_name="Jane",
+        fund_name="MMF",
+        cadence_interval_days="30",
+    )
+    assert result == "Dear Jane, resume your 30-day rhythm."
+
+
+def test_personalize_content_applies_placeholder_filled_facts_to_subject_and_body() -> None:
+    draft = {
+        "subject": "Your fund, {{first_name}}",
+        "body": "You held for {{years_since_exit}} years, largest contribution "
+        "{{largest_contribution}}.",
+    }
+    result = personalize_content(
+        draft,
+        first_name="Jane",
+        fund_name="MMF",
+        years_since_exit="2.5",
+        largest_contribution="KES 20,000",
+    )
+    assert result == {
+        "subject": "Your fund, Jane",
+        "body": "You held for 2.5 years, largest contribution KES 20,000.",
+    }
+
+
 def make_settings(**overrides) -> Settings:
     defaults = {
         "llm_provider": "anthropic",
@@ -185,6 +242,35 @@ def test_create_outreach_message_copies_ai_draft_content_unchanged(scenario) -> 
             "subject": "Come back to {{fund_name}}",
             "body": "Dear {{first_name}}, we miss you.",
         }
+
+
+def test_create_outreach_message_stores_a_given_call_brief_unchanged(scenario) -> None:
+    """render_call_brief's output carries no placeholder, so create_outreach_message
+    stores it as-is, unlike ai_draft_content which personalize_content resolves."""
+    client_id, run_id, campaign_id, _fund_id = scenario
+    with SessionLocal() as session:
+        run = session.get(GenerationRun, run_id)
+        message = create_outreach_message(
+            session, run, campaign_id=campaign_id, call_brief="Call brief: text"
+        )
+        session.commit()
+        message_id = message.message_id
+
+    with SessionLocal() as session:
+        stored = session.get(OutreachMessage, message_id)
+        assert stored.call_brief == "Call brief: text"
+
+
+def test_create_outreach_message_leaves_call_brief_null_when_not_given(scenario) -> None:
+    client_id, run_id, campaign_id, _fund_id = scenario
+    with SessionLocal() as session:
+        run = session.get(GenerationRun, run_id)
+        message = create_outreach_message(session, run, campaign_id=campaign_id)
+        session.commit()
+        message_id = message.message_id
+
+    with SessionLocal() as session:
+        assert session.get(OutreachMessage, message_id).call_brief is None
 
 
 def test_create_outreach_message_falls_back_when_the_vault_has_no_name(scenario) -> None:

@@ -17,15 +17,20 @@ from app.campaigns.batch_generation import ingest_batch as ingest_campaign_batch
 from app.campaigns.batch_generation import submit_batch as submit_campaign_batch_run
 from app.campaigns.enrollment import enroll_cohort
 from app.campaigns.generation import generate_for_enrollment
+from app.campaigns.instantiation import instantiate_template as instantiate_template_run
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT
+from app.campaigns.template_generation import draft_templates_for_campaign
 from app.campaigns.touch import TouchRunOutcome, run_due_enrollments
 from app.config import Settings
 from app.db.models.campaigns import CampaignStep, Enrollment
 from app.db.models.generation_batch import GenerationBatch
-from app.db.models.outreach import Campaign
+from app.db.models.message_template import MessageTemplate
+from app.db.models.outreach import Campaign, OutreachMessage
 from app.llmops.tracing import Tracer
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_id_cursor, encode_id_cursor
+from app.privacy.llm_client import LLMClient
 from app.services.clients import resolve_cohort_client_ids
+from app.services.template_review import TemplateNotFound
 
 
 class CampaignNotFound(Exception):
@@ -268,3 +273,42 @@ def get_campaign_batch(
     if batch is None or batch.campaign_id != campaign_id:
         raise BatchNotFound(generation_batch_id)
     return batch
+
+
+def draft_campaign_templates(
+    session: Session,
+    campaign_id: int,
+    *,
+    settings: Settings,
+    llm_client: LLMClient,
+    limit: int = DEFAULT_BATCH_LIMIT,
+    tracer: Tracer | None = None,
+) -> list[MessageTemplate]:
+    """Derive this campaign's buckets and draft one template for each -- a
+    third path alongside run_campaign_generation and submit_campaign_batch.
+    Raises CampaignNotFound the same way the other two do.
+    """
+    if session.get(Campaign, campaign_id) is None:
+        raise CampaignNotFound(campaign_id)
+    return draft_templates_for_campaign(
+        session, campaign_id, settings=settings, llm_client=llm_client, limit=limit, tracer=tracer
+    )
+
+
+def instantiate_campaign_template(
+    session: Session,
+    campaign_id: int,
+    template_id: str,
+    *,
+    limit: int = DEFAULT_BATCH_LIMIT,
+) -> list[OutreachMessage]:
+    """Instantiate every due, eligible client currently matching an
+    approved template's profile. Raises CampaignNotFound / TemplateNotFound
+    the same ownership-scoped way get_campaign_batch does for a batch.
+    """
+    if session.get(Campaign, campaign_id) is None:
+        raise CampaignNotFound(campaign_id)
+    template = session.get(MessageTemplate, template_id)
+    if template is None or template.campaign_id != campaign_id:
+        raise TemplateNotFound(template_id)
+    return instantiate_template_run(session, template, campaign_id=campaign_id, limit=limit)

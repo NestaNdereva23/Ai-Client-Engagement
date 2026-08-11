@@ -62,6 +62,12 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("CY_API_KEY", "CYTONN_API_KEY"),
     )
+    # The active-clients feed lives at a different path than the dormant one
+    # above; CytonnClient itself is unchanged, only the URL it is pointed at.
+    cytonn_active_clients_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("CY_ACTIVE_CLIENTS_URL", "CYTONN_ACTIVE_CLIENTS_URL"),
+    )
 
     # LLM provider for draft generation.
     llm_provider: str = "anthropic"
@@ -83,6 +89,17 @@ class Settings(BaseSettings):
     langfuse_base_url: str = ""
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
+
+    # Which ComplaintsSource implementation app.ingestion.complaints_source
+    # builds. "stub" is the only real option today, since Cytonn has no
+    # complaints endpoint; a later source registers here under its own name.
+    complaints_source: str = "stub"
+
+    # Which FaAssignmentSource implementation app.ingestion.fa_assignment_source
+    # builds. "stub" is the only real option today, since the active-clients
+    # feed carries no FA field; a later source registers here under its own
+    # name.
+    fa_assignment_source: str = "stub"
 
     # Shared secret for the integration plane, a stopgap ahead of M8A.7's
     # scoped API keys / OAuth client-credentials. Empty means integration

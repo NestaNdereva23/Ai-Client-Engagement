@@ -96,6 +96,32 @@ def test_an_unexpected_placeholder_token_is_rejected() -> None:
         )
 
 
+def test_a_placeholder_filled_fact_token_is_accepted() -> None:
+    """The widened vocabulary a bucketed template may use: not required on
+    every draft (only first_name/fund_name are), but no longer rejected as
+    an unexpected token when a draft does use one."""
+    result = parse_email_draft(
+        draft(
+            "Come back to {{fund_name}}",
+            "Dear {{first_name}}, your typical contribution was "
+            "{{typical_contribution}} and you left in {{month_they_left}}.",
+        )
+    )
+    assert "{{typical_contribution}}" in result.body
+    assert "{{month_they_left}}" in result.body
+
+
+def test_a_still_genuinely_unknown_token_alongside_a_known_one_is_rejected() -> None:
+    with pytest.raises(DraftValidationError, match=r"unexpected placeholder"):
+        parse_email_draft(
+            draft(
+                "Come back to {{fund_name}}",
+                "Dear {{first_name}}, you invested {{typical_contribution}} "
+                "with a return of {{rate}}.",
+            )
+        )
+
+
 def test_email_draft_model_validate_raises_pydantic_validation_error_directly() -> None:
     """The lower-level model is still usable on its own, outside parse_email_draft."""
     with pytest.raises(ValidationError):

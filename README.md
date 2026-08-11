@@ -26,6 +26,16 @@ The test suite never runs against the database used for real ingested data: `tes
 
 `docker compose up -d` also starts a self-hosted Langfuse (web on `localhost:3000`, its own worker, Postgres, ClickHouse, Redis and MinIO, fully isolated from the app's own database). It is optional: a generation run behaves identically without it. See the `LANGFUSE_*` block in `.env.example` for the compose bootstrap variables (all `CHANGEME` defaults, dev-only) and for `LANGFUSE_HOST` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`, the three the app itself reads. Until all three are set, every generation runs through a no-op tracer.
 
+## Phase 2: Account Manager Intelligence
+
+Phase 2 adds risk scoring for the active client book, on top of the same ingestion and PII boundary as Phase 1. Three new packages, scaffolded and empty until their milestones land:
+
+- `risk/` — the six dormancy risk signals, score composition, and routing into queues.
+- `digest/` — assembles the morning digest from the latest risk snapshot.
+- `briefing/` — a deterministic, on-demand briefing for one client.
+
+They follow existing conventions: `db/models/` gets one file per new table group (`active_clients.py`, `risk.py`, `fa_assignment.py`, `complaints.py`, `digest.py`), and `api/routers/` plus `schemas/` get one file per new domain (`risk.py`, `digest.py`, `briefing.py`), mounted the same way the Phase 1 routers are.
+
 ## Design principles
 
 - No client personal data (names, contact details, identifiers) is ever sent to the LLM. Personal data lives in a separate `pii_vault` table that a restricted DB role owns; the model-facing path runs under a safe role that can read only `llm_client_context`, an allow-listed view of tiers and buckets.
