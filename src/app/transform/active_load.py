@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.models import IngestionStatus, PiiVault
+from app.transform.active_features import ActiveFeatureMeasures, derive_active_measures
 from app.transform.active_flatten import ActiveClientRow, ActiveFlattenResult, flatten_active_run
 from app.transform.load import upsert
 
@@ -40,6 +41,13 @@ _ACTIVE_CLIENT_FUND_UPDATE = [
     "purchases_censored",
     "redemption_history_blind",
     "computed_at",
+    "rhythm_days",
+    "avg_ticket",
+    "max_ticket",
+    "last_ticket",
+    "ticket_trend",
+    "largest_real_sale",
+    "fee_runway_months",
 ]
 _VAULT_UPDATE = ["client_name", "source"]
 
@@ -52,7 +60,7 @@ class ActivePersistCounts:
     vault: int = 0
 
 
-def _active_client_fund_dict(c: ActiveClientRow) -> dict[str, Any]:
+def _active_client_fund_dict(c: ActiveClientRow, measures: ActiveFeatureMeasures) -> dict[str, Any]:
     return {
         "client_id": c.client_id,
         "unit_fund_id": c.unit_fund_id,
@@ -65,6 +73,13 @@ def _active_client_fund_dict(c: ActiveClientRow) -> dict[str, Any]:
         "purchases_censored": c.purchases_censored,
         "redemption_history_blind": c.redemption_history_blind,
         "computed_at": c.computed_at,
+        "rhythm_days": measures.rhythm_days,
+        "avg_ticket": measures.avg_ticket,
+        "max_ticket": measures.max_ticket,
+        "last_ticket": measures.last_ticket,
+        "ticket_trend": measures.ticket_trend,
+        "largest_real_sale": measures.largest_real_sale,
+        "fee_runway_months": measures.fee_runway_months,
     }
 
 
@@ -92,8 +107,12 @@ def persist_active_result(
     """
     _log_reconciliation(result)
 
+    measures = derive_active_measures(result)
     client_funds = {
-        (c.client_id, c.unit_fund_id): _active_client_fund_dict(c) for c in result.clients
+        (c.client_id, c.unit_fund_id): _active_client_fund_dict(
+            c, measures[(c.client_id, c.unit_fund_id)]
+        )
+        for c in result.clients
     }
     vault = {c.client_id: _vault_dict(c, source) for c in result.clients}
 
