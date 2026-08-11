@@ -58,7 +58,7 @@ def clients(db: None):
             session.add(
                 PiiVault(
                     client_id=client_id,
-                    client_name="Test Client",
+                    client_name=f"Test Client {client_id}",
                     contact_email=f"client{client_id}@example.com",
                 )
             )
