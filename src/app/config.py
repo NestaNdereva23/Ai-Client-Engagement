@@ -95,6 +95,12 @@ class Settings(BaseSettings):
     # complaints endpoint; a later source registers here under its own name.
     complaints_source: str = "stub"
 
+    # Which FaAssignmentSource implementation app.ingestion.fa_assignment_source
+    # builds. "stub" is the only real option today, since the active-clients
+    # feed carries no FA field; a later source registers here under its own
+    # name.
+    fa_assignment_source: str = "stub"
+
     # Shared secret for the integration plane, a stopgap ahead of M8A.7's
     # scoped API keys / OAuth client-credentials. Empty means integration
     # endpoints refuse every request rather than run unprotected.

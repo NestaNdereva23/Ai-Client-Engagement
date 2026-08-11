@@ -9,7 +9,7 @@ from app.agents.graph import ClientContext
 from app.campaigns.bucketing import ProfileKey, derive_buckets, profile_key_for
 from app.campaigns.enrollment import enroll_cohort
 from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
-from app.db.models.models import ClientFeatures, Clients, Funds
+from app.db.models.models import ClientFeatures, Clients, Funds, PiiVault
 from app.db.models.outreach import Campaign
 from app.db.session import SessionLocal
 from app.services.campaigns import add_campaign_step
@@ -54,11 +54,21 @@ def clients(db: None):
         for client_id in CLIENT_IDS:
             session.add(ClientFeatures(client_id=client_id, fund_type="money_market"))
         session.commit()
+        for client_id in CLIENT_IDS:
+            session.add(
+                PiiVault(
+                    client_id=client_id,
+                    client_name="Test Client",
+                    contact_email=f"client{client_id}@example.com",
+                )
+            )
+        session.commit()
 
     yield list(CLIENT_IDS)
 
     with SessionLocal() as session:
         session.execute(delete(ClientFeatures).where(ClientFeatures.client_id.in_(CLIENT_IDS)))
+        session.execute(delete(PiiVault).where(PiiVault.client_id.in_(CLIENT_IDS)))
         session.execute(delete(Clients).where(Clients.client_id.in_(CLIENT_IDS)))
         session.execute(delete(Funds).where(Funds.unit_fund_id == FUND_ID))
         session.commit()
