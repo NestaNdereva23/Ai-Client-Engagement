@@ -81,6 +81,9 @@ class IngestionWorker:
         self._client_model = client_model
         self._schema_drift_fn = schema_drift_fn
         self._count_field = count_field
+        # Set once a response's meta says which page is the last one, so a
+        # later call can stop without another request.
+        self._known_last_page: int | None = None
 
     def run(self, run_id: str | None = None) -> IngestionResult:
         """Ingest all pages. Resumes if run_id names a run that did not finish."""
@@ -150,14 +153,26 @@ class IngestionWorker:
         return status
 
     def _fetch_page(self, after: str | None) -> tuple[str, dict[str, Any]] | None:
-        """Return the page after the given cursor, or None when there are no more."""
+        """Return the page after the given cursor, or None when there are no more.
+
+        The source paginates: every response carries a meta block with
+        current_page and last_page. after is the page number already
+        checkpointed, so the next page asked for is after + 1, or 1 to start.
+        Once a response's own meta says its page is the last one, later calls
+        stop before making another request.
+        """
         if self._page_fetcher is not None:
             return self._page_fetcher(after)
-        # The live endpoint returns everything in one response, so there is only
-        # a first page. Real paging, when confirmed, changes only this method.
-        if after is not None:
+
+        next_page = 1 if after is None else int(after) + 1
+        if self._known_last_page is not None and next_page > self._known_last_page:
             return None
-        return "1", self._client.fetch(self._fetch_path)
+
+        payload = self._client.fetch(self._fetch_path, params={"page": next_page})
+        meta = payload.get("meta") or {}
+        current_page = meta.get("current_page", next_page)
+        self._known_last_page = meta.get("last_page", current_page)
+        return str(current_page), payload
 
     def _store_raw(
         self, session: Session, run_id: str, page_key: str, payload: dict[str, Any]

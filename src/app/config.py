@@ -125,6 +125,17 @@ class Settings(BaseSettings):
     # dev without it.
     require_deliverable_contact: bool = True
 
+    # Read-only operational admin (SQLAdmin), gated behind a single shared
+    # basic-auth account. Empty username or password means the admin refuses
+    # every login rather than run open. secret_key signs the login session
+    # cookie; a blank one is fine in dev, where the process restarting just
+    # signs everyone back out.
+    admin_username: str = Field(default="", validation_alias=AliasChoices("ADMIN_USERNAME"))
+    admin_password: str = Field(default="", validation_alias=AliasChoices("ADMIN_PASSWORD"))
+    admin_secret_key: str = Field(
+        default="dev-only-admin-secret", validation_alias=AliasChoices("ADMIN_SECRET_KEY")
+    )
+
     @property
     def is_production(self) -> bool:
         """True when running in the production environment."""

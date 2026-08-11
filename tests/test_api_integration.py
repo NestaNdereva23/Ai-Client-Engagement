@@ -206,7 +206,7 @@ class FakeClient:
     def probe(self, path: str = "") -> bool:
         return True
 
-    def fetch(self, path: str = "") -> dict:
+    def fetch(self, path: str = "", *, params: dict | None = None) -> dict:
         return self.payload
 
     def close(self) -> None:

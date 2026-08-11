@@ -25,8 +25,28 @@ class FakeClient:
     def probe(self, path: str = "") -> bool:
         return self.live
 
-    def fetch(self, path: str = "") -> dict:
+    def fetch(self, path: str = "", *, params: dict | None = None) -> dict:
         return {"data": []}
+
+
+class PagedClient:
+    """Stands in for CytonnClient against a real, multi-page source: fetch is
+    driven by the worker's own paging logic (via the page query param), not
+    an injected page_fetcher.
+    """
+
+    def __init__(self, pages: list[dict], live: bool = True):
+        self.live = live
+        self.pages = pages
+        self.calls: list[dict] = []
+
+    def probe(self, path: str = "") -> bool:
+        return self.live
+
+    def fetch(self, path: str = "", *, params: dict | None = None) -> dict:
+        self.calls.append(dict(params or {}))
+        page_number = (params or {}).get("page", 1)
+        return self.pages[page_number - 1]
 
 
 def _client_row(client_id=1, code="C1", amount="100", date="2025-01-01"):
@@ -50,6 +70,20 @@ def _page(fund_id, count, clients):
             }
         ]
     }
+
+
+def _paged(fund_id, count, clients, *, current_page, last_page, per_page=200, total=None):
+    """One page of a real, multi-page response: the fund envelope plus the
+    meta block the source sends alongside it.
+    """
+    page = _page(fund_id, count, clients)
+    page["meta"] = {
+        "current_page": current_page,
+        "per_page": per_page,
+        "total": total if total is not None else count,
+        "last_page": last_page,
+    }
+    return page
 
 
 def _single_page(payload):
@@ -167,6 +201,56 @@ def test_resume_after_failure(db, cleanup_runs):
     assert resumed.pages == 2
     assert resumed.records_written == 2
     assert _counts(run_id)[0] == 2  # two raw rows, page 1 not duplicated
+
+
+def test_walks_every_page_the_source_reports(db, cleanup_runs):
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    pages = [
+        _paged(10, 1, [_client_row(1)], current_page=1, last_page=3),
+        _paged(10, 1, [_client_row(2)], current_page=2, last_page=3),
+        _paged(10, 1, [_client_row(3)], current_page=3, last_page=3),
+    ]
+    client = PagedClient(pages)
+
+    result = IngestionWorker(client).run(run_id=run_id)
+
+    assert result.state == "completed"
+    assert result.pages == 3
+    assert result.records_written == 3
+    # One request per page, page numbers in order, and no extra request once
+    # the last page's own meta said it was the last one.
+    assert client.calls == [{"page": 1}, {"page": 2}, {"page": 3}]
+
+
+def test_resume_mid_pagination_does_not_refetch_earlier_pages(db, cleanup_runs):
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    pages = [
+        _paged(10, 1, [_client_row(1)], current_page=1, last_page=2),
+        _paged(10, 1, [_client_row(2)], current_page=2, last_page=2),
+    ]
+
+    failing_client = PagedClient(pages)
+    real_fetch = failing_client.fetch
+
+    def fetch_then_fail_on_page_2(path="", *, params=None):
+        if (params or {}).get("page") == 2:
+            raise RuntimeError("boom on page 2")
+        return real_fetch(path, params=params)
+
+    failing_client.fetch = fetch_then_fail_on_page_2
+    with pytest.raises(RuntimeError):
+        IngestionWorker(failing_client).run(run_id=run_id)
+
+    resuming_client = PagedClient(pages)
+    resumed = IngestionWorker(resuming_client).run(run_id=run_id)
+
+    assert resumed.state == "completed"
+    assert resumed.pages == 2
+    assert resumed.records_written == 2
+    # Resume picks up straight at page 2, page 1 is not fetched again.
+    assert resuming_client.calls == [{"page": 2}]
 
 
 def test_dead_probe_aborts_without_writing(db, cleanup_runs):
