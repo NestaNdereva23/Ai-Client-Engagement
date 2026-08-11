@@ -5,10 +5,11 @@ dormant table's columns describe a relationship that has already ended; an
 active relationship has no exit yet, so a shared schema would leave half its
 columns meaningless on every row.
 
-Ingestion (this milestone) fills the directly observed columns: balance,
-purchase/sale counts and dates, censoring flags, computed_at. The derived
-measures (rhythm_days, ticket_trend, and the rest) stay null until the
-active-book feature derivation milestone computes them.
+Ingestion fills the directly observed columns: balance, purchase/sale counts
+and dates, censoring flags, computed_at. transform/active_features.py derives
+the rest (rhythm_days, ticket_trend, and the others below) from the same
+transactions on every transform run; a row stays null on those columns only
+until the first successful transform.
 """
 
 from __future__ import annotations
@@ -44,8 +45,9 @@ class ActiveClientFund(Base):
     )
     computed_at: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Derived measures, filled in by the active-book feature derivation
-    # milestone. Null here means "not yet computed", not "zero".
+    # Derived measures, computed by transform/active_features.py from the
+    # client's own transactions. Null here means "not yet computed", not
+    # "zero".
     rhythm_days: Mapped[float | None] = mapped_column(Float, nullable=True)
     avg_ticket: Mapped[float | None] = mapped_column(Float, nullable=True)
     max_ticket: Mapped[float | None] = mapped_column(Float, nullable=True)
