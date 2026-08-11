@@ -42,6 +42,9 @@ SALE_CAP = 2
 class FundRow:
     unit_fund_id: int
     unit_fund_name: str | None
+    # The source's own headcount field is a per-page count, not a fund total,
+    # so this is the sum of every page's count seen for this fund so far, not
+    # a single page's value. See _combine_fund.
     inactive_client_count: int | None
 
 
@@ -131,6 +134,22 @@ def max_date(dates: list[date | None]) -> date | None:
     return max(present) if present else None
 
 
+def _combine_fund(existing: FundRow | None, incoming: FundRow) -> FundRow:
+    """Merge two sightings of the same fund, summing the per-page headcount.
+
+    The source reports the headcount on every page a fund appears on, and it
+    is the count on that page, not the fund's total. Adding the pages together
+    is what turns it back into a fund total; taking either one alone would
+    just be a different wrong number.
+    """
+    if existing is None:
+        return incoming
+    seen = (existing.inactive_client_count, incoming.inactive_client_count)
+    counts = [c for c in seen if c is not None]
+    total = sum(counts) if counts else None
+    return FundRow(existing.unit_fund_id, existing.unit_fund_name or incoming.unit_fund_name, total)
+
+
 def _txn_row(
     txn: dict[str, Any],
     client: ClientRecord,
@@ -166,7 +185,7 @@ def flatten_payload(payload: dict[str, Any], reference_date: datetime) -> Flatte
     """
     ref = reference_date.date()
     result = FlattenResult()
-    seen_funds: set[int] = set()
+    funds_by_id: dict[int, FundRow] = {}
 
     env = RawEnvelope.model_validate(payload)
     for fund_raw in env.data:
@@ -176,11 +195,8 @@ def flatten_payload(payload: dict[str, Any], reference_date: datetime) -> Flatte
             result.counters.funds_skipped += 1
             continue
 
-        if fund.unit_fund_id not in seen_funds:
-            seen_funds.add(fund.unit_fund_id)
-            result.funds.append(
-                FundRow(fund.unit_fund_id, fund.unit_fund_name, fund.inactive_client_count)
-            )
+        row = FundRow(fund.unit_fund_id, fund.unit_fund_name, fund.inactive_client_count)
+        funds_by_id[fund.unit_fund_id] = _combine_fund(funds_by_id.get(fund.unit_fund_id), row)
 
         for client_raw in fund.clients:
             try:
@@ -233,6 +249,7 @@ def flatten_payload(payload: dict[str, Any], reference_date: datetime) -> Flatte
                 )
             )
 
+    result.funds = list(funds_by_id.values())
     return result
 
 
@@ -271,9 +288,11 @@ def flatten_run(
 ) -> FlattenResult:
     """Read a run's raw staging pages and flatten them into one result.
 
-    Funds are de-duplicated across pages. The anchor for days_since_* is the run's
-    persisted reference_ts, read back here, so re-running the same run reproduces
-    identical derivations. Pass reference_date only to override that anchor.
+    Funds are combined across pages, summing the per-page headcount rather than
+    keeping one page's value (see _combine_fund). The anchor for days_since_* is
+    the run's persisted reference_ts, read back here, so re-running the same run
+    reproduces identical derivations. Pass reference_date only to override that
+    anchor.
     """
     ref = reference_date if reference_date is not None else _load_reference_ts(session, run_id)
     payloads = (
@@ -287,15 +306,14 @@ def flatten_run(
     )
 
     combined = FlattenResult()
-    seen_funds: set[int] = set()
+    funds_by_id: dict[int, FundRow] = {}
     for payload in payloads:
         page = flatten_payload(payload, reference_date=ref)
         for fund in page.funds:
-            if fund.unit_fund_id not in seen_funds:
-                seen_funds.add(fund.unit_fund_id)
-                combined.funds.append(fund)
+            funds_by_id[fund.unit_fund_id] = _combine_fund(funds_by_id.get(fund.unit_fund_id), fund)
         combined.clients.extend(page.clients)
         combined.transactions.extend(page.transactions)
         combined.counters.merge(page.counters)
 
+    combined.funds = list(funds_by_id.values())
     return combined

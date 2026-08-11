@@ -69,6 +69,11 @@ def main(argv: list[str] | None = None) -> int:
         f"{result.records_written} written, {result.records_rejected} rejected, "
         f"shortfall {result.shortfall}."
     )
+    if result.population_total is not None:
+        print(
+            f"Population reconciliation: meta.total {result.population_total}, "
+            f"records_seen {result.records_seen}, gap {result.population_gap}."
+        )
     return 0
 
 

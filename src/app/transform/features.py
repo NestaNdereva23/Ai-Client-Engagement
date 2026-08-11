@@ -23,9 +23,25 @@ from app.transform.flatten import PURCHASE_CAP, ClientRow, FlattenResult
 
 # --- thresholds behind the behavioural bands. Retune here, nowhere else. ---
 
-# Months in which exits cluster far above the usual rate.
-WAVE_START = (2023, 9)
-WAVE_END = (2024, 6)
+# Months in which exits cluster far above the usual rate: at least twice the
+# centred 13-month rolling median for that month. Frozen from the 2026-08-11
+# pull (run f120c64629334ece938e080f4d476c0a, 57,336 client-fund relationships,
+# the whole dormant book), the same discipline as VALUE_BAND_CUTOFFS below.
+# Recomputing this per run would let an old exit silently drift in or out of
+# the wave as later months change the rolling baseline around it.
+WAVE_MONTHS = frozenset(
+    {
+        (2020, 1),
+        (2020, 9),
+        (2021, 6),
+        (2023, 1),
+        (2023, 9),
+        (2024, 1),
+        (2024, 2),
+        (2024, 3),
+        (2026, 7),
+    }
+)
 
 # How long the money stayed after the final top-up, in days.
 SHORT_HOLD_DAYS = 60
@@ -51,11 +67,12 @@ STALE_CONTACT_DAYS = 1095
 # without their behaviour changing. Boundaries are right-closed: a value sitting
 # exactly on one belongs to the band below.
 #
-# The source amounts from Cytonn's API are in KES, so the boundaries are kept
-# in KES too, rather than converting each client's amount to USD at
-# classification time. These figures are the original USD quartiles
-# (3,661 / 10,750 / 44,120) converted at ~129 KES per USD and rounded.
-VALUE_BAND_CUTOFFS = (470_000.0, 1_390_000.0, 5_690_000.0)
+# KES-native, no conversion: taken straight off the raw purchase amounts across
+# all 57,336 client-fund relationships in the 2026-08-11 pull (run
+# f120c64629334ece938e080f4d476c0a, the whole dormant book). The earlier
+# figures were quartiles of a 2,963-row sample that turned out to be an
+# unrepresentative high-value corner of the book, not a fair cross-section.
+VALUE_BAND_CUTOFFS = (150.0, 1_000.0, 5_250.0)
 
 # A client's history counts as deep at three purchases, or at six months
 # between the first and last one we can see.
@@ -257,7 +274,7 @@ def _fund_type(fund_name: str | None) -> str:
 def _in_wave(exit_date: date | None) -> bool:
     if exit_date is None:
         return False
-    return WAVE_START <= (exit_date.year, exit_date.month) <= WAVE_END
+    return (exit_date.year, exit_date.month) in WAVE_MONTHS
 
 
 def _priority_tier(value_band: str, recency_band: str) -> str:

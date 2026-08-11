@@ -253,6 +253,44 @@ def test_resume_mid_pagination_does_not_refetch_earlier_pages(db, cleanup_runs):
     assert resuming_client.calls == [{"page": 2}]
 
 
+def test_population_reconciliation_against_meta_total(db, cleanup_runs):
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    pages = [
+        _paged(10, 1, [_client_row(1)], current_page=1, last_page=2, total=3),
+        _paged(10, 1, [_client_row(2)], current_page=2, last_page=2, total=3),
+    ]
+    client = PagedClient(pages)
+
+    result = IngestionWorker(client).run(run_id=run_id)
+
+    assert result.records_seen == 2
+    assert result.population_total == 3
+    assert result.population_gap == 1
+
+
+def test_population_reconciliation_no_gap_on_exact_match(db, cleanup_runs):
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    payload = _paged(10, 2, [_client_row(1), _client_row(2)], current_page=1, last_page=1, total=2)
+
+    result = IngestionWorker(FakeClient(), page_fetcher=_single_page(payload)).run(run_id=run_id)
+
+    assert result.population_total == 2
+    assert result.population_gap == 0
+
+
+def test_population_reconciliation_absent_without_a_meta_block(db, cleanup_runs):
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    payload = _page(10, 2, [_client_row(1), _client_row(2)])  # no "meta" key at all
+
+    result = IngestionWorker(FakeClient(), page_fetcher=_single_page(payload)).run(run_id=run_id)
+
+    assert result.population_total is None
+    assert result.population_gap is None
+
+
 def test_dead_probe_aborts_without_writing(db, cleanup_runs):
     run_id = uuid4().hex
     cleanup_runs.append(run_id)
