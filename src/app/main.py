@@ -6,13 +6,17 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from sqladmin import Admin
 
+from app.admin.auth import AdminAuth
+from app.admin.views import ADMIN_VIEWS
 from app.api import v1
 from app.api.errors import register_error_handlers
 from app.api.idempotency import IdempotencyMiddleware
 from app.api.middleware import CorrelationIdMiddleware
 from app.api.routers import health
 from app.config import Settings, get_settings
+from app.db.session import engine
 from app.llmops.tracing import shutdown_shared_tracer
 from app.logging_config import configure_logging
 
@@ -53,6 +57,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Routers
     app.include_router(health.router)
     app.include_router(v1.router)
+
+    admin = Admin(
+        app, engine, authentication_backend=AdminAuth(secret_key=settings.admin_secret_key)
+    )
+    for view in ADMIN_VIEWS:
+        admin.add_view(view)
 
     return app
 
