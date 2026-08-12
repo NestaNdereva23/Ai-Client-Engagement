@@ -23,6 +23,10 @@ MAX_BODY_LENGTH = 2000
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
 _PLACEHOLDER = re.compile(r"\{\{[^}]*\}\}")
 
+# Client money is KES everywhere. A dollar sign or the letters USD in a
+# draft can only be the model inventing a figure in the wrong currency.
+_NON_KES_CURRENCY = re.compile(r"\$|\bUSD\b")
+
 
 class GuardrailFailure(Exception):
     """Raised by a guardrail check when a draft fails it, tagged with its name."""
@@ -126,13 +130,29 @@ def default_format_check(state: Mapping[str, Any]) -> None:
         )
 
 
+def default_currency_check(state: Mapping[str, Any]) -> None:
+    """A draft's subject and body must never use $ or USD.
+
+    Every client money figure the model is given is KES. There is no
+    conversion anywhere in the request path, so a dollar sign or "USD"
+    in the output is not a formatting choice, it is a wrong currency.
+    """
+    text = f"{state.get('subject') or ''}\n{state.get('body') or ''}"
+    if _NON_KES_CURRENCY.search(text):
+        raise GuardrailFailure(
+            "draft used a non-KES currency ($ or USD); client money is KES only",
+            guardrail="currency",
+        )
+
+
 # The checks agents.graph runs by default, in order: grounding, then numeric
-# traceability, then format and length. Pass a different sequence to
-# build_generation_graph to change or extend this.
+# traceability, then format and length, then currency. Pass a different
+# sequence to build_generation_graph to change or extend this.
 DEFAULT_GUARDRAIL_CHECKS: Sequence[Any] = (
     default_grounding_check,
     default_numeric_traceability_check,
     default_format_check,
+    default_currency_check,
 )
 
 
