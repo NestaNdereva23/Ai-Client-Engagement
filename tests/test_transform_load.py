@@ -456,7 +456,10 @@ def test_bands_persist_on_features(measured) -> None:
         assert f.hold_band == "Stayed years"
         assert f.cadence_band == "Tight"
         assert f.trend_band == "rising"
-        assert f.value_band == "High"
+        # 3.7M KES clears every VALUE_BAND_CUTOFFS boundary now that they are
+        # the full-book quartiles (150 / 1,000 / 5,250 KES), not the old
+        # high-value-sample figures this fixture's amount used to sit inside.
+        assert f.value_band == "Top"
         assert f.purchase_depth == "few"
         assert f.fund_type == "money_market"
         assert f.exit_reason == "client_sale"

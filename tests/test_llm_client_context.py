@@ -32,6 +32,7 @@ ALLOWLIST = {
     "has_depth",
     "staged_exit",
     "stale_contact",
+    "newly_dormant",
 }
 # Feature columns that must never surface through the projection.
 FORBIDDEN = {

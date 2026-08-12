@@ -4,7 +4,7 @@ one campaign, through the real generation harness.
 Leaves every accepted draft pending_review; nothing here sends anything.
 
 Usage:
-    uv run python scripts/run_campaign_cycle.py --campaign-id 1
+    uv run python scripts/inactive/run_campaign_cycle.py --campaign-id 1
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 # Make the app package importable when run as a plain script.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from app.agents.email_agent import build_system_prompt  # noqa: E402
 from app.agents.graph import (  # noqa: E402

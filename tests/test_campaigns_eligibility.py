@@ -19,7 +19,7 @@ from app.campaigns.eligibility import check_eligibility
 from app.config import Settings
 from app.db.models.audit import AuditLog
 from app.db.models.campaigns import CampaignStep, ContactEvent, Enrollment, TouchLog
-from app.db.models.models import Clients, Funds, PiiVault
+from app.db.models.models import ClientFeatures, Clients, Funds, PiiVault
 from app.db.models.outreach import Campaign
 from app.db.models.suppression import Suppression
 from app.db.session import SessionLocal
@@ -100,6 +100,7 @@ def _cleanup_client(client_id: int) -> None:
     with SessionLocal() as session:
         session.execute(delete(ContactEvent).where(ContactEvent.client_id == client_id))
         session.execute(delete(Suppression).where(Suppression.client_id == client_id))
+        session.execute(delete(ClientFeatures).where(ClientFeatures.client_id == client_id))
         enrollment_ids = session.scalars(
             select(Enrollment.enrollment_id).where(Enrollment.client_id == client_id)
         ).all()
@@ -115,6 +116,45 @@ def test_an_otherwise_clean_enrollment_is_eligible(campaign_with_step: int, fund
     client_id = 99501
     with SessionLocal() as session:
         _make_client(session, client_id)
+        session.commit()
+        enrollment = _make_enrollment(session, campaign_id=campaign_with_step, client_id=client_id)
+
+        result = check_eligibility(session, enrollment)
+
+    assert result.eligible is True
+    _cleanup_client(client_id)
+
+
+def test_a_client_with_no_visible_history_is_skipped_and_excluded(
+    campaign_with_step: int, fund: int
+) -> None:
+    client_id = 99510
+    with SessionLocal() as session:
+        _make_client(session, client_id)
+        session.commit()
+        session.add(ClientFeatures(client_id=client_id, purchase_depth="none"))
+        session.commit()
+        enrollment = _make_enrollment(session, campaign_id=campaign_with_step, client_id=client_id)
+
+        result = check_eligibility(session, enrollment)
+        session.commit()
+        enrollment_id = enrollment.enrollment_id
+
+    assert result.eligible is False
+    assert result.reason == "no_visible_history"
+    with SessionLocal() as session:
+        assert session.get(Enrollment, enrollment_id).status == "excluded"
+    _cleanup_client(client_id)
+
+
+def test_a_client_with_some_visible_history_is_not_excluded_on_that_ground(
+    campaign_with_step: int, fund: int
+) -> None:
+    client_id = 99511
+    with SessionLocal() as session:
+        _make_client(session, client_id)
+        session.commit()
+        session.add(ClientFeatures(client_id=client_id, purchase_depth="single"))
         session.commit()
         enrollment = _make_enrollment(session, campaign_id=campaign_with_step, client_id=client_id)
 

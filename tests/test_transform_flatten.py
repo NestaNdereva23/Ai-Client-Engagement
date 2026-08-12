@@ -162,6 +162,80 @@ def test_flatten_run_without_reference_ts_raises(db: None) -> None:
         flatten_run(session, "run-that-does-not-exist")
 
 
+def _payload_with_fund_count(client_id: int, fund_id: int, count: int) -> dict[str, Any]:
+    """One fund, one client, with a given per-page headcount for that fund."""
+    return {
+        "data": [
+            {
+                "unit_fund_id": fund_id,
+                "unit_fund_name": "Money Market Fund",
+                "inactive_client_count": count,
+                "clients": [
+                    {
+                        "client_id": client_id,
+                        "client_code": f"C-{client_id}",
+                        "client_name": "A Name",
+                        "balance": 0,
+                        "computed_at": "2026-07-20T08:00:00",
+                        "last_5_purchases": [],
+                        "last_2_sales": [],
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def test_flatten_payload_sums_a_repeated_fund_within_one_page() -> None:
+    """A fund appearing twice in the same page's data is not a realistic shape
+    the source sends, but the merge has to hold even if it did: the headcount
+    adds up rather than one occurrence silently winning."""
+    payload = _payload_with_fund_count(1, 10, 2)
+    payload["data"].append(_payload_with_fund_count(2, 10, 3)["data"][0])
+
+    result = flatten_payload(payload, ANCHOR)
+
+    assert len(result.funds) == 1
+    assert result.funds[0].inactive_client_count == 5
+
+
+def test_flatten_run_sums_the_fund_headcount_across_pages(
+    db: None, cleanup_runs: list[str]
+) -> None:
+    """The source reports a fund's headcount per page, not per fund. Two pages
+    of the same fund must add up to the fund total, not overwrite each other."""
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    with SessionLocal() as session:
+        session.add(
+            IngestionStatus(run_id=run_id, endpoint="inactive-clients", reference_ts=ANCHOR)
+        )
+        session.add(
+            RawStaging(
+                run_id=run_id,
+                endpoint="inactive-clients",
+                natural_key="1",
+                payload=_payload_with_fund_count(1, 10, 200),
+            )
+        )
+        session.add(
+            RawStaging(
+                run_id=run_id,
+                endpoint="inactive-clients",
+                natural_key="2",
+                payload=_payload_with_fund_count(2, 10, 47),
+            )
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        result = flatten_run(session, run_id)
+
+    assert len(result.funds) == 1
+    assert result.funds[0].inactive_client_count == 247
+    assert {c.client_id for c in result.clients} == {1, 2}
+
+
 def test_latest_reference_date_reads_the_most_recently_completed_run(
     db: None, cleanup_runs: list[str]
 ) -> None:

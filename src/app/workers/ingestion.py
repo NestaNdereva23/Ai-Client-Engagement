@@ -44,6 +44,8 @@ class IngestionResult:
     records_written: int
     records_rejected: int
     shortfall: int
+    population_total: int | None
+    population_gap: int | None
 
 
 class IngestionWorker:
@@ -84,6 +86,11 @@ class IngestionWorker:
         # Set once a response's meta says which page is the last one, so a
         # later call can stop without another request.
         self._known_last_page: int | None = None
+        # The source's own population figure, read from meta.total on any page
+        # that carries it. Used to reconcile records_seen against the whole
+        # population rather than a per-fund count, which the source pages
+        # rather than totals (see _process_page).
+        self._known_total: int | None = None
 
     def run(self, run_id: str | None = None) -> IngestionResult:
         """Ingest all pages. Resumes if run_id names a run that did not finish."""
@@ -198,6 +205,10 @@ class IngestionWorker:
         if drift:
             logger.warning("ingestion.schema_drift", keys=sorted(drift))
 
+        total = (payload.get("meta") or {}).get("total")
+        if total is not None:
+            self._known_total = total
+
         env = RawEnvelope.model_validate(payload)
         for fund_raw in sorted(env.data, key=lambda f: f.get("unit_fund_id") or 0):
             try:
@@ -259,6 +270,12 @@ class IngestionWorker:
         pages = session.scalar(
             select(func.count()).select_from(RawStaging).where(RawStaging.run_id == status.run_id)
         )
+        # A resumed run only sees meta.total on the pages it actually fetched
+        # this call, so a resume that hits no new pages reports no total. That
+        # is honest: nothing here re-derives a figure it did not just see.
+        population_gap = (
+            None if self._known_total is None else self._known_total - status.records_seen
+        )
         return IngestionResult(
             run_id=status.run_id,
             state=status.state,
@@ -267,4 +284,6 @@ class IngestionWorker:
             records_written=status.records_written,
             records_rejected=status.records_rejected,
             shortfall=status.shortfall,
+            population_total=self._known_total,
+            population_gap=population_gap,
         )

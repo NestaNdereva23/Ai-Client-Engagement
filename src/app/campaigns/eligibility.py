@@ -30,7 +30,7 @@ from app.audit.log import record_audit
 from app.campaigns.state_machine import transition_enrollment
 from app.config import get_settings
 from app.db.models.campaigns import CampaignStep, ContactEvent, Enrollment, TouchLog
-from app.db.models.models import Clients, PiiVault
+from app.db.models.models import ClientFeatures, Clients, PiiVault
 from app.db.models.outreach import Campaign, OutreachMessage
 from app.db.models.rules import ClientMessageIndicators
 from app.db.models.suppression import Suppression
@@ -70,6 +70,15 @@ def check_eligibility(
     )
     if step is None:
         return _skip(session, enrollment, reason="no_next_step", terminal=False)
+
+    if _has_no_visible_history(session, enrollment.client_id):
+        return _skip(
+            session,
+            enrollment,
+            reason="no_visible_history",
+            terminal=True,
+            terminal_status="excluded",
+        )
 
     if _already_touched(session, enrollment.enrollment_id, step_no):
         return _skip(session, enrollment, reason="already_touched", terminal=False)
@@ -129,6 +138,19 @@ def check_stop_conditions(session: Session, enrollment: Enrollment) -> Eligibili
         )
 
     return EligibilityResult(eligible=True)
+
+
+def _has_no_visible_history(session: Session, client_id: int) -> bool:
+    """Whether this client has no visible transaction at all: no purchase, no
+    sale, no exit date, nothing an angle could reference. A small slice of
+    the book (0.4 percent) can be counted but never written to; they route
+    to pick_up_again, the angle that claims nothing, but a message that says
+    nothing is not worth sending, so this excludes them at the gate instead.
+    """
+    depth = session.scalar(
+        select(ClientFeatures.purchase_depth).where(ClientFeatures.client_id == client_id)
+    )
+    return depth == "none"
 
 
 def _angle_held(session: Session, client_id: int) -> bool:

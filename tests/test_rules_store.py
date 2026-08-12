@@ -132,6 +132,27 @@ def test_save_version_writes_and_refuses_to_mutate_a_shipped_version(temp_versio
             )
 
 
+def test_save_version_validates_by_default(temp_versions) -> None:
+    bad = [RuleSpec(name="bad", priority=10, match={"value_band": ["Platinum"]})]
+    with SessionLocal() as session:
+        with pytest.raises(RuleValidationError, match="outside its range"):
+            save_version(session, 98, bad, valid_from=date(2030, 1, 1))
+
+
+def test_save_version_with_validate_false_writes_content_todays_vocabulary_would_reject(
+    temp_versions,
+) -> None:
+    """A migration replaying an already-shipped version passes validate=False:
+    that content was valid when it was written, and a later rename must not
+    make it fail to replay on a fresh database (see business rules v3)."""
+    temp_versions.append(97)
+    retired = [RuleSpec(name="retired_value", priority=10, match={"value_band": ["Platinum"]})]
+    with SessionLocal() as session:
+        count = save_version(session, 97, retired, valid_from=date(2030, 1, 1), validate=False)
+        session.commit()
+    assert count == 1
+
+
 def test_a_later_version_supersedes_the_one_before_it(temp_versions) -> None:
     temp_versions.extend([50, 51])
     superseding = [

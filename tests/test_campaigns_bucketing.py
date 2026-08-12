@@ -52,7 +52,11 @@ def clients(db: None):
             )
         session.commit()
         for client_id in CLIENT_IDS:
-            session.add(ClientFeatures(client_id=client_id, fund_type="money_market"))
+            session.add(
+                ClientFeatures(
+                    client_id=client_id, fund_type="money_market", purchase_depth="single"
+                )
+            )
         session.commit()
         for client_id in CLIENT_IDS:
             session.add(

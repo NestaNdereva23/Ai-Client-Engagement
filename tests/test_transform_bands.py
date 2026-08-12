@@ -88,8 +88,8 @@ def test_cadence_band_edges(rhythm: float | None, expected: str) -> None:
     ("hold", "expected"),
     [
         (None, "Unknown"),
-        (0, "Parked briefly"),
-        (60, "Parked briefly"),
+        (0, "Under 2m"),
+        (60, "Under 2m"),
         (61, "Under 6m"),
         (180, "Under 6m"),
         (181, "Stayed months"),
@@ -154,15 +154,29 @@ def test_fund_type_mapping(name: str | None, expected: str) -> None:
 @pytest.mark.parametrize(
     ("exit_date", "expected"),
     [
-        (date(2023, 8, 31), False),
+        # A spike month: any day inside it counts, not just the boundary days.
         (date(2023, 9, 1), True),
-        (date(2024, 6, 30), True),
-        (date(2024, 7, 1), False),
+        (date(2023, 9, 30), True),
+        (date(2026, 7, 4), True),
+        # Adjacent months that are not themselves spikes.
+        (date(2023, 8, 31), False),
+        (date(2023, 10, 1), False),
+        # Inside the old contiguous window, but not a spike on its own: the
+        # membership test only recognises the nine months WAVE_MONTHS names.
+        (date(2023, 12, 1), False),
+        (date(2024, 6, 30), False),
         (None, False),
     ],
 )
 def test_in_wave_edges(exit_date: date | None, expected: bool) -> None:
     assert _in_wave(exit_date) is expected
+
+
+def test_in_wave_recognises_every_frozen_spike_month() -> None:
+    from app.transform.features import WAVE_MONTHS
+
+    for year, month in WAVE_MONTHS:
+        assert _in_wave(date(year, month, 15)) is True
 
 
 @pytest.mark.parametrize(

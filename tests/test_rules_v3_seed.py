@@ -11,12 +11,14 @@ from datetime import date
 
 from app.db.session import SessionLocal
 from app.rules.engine import resolve
-from app.rules.store import RuleSpec, load_active_rules, validate_rules
+from app.rules.store import load_active_rules
 
 V3_VERSION = 3
-# Inside v3's window. v3 is seeded ahead of its cutover, so this is
-# deliberately after v2's own window rather than the day the migration ran.
-IN_FORCE = date(2026, 12, 15)
+# Inside v3's window: 2026-08-04 (fa894fc0413a's cutover) to 2026-08-11
+# (209a9c997624 closed it for v4's hold_band rename). v3's content is
+# immutable and this still pins it, just against the window it actually had
+# rather than the open-ended one it shipped with before that cutover.
+IN_FORCE = date(2026, 8, 10)
 
 # In the order the router applies them.
 EXPECTED_ORDER = (
@@ -95,23 +97,14 @@ def test_the_last_rule_is_the_unconditional_catch_all() -> None:
     assert last.match == {}
 
 
-def test_the_seeded_set_is_itself_valid_and_fully_reachable() -> None:
-    """Re-proves what the migration proved on write, against what is stored."""
-    with SessionLocal() as session:
-        active = load_active_rules(session, at=IN_FORCE)
-    specs = [
-        RuleSpec(
-            name=r.name,
-            priority=r.priority,
-            match=r.match,
-            message_angle=r.message_angle,
-            urgency=r.urgency,
-            priority_tier=r.priority_tier,
-            prompt_variant=r.prompt_variant,
-        )
-        for r in active
-    ]
-    assert validate_rules(specs) is None
+# There is deliberately no "re-validate the stored set against RULE_FIELD_DOMAINS"
+# test here any more: v3's shipped rows still legitimately name "Parked briefly",
+# but that value left the live hold_band vocabulary when v4 (the rename) shipped.
+# Re-validating frozen content against a vocabulary that has since moved on
+# will always fail once any value it used is retired -- that is expected, not
+# a defect, the same way v1 and v2's own vocabulary is gone from RULE_FIELD_DOMAINS
+# without either of them being touched. test_rules_v4_seed.py re-proves this
+# same check against the live vocabulary, which is the one it should hold for.
 
 
 def test_prompt_variant_is_the_angle_identifier() -> None:

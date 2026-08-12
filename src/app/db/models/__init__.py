@@ -3,8 +3,8 @@
 Importing this package registers every model on ``Base.metadata`` so migrations
 and ``create_all`` see them.
 
-risk and digest are scaffolded but still empty; their imports land here
-once each ships its first model.
+digest is scaffolded but still empty; its import lands here once it ships
+its first model.
 """
 
 from app.db.models.active_clients import ActiveClientFund
@@ -59,6 +59,7 @@ from app.db.models.outreach import (
     ReviewAction,
 )
 from app.db.models.rag import RagChunk, RagDocument, RagDocumentVersion
+from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion
 from app.db.models.rules import (
     BusinessRule,
     ClientMessageIndicators,
@@ -66,6 +67,8 @@ from app.db.models.rules import (
     TierContract,
 )
 from app.db.models.suppression import Suppression
+from app.db.models.template_generation_plan import TemplateGenerationPlan
+from app.db.models.template_policy import CampaignTemplatePolicy, TemplatePolicyConfigVersion
 
 __all__ = [
     "CAMPAIGN_STATUSES",
@@ -86,10 +89,12 @@ __all__ = [
     "BusinessRule",
     "Campaign",
     "CampaignStep",
+    "CampaignTemplatePolicy",
     "ClientComplaint",
     "ClientFeatures",
     "ClientFund",
     "ClientMessageIndicators",
+    "ClientRiskFeatures",
     "Clients",
     "ContactEvent",
     "Enrollment",
@@ -112,7 +117,10 @@ __all__ = [
     "RagDocumentVersion",
     "RawStaging",
     "ReviewAction",
+    "RiskConfigVersion",
     "Suppression",
+    "TemplateGenerationPlan",
+    "TemplatePolicyConfigVersion",
     "TemplateReviewAction",
     "TierContract",
     "TouchLog",

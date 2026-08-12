@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     # above; CytonnClient itself is unchanged, only the URL it is pointed at.
     cytonn_active_clients_url: str = Field(
         default="",
-        validation_alias=AliasChoices("CY_ACTIVE_CLIENTS_URL", "CYTONN_ACTIVE_CLIENTS_URL"),
+        validation_alias=AliasChoices("CY_ACTIVE_CLIENTS_URL", "CYTONN_API_ACTIVE_URL"),
     )
 
     # LLM provider for draft generation.

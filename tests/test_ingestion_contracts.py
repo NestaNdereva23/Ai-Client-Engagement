@@ -82,6 +82,25 @@ def test_bad_client_does_not_fail_the_fund():
     assert len(fund.clients) == 2
 
 
+def test_fund_reads_the_renamed_client_count_field():
+    fund = FundRecord.model_validate({"unit_fund_id": 1, "client_count": 7, "clients": []})
+    assert fund.inactive_client_count == 7
+
+
+def test_fund_prefers_the_renamed_field_when_both_are_present():
+    fund = FundRecord.model_validate(
+        {"unit_fund_id": 1, "inactive_client_count": 3, "client_count": 7, "clients": []}
+    )
+    assert fund.inactive_client_count == 7
+
+
+def test_schema_drift_accepts_the_renamed_headcount_field():
+    payload = _sample_payload()
+    payload["data"][0].pop("inactive_client_count")
+    payload["data"][0]["client_count"] = 2
+    assert schema_drift(payload) == set()
+
+
 def test_schema_drift_clean_and_dirty():
     assert schema_drift(_sample_payload()) == set()
     dirty = {

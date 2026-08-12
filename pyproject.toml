@@ -49,6 +49,6 @@ select = ["E", "F", "I", "UP", "B"]
 extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path", "fastapi.Body"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "scripts/inactive/tests", "scripts/active/tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"

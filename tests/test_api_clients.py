@@ -240,6 +240,19 @@ def test_list_clients_filters_by_message_angle(two_clients) -> None:
     assert second_id not in ids
 
 
+def test_list_clients_filters_by_newly_dormant(two_clients) -> None:
+    first_id, second_id, fund_id = two_clients
+    with SessionLocal() as session:
+        row = session.get(ClientFeatures, first_id)
+        row.newly_dormant = True
+        session.commit()
+
+    response = client.get(CLIENTS, params={"fund_id": fund_id, "newly_dormant": True})
+    ids = [row["client_id"] for row in response.json()["items"]]
+    assert first_id in ids
+    assert second_id not in ids
+
+
 def test_segments_counts_include_the_new_buckets(two_clients) -> None:
     response = client.get(SEGMENTS)
     assert response.status_code == 200

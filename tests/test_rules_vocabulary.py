@@ -68,7 +68,14 @@ def test_every_band_is_a_column_a_rule_can_read() -> None:
 
 
 def test_the_boolean_fields_are_carried_as_booleans() -> None:
-    flags = ("in_wave", "has_depth", "staged_exit", "stale_contact", "holds_other_funds")
+    flags = (
+        "in_wave",
+        "has_depth",
+        "staged_exit",
+        "stale_contact",
+        "newly_dormant",
+        "holds_other_funds",
+    )
     for flag in flags:
         assert RULE_FIELD_DOMAINS[flag] == {"true", "false"}
 

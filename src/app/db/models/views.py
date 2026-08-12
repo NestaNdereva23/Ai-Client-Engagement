@@ -30,6 +30,7 @@ llm_client_context = Table(
     Column("has_depth", Boolean),
     Column("staged_exit", Boolean),
     Column("stale_contact", Boolean),
+    Column("newly_dormant", Boolean),
 )
 
 # Real figures, still unrounded: rounding is ModelFactBlock's job at

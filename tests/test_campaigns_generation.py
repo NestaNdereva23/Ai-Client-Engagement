@@ -121,7 +121,9 @@ def client(db: None):
         session.add(
             PiiVault(client_id=CLIENT_ID, client_name="Jane Doe", contact_email="jane@example.com")
         )
-        session.add(ClientFeatures(client_id=CLIENT_ID, fund_type="money_market"))
+        session.add(
+            ClientFeatures(client_id=CLIENT_ID, fund_type="money_market", purchase_depth="single")
+        )
         session.commit()
 
     yield CLIENT_ID

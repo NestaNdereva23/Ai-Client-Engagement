@@ -63,6 +63,24 @@ class Bucket:
         return len(self.members)
 
 
+def profile_key_sort_key(key: ProfileKey) -> tuple:
+    """A stable, deterministic ordering over profile keys.
+
+    Used as the final tie-break wherever buckets need a fixed order:
+    listing an estimate's buckets, and deciding which buckets draft first
+    when a template limit bites (campaigns.template_generation).
+    """
+    return (
+        key.message_angle,
+        key.priority_tier or "",
+        key.product,
+        key.has_cadence,
+        key.stale_contact,
+        key.exit_reason_charge_settled,
+        key.fund_name_known,
+    )
+
+
 def profile_key_for(context: ClientContext, *, product: str) -> ProfileKey:
     """The bucket one client's own context belongs in."""
     facts = context.facts or {}

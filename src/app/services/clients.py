@@ -56,6 +56,7 @@ def _apply_bucket_filters(
     recency_band: str | None,
     purchase_depth: str | None,
     message_angle: str | None,
+    newly_dormant: bool | None,
 ):
     """The allow-listed bucket filters every client query accepts, applied in
     one place so list_clients, get_client, and cohort resolution for a new
@@ -73,6 +74,8 @@ def _apply_bucket_filters(
         query = query.where(ClientFeatures.purchase_depth == purchase_depth)
     if message_angle is not None:
         query = query.where(ClientMessageIndicators.message_angle == message_angle)
+    if newly_dormant is not None:
+        query = query.where(ClientFeatures.newly_dormant == newly_dormant)
     return query
 
 
@@ -89,6 +92,7 @@ def list_clients(
     recency_band: str | None = None,
     purchase_depth: str | None = None,
     message_angle: str | None = None,
+    newly_dormant: bool | None = None,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> tuple[list[Row], str | None]:
@@ -102,6 +106,7 @@ def list_clients(
         recency_band=recency_band,
         purchase_depth=purchase_depth,
         message_angle=message_angle,
+        newly_dormant=newly_dormant,
     )
     if cursor is not None:
         after_id = decode_id_cursor(cursor)
@@ -124,6 +129,7 @@ def resolve_cohort_client_ids(
     recency_band: str | None = None,
     purchase_depth: str | None = None,
     message_angle: str | None = None,
+    newly_dormant: bool | None = None,
 ) -> list[int]:
     """Every client_id matching the given bucket filters, unpaginated.
 
@@ -139,6 +145,7 @@ def resolve_cohort_client_ids(
         recency_band=recency_band,
         purchase_depth=purchase_depth,
         message_angle=message_angle,
+        newly_dormant=newly_dormant,
     )
     return list(session.scalars(query).all())
 

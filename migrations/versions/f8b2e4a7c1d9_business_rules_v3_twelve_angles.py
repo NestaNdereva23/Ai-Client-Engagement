@@ -140,7 +140,10 @@ _V3_RULES = [
 
 def upgrade() -> None:
     session = Session(bind=op.get_bind())
-    save_version(session, 3, _V3_RULES, valid_from=_V3_VALID_FROM)
+    # This content shipped with hold_band's old vocabulary and is never
+    # edited afterwards; validate=False so a later rename of that vocabulary
+    # (see business rules v4) can't make this migration fail to replay.
+    save_version(session, 3, _V3_RULES, valid_from=_V3_VALID_FROM, validate=False)
     session.flush()
 
 

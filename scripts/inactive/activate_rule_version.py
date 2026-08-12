@@ -8,14 +8,14 @@ message_angle_catalog.held already draws: this changes only valid_from and
 (optionally) valid_to on the rows already there.
 
 Bring version 3 live as of today:
-    uv run python scripts/activate_rule_version.py --version 3
+    uv run python scripts/inactive/activate_rule_version.py --version 3
 
 Schedule it for a specific date, and close version 2's window at the same time:
-    uv run python scripts/activate_rule_version.py --version 3 --valid-from 2026-09-01
-    uv run python scripts/activate_rule_version.py --version 2 --valid-to 2026-09-01
+    uv run python scripts/inactive/activate_rule_version.py --version 3 --valid-from 2026-09-01
+    uv run python scripts/inactive/activate_rule_version.py --version 2 --valid-to 2026-09-01
 
 Clear a version's end date (leave it open-ended again):
-    uv run python scripts/activate_rule_version.py --version 2 --valid-to none
+    uv run python scripts/inactive/activate_rule_version.py --version 2 --valid-to none
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from datetime import date
 from pathlib import Path
 
 # Make the app package importable when run as a plain script.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from sqlalchemy import select  # noqa: E402
 

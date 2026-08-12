@@ -280,6 +280,9 @@ class ClientFeatures(Base):
     stale_contact: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )
+    newly_dormant: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
     holds_other_funds: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )

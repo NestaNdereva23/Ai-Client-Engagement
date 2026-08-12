@@ -14,14 +14,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 # Keys we expect at each level. schema_drift uses these to spot new or renamed keys.
+# The fund record's headcount field was renamed from inactive_client_count to
+# client_count at source; both names stay expected so raw_staging pages pulled
+# before and after the rename both read as clean.
 EXPECTED_ENVELOPE_KEYS = {"data"}
 EXPECTED_FUND_KEYS = {
     "unit_fund_id",
     "unit_fund_name",
     "inactive_client_count",
+    "client_count",
     "clients",
 }
 EXPECTED_CLIENT_KEYS = {
@@ -90,13 +94,22 @@ class ClientRecord(BaseModel):
 
 
 class FundRecord(BaseModel):
-    """A unit fund and its dormant clients"""
+    """A unit fund and its dormant clients.
+
+    The headcount field is read under either name the source has used: the
+    original inactive_client_count, or client_count after the source renamed
+    it. It is a per-page count, not a fund total; summing it across pages is
+    the transform stage's job, not this contract's.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
     unit_fund_id: int
     unit_fund_name: str | None = None
-    inactive_client_count: int | None = None
+    inactive_client_count: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices("client_count", "inactive_client_count"),
+    )
     # clients stays as raw dicts so each one is checked on its own.
     clients: list[dict[str, Any]] = Field(default_factory=list)
 

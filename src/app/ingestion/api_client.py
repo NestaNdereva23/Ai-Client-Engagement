@@ -84,12 +84,20 @@ class CytonnClient:
 
         Retries temporary failures with backoff. Raises IngestionAPIError once
         the retries run out, or right away on a client error we do not retry.
+
+        Merges params into the url ourselves: some endpoint urls already carry
+        a query string (for example a "status=active" filter), and passing
+        params straight to httpx replaces that query instead of adding to it,
+        silently dropping the filter.
         """
         last_error: Exception | None = None
+        url = httpx.URL(path or self._base_url)
+        if params:
+            url = url.copy_merge_params(params)
 
         for attempt in range(self._max_attempts):
             try:
-                response = self._client.get(path or self._base_url, params=params)
+                response = self._client.get(url)
             except httpx.TransportError as exc:
                 last_error = exc
                 logger.warning(
@@ -117,7 +125,7 @@ class CytonnClient:
                 self._sleep(self._backoff_delay(attempt))
 
         raise IngestionAPIError(
-            f"request to {path or self._base_url!r} failed after {self._max_attempts} attempts"
+            f"request to {url!r} failed after {self._max_attempts} attempts"
         ) from last_error
 
     def probe(self, path: str = "") -> bool:

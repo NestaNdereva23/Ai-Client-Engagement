@@ -223,7 +223,9 @@ def client(db: None):
         session.add(
             PiiVault(client_id=CLIENT_ID, client_name="Jane Doe", contact_email="jane@example.com")
         )
-        session.add(ClientFeatures(client_id=CLIENT_ID, fund_type="money_market"))
+        session.add(
+            ClientFeatures(client_id=CLIENT_ID, fund_type="money_market", purchase_depth="single")
+        )
         session.commit()
 
     yield CLIENT_ID
@@ -698,7 +700,11 @@ def test_submit_batch_gives_two_clients_on_the_same_angle_an_identical_cached_bl
                     contact_email=f"client{client_id}@example.com",
                 )
             )
-            session.add(ClientFeatures(client_id=client_id, fund_type="money_market"))
+            session.add(
+                ClientFeatures(
+                    client_id=client_id, fund_type="money_market", purchase_depth="single"
+                )
+            )
         session.commit()
 
         campaign_row = Campaign(name="shared cache batch test campaign")

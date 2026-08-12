@@ -30,6 +30,7 @@ class RulePreviewRequest(BaseModel):
     has_depth: bool | None = None
     staged_exit: bool | None = None
     stale_contact: bool | None = None
+    newly_dormant: bool | None = None
     history_censored: bool | None = None
     purchases_censored: bool | None = None
     holds_other_funds: bool | None = None

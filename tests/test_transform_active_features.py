@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from app.transform.active_features import SYSTEM_SALE_MAX, derive_active_measures
+from app.transform.active_features import FEE_PER_MONTH, SYSTEM_SALE_MAX, derive_active_measures
 from app.transform.active_flatten import flatten_active_payload
 
 EAT = timezone(timedelta(hours=3))
@@ -109,6 +109,19 @@ def test_real_sale_above_threshold_is_visible_despite_fee_posting() -> None:
     ]
     m = _only(_payload([(1, "2024-01-01T00:00:00", "10000")], sales=sales))
     assert m.largest_real_sale == 15000.0
+    # The sale window is full, but a real redemption IS visible in it, so
+    # this is truncated history, not a blind one.
+    assert m.redemption_history_blind is False
+
+
+def test_one_fee_posting_alone_is_not_blind() -> None:
+    """A single fee-posting sale doesn't fill the window (SALE_CAP is 2), so
+    there's nothing to be blind about yet -- just no real sale seen so far.
+    """
+    sales = [(50, "2024-01-01T00:00:00", str(SYSTEM_SALE_MAX - 1))]
+    m = _only(_payload([(1, "2024-01-01T00:00:00", "10000")], sales=sales))
+    assert m.largest_real_sale is None
+    assert m.redemption_history_blind is False
 
 
 def test_ticket_trend_needs_three_points() -> None:
@@ -133,28 +146,35 @@ def test_last_ticket_is_the_most_recent_purchase() -> None:
 
 
 def test_drawdown_ratio_uses_implied_prior_balance() -> None:
-    # balance now is 40,000 after a real sale of 10,000, so the implied prior
-    # balance is 50,000 and the drawdown ratio is 10,000 / 50,000 = 0.2.
+    # balance now is 200,000 after a real sale of 50,000, so the implied
+    # prior balance is 250,000 and the drawdown ratio is 50,000 / 250,000 = 0.2.
     m = _only(
         _payload(
             [(1, "2024-01-01T00:00:00", "10000")],
-            sales=[(50, "2024-02-01T00:00:00", "10000")],
-            balance=40_000.0,
+            sales=[(50, "2024-02-01T00:00:00", "50000")],
+            balance=200_000.0,
         )
     )
     assert m.drawdown_ratio == 0.2
 
 
-def test_fee_runway_uses_observed_fee_postings() -> None:
-    fee_amount = str(SYSTEM_SALE_MAX - 1)  # 99.0
+def test_fee_runway_uses_the_fixed_deduction_rate_not_observed_sales() -> None:
+    """fee_runway_months is balance / FEE_PER_MONTH, a fixed rate -- not an
+    average of whatever fee postings happen to be visible for this client.
+    """
     m = _only(
         _payload(
             [(1, "2024-01-01T00:00:00", "10000")],
-            sales=[(50, "2024-02-01T00:00:00", fee_amount)],
-            balance=9_900.0,
+            sales=[(50, "2024-02-01T00:00:00", "1")],  # a fee posting of a different size
+            balance=FEE_PER_MONTH * 10,
         )
     )
-    assert m.fee_runway_months == 100.0
+    assert m.fee_runway_months == 10.0
+
+
+def test_fee_runway_ignores_a_client_with_no_visible_sales_at_all() -> None:
+    m = _only(_payload([(1, "2024-01-01T00:00:00", "10000")], balance=FEE_PER_MONTH * 6))
+    assert m.fee_runway_months == 6.0
 
 
 def test_recency_counts_days_since_purchase_not_any_transaction() -> None:
