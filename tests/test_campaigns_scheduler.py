@@ -16,7 +16,7 @@ from sqlalchemy import delete, select
 
 from app.campaigns.scheduler import advance_enrollment, count_stale_contacts, select_due_enrollments
 from app.db.models.audit import AuditLog
-from app.db.models.campaigns import CampaignStep, Enrollment
+from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
 from app.db.models.models import ClientFeatures, Clients, Funds
 from app.db.models.outreach import Campaign
 from app.db.session import SessionLocal
@@ -288,6 +288,31 @@ def test_select_due_enrollments_respects_the_batch_limit(
     with SessionLocal() as session:
         due = select_due_enrollments(session, campaign_id=campaign_with_steps, limit=0)
     assert due == []
+
+
+def test_a_step_already_touched_but_not_yet_sent_is_excluded_from_the_next_page(
+    campaign_with_steps: int, three_clients: tuple[int, int, int]
+) -> None:
+    """A touch_log row for the next step means that step is already being
+    worked (generated, or waiting on review) -- select_due_enrollments must
+    not keep handing it back every page, or it would permanently occupy the
+    front of a large batch and starve everything enrolled after it."""
+    fresh_id, _stale_id, unknown_id = three_clients
+    with SessionLocal() as session:
+        touched = _make_enrollment(session, campaign_id=campaign_with_steps, client_id=fresh_id)
+        untouched = _make_enrollment(session, campaign_id=campaign_with_steps, client_id=unknown_id)
+        session.add(TouchLog(enrollment_id=touched.enrollment_id, step_no=1))
+        session.commit()
+        untouched_id = untouched.enrollment_id
+
+    try:
+        with SessionLocal() as session:
+            due = select_due_enrollments(session, campaign_id=campaign_with_steps)
+        assert [row.enrollment_id for row in due] == [untouched_id]
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(TouchLog).where(TouchLog.enrollment_id == touched.enrollment_id))
+            session.commit()
 
 
 def test_advance_enrollment_schedules_the_next_step_from_the_offset_gap(

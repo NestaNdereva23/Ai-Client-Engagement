@@ -415,12 +415,13 @@ def test_a_second_batch_run_after_a_rejection_does_not_re_attempt_the_same_step(
     campaign_with_steps: int, client_row: int
 ) -> None:
     """Documents the current gate behaviour rather than asserting a retry
-    that doesn't exist: check_eligibility's already_touched check counts any
-    touch_log row, message or not, so a rejected step stays put rather than
-    being retried automatically. Unsticking it is what the regenerate
-    endpoint is for, once a message exists to regenerate from -- a fully
-    automatic retry of a message-less rejection is a gap this change does
-    not close.
+    that doesn't exist: a rejected step's touch_log row stays put rather
+    than being retried automatically, and select_due_enrollments now
+    excludes it from the very next page instead of re-selecting it only to
+    filter it out -- so a second run finds nothing left to attempt.
+    Unsticking the step itself is what the regenerate endpoint is for, once
+    a message exists to regenerate from -- a fully automatic retry of a
+    message-less rejection is a gap this change does not close.
     """
     attempts = []
 
@@ -441,8 +442,7 @@ def test_a_second_batch_run_after_a_rejection_does_not_re_attempt_the_same_step(
 
     assert first[0].generated is False
     assert first[0].reason == "guardrail_rejected"
-    assert second[0].generated is False
-    assert second[0].reason == "already_touched"
+    assert second == []
     assert attempts == [1]  # generate was never called a second time
 
 
