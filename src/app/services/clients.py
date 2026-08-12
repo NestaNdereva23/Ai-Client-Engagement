@@ -3,23 +3,40 @@
 Every query here joins client_features and client_message_indicators, the
 model-safe projection the rest of the codebase already treats as the source
 of truth for a client's bucket; no query here ever touches pii_vault. A
-client's name is deliberately never re-attached: that step is gated on an
-authorized role in the design, and no role or session exists yet (M8.5 is
-still open), so the safe default until then is to never re-attach one.
+client's name is deliberately never re-attached on any of these reads: that
+step is gated on the reviewer key (see app.api.reviewer_auth) ahead of a
+real role, and the endpoint that calls get_client_name is the only place in
+this module allowed to read pii_vault at all.
 
-latest_call_brief is the one exception: it carries no name or PII to begin
-with (agents.email_agent.render_call_brief never takes any), so surfacing
-it here re-exposes nothing new.
+latest_call_brief is the one un-gated exception: it carries no name or PII
+to begin with (agents.email_agent.render_call_brief never takes any), so
+surfacing it here re-exposes nothing new.
+
+get_client_profile is a wider read than list_clients/get_client, but it
+stays inside the same boundary: every column it touches lives on clients,
+client_features, client_message_indicators, funds, enrollment, touch_log,
+outreach_message (status fields only, never ai_draft_content or
+personalized_content), contact_events, or suppression -- never pii_vault.
+
+get_client_name is different on purpose: it is the one function here that
+reads pii_vault, through the restricted role, and it audits every read.
+Its caller is responsible for gating access to it (see app.api.reviewer_auth).
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from sqlalchemy import Row, func, select
 from sqlalchemy.orm import Session
 
-from app.db.models.models import ClientFeatures, Clients
+from app.audit.log import record_audit
+from app.db.models.campaigns import ContactEvent, Enrollment, TouchLog
+from app.db.models.models import ClientFeatures, Clients, Funds, PiiVault
 from app.db.models.outreach import OutreachMessage
 from app.db.models.rules import ClientMessageIndicators
+from app.db.models.suppression import Suppression
+from app.db.session import restricted_session
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_id_cursor, encode_id_cursor
 
 _CLIENT_COLUMNS = (
@@ -175,6 +192,170 @@ def latest_call_brief(session: Session, client_id: int) -> str | None:
         .order_by(OutreachMessage.created_at.desc())
         .limit(1)
     )
+
+
+_PROFILE_CORE_COLUMNS = (
+    Clients.client_id,
+    Clients.client_code,
+    Clients.unit_fund_id,
+    Funds.unit_fund_name,
+    ClientFeatures.fund_type,
+    ClientFeatures.n_funds,
+    ClientFeatures.holds_other_funds,
+    ClientFeatures.recency_band,
+    ClientFeatures.value_band,
+    ClientFeatures.cadence_band,
+    ClientFeatures.hold_band,
+    ClientFeatures.purchase_depth,
+    ClientFeatures.trend_band,
+    ClientFeatures.exit_reason,
+    ClientFeatures.own_rhythm_days,
+    ClientFeatures.in_wave,
+    ClientFeatures.newly_dormant,
+    ClientFeatures.has_depth,
+    ClientFeatures.staged_exit,
+    ClientFeatures.stale_contact,
+    ClientFeatures.history_censored,
+    ClientFeatures.purchases_censored,
+    Clients.last_activity_date,
+    Clients.days_since_last_activity,
+    ClientFeatures.observed_volume,
+    Clients.n_purchases_returned,
+    Clients.total_purchase_amount,
+    Clients.computed_at,
+    ClientMessageIndicators.message_angle,
+    ClientMessageIndicators.priority_tier,
+    ClientMessageIndicators.urgency,
+    ClientMessageIndicators.prompt_variant,
+    ClientMessageIndicators.rule_name,
+    ClientMessageIndicators.rule_version,
+)
+
+
+def _profile_core(session: Session, client_id: int) -> Row:
+    """Identity, bands, flags, activity, and routing in one row.
+
+    Every join beyond clients is outer: a client can be missing its
+    features row (not yet transformed) or its indicators row (not yet
+    resolved), and that is a row of nulls here, not a 404 -- only a missing
+    clients row is.
+    """
+    query = (
+        select(*_PROFILE_CORE_COLUMNS)
+        .select_from(Clients)
+        .join(ClientFeatures, ClientFeatures.client_id == Clients.client_id, isouter=True)
+        .join(
+            ClientMessageIndicators,
+            ClientMessageIndicators.client_id == Clients.client_id,
+            isouter=True,
+        )
+        .join(Funds, Funds.unit_fund_id == Clients.unit_fund_id, isouter=True)
+        .where(Clients.client_id == client_id)
+    )
+    row = session.execute(query).one_or_none()
+    if row is None:
+        raise ClientNotFound(client_id)
+    return row
+
+
+def _client_enrollments(session: Session, client_id: int) -> list[Enrollment]:
+    return list(
+        session.scalars(
+            select(Enrollment)
+            .where(Enrollment.client_id == client_id)
+            .order_by(Enrollment.enrollment_id)
+        ).all()
+    )
+
+
+def _client_touch_log(session: Session, client_id: int) -> list[TouchLog]:
+    return list(
+        session.scalars(
+            select(TouchLog)
+            .join(Enrollment, Enrollment.enrollment_id == TouchLog.enrollment_id)
+            .where(Enrollment.client_id == client_id)
+            .order_by(TouchLog.touch_id)
+        ).all()
+    )
+
+
+def _client_outreach_messages(session: Session, client_id: int) -> list[OutreachMessage]:
+    return list(
+        session.scalars(
+            select(OutreachMessage)
+            .where(OutreachMessage.client_id == client_id)
+            .order_by(OutreachMessage.created_at)
+        ).all()
+    )
+
+
+def _client_contact_events(session: Session, client_id: int) -> list[ContactEvent]:
+    return list(
+        session.scalars(
+            select(ContactEvent)
+            .where(ContactEvent.client_id == client_id)
+            .order_by(ContactEvent.occurred_at)
+        ).all()
+    )
+
+
+@dataclass(frozen=True)
+class ClientProfile:
+    """Every non-PII fact this codebase holds about one client, gathered
+    from the tables get_client_profile is allowed to read (see module
+    docstring). core is the single-row identity/bands/flags/activity/routing
+    projection; the rest are per-client history.
+    """
+
+    core: Row
+    enrollments: list[Enrollment]
+    touch_log: list[TouchLog]
+    outreach_messages: list[OutreachMessage]
+    contact_events: list[ContactEvent]
+    suppression: Suppression | None
+    call_brief: str | None
+
+
+def get_client_profile(session: Session, client_id: int) -> ClientProfile:
+    """The fuller client profile: everything in ClientProfile, or raise
+    ClientNotFound. No name -- see services/clients.py's module docstring.
+    """
+    return ClientProfile(
+        core=_profile_core(session, client_id),
+        enrollments=_client_enrollments(session, client_id),
+        touch_log=_client_touch_log(session, client_id),
+        outreach_messages=_client_outreach_messages(session, client_id),
+        contact_events=_client_contact_events(session, client_id),
+        suppression=session.get(Suppression, client_id),
+        call_brief=latest_call_brief(session, client_id),
+    )
+
+
+def get_client_name(session: Session, client_id: int) -> str | None:
+    """This client's real name, read through the restricted role and
+    audited. The one PII read in this module -- see module docstring.
+
+    Raises ClientNotFound when no clients row exists at all, the same
+    not-found this module's other reads use. A clients row with nothing in
+    pii_vault yet is not that: it returns None, a real and common state for
+    a client whose contact channels have not synced yet.
+    """
+    if session.get(Clients, client_id) is None:
+        raise ClientNotFound(client_id)
+
+    with restricted_session() as restricted:
+        name = restricted.scalar(
+            select(PiiVault.client_name).where(PiiVault.client_id == client_id)
+        )
+        record_audit(
+            restricted,
+            entity_type="pii_vault",
+            action="read",
+            entity_id=str(client_id),
+            detail={"purpose": "client_profile_name"},
+        )
+        restricted.commit()
+    return name
 
 
 def segment_distribution(session: Session) -> dict[str, list[tuple[str, int]] | int]:

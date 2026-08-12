@@ -108,6 +108,14 @@ class Settings(BaseSettings):
         default="", validation_alias=AliasChoices("INTEGRATION_API_KEY")
     )
 
+    # Shared secret gating the one endpoint that re-attaches a client's real
+    # name, a stopgap ahead of real session/role auth. Empty means that
+    # endpoint refuses every request rather than run unprotected. Do not set
+    # this in any environment holding real client data until real auth
+    # exists -- this key alone is not that decision, only the minimum gate
+    # in front of it.
+    reviewer_api_key: str = Field(default="", validation_alias=AliasChoices("REVIEWER_API_KEY"))
+
     # Minimum days between two touches to the same client, across every
     # campaign, checked by the eligibility gate before each send.
     campaign_cooldown_days: int = 7

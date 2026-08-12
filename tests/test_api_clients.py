@@ -1,18 +1,25 @@
-"""The client segment console API: browse buckets, never a name."""
+"""The client segment console API: browse buckets, never a name -- except
+GET /clients/{id}/name, gated behind the reviewer key stopgap.
+"""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, text
+from sqlalchemy import delete, select, text
 
+from app.api import reviewer_auth
 from app.config import Settings
+from app.db.models.audit import AuditLog
+from app.db.models.campaigns import CampaignStep, ContactEvent, Enrollment, TouchLog
 from app.db.models.llmops import GenerationRun
-from app.db.models.models import ClientFeatures, Clients, Funds
+from app.db.models.models import ClientFeatures, Clients, Funds, PiiVault
 from app.db.models.outreach import Campaign, OutreachMessage
 from app.db.models.rules import ClientMessageIndicators
+from app.db.models.suppression import Suppression
 from app.db.session import SessionLocal
 from app.llmops.versions import persist_generation_run
 from app.main import app
@@ -22,6 +29,21 @@ client = TestClient(app)
 
 CLIENTS = "/api/v1/clients"
 SEGMENTS = "/api/v1/segments"
+_TEST_REVIEWER_KEY = "test-reviewer-key"
+REVIEWER_HEADERS = {"X-Reviewer-Key": _TEST_REVIEWER_KEY}
+
+
+class _ConfiguredReviewerSettings:
+    reviewer_api_key = _TEST_REVIEWER_KEY
+
+
+class _UnconfiguredReviewerSettings:
+    reviewer_api_key = ""
+
+
+@pytest.fixture
+def configured_reviewer_key(monkeypatch):
+    monkeypatch.setattr(reviewer_auth, "get_settings", lambda: _ConfiguredReviewerSettings())
 
 
 @pytest.fixture
@@ -164,6 +186,165 @@ def approved_call_brief(two_clients):
         session.commit()
 
 
+@pytest.fixture
+def profile_client(two_clients):
+    """Adds a campaign, enrollment, touch, outreach_message, contact_event,
+    and suppression row for the first of two_clients, so the profile read
+    has something in every section to return.
+    """
+    first_id, _second_id, _fund_id = two_clients
+    with SessionLocal() as session:
+        campaign = Campaign(name="client profile test campaign")
+        session.add(campaign)
+        session.commit()
+        campaign_id = campaign.campaign_id
+        session.add(
+            CampaignStep(
+                campaign_id=campaign_id, step_no=1, offset_days=0, message_angle="onboarding_retry"
+            )
+        )
+        session.commit()
+
+        enrollment = Enrollment(
+            campaign_id=campaign_id, client_id=first_id, is_primary_contact_row=True
+        )
+        session.add(enrollment)
+        session.commit()
+        enrollment_id = enrollment.enrollment_id
+
+        run = persist_generation_run(
+            session,
+            {
+                "run_id": str(uuid4()),
+                "trace_id": uuid4().hex,
+                "client_id": first_id,
+                "product": "money market",
+                "angle": "onboarding_retry",
+                "priority_tier": "T1",
+                "prompt_variant": "onboarding_retry",
+                "status": "accepted",
+                "attempts": 1,
+                "failed_guardrail": None,
+                "reason": None,
+                "raw_structured_output": {
+                    "subject": "Come back to {{fund_name}}",
+                    "body": "Dear {{first_name}}, we miss you.",
+                },
+            },
+            _make_settings(),
+        )
+        session.commit()
+        message = create_outreach_message(session, run, campaign_id=campaign_id)
+        session.commit()
+        message_id = message.message_id
+
+        session.add(
+            TouchLog(enrollment_id=enrollment_id, step_no=1, message_id=message_id, sent_at=None)
+        )
+        session.add(ContactEvent(client_id=first_id, type="open", occurred_at=datetime.now(UTC)))
+        session.add(Suppression(client_id=first_id, reason="test_suppressed", source="test"))
+        session.commit()
+
+    yield first_id, campaign_id
+
+    with SessionLocal() as session:
+        session.execute(delete(ContactEvent).where(ContactEvent.client_id == first_id))
+        session.execute(delete(Suppression).where(Suppression.client_id == first_id))
+        session.execute(delete(TouchLog).where(TouchLog.enrollment_id == enrollment_id))
+        session.execute(delete(OutreachMessage).where(OutreachMessage.message_id == message_id))
+        session.execute(delete(GenerationRun).where(GenerationRun.run_id == run.run_id))
+        session.execute(delete(Enrollment).where(Enrollment.enrollment_id == enrollment_id))
+        session.execute(delete(CampaignStep).where(CampaignStep.campaign_id == campaign_id))
+        session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
+        session.commit()
+
+
+def test_get_client_profile_returns_identity_bands_flags_activity_routing(
+    two_clients,
+) -> None:
+    first_id, _second_id, fund_id = two_clients
+    response = client.get(f"{CLIENTS}/{first_id}/profile")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["identity"]["client_id"] == first_id
+    assert body["identity"]["unit_fund_id"] == fund_id
+    assert body["identity"]["fund_name"] == "Cytonn Money Market Fund"
+    assert body["bands"]["value_band"] == "High"
+    assert body["bands"]["recency_band"] == "1 to 3y"
+    assert body["flags"]["stale_contact"] is True
+    assert body["routing"]["message_angle"] == "onboarding_retry"
+    assert body["routing"]["rule_name"] == "onboarding_retry"
+    assert body["routing"]["rule_version"] == 3
+
+
+def test_get_client_profile_never_includes_a_name(two_clients) -> None:
+    first_id, _second_id, _fund_id = two_clients
+    response = client.get(f"{CLIENTS}/{first_id}/profile")
+    body = response.json()
+    assert "client_name" not in body["identity"]
+    assert "name" not in body["identity"]
+
+
+def test_get_client_profile_404s_for_an_unknown_client(db: None) -> None:
+    response = client.get(f"{CLIENTS}/9999999/profile")
+    assert response.status_code == 404
+
+
+def test_get_client_profile_empty_history_is_empty_lists_not_missing_keys(two_clients) -> None:
+    first_id, _second_id, _fund_id = two_clients
+    response = client.get(f"{CLIENTS}/{first_id}/profile")
+    body = response.json()
+    assert body["enrollments"] == []
+    assert body["touch_log"] == []
+    assert body["outreach_messages"] == []
+    assert body["contact_events"] == []
+    assert body["suppression"] == {
+        "is_suppressed": False,
+        "reason": None,
+        "source": None,
+        "created_at": None,
+    }
+
+
+def test_get_client_profile_includes_campaign_and_engagement_history(profile_client) -> None:
+    first_id, campaign_id = profile_client
+    response = client.get(f"{CLIENTS}/{first_id}/profile")
+    body = response.json()
+
+    assert len(body["enrollments"]) == 1
+    assert body["enrollments"][0]["campaign_id"] == campaign_id
+    assert body["enrollments"][0]["status"] == "enrolled"
+
+    assert len(body["touch_log"]) == 1
+    assert body["touch_log"][0]["step_no"] == 1
+
+    assert len(body["outreach_messages"]) == 1
+    message = body["outreach_messages"][0]
+    assert message["campaign_id"] == campaign_id
+    assert message["status"] == "pending_review"
+    assert "ai_draft_content" not in message
+    assert "personalized_content" not in message
+
+    assert len(body["contact_events"]) == 1
+    assert body["contact_events"][0]["type"] == "open"
+
+
+def test_get_client_profile_reports_suppression_reason(profile_client) -> None:
+    first_id, _campaign_id = profile_client
+    response = client.get(f"{CLIENTS}/{first_id}/profile")
+    suppression = response.json()["suppression"]
+    assert suppression["is_suppressed"] is True
+    assert suppression["reason"] == "test_suppressed"
+
+
+def test_get_client_profile_returns_the_latest_approved_call_brief(approved_call_brief) -> None:
+    first_id = approved_call_brief
+    response = client.get(f"{CLIENTS}/{first_id}/profile")
+    assert response.status_code == 200
+    assert response.json()["call_brief"] == "Call brief: text"
+
+
 def test_get_client_detail_returns_the_latest_approved_call_brief(approved_call_brief) -> None:
     first_id = approved_call_brief
     response = client.get(f"{CLIENTS}/{first_id}")
@@ -273,3 +454,90 @@ def test_segments_stale_contact_count_reflects_the_stale_client(two_clients) -> 
 
     after = client.get(SEGMENTS).json()["stale_contact_count"]
     assert after == before - 1
+
+
+# --- GET /clients/{id}/name: the gated name re-attachment ------------------
+
+
+def test_client_name_missing_header_is_401(configured_reviewer_key, two_clients) -> None:
+    first_id, _second_id, _fund_id = two_clients
+    response = client.get(f"{CLIENTS}/{first_id}/name")
+    assert response.status_code == 401
+
+
+def test_client_name_wrong_key_is_401(configured_reviewer_key, two_clients) -> None:
+    first_id, _second_id, _fund_id = two_clients
+    response = client.get(f"{CLIENTS}/{first_id}/name", headers={"X-Reviewer-Key": "wrong"})
+    assert response.status_code == 401
+
+
+def test_client_name_no_key_configured_is_503(monkeypatch, two_clients) -> None:
+    first_id, _second_id, _fund_id = two_clients
+    monkeypatch.setattr(reviewer_auth, "get_settings", lambda: _UnconfiguredReviewerSettings())
+    response = client.get(f"{CLIENTS}/{first_id}/name", headers=REVIEWER_HEADERS)
+    assert response.status_code == 503
+
+
+def test_client_name_404s_for_an_unknown_client(configured_reviewer_key, db: None) -> None:
+    response = client.get(f"{CLIENTS}/9999999/name", headers=REVIEWER_HEADERS)
+    assert response.status_code == 404
+
+
+def test_client_name_is_null_with_no_pii_vault_row(configured_reviewer_key, two_clients) -> None:
+    """A real, common state -- not a 404 -- for a client whose contact
+    channels have not synced in yet."""
+    first_id, _second_id, _fund_id = two_clients
+    response = client.get(f"{CLIENTS}/{first_id}/name", headers=REVIEWER_HEADERS)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["client_id"] == first_id
+    assert body["client_name"] is None
+
+
+@pytest.fixture
+def named_client(two_clients):
+    first_id, _second_id, _fund_id = two_clients
+    with SessionLocal() as session:
+        session.add(PiiVault(client_id=first_id, client_name="Jane Doe"))
+        session.commit()
+
+    yield first_id
+
+    with SessionLocal() as session:
+        session.execute(delete(PiiVault).where(PiiVault.client_id == first_id))
+        session.commit()
+
+
+def test_client_name_returns_the_real_name_with_a_valid_key(
+    configured_reviewer_key, named_client
+) -> None:
+    response = client.get(f"{CLIENTS}/{named_client}/name", headers=REVIEWER_HEADERS)
+    assert response.status_code == 200
+    assert response.json()["client_name"] == "Jane Doe"
+
+
+def test_client_name_read_is_audited(configured_reviewer_key, named_client) -> None:
+    response = client.get(f"{CLIENTS}/{named_client}/name", headers=REVIEWER_HEADERS)
+    assert response.status_code == 200
+
+    with SessionLocal() as session:
+        rows = session.scalars(
+            select(AuditLog).where(
+                AuditLog.entity_type == "pii_vault",
+                AuditLog.entity_id == str(named_client),
+                AuditLog.action == "read",
+            )
+        ).all()
+    assert rows, "expected a pii_vault audit row for this read"
+
+
+def test_get_client_profile_still_needs_no_key_and_never_includes_a_name(
+    named_client,
+) -> None:
+    """The profile endpoint (item 13) must stay exactly as it was: no
+    auth, no name, even for a client the name endpoint can now identify.
+    """
+    response = client.get(f"{CLIENTS}/{named_client}/profile")
+    assert response.status_code == 200
+    assert "Jane Doe" not in response.text
+    assert "client_name" not in response.json()["identity"]
