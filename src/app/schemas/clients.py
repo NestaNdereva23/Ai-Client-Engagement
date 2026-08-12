@@ -155,8 +155,8 @@ class ClientSuppressionOut(BaseModel):
 
 class ClientProfileOut(BaseModel):
     """The fuller, non-PII client profile: identity, bands, flags, activity,
-    routing, and every campaign/engagement record. No name -- see the router
-    docstring for why that is a separate, not-yet-built endpoint.
+    routing, and every campaign/engagement record. No name -- that is
+    ClientNameOut, a separate, gated endpoint (see the router docstring).
     """
 
     identity: ClientIdentityOut
@@ -170,6 +170,15 @@ class ClientProfileOut(BaseModel):
     contact_events: list[ClientContactEventOut]
     suppression: ClientSuppressionOut
     call_brief: str | None
+
+
+class ClientNameOut(BaseModel):
+    """The one PII field this console withholds everywhere else. Gated
+    behind the reviewer key and audited on every read (see the router).
+    """
+
+    client_id: int
+    client_name: str | None
 
 
 class SegmentBucketOut(BaseModel):

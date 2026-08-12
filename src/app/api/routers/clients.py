@@ -1,13 +1,9 @@
 """Client segment console: browse buckets and see the distribution across them.
 
-Never returns a name or any other PII; that stays behind pii_vault and the
-restricted role. Re-attaching a name for an authorized reviewer is part of
-the design (§9A.3), but no session or role exists yet (M8.5 is still open),
-so this never re-attaches one until that lands.
-
-The one exception is call_brief, on the single-client detail read and the
-fuller profile read: it carries no name and no PII to begin with, so this is
-not name re-attachment.
+GET /clients and GET /clients/{id} never return a name or any other PII;
+that stays behind pii_vault and the restricted role. The one exception is
+call_brief, on the single-client detail read and the fuller profile read: it
+carries no name and no PII to begin with, so this is not name re-attachment.
 
 GET /clients/{id}/profile is the fuller read: identity, behavioural bands,
 flags, activity, routing, and every campaign/engagement record this codebase
@@ -16,6 +12,14 @@ own drafted or personalized content would carry -- only its status history.
 It is a separate, explicitly named endpoint rather than a widened
 GET /clients/{id}, so an existing caller's response shape never changes
 under it.
+
+GET /clients/{id}/name is the one place in this router that re-attaches a
+real name. Real session/role auth does not exist yet, so it sits behind the
+reviewer key stopgap (app.api.reviewer_auth) instead -- fails closed with no
+key configured, and every successful read is audited. It is deliberately its
+own endpoint, not a field on the profile read above: the profile stays safe
+to call with no gate at all, and only this one, obviously sensitive endpoint
+needs one.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.api.reviewer_auth import require_reviewer_key
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.clients import (
@@ -32,6 +37,7 @@ from app.schemas.clients import (
     ClientEnrollmentOut,
     ClientFlagsOut,
     ClientIdentityOut,
+    ClientNameOut,
     ClientOutreachMessageOut,
     ClientProfileOut,
     ClientRoutingOut,
@@ -45,6 +51,7 @@ from app.services.clients import (
     ClientNotFound,
     ClientProfile,
     get_client,
+    get_client_name,
     get_client_profile,
     latest_call_brief,
     list_clients,
@@ -224,6 +231,26 @@ def get_client_profile_detail(
     except ClientNotFound:
         raise HTTPException(status_code=404, detail="client not found") from None
     return _to_profile_out(profile)
+
+
+@router.get(
+    "/clients/{client_id}/name",
+    response_model=ClientNameOut,
+    dependencies=[Depends(require_reviewer_key)],
+)
+def get_client_name_detail(
+    client_id: int, session: Session = Depends(get_session)
+) -> ClientNameOut:
+    """The one PII field the rest of this console withholds (see module
+    docstring). Requires the X-Reviewer-Key header; every successful read
+    is audited as a pii_vault access. 503s if no reviewer key is configured
+    at all, 401 for a missing or wrong one, 404 for an unknown client.
+    """
+    try:
+        name = get_client_name(session, client_id)
+    except ClientNotFound:
+        raise HTTPException(status_code=404, detail="client not found") from None
+    return ClientNameOut(client_id=client_id, client_name=name)
 
 
 @router.get("/segments", response_model=SegmentDistributionOut)

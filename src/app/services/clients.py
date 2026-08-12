@@ -3,19 +3,24 @@
 Every query here joins client_features and client_message_indicators, the
 model-safe projection the rest of the codebase already treats as the source
 of truth for a client's bucket; no query here ever touches pii_vault. A
-client's name is deliberately never re-attached: that step is gated on an
-authorized role in the design, and no role or session exists yet (M8.5 is
-still open), so the safe default until then is to never re-attach one.
+client's name is deliberately never re-attached on any of these reads: that
+step is gated on the reviewer key (see app.api.reviewer_auth) ahead of a
+real role, and the endpoint that calls get_client_name is the only place in
+this module allowed to read pii_vault at all.
 
-latest_call_brief is the one exception: it carries no name or PII to begin
-with (agents.email_agent.render_call_brief never takes any), so surfacing
-it here re-exposes nothing new.
+latest_call_brief is the one un-gated exception: it carries no name or PII
+to begin with (agents.email_agent.render_call_brief never takes any), so
+surfacing it here re-exposes nothing new.
 
 get_client_profile is a wider read than list_clients/get_client, but it
 stays inside the same boundary: every column it touches lives on clients,
 client_features, client_message_indicators, funds, enrollment, touch_log,
 outreach_message (status fields only, never ai_draft_content or
 personalized_content), contact_events, or suppression -- never pii_vault.
+
+get_client_name is different on purpose: it is the one function here that
+reads pii_vault, through the restricted role, and it audits every read.
+Its caller is responsible for gating access to it (see app.api.reviewer_auth).
 """
 
 from __future__ import annotations
@@ -25,11 +30,13 @@ from dataclasses import dataclass
 from sqlalchemy import Row, func, select
 from sqlalchemy.orm import Session
 
+from app.audit.log import record_audit
 from app.db.models.campaigns import ContactEvent, Enrollment, TouchLog
-from app.db.models.models import ClientFeatures, Clients, Funds
+from app.db.models.models import ClientFeatures, Clients, Funds, PiiVault
 from app.db.models.outreach import OutreachMessage
 from app.db.models.rules import ClientMessageIndicators
 from app.db.models.suppression import Suppression
+from app.db.session import restricted_session
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_id_cursor, encode_id_cursor
 
 _CLIENT_COLUMNS = (
@@ -322,6 +329,33 @@ def get_client_profile(session: Session, client_id: int) -> ClientProfile:
         suppression=session.get(Suppression, client_id),
         call_brief=latest_call_brief(session, client_id),
     )
+
+
+def get_client_name(session: Session, client_id: int) -> str | None:
+    """This client's real name, read through the restricted role and
+    audited. The one PII read in this module -- see module docstring.
+
+    Raises ClientNotFound when no clients row exists at all, the same
+    not-found this module's other reads use. A clients row with nothing in
+    pii_vault yet is not that: it returns None, a real and common state for
+    a client whose contact channels have not synced yet.
+    """
+    if session.get(Clients, client_id) is None:
+        raise ClientNotFound(client_id)
+
+    with restricted_session() as restricted:
+        name = restricted.scalar(
+            select(PiiVault.client_name).where(PiiVault.client_id == client_id)
+        )
+        record_audit(
+            restricted,
+            entity_type="pii_vault",
+            action="read",
+            entity_id=str(client_id),
+            detail={"purpose": "client_profile_name"},
+        )
+        restricted.commit()
+    return name
 
 
 def segment_distribution(session: Session) -> dict[str, list[tuple[str, int]] | int]:
