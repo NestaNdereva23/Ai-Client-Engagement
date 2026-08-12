@@ -42,6 +42,33 @@ SYSTEM_SALE_MAX = 100.0
 # (at most two sale slots) to average reliably.
 FEE_PER_MONTH = 50.0
 
+# --- frozen bucket cutoffs. Retune here, nowhere else. ---
+#
+# Interior cutoffs only, right-closed: a value sitting exactly on one belongs
+# to the band below it. Same discipline as VALUE_BAND_CUTOFFS in
+# transform/features.py.
+
+# Fixed literal edges, KES, straight off active_eda.ipynb's own binning --
+# not a recomputed statistic, so no sign-off decision was needed. The first
+# and third edges match DUST_BALANCE and MATERIAL_BALANCE (KES 100 / 10,000)
+# so a balance right at either threshold lands in the tier its name implies.
+BALANCE_TIER_CUTOFFS = (100.0, 1_000.0, 10_000.0, 100_000.0, 1_000_000.0)
+BALANCE_TIERS = ("Dust", "Micro", "Small", "Core", "Premium", "Institutional")
+
+# Fixed literal edges, days, straight off active_eda.ipynb's own binning --
+# also not a recomputed statistic.
+RECENCY_BAND_CUTOFFS = (30, 90, 180, 365, 730)
+RECENCY_BANDS = ("<=1m", "1-3m", "3-6m", "6-12m", "1-2y", "2y+")
+
+# Quartiles of avg_ticket across active_eda_out's 27,481-row client x fund
+# extract (the same population client_risk_features serves), rounded to
+# clean figures rather than shipped as raw decimals. Frozen, not recomputed
+# per run -- the same choice Phase 1 made for VALUE_BAND_CUTOFFS: recomputing
+# quartiles live would move a client between tiers without their behaviour
+# changing.
+VALUE_TIER_CUTOFFS = (500.0, 3_000.0, 18_500.0)
+VALUE_TIERS = ("Low", "Medium", "High", "Top")
+
 
 @dataclass
 class ActiveFeatureMeasures:
@@ -151,6 +178,31 @@ def _days_since_purchase(last_purchase: date | None, reference_date: date | None
     if last_purchase is None or reference_date is None:
         return None
     return max(0, (reference_date - last_purchase).days)
+
+
+def _bucket(value: float | None, cutoffs: tuple[float, ...], labels: tuple[str, ...]) -> str:
+    """Right-closed bucketing shared by balance_tier/recency_band/value_tier.
+
+    "Unknown" when value is missing -- never guessed into a real tier.
+    """
+    if value is None:
+        return "Unknown"
+    for cutoff, label in zip(cutoffs, labels, strict=False):
+        if value <= cutoff:
+            return label
+    return labels[-1]
+
+
+def balance_tier(balance: float | None) -> str:
+    return _bucket(balance, BALANCE_TIER_CUTOFFS, BALANCE_TIERS)
+
+
+def recency_band(days_since_purchase: int | None) -> str:
+    return _bucket(days_since_purchase, RECENCY_BAND_CUTOFFS, RECENCY_BANDS)
+
+
+def value_tier(avg_ticket: float | None) -> str:
+    return _bucket(avg_ticket, VALUE_TIER_CUTOFFS, VALUE_TIERS)
 
 
 def derive_active_measures(

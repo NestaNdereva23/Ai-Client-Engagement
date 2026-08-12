@@ -67,6 +67,23 @@ def test_no_signal_scores_zero_and_bands_none() -> None:
     assert result.aum_at_risk == 0.0
 
 
+def test_compose_score_fills_the_tier_columns() -> None:
+    # balance=500_000 -> Premium, avg_ticket=50_000 -> Top,
+    # days_since_purchase=10 -> <=1m.
+    result = compose_score(_row(), _config())
+    assert result.balance_tier == "Premium"
+    assert result.value_tier == "Top"
+    assert result.recency_band == "<=1m"
+
+
+def test_compose_score_tiers_are_unknown_when_the_underlying_measure_is_missing() -> None:
+    row = _row(balance=None, avg_ticket=None, days_since_purchase=None)
+    result = compose_score(row, _config())
+    assert result.balance_tier == "Unknown"
+    assert result.value_tier == "Unknown"
+    assert result.recency_band == "Unknown"
+
+
 def test_score_is_the_weighted_sum_of_fired_signals() -> None:
     # dormant (25) + never_repeated (3) fire; nothing else does.
     row = _row(days_since_purchase=400, n_purchases=1, rhythm_days=None)

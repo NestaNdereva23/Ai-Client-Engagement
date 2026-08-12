@@ -9,7 +9,17 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from app.transform.active_features import FEE_PER_MONTH, SYSTEM_SALE_MAX, derive_active_measures
+from app.transform.active_features import (
+    BALANCE_TIER_CUTOFFS,
+    FEE_PER_MONTH,
+    RECENCY_BAND_CUTOFFS,
+    SYSTEM_SALE_MAX,
+    VALUE_TIER_CUTOFFS,
+    balance_tier,
+    derive_active_measures,
+    recency_band,
+    value_tier,
+)
 from app.transform.active_flatten import flatten_active_payload
 
 EAT = timezone(timedelta(hours=3))
@@ -191,3 +201,56 @@ def test_recency_counts_days_since_purchase_not_any_transaction() -> None:
 def test_recency_none_without_a_reference_date() -> None:
     m = _only(_payload([(1, "2024-01-01T00:00:00", "10000")]), reference_date=None)
     assert m.days_since_purchase is None
+
+
+# --- bucketing: balance_tier, recency_band, value_tier ---
+
+
+def test_balance_tier_unknown_when_balance_missing() -> None:
+    assert balance_tier(None) == "Unknown"
+
+
+def test_balance_tier_boundaries() -> None:
+    dust_max, micro_max, small_max, core_max, premium_max = BALANCE_TIER_CUTOFFS
+    assert balance_tier(dust_max) == "Dust"
+    assert balance_tier(dust_max + 1) == "Micro"
+    assert balance_tier(micro_max) == "Micro"
+    assert balance_tier(micro_max + 1) == "Small"
+    assert balance_tier(small_max) == "Small"
+    assert balance_tier(small_max + 1) == "Core"
+    assert balance_tier(core_max) == "Core"
+    assert balance_tier(core_max + 1) == "Premium"
+    assert balance_tier(premium_max) == "Premium"
+    assert balance_tier(premium_max + 1) == "Institutional"
+
+
+def test_recency_band_unknown_when_days_missing() -> None:
+    assert recency_band(None) == "Unknown"
+
+
+def test_recency_band_boundaries() -> None:
+    one_m, three_m, six_m, one_y, two_y = RECENCY_BAND_CUTOFFS
+    assert recency_band(one_m) == "<=1m"
+    assert recency_band(one_m + 1) == "1-3m"
+    assert recency_band(three_m) == "1-3m"
+    assert recency_band(three_m + 1) == "3-6m"
+    assert recency_band(six_m) == "3-6m"
+    assert recency_band(six_m + 1) == "6-12m"
+    assert recency_band(one_y) == "6-12m"
+    assert recency_band(one_y + 1) == "1-2y"
+    assert recency_band(two_y) == "1-2y"
+    assert recency_band(two_y + 1) == "2y+"
+
+
+def test_value_tier_unknown_when_avg_ticket_missing() -> None:
+    assert value_tier(None) == "Unknown"
+
+
+def test_value_tier_boundaries() -> None:
+    low_max, medium_max, high_max = VALUE_TIER_CUTOFFS
+    assert value_tier(low_max) == "Low"
+    assert value_tier(low_max + 1) == "Medium"
+    assert value_tier(medium_max) == "Medium"
+    assert value_tier(medium_max + 1) == "High"
+    assert value_tier(high_max) == "High"
+    assert value_tier(high_max + 1) == "Top"
