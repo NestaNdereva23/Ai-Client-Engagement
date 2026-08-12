@@ -56,6 +56,9 @@ class ActiveClientFund(Base):
     # A genuine client-initiated redemption, filtered to exclude system-driven
     # sales (the SYSTEM_SALE_MAX heuristic).
     largest_real_sale: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The most recent date among real sales, not among every sale slot --
+    # see transform/active_features.py::_last_real_sale_date.
+    last_real_sale_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     fee_runway_months: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     updated_at: Mapped[datetime] = mapped_column(

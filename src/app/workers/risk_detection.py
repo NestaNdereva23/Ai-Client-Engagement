@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.audit.log import record_audit
 from app.config import get_settings
+from app.db.models.digest import DigestRun
 from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion, RiskRun, RiskSnapshot
 from app.db.models.suppression import Suppression
 from app.db.session import SessionLocal
@@ -50,6 +51,7 @@ from app.transform.active_features import ActiveFeatureMeasures, derive_active_m
 from app.transform.active_flatten import flatten_active_run
 from app.transform.active_load import persist_active_result
 from app.transform.load import upsert
+from app.workers.digest import build_and_persist_digest
 from app.workers.ingestion import IngestionWorker
 
 logger = structlog.get_logger(__name__)
@@ -92,6 +94,7 @@ class RiskRunResult:
     signals_fired: dict[str, int]
     route_distribution: dict[str, int]
     routes_changed: int | None
+    digest_run_id: int | None = None
 
 
 def _lapse_ratio(m: ActiveFeatureMeasures) -> float | None:
@@ -302,6 +305,18 @@ class RiskDetectionWorker:
                     detail={"changed": changes, "changed_count": len(changes)},
                 )
 
+            digest_run = build_and_persist_digest(
+                session,
+                run.run_id,
+                fa_assignment_source=fa_source,
+                cap_per_group=config_row.digest_cap_per_group,
+            )
+            logger.info(
+                "risk_detection.digest_built",
+                run_id=run.run_id,
+                digest_run_id=digest_run.digest_run_id,
+            )
+
             run.state = "completed"
             run.finished_at = func.now()
             record_audit(
@@ -325,6 +340,7 @@ class RiskDetectionWorker:
                 signals_fired=signal_counts,
                 route_distribution=dict(route_distribution),
                 routes_changed=len(changes),
+                digest_run_id=digest_run.digest_run_id,
             )
             logger.info("risk_detection.completed", **result.__dict__)
             return result
@@ -411,6 +427,12 @@ class RiskDetectionWorker:
             .group_by(RiskSnapshot.route)
         ).all()
         route_distribution = {route: count for route, count in rows}
+        digest_run_id = session.scalar(
+            select(DigestRun.digest_run_id)
+            .where(DigestRun.risk_run_id == run.run_id)
+            .order_by(DigestRun.digest_run_id.desc())
+            .limit(1)
+        )
         return RiskRunResult(
             run_id=run.run_id,
             state=run.state,
@@ -418,4 +440,5 @@ class RiskDetectionWorker:
             signals_fired={},
             route_distribution=route_distribution,
             routes_changed=None,
+            digest_run_id=digest_run_id,
         )

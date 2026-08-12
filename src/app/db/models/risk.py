@@ -52,6 +52,10 @@ class RiskConfigVersion(Base):
     thresholds: Mapped[dict] = mapped_column(JSONB, nullable=False)
     fa_call_capacity: Mapped[int] = mapped_column(Integer, nullable=False)
     at_risk_min: Mapped[int] = mapped_column(Integer, nullable=False)
+    # How many lines the morning digest shows per FA (or fund) group before
+    # falling back to an "and N more" line. A rendering knob, not a signal
+    # threshold, so it lives here rather than in the thresholds dict.
+    digest_cap_per_group: Mapped[int] = mapped_column(Integer, nullable=False)
     valid_from: Mapped[date] = mapped_column(Date, nullable=False)
     valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

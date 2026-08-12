@@ -12,6 +12,7 @@ from sqlalchemy import delete, func, select, text
 
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.audit import AuditLog
+from app.db.models.digest import DigestLine, DigestRun
 from app.db.models.models import PiiVault
 from app.db.models.risk import ClientRiskFeatures, RiskRun, RiskSnapshot
 from app.db.session import SessionLocal
@@ -84,6 +85,16 @@ def cleanup_risk_runs():
     yield run_ids
     with SessionLocal() as session:
         for run_id in run_ids:
+            digest_run_ids = session.scalars(
+                select(DigestRun.digest_run_id).where(DigestRun.risk_run_id == run_id)
+            ).all()
+            if digest_run_ids:
+                session.execute(
+                    delete(DigestLine).where(DigestLine.digest_run_id.in_(digest_run_ids))
+                )
+                session.execute(
+                    delete(DigestRun).where(DigestRun.digest_run_id.in_(digest_run_ids))
+                )
             session.execute(delete(RiskSnapshot).where(RiskSnapshot.run_id == run_id))
             session.execute(delete(RiskRun).where(RiskRun.run_id == run_id))
             session.execute(text("DELETE FROM ingestion_rejects WHERE run_id = :r"), {"r": run_id})
