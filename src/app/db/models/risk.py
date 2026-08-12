@@ -1,16 +1,34 @@
-"""Risk scoring tables: risk_config_version and client_risk_features now,
-risk_run and risk_snapshot land with the nightly detection job.
+"""Risk scoring tables: risk_config_version, client_risk_features,
+risk_run, and risk_snapshot.
 """
 
 from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, Integer, Text, func, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+
+# Allowed values for risk_run.state, same three states ingestion_status uses.
+RISK_RUN_STATES = ("running", "completed", "failed")
 
 
 class RiskConfigVersion(Base):
@@ -50,12 +68,11 @@ class ClientRiskFeatures(Base):
     cache of the most recent row of).
 
     Columns this milestone (score composition) fills: the six sig_* signals,
-    risk_score, risk_band, risk_reasons, aum_at_risk, credible_rhythm, and
-    lapse_ratio -- everything compose_score produces from an ActiveFeatureMeasures
-    row and the active config. recency_band, balance_tier, and value_tier need
-    their own frozen cutoffs, the same kind of decision Phase 1's value_band
-    needed, and stay null until that decision is made. route and queue_rank
-    are the routing milestone's job and stay null until then.
+    risk_score, risk_band, risk_reasons, aum_at_risk, credible_rhythm,
+    lapse_ratio, recency_band, balance_tier, and value_tier -- everything
+    compose_score produces from an ActiveFeatureMeasures row and the active
+    config. route and queue_rank are the routing milestone's job and stay
+    null until then.
     """
 
     __tablename__ = "client_risk_features"
@@ -63,7 +80,9 @@ class ClientRiskFeatures(Base):
     client_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     unit_fund_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
 
-    # Deferred bucketing -- see the class docstring.
+    # Nullable because a nightly run hasn't written this row yet, not because
+    # the bucketing is undecided -- see transform/active_features.py for the
+    # frozen cutoffs.
     recency_band: Mapped[str | None] = mapped_column(Text, nullable=True)
     balance_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
     value_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -91,7 +110,8 @@ class ClientRiskFeatures(Base):
     # explainable against the exact constants that made it.
     config_version: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    # The routing milestone's output -- see the class docstring.
+    # risk/routing.py's output (AM7). Stays null here until the nightly job
+    # (AM9) writes this table.
     route: Mapped[str | None] = mapped_column(Text, nullable=True)
     queue_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
@@ -100,4 +120,87 @@ class ClientRiskFeatures(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+class RiskRun(Base):
+    """One nightly detection run.
+
+    Mirrors ingestion_status's shape (run_id, state, started_at,
+    reference_ts, finished_at): same three states, same resumability
+    discipline, so a run's own health is checked the same way. reference_ts
+    is set once when the run starts and never changed, so every days_since_*
+    figure risk_snapshot carries for this run is anchored consistently.
+    """
+
+    __tablename__ = "risk_run"
+    __table_args__ = (
+        CheckConstraint("state IN ('running', 'completed', 'failed')", name="ck_risk_run_state"),
+    )
+
+    run_id: Mapped[str] = mapped_column(String(36), primary_key=True, autoincrement=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, server_default="running")
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    reference_ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Which config version this run scored and routed against.
+    config_version: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class RiskSnapshot(Base):
+    """One client-fund's numbers as of one run, append-only.
+
+    Carries the same numbers as client_risk_features at the moment that run
+    computed them. Never updated after it is written -- a repeat write for
+    the same run_id/client_id/unit_fund_id hits uq_risk_snapshot_run_client_fund
+    and raises, rather than silently overwriting history. This is the
+    source of truth a day-over-day delta is computed from; client_risk_features
+    is a disposable cache of its most recent row.
+    """
+
+    __tablename__ = "risk_snapshot"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id", "client_id", "unit_fund_id", name="uq_risk_snapshot_run_client_fund"
+        ),
+        # Lookup order for latest_snapshot_for/delta_for: every prior
+        # snapshot for one client-fund, across runs.
+        Index("ix_risk_snapshot_client_fund_run", "client_id", "unit_fund_id", "run_id"),
+    )
+
+    snapshot_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("risk_run.run_id"), nullable=False)
+    client_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    unit_fund_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    recency_band: Mapped[str | None] = mapped_column(Text, nullable=True)
+    balance_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
+    value_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
+    credible_rhythm: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    lapse_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    sig_drawdown: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    sig_dormant: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    sig_cadence_break: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    sig_shrinking: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    sig_fee_erosion: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    sig_never_repeated: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+    risk_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    risk_band: Mapped[str] = mapped_column(Text, nullable=False)
+    risk_reasons: Mapped[str] = mapped_column(Text, nullable=False)
+    aum_at_risk: Mapped[float] = mapped_column(Float, nullable=False)
+    config_version: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    route: Mapped[str | None] = mapped_column(Text, nullable=True)
+    queue_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )

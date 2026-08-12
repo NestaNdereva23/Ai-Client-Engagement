@@ -59,7 +59,7 @@ from app.db.models.outreach import (
     ReviewAction,
 )
 from app.db.models.rag import RagChunk, RagDocument, RagDocumentVersion
-from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion
+from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion, RiskRun, RiskSnapshot
 from app.db.models.rules import (
     BusinessRule,
     ClientMessageIndicators,
@@ -118,6 +118,8 @@ __all__ = [
     "RawStaging",
     "ReviewAction",
     "RiskConfigVersion",
+    "RiskRun",
+    "RiskSnapshot",
     "Suppression",
     "TemplateGenerationPlan",
     "TemplatePolicyConfigVersion",

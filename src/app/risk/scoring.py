@@ -14,6 +14,9 @@ from dataclasses import dataclass
 from app.db.models.risk import RiskConfigVersion
 from app.risk.signals import SIGNAL_LABELS, SIGNAL_ORDER, fired_signals
 from app.transform.active_features import ActiveFeatureMeasures
+from app.transform.active_features import balance_tier as _balance_tier
+from app.transform.active_features import recency_band as _recency_band
+from app.transform.active_features import value_tier as _value_tier
 
 RISK_BANDS = frozenset({"None", "Low", "Watch", "High", "Critical"})
 
@@ -29,6 +32,9 @@ class ScoreResult:
     risk_reasons: str
     aum_at_risk: float
     signals: dict[str, bool]
+    recency_band: str
+    balance_tier: str
+    value_tier: str
 
 
 def _band(score: float, cutoffs: Sequence[float]) -> str:
@@ -77,4 +83,7 @@ def compose_score(row: ActiveFeatureMeasures, config: RiskConfigVersion) -> Scor
         risk_reasons=reasons,
         aum_at_risk=aum_at_risk,
         signals=signals,
+        recency_band=_recency_band(row.days_since_purchase),
+        balance_tier=_balance_tier(row.balance),
+        value_tier=_value_tier(row.avg_ticket),
     )
