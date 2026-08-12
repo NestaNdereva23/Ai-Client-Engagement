@@ -9,6 +9,7 @@ from sqlalchemy import delete, select
 from app.db.models.campaigns import CampaignStep, Enrollment
 from app.db.models.models import ClientFeatures, Clients, Funds, PiiVault
 from app.db.models.outreach import Campaign
+from app.db.models.template_generation_plan import TemplateGenerationPlan
 from app.db.session import SessionLocal
 from app.main import app
 
@@ -282,6 +283,9 @@ def two_due_enrollments(db: None, monkeypatch):
     yield campaign_id
 
     with SessionLocal() as session:
+        session.execute(
+            delete(TemplateGenerationPlan).where(TemplateGenerationPlan.campaign_id == campaign_id)
+        )
         session.execute(delete(Enrollment).where(Enrollment.campaign_id == campaign_id))
         session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
         session.execute(delete(Clients).where(Clients.client_id.in_(client_ids)))
@@ -316,7 +320,12 @@ def test_draft_templates_drafts_nothing_when_no_step_makes_anyone_eligible(
     response = client.post(f"{CAMPAIGNS}/{two_due_enrollments}/templates/draft")
     assert response.status_code == 200
     body = response.json()
+    assert body["estimated_templates"] == 0
+    assert body["effective_limit"] is None
     assert body["drafted_count"] == 0
+    assert body["skipped_existing"] == 0
+    assert body["failed_guardrails"] == 0
+    assert body["policy"]["source"] == "default"
     assert body["templates"] == []
 
 

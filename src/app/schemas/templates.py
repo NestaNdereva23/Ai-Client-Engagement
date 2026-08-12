@@ -61,13 +61,6 @@ class MessageTemplateDetail(MessageTemplateSummary):
     history: list[TemplateReviewActionOut]
 
 
-class DraftTemplatesResult(BaseModel):
-    """How many templates one drafting call produced, and which."""
-
-    drafted_count: int
-    templates: list[MessageTemplateSummary]
-
-
 class InstantiateTemplateResult(BaseModel):
     """How many messages one instantiation call produced, and which."""
 
@@ -136,3 +129,23 @@ class TemplatePolicyOut(BaseModel):
     max_templates_pct: int | None
     updated_at: datetime | None
     updated_by: str | None
+
+
+class DraftTemplatesResult(BaseModel):
+    """What one drafting call produced, and the plan behind it.
+
+    Three numbers, never conflated: estimated_templates (this call's due
+    cohort, before any skip or limit), effective_limit (the cap the policy
+    in force resolved to, or null for no limit), and drafted_count (what
+    actually landed). skipped_existing counts buckets a previous call
+    already templated; failed_guardrails counts ones this call attempted
+    but every guardrail retry rejected.
+    """
+
+    estimated_templates: int
+    effective_limit: int | None
+    drafted_count: int
+    skipped_existing: int
+    failed_guardrails: int
+    policy: TemplatePolicyOut
+    templates: list[MessageTemplateSummary]

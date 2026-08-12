@@ -159,7 +159,7 @@ def test_a_campaign_with_no_policy_falls_back_to_the_active_default(
         default = load_active_default_config(session, date(2026, 1, 1))
         assert default is not None
         assert default.default_max_templates_pct == 25
-        assert resolve_effective_limit(session, campaign, 100) == 25
+        assert resolve_effective_limit(session, campaign, 100, at=date(2026, 1, 1)) == 25
 
 
 def test_a_campaigns_own_policy_wins_over_the_default(

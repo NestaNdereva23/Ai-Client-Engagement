@@ -39,7 +39,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.graph import ContextLoader
 from app.audit.log import record_audit
-from app.campaigns.bucketing import Bucket, ProfileKey, derive_buckets
+from app.campaigns.bucketing import Bucket, ProfileKey, derive_buckets, profile_key_sort_key
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT, select_due_enrollments
 from app.config import get_settings
 from app.db.models.campaigns import CampaignStep, ContactEvent, Enrollment, TouchLog
@@ -84,20 +84,8 @@ class TemplateEstimate:
     as_of: datetime
 
 
-def _profile_key_sort_key(key: ProfileKey) -> tuple:
-    return (
-        key.message_angle,
-        key.priority_tier or "",
-        key.product,
-        key.has_cadence,
-        key.stale_contact,
-        key.exit_reason_charge_settled,
-        key.fund_name_known,
-    )
-
-
 def _to_estimate(buckets: Sequence[EstimatedBucket], *, limit: int) -> TemplateEstimate:
-    counted = sorted(buckets, key=lambda b: _profile_key_sort_key(b.profile_key))
+    counted = sorted(buckets, key=lambda b: profile_key_sort_key(b.profile_key))
     return TemplateEstimate(
         estimated_templates=len(counted),
         eligible_clients=sum(b.client_count for b in counted),

@@ -20,7 +20,7 @@ from app.campaigns.estimation import TemplateEstimate, estimate_templates_sql
 from app.campaigns.generation import generate_for_enrollment
 from app.campaigns.instantiation import instantiate_template as instantiate_template_run
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT
-from app.campaigns.template_generation import draft_templates_for_campaign
+from app.campaigns.template_generation import TemplateDraftOutcome, draft_templates_for_campaign
 from app.campaigns.template_policy import (
     EffectivePolicy,
     get_effective_policy,
@@ -289,8 +289,9 @@ def draft_campaign_templates(
     llm_client: LLMClient,
     limit: int = DEFAULT_BATCH_LIMIT,
     tracer: Tracer | None = None,
-) -> list[MessageTemplate]:
-    """Derive this campaign's buckets and draft one template for each -- a
+) -> TemplateDraftOutcome:
+    """Derive this campaign's buckets and draft one template for each due,
+    not-yet-templated bucket, up to the campaign's effective limit -- a
     third path alongside run_campaign_generation and submit_campaign_batch.
     Raises CampaignNotFound the same way the other two do.
     """

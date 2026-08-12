@@ -163,7 +163,9 @@ business_rules = sa.table(
 
 def upgrade() -> None:
     session = Session(bind=op.get_bind())
-    save_version(session, 4, _V4_RULES, valid_from=_V4_VALID_FROM)
+    # This content is never edited afterwards either; validate=False for the
+    # same reason v3's own seed passes it (see business_rules_v3_twelve_angles).
+    save_version(session, 4, _V4_RULES, valid_from=_V4_VALID_FROM, validate=False)
     session.flush()
     op.execute(
         business_rules.update().where(business_rules.c.version == 3).values(valid_to=_V3_VALID_TO)

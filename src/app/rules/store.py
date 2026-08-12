@@ -1,9 +1,14 @@
 """Read and write the versioned business-rule store, with validation.
 
 A rule set ships as a numbered version with a validity window and is never
-mutated afterwards. Editing means saving a new version. Every write is validated:
-match fields and values are known, outputs are in range, and no rule is
-unreachable behind an earlier one that already covers it.
+mutated afterwards. Editing means saving a new version. A new write is
+validated: match fields and values are known, outputs are in range, and no
+rule is unreachable behind an earlier one that already covers it. A
+migration replaying an already-shipped version skips this (see
+save_version's validate argument), since that content was checked once,
+against the vocabulary in force when it was written, and must keep replaying
+the same way on a fresh database even after a later rename moves that
+vocabulary on.
 """
 
 from __future__ import annotations
@@ -151,13 +156,24 @@ def save_version(
     *,
     valid_from: date,
     valid_to: date | None = None,
+    validate: bool = True,
 ) -> int:
     """Validate and insert a new rule-set version, returning the row count.
 
     Refuses to touch a version that already exists, so a shipped set is never
     mutated. A later valid_from simply supersedes the one before it.
+
+    validate defaults to True: anything authoring a version for the first
+    time should be checked against today's vocabulary. A migration replaying
+    an already-shipped version is different -- that content was valid when it
+    shipped, the migration itself is never edited afterwards, and a later
+    rename can retire one of its values from the live vocabulary. Replaying
+    it on a fresh database must not fail because of a change that came after
+    it was written, so a migration seeding historical content passes
+    validate=False.
     """
-    validate_rules(rules)
+    if validate:
+        validate_rules(rules)
 
     if session.scalar(select(func.count()).where(BusinessRule.version == version)):
         raise RuleValidationError(f"version {version} already exists and may not be mutated")

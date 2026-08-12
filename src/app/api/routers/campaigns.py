@@ -391,12 +391,14 @@ def post_campaign_templates_draft(
     session: Session = Depends(get_session),
 ) -> DraftTemplatesResult:
     """Group this campaign's due, eligible enrollments into buckets and draft
-    one template per bucket -- a third path alongside /generate and
-    /generate/batch. Nothing is instantiated yet: each template needs its
-    own review at GET/POST /templates first.
+    one template per not-yet-templated bucket, up to the campaign's
+    effective limit -- a third path alongside /generate and /generate/batch.
+    Calling this again after raising the limit tops up rather than
+    redrafting. Nothing is instantiated yet: each template needs its own
+    review at GET/POST /templates first.
     """
     try:
-        templates = draft_campaign_templates(
+        outcome = draft_campaign_templates(
             session,
             campaign_id,
             settings=get_settings(),
@@ -409,8 +411,13 @@ def post_campaign_templates_draft(
         session.rollback()
         raise HTTPException(status_code=404, detail="campaign not found") from None
     return DraftTemplatesResult(
-        drafted_count=len(templates),
-        templates=[MessageTemplateSummary.model_validate(t) for t in templates],
+        estimated_templates=outcome.estimated_templates,
+        effective_limit=outcome.effective_limit,
+        drafted_count=outcome.drafted_count,
+        skipped_existing=outcome.skipped_existing,
+        failed_guardrails=outcome.failed_guardrails,
+        policy=_policy_out(outcome.policy),
+        templates=[MessageTemplateSummary.model_validate(t) for t in outcome.templates],
     )
 
 

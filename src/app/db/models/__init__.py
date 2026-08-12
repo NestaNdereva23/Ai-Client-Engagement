@@ -67,6 +67,7 @@ from app.db.models.rules import (
     TierContract,
 )
 from app.db.models.suppression import Suppression
+from app.db.models.template_generation_plan import TemplateGenerationPlan
 from app.db.models.template_policy import CampaignTemplatePolicy, TemplatePolicyConfigVersion
 
 __all__ = [
@@ -118,6 +119,7 @@ __all__ = [
     "ReviewAction",
     "RiskConfigVersion",
     "Suppression",
+    "TemplateGenerationPlan",
     "TemplatePolicyConfigVersion",
     "TemplateReviewAction",
     "TierContract",
