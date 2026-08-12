@@ -244,8 +244,10 @@ def test_a_second_run_before_advancing_creates_no_duplicate_touch(
         enrollment_id = enrollment.enrollment_id
 
     assert first[0].generated is True
-    assert second[0].generated is False
-    assert second[0].reason in ("already_touched", "previous_touch_pending")
+    # A step with a touch already logged is excluded from selection itself
+    # now, not selected and then filtered out, so the second run finds
+    # nothing left due.
+    assert second == []
 
     with SessionLocal() as session:
         touches = (

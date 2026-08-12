@@ -20,10 +20,15 @@ from sqlalchemy.orm import Session
 
 from app.audit.log import record_audit
 from app.campaigns.state_machine import transition_enrollment
-from app.db.models.campaigns import CampaignStep, Enrollment
+from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
 from app.db.models.models import ClientFeatures
 
 DEFAULT_BATCH_LIMIT = 500
+
+# A caller may ask for more than the default batch in one call (a large
+# campaign's first sweep, say); this is the ceiling on that ask, not the
+# ceiling on a single run's usual size.
+MAX_BATCH_LIMIT = 10000
 
 _SCHEDULABLE_STATUSES = ("enrolled", "in_progress")
 
@@ -45,14 +50,27 @@ def select_due_enrollments(
     transform is never held back by this. A bounded limit keeps one run to a
     manageable batch; running again the same day just picks up whatever is
     still due, since this only reads and never changes anything itself.
+
+    An enrollment whose next step already has a touch_log row is excluded
+    here, not just later at the eligibility gate: next_due_at only moves once
+    a touch is actually sent, so a generated-but-unsent step would otherwise
+    keep reappearing at the front of every future page (ordered by
+    enrollment_id) and permanently block anything after it in the batch.
     """
+    next_step_no = Enrollment.current_step + 1
     query = (
         select(Enrollment)
         .outerjoin(ClientFeatures, ClientFeatures.client_id == Enrollment.client_id)
+        .outerjoin(
+            TouchLog,
+            (TouchLog.enrollment_id == Enrollment.enrollment_id)
+            & (TouchLog.step_no == next_step_no),
+        )
         .where(
             Enrollment.status.in_(_SCHEDULABLE_STATUSES),
             Enrollment.is_primary_contact_row.is_(True),
             (Enrollment.next_due_at.is_(None)) | (Enrollment.next_due_at <= func.now()),
+            TouchLog.touch_id.is_(None),
         )
     )
     if campaign_id is not None:

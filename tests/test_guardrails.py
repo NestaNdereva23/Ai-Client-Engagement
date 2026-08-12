@@ -1,9 +1,11 @@
-"""Output guardrails: grounding and format/length, each tagged with its own name.
+"""Output guardrails: grounding, format/length, and currency, each tagged
+with its own name.
 
 These prove the grounding check traces every rate claim in the body,
 the format check enforces a short win back email's subject and body limits
-in both directions, a pass is silent, and a failure always carries a
-guardrail name a caller can use to record which one caught it.
+in both directions, the currency check rejects any non-KES money symbol,
+a pass is silent, and a failure always carries a guardrail name a caller
+can use to record which one caught it.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from app.agents.guardrails import (
     MAX_SUBJECT_LENGTH,
     MIN_BODY_LENGTH,
     GuardrailFailure,
+    default_currency_check,
     default_format_check,
     default_grounding_check,
 )
@@ -89,6 +92,38 @@ def test_format_check_fails_a_body_over_the_limit() -> None:
         default_format_check(state)
     assert exc_info.value.guardrail == "format_length"
     assert "over" in str(exc_info.value)
+
+
+def test_currency_check_passes_a_kes_only_draft() -> None:
+    state = {
+        "subject": "Come back to {{fund_name}}",
+        "body": "Dear {{first_name}}, your typical contribution was KES 50,000.",
+    }
+    default_currency_check(state)  # does not raise
+
+
+def test_currency_check_fails_a_dollar_sign_in_the_body() -> None:
+    state = {
+        "subject": "Come back to {{fund_name}}",
+        "body": "Dear {{first_name}}, top up with as little as $50 today.",
+    }
+    with pytest.raises(GuardrailFailure) as exc_info:
+        default_currency_check(state)
+    assert exc_info.value.guardrail == "currency"
+
+
+def test_currency_check_fails_usd_in_the_subject() -> None:
+    state = {
+        "subject": "Grow your USD savings with {{fund_name}}",
+        "body": "Dear {{first_name}}, we would love to see you invest again soon.",
+    }
+    with pytest.raises(GuardrailFailure) as exc_info:
+        default_currency_check(state)
+    assert exc_info.value.guardrail == "currency"
+
+
+def test_currency_check_ignores_missing_fields() -> None:
+    default_currency_check({})  # does not raise
 
 
 def test_guardrail_failure_defaults_to_an_unknown_guardrail_name() -> None:

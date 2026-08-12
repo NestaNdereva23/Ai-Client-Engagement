@@ -11,7 +11,7 @@ from app.agents.email_channel import build_default_agent
 from app.campaigns.batch_generation import BatchNotFound
 from app.campaigns.estimation import DEFAULT_ESTIMATE_LIMIT, MAX_ESTIMATE_LIMIT
 from app.campaigns.generation import model_boundary_audit_sink
-from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT
+from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT, MAX_BATCH_LIMIT
 from app.campaigns.template_policy import EffectivePolicy, TemplatePolicyValidationError
 from app.config import get_settings
 from app.db.session import get_session
@@ -171,7 +171,7 @@ def post_campaign_step(
 @router.post("/{campaign_id}/generate", response_model=list[TouchOutcomeOut])
 def post_campaign_generate(
     campaign_id: int,
-    limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=DEFAULT_BATCH_LIMIT),
+    limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
     session: Session = Depends(get_session),
 ) -> list[TouchOutcomeOut]:
     """Generate a touch for every one of this campaign's due, eligible
@@ -230,7 +230,7 @@ def _batch_out(batch) -> GenerationBatchOut:
 @router.post("/{campaign_id}/generate/batch", response_model=GenerationBatchOut, status_code=201)
 def post_campaign_generate_batch(
     campaign_id: int,
-    limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=DEFAULT_BATCH_LIMIT),
+    limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
     session: Session = Depends(get_session),
 ) -> GenerationBatchOut:
     """Submit this campaign's due, eligible enrollments to the model
@@ -387,7 +387,7 @@ def put_campaign_templates_policy(
 @router.post("/{campaign_id}/templates/draft", response_model=DraftTemplatesResult)
 def post_campaign_templates_draft(
     campaign_id: int,
-    limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=DEFAULT_BATCH_LIMIT),
+    limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
     session: Session = Depends(get_session),
 ) -> DraftTemplatesResult:
     """Group this campaign's due, eligible enrollments into buckets and draft
@@ -428,7 +428,7 @@ def post_campaign_templates_draft(
 def post_campaign_template_instantiate(
     campaign_id: int,
     template_id: str,
-    limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=DEFAULT_BATCH_LIMIT),
+    limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
     session: Session = Depends(get_session),
 ) -> InstantiateTemplateResult:
     """Fill in every due, eligible client currently matching an approved
