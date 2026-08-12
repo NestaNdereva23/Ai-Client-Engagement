@@ -1,8 +1,8 @@
-"""The seeded v3 rule set: all twelve angles, in router order, reachable.
+"""The seeded v4 rule set: v3 with 'Parked briefly' renamed to 'Under 2m'.
 
-Full parity against the analysis output (all 4,497 rows) belongs to the
-harness built for the feature bands; this checks the seed on its own terms,
-one representative client per rule.
+Mirrors test_rules_v3_seed.py. v4 exists solely to carry the hold_band rename
+forward without mutating v3's already-shipped rows; every other rule is
+identical, priority for priority.
 """
 
 from __future__ import annotations
@@ -11,14 +11,11 @@ from datetime import date
 
 from app.db.session import SessionLocal
 from app.rules.engine import resolve
-from app.rules.store import load_active_rules
+from app.rules.store import RuleSpec, load_active_rules, validate_rules
 
-V3_VERSION = 3
-# Inside v3's window: 2026-08-04 (fa894fc0413a's cutover) to 2026-08-11
-# (209a9c997624 closed it for v4's hold_band rename). v3's content is
-# immutable and this still pins it, just against the window it actually had
-# rather than the open-ended one it shipped with before that cutover.
-IN_FORCE = date(2026, 8, 10)
+V4_VERSION = 4
+# Inside v4's window: opens 2026-08-11 (209a9c997624), open-ended.
+IN_FORCE = date(2026, 8, 11)
 
 # In the order the router applies them.
 EXPECTED_ORDER = (
@@ -58,13 +55,14 @@ def _features(**overrides: str) -> dict[str, str]:
 
 
 # One feature set per angle, built to match that rule and nothing above it.
+# The only difference from v3's CASES: "Parked briefly" is "Under 2m" here.
 CASES = {
     "not_a_goodbye": _features(exit_reason="charge_settled"),
     "wrong_shelf": _features(fund_type="high_yield", hold_band="Under 6m"),
     "see_what_changed": _features(in_wave="true", hold_band="Stayed years", has_depth="true"),
     "the_long_hold": _features(in_wave="true", hold_band="Stayed years", has_depth="false"),
-    "your_next_deposit": _features(hold_band="Parked briefly", purchase_depth="capped"),
-    "second_try": _features(hold_band="Parked briefly", purchase_depth="single"),
+    "your_next_deposit": _features(hold_band="Under 2m", purchase_depth="capped"),
+    "second_try": _features(hold_band="Under 2m", purchase_depth="single"),
     "you_wound_down": _features(staged_exit="true"),
     "you_were_scaling": _features(trend_band="rising"),
     "you_were_fading": _features(trend_band="falling"),
@@ -74,10 +72,10 @@ CASES = {
 }
 
 
-def test_the_seed_ships_all_twelve_angles_at_version_3() -> None:
+def test_the_seed_ships_all_twelve_angles_at_version_4() -> None:
     with SessionLocal() as session:
         active = load_active_rules(session, at=IN_FORCE)
-    assert {r.version for r in active} == {V3_VERSION}
+    assert {r.version for r in active} == {V4_VERSION}
     assert {r.message_angle for r in active} == set(EXPECTED_ORDER)
 
 
@@ -97,18 +95,26 @@ def test_the_last_rule_is_the_unconditional_catch_all() -> None:
     assert last.match == {}
 
 
-# There is deliberately no "re-validate the stored set against RULE_FIELD_DOMAINS"
-# test here any more: v3's shipped rows still legitimately name "Parked briefly",
-# but that value left the live hold_band vocabulary when v4 (the rename) shipped.
-# Re-validating frozen content against a vocabulary that has since moved on
-# will always fail once any value it used is retired -- that is expected, not
-# a defect, the same way v1 and v2's own vocabulary is gone from RULE_FIELD_DOMAINS
-# without either of them being touched. test_rules_v4_seed.py re-proves this
-# same check against the live vocabulary, which is the one it should hold for.
+def test_the_seeded_set_is_itself_valid_and_fully_reachable() -> None:
+    """Re-proves what the migration proved on write, against what is stored."""
+    with SessionLocal() as session:
+        active = load_active_rules(session, at=IN_FORCE)
+    specs = [
+        RuleSpec(
+            name=r.name,
+            priority=r.priority,
+            match=r.match,
+            message_angle=r.message_angle,
+            urgency=r.urgency,
+            priority_tier=r.priority_tier,
+            prompt_variant=r.prompt_variant,
+        )
+        for r in active
+    ]
+    assert validate_rules(specs) is None
 
 
 def test_prompt_variant_is_the_angle_identifier() -> None:
-    """Ahead of the catalogue lookup: the seed already carries the angle name."""
     with SessionLocal() as session:
         active = load_active_rules(session, at=IN_FORCE)
     assert all(r.prompt_variant == r.message_angle for r in active)
@@ -131,17 +137,8 @@ def test_a_client_matching_nothing_specific_falls_through_to_the_catch_all() -> 
     assert resolution.message_angle == "pick_up_again"
 
 
-def test_a_charge_settled_exit_wins_over_every_other_signal() -> None:
-    """not_a_goodbye sits first because it overrides everything else true of the client."""
+def test_no_rule_still_names_the_retired_hold_band_value() -> None:
     with SessionLocal() as session:
-        rules = load_active_rules(session, at=IN_FORCE)
-    features = _features(
-        exit_reason="charge_settled",
-        in_wave="true",
-        hold_band="Stayed years",
-        has_depth="true",
-        staged_exit="true",
-        trend_band="rising",
-    )
-    resolution = resolve(features, rules)
-    assert resolution.message_angle == "not_a_goodbye"
+        active = load_active_rules(session, at=IN_FORCE)
+    for rule in active:
+        assert "Parked briefly" not in rule.match.get("hold_band", ())

@@ -88,8 +88,8 @@ def test_cadence_band_edges(rhythm: float | None, expected: str) -> None:
     ("hold", "expected"),
     [
         (None, "Unknown"),
-        (0, "Parked briefly"),
-        (60, "Parked briefly"),
+        (0, "Under 2m"),
+        (60, "Under 2m"),
         (61, "Under 6m"),
         (180, "Under 6m"),
         (181, "Stayed months"),

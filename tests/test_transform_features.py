@@ -83,3 +83,19 @@ def test_derivation_is_deterministic() -> None:
     first = derive_features(flatten_payload(payload, ANCHOR))
     second = derive_features(flatten_payload(payload, ANCHOR))
     assert first == second
+
+
+def test_newly_dormant_at_exactly_ninety_days() -> None:
+    """The boundary belongs to newly_dormant, not the day after it."""
+    f = _only(_payload([(1, "2026-04-24T00:00:00", "100")]))
+    assert f.newly_dormant is True
+
+
+def test_newly_dormant_false_the_day_after_the_boundary() -> None:
+    f = _only(_payload([(1, "2026-04-23T00:00:00", "100")]))
+    assert f.newly_dormant is False
+
+
+def test_newly_dormant_false_with_no_visible_activity() -> None:
+    f = _only(_payload([]))
+    assert f.newly_dormant is False

@@ -50,6 +50,7 @@ RULE_FIELD_DOMAINS: dict[str, set[str]] = {
     "has_depth": _BOOL,
     "staged_exit": _BOOL,
     "stale_contact": _BOOL,
+    "newly_dormant": _BOOL,
 }
 
 # The twelve angles. Kept in step with message_angle_catalog, which holds

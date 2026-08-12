@@ -62,6 +62,11 @@ CADENCE_PERIODIC_DAYS = 365
 # Contact details older than this need checking before they are used.
 STALE_CONTACT_DAYS = 1095
 
+# Gone quiet this recently or less is still warm: the relationship is fresh,
+# contact details are likely still good, and the client does not need
+# reminding who Cytonn is.
+NEWLY_DORMANT_DAYS = 90
+
 # Quartile boundaries of the average contribution across the population, taken
 # once and frozen. Recomputing them per run would move a client between bands
 # without their behaviour changing. Boundaries are right-closed: a value sitting
@@ -85,7 +90,7 @@ DEPTH_WINDOW_DAYS = 180
 RECENCY_BANDS = frozenset({"Under 1y", "1 to 3y", "3 to 6y", "Over 6y", "Unknown"})
 VALUE_BANDS = frozenset({"Low", "Medium", "High", "Top"})
 CADENCE_BANDS = frozenset({"None", "Tight", "Regular", "Periodic", "Infrequent"})
-HOLD_BANDS = frozenset({"Parked briefly", "Under 6m", "Stayed months", "Stayed years", "Unknown"})
+HOLD_BANDS = frozenset({"Under 2m", "Under 6m", "Stayed months", "Stayed years", "Unknown"})
 PURCHASE_DEPTHS = frozenset({"none", "single", "few", "capped"})
 TREND_BANDS = frozenset({"rising", "flat", "falling", "unknown"})
 EXIT_REASONS = frozenset({"client_sale", "charge_settled", "unknown"})
@@ -137,6 +142,7 @@ class FeatureRow:
     has_depth: bool
     staged_exit: bool
     stale_contact: bool
+    newly_dormant: bool
     holds_other_funds: bool
     priority_tier: str
 
@@ -224,7 +230,7 @@ def _hold_band(hold_days: int | None) -> str:
     if hold_days is None:
         return "Unknown"
     if hold_days <= SHORT_HOLD_DAYS:
-        return "Parked briefly"
+        return "Under 2m"
     if hold_days <= MID_HOLD_DAYS:
         return "Under 6m"
     if hold_days < LONG_HOLD_DAYS:
@@ -422,6 +428,8 @@ def derive_features(
                 and measure.drawdown_days >= DRAWDOWN_DAYS,
                 stale_contact=primary.days_since_last_activity is not None
                 and primary.days_since_last_activity > STALE_CONTACT_DAYS,
+                newly_dormant=primary.days_since_last_activity is not None
+                and primary.days_since_last_activity <= NEWLY_DORMANT_DAYS,
                 holds_other_funds=len(ordered) > 1,
                 priority_tier=_priority_tier(value_band, recency_band),
             )

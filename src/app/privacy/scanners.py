@@ -35,6 +35,7 @@ MODEL_ALLOWED_KEYS = frozenset(
         "has_depth",
         "staged_exit",
         "stale_contact",
+        "newly_dormant",
     }
 )
 

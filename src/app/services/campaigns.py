@@ -16,10 +16,16 @@ from app.campaigns.batch_generation import BatchIngestResult, BatchNotFound
 from app.campaigns.batch_generation import ingest_batch as ingest_campaign_batch_run
 from app.campaigns.batch_generation import submit_batch as submit_campaign_batch_run
 from app.campaigns.enrollment import enroll_cohort
+from app.campaigns.estimation import TemplateEstimate, estimate_templates_sql
 from app.campaigns.generation import generate_for_enrollment
 from app.campaigns.instantiation import instantiate_template as instantiate_template_run
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT
 from app.campaigns.template_generation import draft_templates_for_campaign
+from app.campaigns.template_policy import (
+    EffectivePolicy,
+    get_effective_policy,
+    set_campaign_policy,
+)
 from app.campaigns.touch import TouchRunOutcome, run_due_enrollments
 from app.config import Settings
 from app.db.models.campaigns import CampaignStep, Enrollment
@@ -312,3 +318,58 @@ def instantiate_campaign_template(
     if template is None or template.campaign_id != campaign_id:
         raise TemplateNotFound(template_id)
     return instantiate_template_run(session, template, campaign_id=campaign_id, limit=limit)
+
+
+def estimate_campaign_templates(
+    session: Session, campaign_id: int, *, limit: int = DEFAULT_BATCH_LIMIT
+) -> TemplateEstimate:
+    """How many templates drafting this campaign right now would produce.
+
+    Read-only and never constructs an LLMClient: estimate_templates_sql
+    resolves the due, eligible cohort from bulk column reads, not a
+    ClientContext per client. Raises CampaignNotFound the same way the
+    other campaign-scoped calls do.
+    """
+    if session.get(Campaign, campaign_id) is None:
+        raise CampaignNotFound(campaign_id)
+    return estimate_templates_sql(session, campaign_id, limit=limit)
+
+
+def get_campaign_template_policy(session: Session, campaign_id: int) -> EffectivePolicy:
+    """The limit in force for this campaign: its own override if it has set
+    one, otherwise the active system default. Raises CampaignNotFound the
+    same way the other campaign-scoped calls do.
+    """
+    if session.get(Campaign, campaign_id) is None:
+        raise CampaignNotFound(campaign_id)
+    return get_effective_policy(session, campaign_id)
+
+
+def set_campaign_template_policy(
+    session: Session,
+    campaign_id: int,
+    *,
+    max_templates: int | None,
+    max_templates_pct: int | None,
+    updated_by: str,
+) -> EffectivePolicy:
+    """Set this campaign's own template generation limit, overriding the
+    system default. Raises CampaignNotFound the same way the other
+    campaign-scoped calls do.
+    """
+    if session.get(Campaign, campaign_id) is None:
+        raise CampaignNotFound(campaign_id)
+    policy = set_campaign_policy(
+        session,
+        campaign_id,
+        max_templates=max_templates,
+        max_templates_pct=max_templates_pct,
+        updated_by=updated_by,
+    )
+    return EffectivePolicy(
+        source="campaign",
+        max_templates=policy.max_templates,
+        max_templates_pct=policy.max_templates_pct,
+        updated_at=policy.updated_at,
+        updated_by=policy.updated_by,
+    )

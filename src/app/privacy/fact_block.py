@@ -28,7 +28,7 @@ from app.transform.features import (
 
 # The schema a message is stamped with, so it can be explained later even if
 # the fields change. Bump on any change to the fields or their meaning.
-MODEL_FACT_BLOCK_VERSION = 1
+MODEL_FACT_BLOCK_VERSION = 2
 
 _MONTH_FORMAT = re.compile(r"^\d{4}-\d{2}$")
 
@@ -71,6 +71,7 @@ class ModelFactBlock(BaseModel):
     has_depth: bool | None = None
     staged_exit: bool | None = None
     stale_contact: bool | None = None
+    newly_dormant: bool | None = None
 
     fund_name: _band(FUND_DISPLAY_NAMES.values()) | None = None
     years_since_exit: float | None = None

@@ -50,6 +50,7 @@ def get_clients(
     recency_band: str | None = None,
     purchase_depth: str | None = None,
     message_angle: str | None = None,
+    newly_dormant: bool | None = None,
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
@@ -64,6 +65,7 @@ def get_clients(
             recency_band=recency_band,
             purchase_depth=purchase_depth,
             message_angle=message_angle,
+            newly_dormant=newly_dormant,
             cursor=cursor,
             limit=limit,
         )

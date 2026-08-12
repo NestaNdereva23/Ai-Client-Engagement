@@ -51,6 +51,7 @@ _BAND_FACT_KEYS = (
     "has_depth",
     "staged_exit",
     "stale_contact",
+    "newly_dormant",
 )
 _NUMERIC_FACT_KEYS = (
     "years_since_exit",

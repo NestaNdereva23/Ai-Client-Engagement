@@ -45,6 +45,7 @@ class CohortFilter(BaseModel):
     recency_band: str | None = None
     purchase_depth: str | None = None
     message_angle: str | None = None
+    newly_dormant: bool | None = None
 
     @model_validator(mode="after")
     def _at_least_one_filter(self) -> CohortFilter:
@@ -54,8 +55,11 @@ class CohortFilter(BaseModel):
             self.recency_band,
             self.purchase_depth,
             self.message_angle,
+            self.newly_dormant,
         )
-        if not any(fields):
+        # is not None, not truthiness: newly_dormant=False is a real filter
+        # (exclude the newly dormant), not an absent one.
+        if not any(f is not None for f in fields):
             raise ValueError(
                 "cohort must set at least one filter, or it would enroll the entire book"
             )

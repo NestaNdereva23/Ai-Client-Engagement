@@ -1,7 +1,7 @@
 """Command line entry point to send every approved, unsent touch in one campaign.
 
 Usage:
-    uv run python scripts/send_approved_touches.py --campaign-id 1
+    uv run python scripts/inactive/send_approved_touches.py --campaign-id 1
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 # Make the app package importable when run as a plain script.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from sqlalchemy import select  # noqa: E402
 

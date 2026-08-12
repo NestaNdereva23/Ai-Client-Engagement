@@ -1,7 +1,8 @@
 """Retiring the v1 and v2 rule sets: their windows close where the next one
-began, v3 is the active version from that point on with no gap and no
-overlap, and the v1 vocabulary itself is gone from the schema, the model
-boundary, the rule vocabulary, and the client console.
+began, each version is active for exactly the window it was given with no gap
+and no overlap (v3 handed over to v4 later, for the hold_band rename), and
+the v1 vocabulary itself is gone from the schema, the model boundary, the
+rule vocabulary, and the client console.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from app.rules.store import MESSAGE_ANGLES, PRIORITY_TIERS, RULE_FIELD_DOMAINS, 
 
 _V1_ENDS = date(2026, 8, 1)
 _V2_ENDS = date(2026, 8, 4)
+_V3_ENDS = date(2026, 8, 11)
 _DROPPED_CLIENT_FEATURES_COLUMNS = {"archetype", "recency_bucket", "value_tier", "rhythm_band"}
 _DROPPED_CLIENTS_COLUMNS = {"net_flow"}
 
@@ -38,15 +40,25 @@ def test_v2_is_active_only_between_v1_and_v3() -> None:
     assert {r.version for r in on_the_boundary} == {3}
 
 
-def test_v3_is_the_active_version_from_its_cutover_onward() -> None:
+def test_v3_is_the_active_version_between_v2_and_v4() -> None:
     with SessionLocal() as session:
         just_after = load_active_rules(session, at=date(2026, 8, 5))
-        well_after = load_active_rules(session, at=date(2027, 1, 1))
+        on_the_boundary = load_active_rules(session, at=_V3_ENDS)
     assert {r.version for r in just_after} == {3}
-    assert {r.version for r in well_after} == {3}
+    # valid_to is exclusive: the boundary date itself belongs to v4.
+    assert {r.version for r in on_the_boundary} == {4}
 
 
-def test_the_three_windows_neither_gap_nor_overlap() -> None:
+def test_v4_is_the_active_version_from_its_cutover_onward() -> None:
+    """v4 exists to carry the hold_band rename forward without mutating v3."""
+    with SessionLocal() as session:
+        just_after = load_active_rules(session, at=date(2026, 8, 12))
+        well_after = load_active_rules(session, at=date(2027, 1, 1))
+    assert {r.version for r in just_after} == {4}
+    assert {r.version for r in well_after} == {4}
+
+
+def test_the_four_windows_neither_gap_nor_overlap() -> None:
     """Every day from v1's start onward resolves to exactly one version."""
     with SessionLocal() as session:
         for probe in (
@@ -55,6 +67,8 @@ def test_the_three_windows_neither_gap_nor_overlap() -> None:
             date(2026, 8, 1),
             date(2026, 8, 3),
             date(2026, 8, 4),
+            date(2026, 8, 10),
+            date(2026, 8, 11),
             date(2026, 9, 1),
             date(2026, 12, 1),
         ):

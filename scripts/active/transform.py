@@ -1,7 +1,10 @@
 """Command line entry point for transforming a staged active-clients run.
 
 Run:
-    uv run python scripts/transform_active.py --run-id <id>
+    uv run python scripts/active/transform.py --run-id <id>
+
+Only ever picks up an active-clients run when guessing the latest one; see
+scripts/inactive/transform.py's docstring for why that matters.
 """
 
 from __future__ import annotations
@@ -11,7 +14,7 @@ import sys
 from pathlib import Path
 
 # Make the app package importable when run as a plain script.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from sqlalchemy import select  # noqa: E402
 
@@ -47,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
         if run_id is None:
             parser.error(
                 "no active-clients ingestion run found; "
-                "run scripts/ingest.py --endpoint active-clients first, or pass --run-id"
+                "run scripts/active/ingest.py first, or pass --run-id"
             )
 
         print(f"transforming active-clients run {run_id}")

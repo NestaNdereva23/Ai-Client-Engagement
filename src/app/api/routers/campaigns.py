@@ -9,8 +9,10 @@ from sqlalchemy.orm import Session
 
 from app.agents.email_channel import build_default_agent
 from app.campaigns.batch_generation import BatchNotFound
+from app.campaigns.estimation import DEFAULT_ESTIMATE_LIMIT, MAX_ESTIMATE_LIMIT
 from app.campaigns.generation import model_boundary_audit_sink
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT
+from app.campaigns.template_policy import EffectivePolicy, TemplatePolicyValidationError
 from app.config import get_settings
 from app.db.session import get_session
 from app.llmops.tracing import get_shared_tracer
@@ -30,9 +32,15 @@ from app.schemas.campaigns import (
 )
 from app.schemas.review import OutreachMessageSummary
 from app.schemas.templates import (
+    BucketEstimateOut,
     DraftTemplatesResult,
+    EstimateComputedFromOut,
     InstantiateTemplateResult,
     MessageTemplateSummary,
+    ProfileKeyOut,
+    TemplateEstimateOut,
+    TemplatePolicyOut,
+    TemplatePolicyRequest,
 )
 from app.services.campaigns import (
     CampaignNotFound,
@@ -40,11 +48,14 @@ from app.services.campaigns import (
     campaign_summary,
     create_campaign,
     draft_campaign_templates,
+    estimate_campaign_templates,
     get_campaign_batch,
+    get_campaign_template_policy,
     ingest_campaign_batch,
     instantiate_campaign_template,
     list_campaigns,
     run_campaign_generation,
+    set_campaign_template_policy,
     submit_campaign_batch,
 )
 from app.services.review import TemplateNotApproved
@@ -290,6 +301,87 @@ def post_campaign_batch_ingest(
             for o in result.outcomes
         ],
     )
+
+
+def _policy_out(policy: EffectivePolicy) -> TemplatePolicyOut:
+    return TemplatePolicyOut(
+        source=policy.source,
+        max_templates=policy.max_templates,
+        max_templates_pct=policy.max_templates_pct,
+        updated_at=policy.updated_at,
+        updated_by=policy.updated_by,
+    )
+
+
+@router.get("/{campaign_id}/templates/estimate", response_model=TemplateEstimateOut)
+def get_campaign_templates_estimate(
+    campaign_id: int,
+    limit: int = Query(default=DEFAULT_ESTIMATE_LIMIT, ge=1, le=MAX_ESTIMATE_LIMIT),
+    session: Session = Depends(get_session),
+) -> TemplateEstimateOut:
+    """How many distinct templates this campaign's current configuration
+    would produce. Deterministic given the same due cohort, never
+    constructs an LLMClient, and changes nothing -- safe to call any time,
+    including before /templates/draft to see what a limit would bite into.
+    """
+    try:
+        estimate = estimate_campaign_templates(session, campaign_id, limit=limit)
+    except CampaignNotFound:
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    return TemplateEstimateOut(
+        estimated_templates=estimate.estimated_templates,
+        eligible_clients=estimate.eligible_clients,
+        buckets=[
+            BucketEstimateOut(
+                profile_key=ProfileKeyOut(**bucket.profile_key.as_dict()),
+                client_count=bucket.client_count,
+            )
+            for bucket in estimate.buckets
+        ],
+        computed_from=EstimateComputedFromOut(limit=estimate.limit, as_of=estimate.as_of),
+    )
+
+
+@router.get("/{campaign_id}/templates/policy", response_model=TemplatePolicyOut)
+def get_campaign_templates_policy(
+    campaign_id: int, session: Session = Depends(get_session)
+) -> TemplatePolicyOut:
+    """The limit in force for this campaign right now: its own override if
+    it has set one, otherwise the active system default.
+    """
+    try:
+        policy = get_campaign_template_policy(session, campaign_id)
+    except CampaignNotFound:
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    return _policy_out(policy)
+
+
+@router.put("/{campaign_id}/templates/policy", response_model=TemplatePolicyOut)
+def put_campaign_templates_policy(
+    campaign_id: int, body: TemplatePolicyRequest, session: Session = Depends(get_session)
+) -> TemplatePolicyOut:
+    """Set this campaign's own template generation limit.
+
+    A limit is a throttle, not a decision about the campaign: raising it
+    and calling /templates/draft again tops up rather than redrafting, and
+    lowering it deletes nothing already drafted.
+    """
+    try:
+        policy = set_campaign_template_policy(
+            session,
+            campaign_id,
+            max_templates=body.max_templates,
+            max_templates_pct=body.max_templates_pct,
+            updated_by=body.updated_by,
+        )
+        session.commit()
+    except CampaignNotFound:
+        session.rollback()
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    except TemplatePolicyValidationError as exc:
+        session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    return _policy_out(policy)
 
 
 @router.post("/{campaign_id}/templates/draft", response_model=DraftTemplatesResult)

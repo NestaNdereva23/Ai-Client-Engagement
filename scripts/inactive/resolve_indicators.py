@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 
 # Make the app package importable when run as a plain script.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from app.config import get_settings  # noqa: E402
 from app.db.session import SessionLocal  # noqa: E402

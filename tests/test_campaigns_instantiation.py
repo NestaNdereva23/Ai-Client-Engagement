@@ -101,7 +101,12 @@ def client(roles):
             PiiVault(client_id=CLIENT_ID, client_name="Jane Doe", contact_email="jane@example.com")
         )
         session.add(
-            ClientFeatures(client_id=CLIENT_ID, fund_type="money_market", cadence_band="Regular")
+            ClientFeatures(
+                client_id=CLIENT_ID,
+                fund_type="money_market",
+                cadence_band="Regular",
+                purchase_depth="single",
+            )
         )
         session.commit()
         session.add(

@@ -1,10 +1,15 @@
-"""Command line entry point for an ingestion run.
+"""Command line entry point for an inactive-clients (dormant book) ingestion run.
 
 Run a fresh pull:
-    uv run python scripts/ingest.py
+    uv run python scripts/inactive/ingest.py
 
 Resume a run that stopped:
-    uv run python scripts/ingest.py --run-id <id>
+    uv run python scripts/inactive/ingest.py --run-id <id>
+
+The endpoint is fixed to inactive-clients. There is a separate, matching
+script for the active-clients feed at scripts/active/ingest.py, kept apart on
+purpose: a shared script with an --endpoint flag once let a plain, unflagged
+run silently transform the wrong population (see scripts/inactive/transform.py).
 """
 
 from __future__ import annotations
@@ -14,22 +19,19 @@ import sys
 from pathlib import Path
 
 # Make the app package importable when run as a plain script.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from app.config import get_settings  # noqa: E402
 from app.ingestion.api_client import CytonnClient  # noqa: E402
 from app.ingestion.endpoints import resolve_endpoint  # noqa: E402
 from app.workers.ingestion import IngestionAborted, IngestionWorker  # noqa: E402
 
+ENDPOINT = "inactive-clients"
+
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Pull the endpoint into raw staging.")
+    parser = argparse.ArgumentParser(description="Pull the inactive-clients feed into raw staging.")
     parser.add_argument("--run-id", help="Resume this run instead of starting a new one.")
-    parser.add_argument(
-        "--endpoint",
-        default="inactive-clients",
-        help="Label and path for the endpoint (default: inactive-clients).",
-    )
     parser.add_argument(
         "--max-pages",
         type=int,
@@ -42,11 +44,11 @@ def main(argv: list[str] | None = None) -> int:
     if not settings.cytonn_api_base_url or not settings.cytonn_api_key:
         parser.error("CY_API_BASE_URL and CY_API_KEY must be set in the environment.")
 
-    config = resolve_endpoint(args.endpoint, settings)
+    config = resolve_endpoint(ENDPOINT, settings)
     client = CytonnClient(settings.cytonn_api_base_url, settings.cytonn_api_key)
     worker = IngestionWorker(
         client,
-        endpoint=args.endpoint,
+        endpoint=ENDPOINT,
         fetch_path=config.fetch_path,
         max_pages=args.max_pages,
         fund_model=config.fund_model,

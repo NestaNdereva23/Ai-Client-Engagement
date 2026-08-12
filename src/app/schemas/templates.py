@@ -73,3 +73,66 @@ class InstantiateTemplateResult(BaseModel):
 
     instantiated_count: int
     messages: list[OutreachMessageSummary]
+
+
+class ProfileKeyOut(BaseModel):
+    """The shared, profile-defining facts one estimated bucket's clients have in common."""
+
+    message_angle: str
+    priority_tier: str | None
+    product: str
+    has_cadence: bool
+    stale_contact: bool
+    exit_reason_charge_settled: bool
+    fund_name_known: bool
+
+
+class BucketEstimateOut(BaseModel):
+    """One profile's worth of due, eligible clients, and how many of them there are."""
+
+    profile_key: ProfileKeyOut
+    client_count: int
+
+
+class EstimateComputedFromOut(BaseModel):
+    """The inputs behind an estimate, so "same configuration, same number" is checkable."""
+
+    limit: int
+    as_of: datetime
+
+
+class TemplateEstimateOut(BaseModel):
+    """How many templates drafting this campaign right now would produce.
+
+    Three separate numbers, never conflated: estimated_templates here,
+    the configured maximum from GET .../templates/policy, and actual
+    generated from a real drafting call.
+    """
+
+    estimated_templates: int
+    eligible_clients: int
+    buckets: list[BucketEstimateOut]
+    computed_from: EstimateComputedFromOut
+
+
+class TemplatePolicyRequest(BaseModel):
+    """A campaign manager's own override for how many templates one
+    drafting call may produce. Either field, or both, or neither -- neither
+    set means no limit.
+    """
+
+    max_templates: int | None = None
+    max_templates_pct: int | None = None
+    updated_by: str
+
+
+class TemplatePolicyOut(BaseModel):
+    """The limit in force for one campaign: its own override if it has set
+    one, otherwise the active system default.
+    """
+
+    source: str
+    max_templates: int | None
+    max_templates_pct: int | None
+    updated_at: datetime | None
+    updated_by: str | None

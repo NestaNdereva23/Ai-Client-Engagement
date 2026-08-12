@@ -38,9 +38,9 @@ from app.transform.features import (
     _value_band,
 )
 
-# Inside the v3 rule set's window (its valid_from is deliberately after v2's,
-# so seeding it does not cut resolution over ahead of the rest of the uplift).
-V3_IN_FORCE = date(2026, 12, 15)
+# Inside v3's real window: 2026-08-04 to 2026-08-11, closed by 209a9c997624
+# when v4 took over for the hold_band rename.
+V3_IN_FORCE = date(2026, 8, 10)
 
 # From angle_summary.csv. Pinned as a literal so the count assertion holds
 # even when the source file, which carries client names, is not available.
@@ -64,8 +64,11 @@ EXPECTED_TIER_COUNTS = {"T1": 1003, "T2": 1207, "T3": 1108, "T4": 1179}
 
 # The analysis cuts hold time three ways. Production splits the middle band at
 # six months so a rule can name it, so the two agree only after collapsing.
+# Keys are production's _hold_band() output; values are the analysis CSV's own
+# column, which still says "Parked briefly" since it is a frozen historical
+# extract, not re-run against production's post-rename vocabulary.
 _HOLD_COLLAPSE = {
-    "Parked briefly": "Parked briefly",
+    "Under 2m": "Parked briefly",
     "Under 6m": "Stayed months",
     "Stayed months": "Stayed months",
     "Stayed years": "Stayed years",

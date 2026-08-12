@@ -36,6 +36,7 @@ PERMITTED_KEYS = {
     "has_depth",
     "staged_exit",
     "stale_contact",
+    "newly_dormant",
     "fund_name",
     "years_since_exit",
     "typical_contribution_kes",

@@ -168,6 +168,7 @@ def test_create_campaign_enrolls_exactly_the_matching_cohort(cohort_clients) -> 
         "recency_band": None,
         "purchase_depth": None,
         "message_angle": None,
+        "newly_dormant": None,
     }
 
     with SessionLocal() as session:
@@ -183,6 +184,15 @@ def test_create_campaign_enrolls_exactly_the_matching_cohort(cohort_clients) -> 
 def test_create_campaign_rejects_an_empty_cohort(db: None) -> None:
     response = client.post(CAMPAIGNS, json={"name": "empty cohort campaign", "cohort": {}})
     assert response.status_code == 422
+
+
+def test_create_campaign_accepts_newly_dormant_false_as_a_real_filter(db: None) -> None:
+    """newly_dormant=False excludes the newly dormant; it is not an absent filter."""
+    response = client.post(
+        CAMPAIGNS,
+        json={"name": "not newly dormant campaign", "cohort": {"newly_dormant": False}},
+    )
+    assert response.status_code == 201
 
 
 @pytest.fixture

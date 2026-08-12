@@ -1,11 +1,11 @@
 """Command line entry point to create (or reuse) a campaign and enroll clients.
 
 Create a new one-step campaign and enroll two clients:
-    uv run python scripts/enroll_campaign.py --campaign-name "manual test" \
+    uv run python scripts/inactive/enroll_campaign.py --campaign-name "manual test" \
         --client-id 1001 --client-id 1002
 
 Enroll more clients into an existing campaign:
-    uv run python scripts/enroll_campaign.py --campaign-id 3 --client-id 1003
+    uv run python scripts/inactive/enroll_campaign.py --campaign-id 3 --client-id 1003
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 # Make the app package importable when run as a plain script.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from app.campaigns.enrollment import enroll_cohort  # noqa: E402
 from app.config import get_settings  # noqa: E402
