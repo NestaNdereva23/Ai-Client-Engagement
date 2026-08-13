@@ -47,6 +47,7 @@ _ACTIVE_CLIENT_FUND_UPDATE = [
     "last_ticket",
     "ticket_trend",
     "largest_real_sale",
+    "last_real_sale_date",
     "fee_runway_months",
 ]
 _VAULT_UPDATE = ["client_name", "source"]
@@ -79,6 +80,7 @@ def _active_client_fund_dict(c: ActiveClientRow, measures: ActiveFeatureMeasures
         "last_ticket": measures.last_ticket,
         "ticket_trend": measures.ticket_trend,
         "largest_real_sale": measures.largest_real_sale,
+        "last_real_sale_date": measures.last_real_sale_date,
         "fee_runway_months": measures.fee_runway_months,
     }
 

@@ -69,13 +69,16 @@ def save_config_version(
     *,
     fa_call_capacity: int,
     at_risk_min: int,
+    digest_cap_per_group: int = 12,
     valid_from: date,
     valid_to: date | None = None,
 ) -> RiskConfigVersion:
     """Validate and insert a new config version.
 
     Refuses to touch a version that already exists, so a shipped config is
-    never edited underneath a score that already cited it.
+    never edited underneath a score that already cited it. digest_cap_per_group
+    is a rendering knob for the morning digest, not a scoring input, so it
+    defaults to the notebook's own cap of 12 rather than being required.
     """
     validate_config(weights, thresholds)
 
@@ -88,6 +91,7 @@ def save_config_version(
         thresholds=thresholds,
         fa_call_capacity=fa_call_capacity,
         at_risk_min=at_risk_min,
+        digest_cap_per_group=digest_cap_per_group,
         valid_from=valid_from,
         valid_to=valid_to,
     )

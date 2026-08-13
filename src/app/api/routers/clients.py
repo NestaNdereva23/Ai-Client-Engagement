@@ -16,10 +16,10 @@ under it.
 GET /clients/{id}/name is the one place in this router that re-attaches a
 real name. Real session/role auth does not exist yet, so it sits behind the
 reviewer key stopgap (app.api.reviewer_auth) instead -- fails closed with no
-key configured, and every successful read is audited. It is deliberately its
-own endpoint, not a field on the profile read above: the profile stays safe
-to call with no gate at all, and only this one, obviously sensitive endpoint
-needs one.
+reviewer configured, and every successful read is audited under the
+reviewer_id that key resolved to. It is deliberately its own endpoint, not a
+field on the profile read above: the profile stays safe to call with no
+gate at all, and only this one, obviously sensitive endpoint needs one.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.api.reviewer_auth import require_reviewer_key
+from app.api.reviewer_auth import get_current_reviewer_id
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.clients import (
@@ -233,21 +233,20 @@ def get_client_profile_detail(
     return _to_profile_out(profile)
 
 
-@router.get(
-    "/clients/{client_id}/name",
-    response_model=ClientNameOut,
-    dependencies=[Depends(require_reviewer_key)],
-)
+@router.get("/clients/{client_id}/name", response_model=ClientNameOut)
 def get_client_name_detail(
-    client_id: int, session: Session = Depends(get_session)
+    client_id: int,
+    reviewer_id: str = Depends(get_current_reviewer_id),
+    session: Session = Depends(get_session),
 ) -> ClientNameOut:
     """The one PII field the rest of this console withholds (see module
     docstring). Requires the X-Reviewer-Key header; every successful read
-    is audited as a pii_vault access. 503s if no reviewer key is configured
-    at all, 401 for a missing or wrong one, 404 for an unknown client.
+    is audited as a pii_vault access under the reviewer_id that key
+    resolved to. 503s if no reviewers are configured at all, 401 for a
+    missing or wrong key, 404 for an unknown client.
     """
     try:
-        name = get_client_name(session, client_id)
+        name = get_client_name(session, client_id, reviewer_id=reviewer_id)
     except ClientNotFound:
         raise HTTPException(status_code=404, detail="client not found") from None
     return ClientNameOut(client_id=client_id, client_name=name)

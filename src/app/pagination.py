@@ -59,3 +59,18 @@ def decode_id_cursor(cursor: str) -> int:
 
 def clamp_limit(limit: int) -> int:
     return max(1, min(limit, MAX_LIMIT))
+
+
+def encode_pair_cursor(a: int, b: int) -> str:
+    """For a list ordered by two integer columns (a composite key, no
+    timestamp to pair them with), such as (client_id, unit_fund_id).
+    """
+    return base64.urlsafe_b64encode(json.dumps([a, b]).encode()).decode()
+
+
+def decode_pair_cursor(cursor: str) -> tuple[int, int]:
+    try:
+        a, b = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
+        return a, b
+    except Exception as exc:
+        raise InvalidCursor(cursor) from exc

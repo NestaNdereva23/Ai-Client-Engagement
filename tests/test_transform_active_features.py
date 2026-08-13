@@ -168,6 +168,34 @@ def test_drawdown_ratio_uses_implied_prior_balance() -> None:
     assert m.drawdown_ratio == 0.2
 
 
+def test_last_real_sale_date_is_the_most_recent_not_the_largest() -> None:
+    # An older, larger real sale and a more recent, smaller one: the date
+    # tracks the most recent real sale, independent of largest_real_sale.
+    m = _only(
+        _payload(
+            [(1, "2024-01-01T00:00:00", "10000")],
+            sales=[
+                (50, "2024-02-01T00:00:00", "80000"),
+                (51, "2024-06-01T00:00:00", "20000"),
+            ],
+            balance=200_000.0,
+        )
+    )
+    assert m.largest_real_sale == 80000.0
+    assert m.last_real_sale_date == date(2024, 6, 1)
+
+
+def test_last_real_sale_date_ignores_system_fee_postings() -> None:
+    m = _only(
+        _payload(
+            [(1, "2024-01-01T00:00:00", "10000")],
+            sales=[(50, "2024-06-01T00:00:00", str(SYSTEM_SALE_MAX))],
+        )
+    )
+    assert m.largest_real_sale is None
+    assert m.last_real_sale_date is None
+
+
 def test_fee_runway_uses_the_fixed_deduction_rate_not_observed_sales() -> None:
     """fee_runway_months is balance / FEE_PER_MONTH, a fixed rate -- not an
     average of whatever fee postings happen to be visible for this client.

@@ -11,10 +11,14 @@ ReviewOutcome = Literal["approve", "edit_approve", "reject", "escalate", "hold"]
 
 
 class DecideRequest(BaseModel):
-    """One reviewer decision on one message."""
+    """One reviewer decision on one message.
+
+    reviewer_id is not a field here: the reviewer is the caller
+    authenticated by X-Reviewer-Key (app.api.reviewer_auth), not whatever
+    a request body claims.
+    """
 
     outcome: ReviewOutcome
-    reviewer_id: str
     reason: str | None = None
     edited_content: dict | None = None
 

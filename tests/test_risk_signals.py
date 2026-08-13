@@ -40,6 +40,7 @@ def _row(**overrides) -> ActiveFeatureMeasures:
         last_ticket=50_000.0,
         ticket_trend=0.0,
         largest_real_sale=None,
+        last_real_sale_date=None,
         drawdown_ratio=None,
         fee_runway_months=None,
         days_since_purchase=10,

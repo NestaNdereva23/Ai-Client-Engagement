@@ -2,12 +2,13 @@
 
 Importing this package registers every model on ``Base.metadata`` so migrations
 and ``create_all`` see them.
-
-digest is scaffolded but still empty; its import lands here once it ships
-its first model.
 """
 
-from app.db.models.active_clients import ActiveClientFund
+from app.db.models.active_clients import (
+    INTERACTION_TYPES,
+    ActiveClientFund,
+    ActiveClientInteraction,
+)
 from app.db.models.api import IdempotencyKey
 from app.db.models.audit import AuditLog
 from app.db.models.campaigns import (
@@ -24,6 +25,7 @@ from app.db.models.complaints import (
     COMPLAINT_STATUSES,
     ClientComplaint,
 )
+from app.db.models.digest import DigestLine, DigestRun
 from app.db.models.fa_assignment import FaAssignment
 from app.db.models.generation_batch import (
     GENERATION_BATCH_ITEM_STATUSES,
@@ -80,11 +82,13 @@ __all__ = [
     "GENERATION_BATCH_ITEM_STATUSES",
     "GENERATION_BATCH_STATUSES",
     "INGESTION_STATES",
+    "INTERACTION_TYPES",
     "MESSAGE_STATUSES",
     "MESSAGE_TEMPLATE_STATUSES",
     "REVIEW_OUTCOMES",
     "TEMPLATE_REVIEW_OUTCOMES",
     "ActiveClientFund",
+    "ActiveClientInteraction",
     "AuditLog",
     "BusinessRule",
     "Campaign",
@@ -97,6 +101,8 @@ __all__ = [
     "ClientRiskFeatures",
     "Clients",
     "ContactEvent",
+    "DigestLine",
+    "DigestRun",
     "Enrollment",
     "FaAssignment",
     "Funds",

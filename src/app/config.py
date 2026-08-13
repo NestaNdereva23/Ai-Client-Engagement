@@ -108,13 +108,28 @@ class Settings(BaseSettings):
         default="", validation_alias=AliasChoices("INTEGRATION_API_KEY")
     )
 
-    # Shared secret gating the one endpoint that re-attaches a client's real
-    # name, a stopgap ahead of real session/role auth. Empty means that
-    # endpoint refuses every request rather than run unprotected. Do not set
-    # this in any environment holding real client data until real auth
-    # exists -- this key alone is not that decision, only the minimum gate
-    # in front of it.
-    reviewer_api_key: str = Field(default="", validation_alias=AliasChoices("REVIEWER_API_KEY"))
+    # Reviewer identities allowed to call the endpoints that re-attach a
+    # client's real name, view a briefing, or record a review decision --
+    # a stopgap ahead of real session/role auth. Format is
+    # "reviewer_id:key,reviewer_id:key", one static key per reviewer, not a
+    # login. Empty means those endpoints refuse every request rather than
+    # run unprotected. Do not set this in any environment holding real
+    # client data until real session/role auth exists -- this list alone is
+    # not that decision, only the minimum gate in front of it.
+    reviewers: str = Field(default="", validation_alias=AliasChoices("REVIEWERS"))
+
+    @property
+    def reviewer_keys(self) -> dict[str, str]:
+        """`reviewers`, parsed into key -> reviewer_id. Blank or malformed
+        entries (no ":", empty id, empty key) are dropped rather than
+        raising -- a typo'd entry should not take every reviewer down.
+        """
+        result: dict[str, str] = {}
+        for entry in self.reviewers.split(","):
+            reviewer_id, _, key = entry.strip().partition(":")
+            if reviewer_id and key:
+                result[key] = reviewer_id
+        return result
 
     # Minimum days between two touches to the same client, across every
     # campaign, checked by the eligibility gate before each send.

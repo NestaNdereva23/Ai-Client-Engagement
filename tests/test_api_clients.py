@@ -11,7 +11,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select, text
 
-from app.api import reviewer_auth
 from app.config import Settings
 from app.db.models.audit import AuditLog
 from app.db.models.campaigns import CampaignStep, ContactEvent, Enrollment, TouchLog
@@ -29,21 +28,6 @@ client = TestClient(app)
 
 CLIENTS = "/api/v1/clients"
 SEGMENTS = "/api/v1/segments"
-_TEST_REVIEWER_KEY = "test-reviewer-key"
-REVIEWER_HEADERS = {"X-Reviewer-Key": _TEST_REVIEWER_KEY}
-
-
-class _ConfiguredReviewerSettings:
-    reviewer_api_key = _TEST_REVIEWER_KEY
-
-
-class _UnconfiguredReviewerSettings:
-    reviewer_api_key = ""
-
-
-@pytest.fixture
-def configured_reviewer_key(monkeypatch):
-    monkeypatch.setattr(reviewer_auth, "get_settings", lambda: _ConfiguredReviewerSettings())
 
 
 @pytest.fixture
@@ -459,35 +443,40 @@ def test_segments_stale_contact_count_reflects_the_stale_client(two_clients) -> 
 # --- GET /clients/{id}/name: the gated name re-attachment ------------------
 
 
-def test_client_name_missing_header_is_401(configured_reviewer_key, two_clients) -> None:
+def test_client_name_missing_header_is_401(configured_reviewers, two_clients) -> None:
     first_id, _second_id, _fund_id = two_clients
     response = client.get(f"{CLIENTS}/{first_id}/name")
     assert response.status_code == 401
 
 
-def test_client_name_wrong_key_is_401(configured_reviewer_key, two_clients) -> None:
+def test_client_name_wrong_key_is_401(configured_reviewers, two_clients) -> None:
     first_id, _second_id, _fund_id = two_clients
     response = client.get(f"{CLIENTS}/{first_id}/name", headers={"X-Reviewer-Key": "wrong"})
     assert response.status_code == 401
 
 
-def test_client_name_no_key_configured_is_503(monkeypatch, two_clients) -> None:
+def test_client_name_no_key_configured_is_503(
+    unconfigured_reviewers, two_clients, reviewer_1_headers
+) -> None:
     first_id, _second_id, _fund_id = two_clients
-    monkeypatch.setattr(reviewer_auth, "get_settings", lambda: _UnconfiguredReviewerSettings())
-    response = client.get(f"{CLIENTS}/{first_id}/name", headers=REVIEWER_HEADERS)
+    response = client.get(f"{CLIENTS}/{first_id}/name", headers=reviewer_1_headers)
     assert response.status_code == 503
 
 
-def test_client_name_404s_for_an_unknown_client(configured_reviewer_key, db: None) -> None:
-    response = client.get(f"{CLIENTS}/9999999/name", headers=REVIEWER_HEADERS)
+def test_client_name_404s_for_an_unknown_client(
+    configured_reviewers, db: None, reviewer_1_headers
+) -> None:
+    response = client.get(f"{CLIENTS}/9999999/name", headers=reviewer_1_headers)
     assert response.status_code == 404
 
 
-def test_client_name_is_null_with_no_pii_vault_row(configured_reviewer_key, two_clients) -> None:
+def test_client_name_is_null_with_no_pii_vault_row(
+    configured_reviewers, two_clients, reviewer_1_headers
+) -> None:
     """A real, common state -- not a 404 -- for a client whose contact
     channels have not synced in yet."""
     first_id, _second_id, _fund_id = two_clients
-    response = client.get(f"{CLIENTS}/{first_id}/name", headers=REVIEWER_HEADERS)
+    response = client.get(f"{CLIENTS}/{first_id}/name", headers=reviewer_1_headers)
     assert response.status_code == 200
     body = response.json()
     assert body["client_id"] == first_id
@@ -509,26 +498,31 @@ def named_client(two_clients):
 
 
 def test_client_name_returns_the_real_name_with_a_valid_key(
-    configured_reviewer_key, named_client
+    configured_reviewers, named_client, reviewer_1_headers
 ) -> None:
-    response = client.get(f"{CLIENTS}/{named_client}/name", headers=REVIEWER_HEADERS)
+    response = client.get(f"{CLIENTS}/{named_client}/name", headers=reviewer_1_headers)
     assert response.status_code == 200
     assert response.json()["client_name"] == "Jane Doe"
 
 
-def test_client_name_read_is_audited(configured_reviewer_key, named_client) -> None:
-    response = client.get(f"{CLIENTS}/{named_client}/name", headers=REVIEWER_HEADERS)
+def test_client_name_read_is_audited(
+    configured_reviewers, named_client, reviewer_1_headers
+) -> None:
+    response = client.get(f"{CLIENTS}/{named_client}/name", headers=reviewer_1_headers)
     assert response.status_code == 200
 
     with SessionLocal() as session:
         rows = session.scalars(
-            select(AuditLog).where(
+            select(AuditLog)
+            .where(
                 AuditLog.entity_type == "pii_vault",
                 AuditLog.entity_id == str(named_client),
                 AuditLog.action == "read",
             )
+            .order_by(AuditLog.log_id.desc())
         ).all()
     assert rows, "expected a pii_vault audit row for this read"
+    assert rows[0].actor_id == "fa-1"
 
 
 def test_get_client_profile_still_needs_no_key_and_never_includes_a_name(

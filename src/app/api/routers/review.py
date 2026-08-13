@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.agents.email_channel import build_default_agent
+from app.api.reviewer_auth import get_current_reviewer_id
 from app.campaigns.generation import (
     MessageNotRegenerable,
     RegenerationRejected,
@@ -82,15 +83,22 @@ def get_review(message_id: str, session: Session = Depends(get_session)) -> Outr
 
 @router.post("/{message_id}/decide", response_model=ReviewActionOut)
 def decide_review(
-    message_id: str, body: DecideRequest, session: Session = Depends(get_session)
+    message_id: str,
+    body: DecideRequest,
+    reviewer_id: str = Depends(get_current_reviewer_id),
+    session: Session = Depends(get_session),
 ) -> ReviewActionOut:
-    """Approve, edit-approve, reject, escalate, or hold one message."""
+    """Approve, edit-approve, reject, escalate, or hold one message.
+
+    Requires the X-Reviewer-Key header; the decision is recorded under the
+    reviewer_id that key resolved to, not a self-reported one.
+    """
     try:
         action = decide_message(
             session,
             message_id,
             outcome=body.outcome,
-            reviewer_id=body.reviewer_id,
+            reviewer_id=reviewer_id,
             reason=body.reason,
             edited_content=body.edited_content,
         )

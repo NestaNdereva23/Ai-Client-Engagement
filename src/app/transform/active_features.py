@@ -89,6 +89,10 @@ class ActiveFeatureMeasures:
     last_ticket: float | None
     ticket_trend: float | None
     largest_real_sale: float | None
+    # The most recent date among real sales specifically -- not the same as
+    # last_sale on active_client_fund, which is the most recent date among
+    # every sale slot including system fee postings.
+    last_real_sale_date: date | None
     drawdown_ratio: float | None
     fee_runway_months: float | None
     days_since_purchase: int | None
@@ -137,6 +141,17 @@ def _largest_real_sale(sales: list[ActiveTxnRow], system_sale_max: float) -> flo
     """
     real = [s.amount for s in sales if s.amount > system_sale_max]
     return max(real) if real else None
+
+
+def _last_real_sale_date(sales: list[ActiveTxnRow], system_sale_max: float) -> date | None:
+    """The most recent date among real sales, or None if none is visible.
+
+    Independent of _largest_real_sale: the most recent real sale is not
+    necessarily the largest one, and a briefing reports both facts as they
+    are, not as if they were the same transaction.
+    """
+    dates = [s.date for s in sales if s.amount > system_sale_max and s.date is not None]
+    return max(dates) if dates else None
 
 
 def _drawdown_ratio(largest_real_sale: float | None, balance: float | None) -> float | None:
@@ -255,6 +270,7 @@ def derive_active_measures(
             last_ticket=_last_ticket(bought),
             ticket_trend=_log_slope(amounts),
             largest_real_sale=largest_real_sale,
+            last_real_sale_date=_last_real_sale_date(sold, system_sale_max),
             drawdown_ratio=_drawdown_ratio(largest_real_sale, row.balance),
             fee_runway_months=_fee_runway_months(row.balance, fee_per_month),
             days_since_purchase=_days_since_purchase(row.last_purchase, ref),

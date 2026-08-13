@@ -49,6 +49,13 @@ def test_v1_capacity_and_gate_match_the_notebook(db) -> None:
     assert config.at_risk_min == 25
 
 
+def test_v1_digest_cap_matches_the_notebook(db) -> None:
+    with SessionLocal() as session:
+        config = load_active_config(session, IN_FORCE)
+    assert config is not None
+    assert config.digest_cap_per_group == 12
+
+
 def test_v1_band_cutoffs_match_the_notebooks_pd_cut(db) -> None:
     """The notebook bins with pd.cut(risk_score, [-1, 0, 24, 49, 74, 100]);
     the four interior edges are what's stored.
