@@ -4,7 +4,11 @@ Importing this package registers every model on ``Base.metadata`` so migrations
 and ``create_all`` see them.
 """
 
-from app.db.models.active_clients import ActiveClientFund
+from app.db.models.active_clients import (
+    INTERACTION_TYPES,
+    ActiveClientFund,
+    ActiveClientInteraction,
+)
 from app.db.models.api import IdempotencyKey
 from app.db.models.audit import AuditLog
 from app.db.models.campaigns import (
@@ -78,11 +82,13 @@ __all__ = [
     "GENERATION_BATCH_ITEM_STATUSES",
     "GENERATION_BATCH_STATUSES",
     "INGESTION_STATES",
+    "INTERACTION_TYPES",
     "MESSAGE_STATUSES",
     "MESSAGE_TEMPLATE_STATUSES",
     "REVIEW_OUTCOMES",
     "TEMPLATE_REVIEW_OUTCOMES",
     "ActiveClientFund",
+    "ActiveClientInteraction",
     "AuditLog",
     "BusinessRule",
     "Campaign",

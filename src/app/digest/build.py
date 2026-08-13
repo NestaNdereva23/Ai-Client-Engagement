@@ -18,6 +18,7 @@ from app.db.models.complaints import ClientComplaint
 from app.db.models.risk import RiskSnapshot
 from app.ingestion.fa_assignment_source import FaAssignmentSource
 from app.risk.history import delta_for
+from app.risk.signals import SIGNAL_ORDER
 
 # Routes a digest line ever exists for: the two an FA needs to see, in the
 # order the notebook renders them (call queue first).
@@ -40,6 +41,7 @@ class DigestLineData:
     risk_score: int
     risk_band: str
     risk_reasons: str
+    risk_reason_tags: list[str]
     aum_at_risk: float
     score_delta: int | None
     route: str
@@ -51,7 +53,16 @@ class DigestLineData:
 class DigestGroupData:
     group_key: str
     total_eligible: int
+    total_aum_at_risk: float
     lines: list[DigestLineData]
+
+
+def _reason_tags(row: RiskSnapshot) -> list[str]:
+    """Fired signal names for one row, "sig_" stripped, in the same
+    declaration order risk_reasons is joined in -- a machine-readable form
+    of the same prose string, not a second source of truth.
+    """
+    return [name.removeprefix("sig_") for name in SIGNAL_ORDER if getattr(row, name)]
 
 
 @dataclass
@@ -104,6 +115,9 @@ def build_digest(
     groups: dict[str, DigestGroupData] = {}
     for key, rows in by_group.items():
         rows.sort(key=lambda r: r.aum_at_risk, reverse=True)
+        # The true total, over every eligible row -- not just the ones the
+        # cap below keeps in `lines`.
+        total_aum_at_risk = sum(row.aum_at_risk for row in rows)
         capped = rows[:cap_per_group]
         lines = [
             DigestLineData(
@@ -114,6 +128,7 @@ def build_digest(
                 risk_score=row.risk_score,
                 risk_band=row.risk_band,
                 risk_reasons=row.risk_reasons,
+                risk_reason_tags=_reason_tags(row),
                 aum_at_risk=row.aum_at_risk,
                 score_delta=delta_for(session, row.client_id, row.unit_fund_id, risk_run_id),
                 route=row.route,
@@ -122,6 +137,11 @@ def build_digest(
             )
             for rank, row in enumerate(capped, start=1)
         ]
-        groups[key] = DigestGroupData(group_key=key, total_eligible=len(rows), lines=lines)
+        groups[key] = DigestGroupData(
+            group_key=key,
+            total_eligible=len(rows),
+            total_aum_at_risk=total_aum_at_risk,
+            lines=lines,
+        )
 
     return DigestBuildResult(risk_run_id=risk_run_id, groups=groups)

@@ -16,10 +16,24 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, Integer, Text, func, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Float,
+    Index,
+    Integer,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+
+INTERACTION_TYPES = ("call_logged", "snoozed", "dismissed")
 
 
 class ActiveClientFund(Base):
@@ -66,4 +80,36 @@ class ActiveClientFund(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+class ActiveClientInteraction(Base):
+    """One FA action logged against an active-client digest line: a call,
+    a snooze, or a dismiss (see the reference reviewer console). Manual
+    bookkeeping only -- the active-client population has no campaign or
+    enrollment path in this codebase yet, so nothing here triggers a send
+    or a routing change; it only records that a human already acted.
+    """
+
+    __tablename__ = "active_client_interaction"
+    __table_args__ = (
+        CheckConstraint(
+            "type IN ('call_logged', 'snoozed', 'dismissed')",
+            name="ck_active_client_interaction_type",
+        ),
+        Index(
+            "ix_active_client_interaction_client_fund", "client_id", "unit_fund_id", "created_at"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    client_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    unit_fund_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    type: Mapped[str] = mapped_column(Text, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The reviewer X-Reviewer-Key resolved to (app.api.reviewer_auth), never
+    # a self-reported field on the request body.
+    reviewer_id: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )

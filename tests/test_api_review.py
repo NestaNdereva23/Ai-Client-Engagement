@@ -184,81 +184,118 @@ def test_get_review_404s_when_not_found(db: None) -> None:
     assert response.json()["error"]["code"] == "not_found"
 
 
-def test_decide_approve_returns_the_action_and_updates_status(message) -> None:
+def test_decide_with_no_reviewer_key_is_401(configured_reviewers, message) -> None:
+    message_id, _campaign_id = message
+    response = client.post(f"{REVIEWS}/{message_id}/decide", json={"outcome": "approve"})
+    assert response.status_code == 401
+
+
+def test_decide_with_no_reviewers_configured_is_503(
+    unconfigured_reviewers, message, reviewer_1_headers
+) -> None:
+    message_id, _campaign_id = message
+    response = client.post(
+        f"{REVIEWS}/{message_id}/decide", json={"outcome": "approve"}, headers=reviewer_1_headers
+    )
+    assert response.status_code == 503
+
+
+def test_decide_approve_returns_the_action_and_updates_status(
+    configured_reviewers, message, reviewer_1_headers
+) -> None:
     message_id, _campaign_id = message
     response = client.post(
         f"{REVIEWS}/{message_id}/decide",
-        json={"outcome": "approve", "reviewer_id": "fa-1"},
+        json={"outcome": "approve"},
+        headers=reviewer_1_headers,
     )
     assert response.status_code == 200
-    assert response.json()["outcome"] == "approve"
+    body = response.json()
+    assert body["outcome"] == "approve"
+    assert body["reviewer_id"] == "fa-1"
 
     detail = client.get(f"{REVIEWS}/{message_id}").json()
     assert detail["status"] == "approved"
     assert len(detail["history"]) == 1
 
 
-def test_decide_edit_approve_without_content_is_rejected(message) -> None:
+def test_decide_edit_approve_without_content_is_rejected(
+    configured_reviewers, message, reviewer_1_headers
+) -> None:
     message_id, _campaign_id = message
     response = client.post(
         f"{REVIEWS}/{message_id}/decide",
-        json={"outcome": "edit_approve", "reviewer_id": "fa-1"},
+        json={"outcome": "edit_approve"},
+        headers=reviewer_1_headers,
     )
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "validation_error"
 
 
-def test_decide_edit_approve_stores_the_edit(message) -> None:
+def test_decide_edit_approve_stores_the_edit(
+    configured_reviewers, message, reviewer_1_headers
+) -> None:
     message_id, _campaign_id = message
     edited = {"subject": "New subject", "body": "New body"}
     response = client.post(
         f"{REVIEWS}/{message_id}/decide",
-        json={"outcome": "edit_approve", "reviewer_id": "fa-1", "edited_content": edited},
+        json={"outcome": "edit_approve", "edited_content": edited},
+        headers=reviewer_1_headers,
     )
     assert response.status_code == 200
     assert response.json()["edited_content"] == edited
 
 
-def test_decide_twice_is_a_conflict(message) -> None:
+def test_decide_twice_is_a_conflict(
+    configured_reviewers, message, reviewer_1_headers, reviewer_2_headers
+) -> None:
     message_id, _campaign_id = message
     first = client.post(
         f"{REVIEWS}/{message_id}/decide",
-        json={"outcome": "approve", "reviewer_id": "fa-1"},
+        json={"outcome": "approve"},
+        headers=reviewer_1_headers,
     )
     assert first.status_code == 200
 
     second = client.post(
         f"{REVIEWS}/{message_id}/decide",
-        json={"outcome": "reject", "reviewer_id": "fa-2"},
+        json={"outcome": "reject"},
+        headers=reviewer_2_headers,
     )
     assert second.status_code == 409
     assert second.json()["error"]["code"] == "conflict"
 
 
-def test_decide_404s_when_the_message_does_not_exist(db: None) -> None:
+def test_decide_404s_when_the_message_does_not_exist(
+    configured_reviewers, db: None, reviewer_1_headers
+) -> None:
     response = client.post(
         f"{REVIEWS}/not-a-real-id/decide",
-        json={"outcome": "approve", "reviewer_id": "fa-1"},
+        json={"outcome": "approve"},
+        headers=reviewer_1_headers,
     )
     assert response.status_code == 404
 
 
-def test_decide_replays_the_first_result_for_a_repeated_idempotency_key(message) -> None:
+def test_decide_replays_the_first_result_for_a_repeated_idempotency_key(
+    configured_reviewers, message, reviewer_1_headers, reviewer_2_headers
+) -> None:
     message_id, _campaign_id = message
     key = str(uuid4())
-    headers = {"Idempotency-Key": key}
+    headers = {"Idempotency-Key": key, **reviewer_1_headers}
+    replay_headers = {"Idempotency-Key": key, **reviewer_2_headers}
     try:
         first = client.post(
             f"{REVIEWS}/{message_id}/decide",
-            json={"outcome": "approve", "reviewer_id": "fa-1"},
+            json={"outcome": "approve"},
             headers=headers,
         )
         assert first.status_code == 200
 
         replay = client.post(
             f"{REVIEWS}/{message_id}/decide",
-            json={"outcome": "reject", "reviewer_id": "fa-2"},
-            headers=headers,
+            json={"outcome": "reject"},
+            headers=replay_headers,
         )
         assert replay.status_code == 200
         assert replay.json() == first.json()

@@ -9,10 +9,11 @@ implementation plan.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
 from app.audit.log import record_audit
@@ -22,7 +23,7 @@ from app.db.models.complaints import ClientComplaint
 from app.db.models.models import Funds, PiiVault
 from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion
 from app.db.session import restricted_session
-from app.risk.signals import SIGNAL_ORDER
+from app.risk.signals import SIGNAL_LABELS, SIGNAL_ORDER
 
 
 class BriefingNotFound(Exception):
@@ -35,6 +36,37 @@ class BriefingView:
     unit_fund_id: int
     client_name: str | None
     text: str
+    basis: list[str]
+
+
+def briefing_available_keys(
+    session: Session, keys: Sequence[tuple[int, int]]
+) -> set[tuple[int, int]]:
+    """Which of these (client_id, unit_fund_id) keys have enough data for
+    get_briefing to render right now: a client_risk_features row and an
+    active_client_fund row, both present -- the same two reads
+    get_briefing itself does, so this can never disagree with what it
+    actually finds. A cheap existence check, not a render: no name is read
+    and nothing is audited.
+    """
+    keys = list(keys)
+    if not keys:
+        return set()
+    risk_keys = set(
+        session.execute(
+            select(ClientRiskFeatures.client_id, ClientRiskFeatures.unit_fund_id).where(
+                tuple_(ClientRiskFeatures.client_id, ClientRiskFeatures.unit_fund_id).in_(keys)
+            )
+        ).all()
+    )
+    active_keys = set(
+        session.execute(
+            select(ActiveClientFund.client_id, ActiveClientFund.unit_fund_id).where(
+                tuple_(ActiveClientFund.client_id, ActiveClientFund.unit_fund_id).in_(keys)
+            )
+        ).all()
+    )
+    return risk_keys & active_keys
 
 
 def _days_since(occurred: date | None, reference_date: date) -> int | None:
@@ -123,6 +155,7 @@ def get_briefing(
     unit_fund_id: int,
     *,
     viewing_fa_id: str,
+    reviewer_id: str | None = None,
     reference_date: date | None = None,
 ) -> BriefingView:
     """Render one client-fund's briefing and audit the view.
@@ -166,6 +199,10 @@ def get_briefing(
     )
     text = render_briefing(facts)
     name = _client_name(client_id)
+    # The same fired signals the "WHY THIS CLIENT SURFACED" section of
+    # `text` lists, in the same order -- the discrete facts AM11 actually
+    # weighed, not a paraphrase of them.
+    basis = [SIGNAL_LABELS[sig] for sig in SIGNAL_ORDER if signals.get(sig)]
 
     record_audit(
         session,
@@ -173,8 +210,10 @@ def get_briefing(
         action="view",
         entity_id=str(client_id),
         actor_id=viewing_fa_id,
-        detail={"unit_fund_id": unit_fund_id, "route": risk.route},
+        detail={"unit_fund_id": unit_fund_id, "route": risk.route, "reviewer_id": reviewer_id},
     )
     session.commit()
 
-    return BriefingView(client_id=client_id, unit_fund_id=unit_fund_id, client_name=name, text=text)
+    return BriefingView(
+        client_id=client_id, unit_fund_id=unit_fund_id, client_name=name, text=text, basis=basis
+    )

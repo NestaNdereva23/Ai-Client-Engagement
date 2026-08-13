@@ -147,28 +147,54 @@ def test_get_template_detail_404s_when_not_found(db: None) -> None:
     assert response.json()["error"]["code"] == "not_found"
 
 
-def test_decide_approve_returns_the_action_and_updates_status(template) -> None:
+def test_decide_with_no_reviewer_key_is_401(configured_reviewers, template) -> None:
+    template_id, _campaign_id = template
+    response = client.post(f"{TEMPLATES}/{template_id}/decide", json={"outcome": "approve"})
+    assert response.status_code == 401
+
+
+def test_decide_with_no_reviewers_configured_is_503(
+    unconfigured_reviewers, template, reviewer_1_headers
+) -> None:
     template_id, _campaign_id = template
     response = client.post(
         f"{TEMPLATES}/{template_id}/decide",
-        json={"outcome": "approve", "reviewer_id": "fa-1"},
+        json={"outcome": "approve"},
+        headers=reviewer_1_headers,
+    )
+    assert response.status_code == 503
+
+
+def test_decide_approve_returns_the_action_and_updates_status(
+    configured_reviewers, template, reviewer_1_headers
+) -> None:
+    template_id, _campaign_id = template
+    response = client.post(
+        f"{TEMPLATES}/{template_id}/decide",
+        json={"outcome": "approve"},
+        headers=reviewer_1_headers,
     )
     assert response.status_code == 200
-    assert response.json()["outcome"] == "approve"
-    assert response.json()["message_angle"] == "pick_up_again"
-    assert response.json()["priority_tier"] == "T3"
+    body = response.json()
+    assert body["outcome"] == "approve"
+    assert body["message_angle"] == "pick_up_again"
+    assert body["priority_tier"] == "T3"
+    assert body["reviewer_id"] == "fa-1"
 
     detail = client.get(f"{TEMPLATES}/{template_id}").json()
     assert detail["status"] == "approved"
     assert len(detail["history"]) == 1
 
 
-def test_decide_edit_approve_stores_the_edit_and_updates_the_draft(template) -> None:
+def test_decide_edit_approve_stores_the_edit_and_updates_the_draft(
+    configured_reviewers, template, reviewer_1_headers
+) -> None:
     template_id, _campaign_id = template
     edited = {"subject": "New subject", "body": "New body, {{first_name}}."}
     response = client.post(
         f"{TEMPLATES}/{template_id}/decide",
-        json={"outcome": "edit_approve", "reviewer_id": "fa-1", "edited_content": edited},
+        json={"outcome": "edit_approve", "edited_content": edited},
+        headers=reviewer_1_headers,
     )
     assert response.status_code == 200
     assert response.json()["edited_content"] == edited
@@ -177,35 +203,45 @@ def test_decide_edit_approve_stores_the_edit_and_updates_the_draft(template) -> 
     assert detail["ai_draft_content"] == edited
 
 
-def test_decide_edit_approve_without_content_is_rejected(template) -> None:
+def test_decide_edit_approve_without_content_is_rejected(
+    configured_reviewers, template, reviewer_1_headers
+) -> None:
     template_id, _campaign_id = template
     response = client.post(
         f"{TEMPLATES}/{template_id}/decide",
-        json={"outcome": "edit_approve", "reviewer_id": "fa-1"},
+        json={"outcome": "edit_approve"},
+        headers=reviewer_1_headers,
     )
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "validation_error"
 
 
-def test_decide_twice_is_a_conflict(template) -> None:
+def test_decide_twice_is_a_conflict(
+    configured_reviewers, template, reviewer_1_headers, reviewer_2_headers
+) -> None:
     template_id, _campaign_id = template
     first = client.post(
         f"{TEMPLATES}/{template_id}/decide",
-        json={"outcome": "approve", "reviewer_id": "fa-1"},
+        json={"outcome": "approve"},
+        headers=reviewer_1_headers,
     )
     assert first.status_code == 200
 
     second = client.post(
         f"{TEMPLATES}/{template_id}/decide",
-        json={"outcome": "reject", "reviewer_id": "fa-2"},
+        json={"outcome": "reject"},
+        headers=reviewer_2_headers,
     )
     assert second.status_code == 409
     assert second.json()["error"]["code"] == "conflict"
 
 
-def test_decide_404s_when_the_template_does_not_exist(db: None) -> None:
+def test_decide_404s_when_the_template_does_not_exist(
+    configured_reviewers, db: None, reviewer_1_headers
+) -> None:
     response = client.post(
         f"{TEMPLATES}/not-a-real-id/decide",
-        json={"outcome": "approve", "reviewer_id": "fa-1"},
+        json={"outcome": "approve"},
+        headers=reviewer_1_headers,
     )
     assert response.status_code == 404

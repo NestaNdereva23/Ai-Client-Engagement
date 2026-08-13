@@ -24,6 +24,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -63,6 +64,10 @@ class DigestLine(Base):
     )
     group_key: Mapped[str] = mapped_column(Text, nullable=False)
     group_total: Mapped[int] = mapped_column(Integer, nullable=False)
+    # The true aum_at_risk sum across every eligible row in this group, not
+    # just the ones the per-group cap kept -- duplicated onto every line in
+    # a group, the same way group_total already is.
+    group_aum_total: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0"))
     rank: Mapped[int] = mapped_column(Integer, nullable=False)
 
     client_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -71,6 +76,11 @@ class DigestLine(Base):
     risk_score: Mapped[int] = mapped_column(Integer, nullable=False)
     risk_band: Mapped[str] = mapped_column(Text, nullable=False)
     risk_reasons: Mapped[str] = mapped_column(Text, nullable=False)
+    # risk_reasons split into short codes (fired signal names, "sig_"
+    # stripped), so a console can render chips without parsing prose.
+    risk_reason_tags: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'")
+    )
     aum_at_risk: Mapped[float] = mapped_column(Float, nullable=False)
     # None when there is no prior run to compare against, never a fabricated
     # zero -- the same rule risk/history.py::delta_for already follows.

@@ -10,10 +10,14 @@ from app.schemas.review import OutreachMessageSummary, ReviewOutcome
 
 
 class DecideTemplateRequest(BaseModel):
-    """One reviewer decision on one template."""
+    """One reviewer decision on one template.
+
+    reviewer_id is not a field here: the reviewer is the caller
+    authenticated by X-Reviewer-Key (app.api.reviewer_auth), not whatever
+    a request body claims.
+    """
 
     outcome: ReviewOutcome
-    reviewer_id: str
     reason: str | None = None
     edited_content: dict | None = None
 

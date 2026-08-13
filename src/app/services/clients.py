@@ -331,9 +331,15 @@ def get_client_profile(session: Session, client_id: int) -> ClientProfile:
     )
 
 
-def get_client_name(session: Session, client_id: int) -> str | None:
+def get_client_name(
+    session: Session, client_id: int, *, reviewer_id: str | None = None
+) -> str | None:
     """This client's real name, read through the restricted role and
     audited. The one PII read in this module -- see module docstring.
+
+    reviewer_id is the authenticated caller (see app.api.reviewer_auth),
+    recorded as the audit row's actor so the read names who actually
+    looked, not just that a look happened.
 
     Raises ClientNotFound when no clients row exists at all, the same
     not-found this module's other reads use. A clients row with nothing in
@@ -352,6 +358,7 @@ def get_client_name(session: Session, client_id: int) -> str | None:
             entity_type="pii_vault",
             action="read",
             entity_id=str(client_id),
+            actor_id=reviewer_id,
             detail={"purpose": "client_profile_name"},
         )
         restricted.commit()

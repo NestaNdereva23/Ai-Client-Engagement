@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.api.reviewer_auth import get_current_reviewer_id
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.templates import (
@@ -78,20 +79,25 @@ def get_template_detail(
 
 @router.post("/{template_id}/decide", response_model=TemplateReviewActionOut)
 def decide_review(
-    template_id: str, body: DecideTemplateRequest, session: Session = Depends(get_session)
+    template_id: str,
+    body: DecideTemplateRequest,
+    reviewer_id: str = Depends(get_current_reviewer_id),
+    session: Session = Depends(get_session),
 ) -> TemplateReviewActionOut:
     """Approve, edit-approve, reject, escalate, or hold one template.
 
     Mandatory for every tier, never gated by review_sample_rate or
     tier_sampling_enabled, and the only gate that must pass before
-    POST .../instantiate may run against this template.
+    POST .../instantiate may run against this template. Requires the
+    X-Reviewer-Key header; the decision is recorded under the reviewer_id
+    that key resolved to, not a self-reported one.
     """
     try:
         action = decide_template_action(
             session,
             template_id,
             outcome=body.outcome,
-            reviewer_id=body.reviewer_id,
+            reviewer_id=reviewer_id,
             reason=body.reason,
             edited_content=body.edited_content,
         )

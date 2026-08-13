@@ -14,3 +14,4 @@ class BriefingOut(BaseModel):
     unit_fund_id: int
     client_name: str | None
     text: str
+    basis: list[str]

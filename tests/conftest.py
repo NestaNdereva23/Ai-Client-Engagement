@@ -70,6 +70,59 @@ def _ensure_tables() -> None:
         Base.metadata.create_all(engine)
 
 
+# A small fixed reviewer roster shared by every test that needs the
+# X-Reviewer-Key gate (app.api.reviewer_auth). Two reviewers, so tests that
+# check "this action recorded which reviewer did it" have two real
+# identities to tell apart.
+REVIEWER_1_ID = "fa-1"
+REVIEWER_1_KEY = "test-reviewer-key-1"
+REVIEWER_2_ID = "fa-2"
+REVIEWER_2_KEY = "test-reviewer-key-2"
+REVIEWER_1_HEADERS = {"X-Reviewer-Key": REVIEWER_1_KEY}
+REVIEWER_2_HEADERS = {"X-Reviewer-Key": REVIEWER_2_KEY}
+
+
+class _ConfiguredReviewersSettings:
+    reviewer_keys = {REVIEWER_1_KEY: REVIEWER_1_ID, REVIEWER_2_KEY: REVIEWER_2_ID}
+
+
+class _UnconfiguredReviewersSettings:
+    reviewer_keys: dict[str, str] = {}
+
+
+@pytest.fixture
+def reviewer_1_headers() -> dict[str, str]:
+    """X-Reviewer-Key header for the first fixed test reviewer.
+
+    A fixture, not a plain import, so test modules never need
+    `from conftest import ...` -- that bare module name collides with the
+    unrelated conftest.py under scripts/ once the whole suite runs together.
+    """
+    return REVIEWER_1_HEADERS
+
+
+@pytest.fixture
+def reviewer_2_headers() -> dict[str, str]:
+    """X-Reviewer-Key header for the second fixed test reviewer."""
+    return REVIEWER_2_HEADERS
+
+
+@pytest.fixture
+def configured_reviewers(monkeypatch):
+    """Point app.api.reviewer_auth at the fixed test roster above."""
+    from app.api import reviewer_auth
+
+    monkeypatch.setattr(reviewer_auth, "get_settings", lambda: _ConfiguredReviewersSettings())
+
+
+@pytest.fixture
+def unconfigured_reviewers(monkeypatch):
+    """Point app.api.reviewer_auth at an empty roster, for the 503 case."""
+    from app.api import reviewer_auth
+
+    monkeypatch.setattr(reviewer_auth, "get_settings", lambda: _UnconfiguredReviewersSettings())
+
+
 @pytest.fixture
 def cleanup_runs():
     """Collect run ids to delete after the test, keeping the database clean."""

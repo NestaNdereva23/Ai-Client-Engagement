@@ -11,6 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api.routers import (
+    active_clients,
     admin,
     audit,
     briefing,
@@ -42,3 +43,4 @@ router.include_router(admin.router)
 router.include_router(risk.router)
 router.include_router(digest.router)
 router.include_router(briefing.router)
+router.include_router(active_clients.router)
