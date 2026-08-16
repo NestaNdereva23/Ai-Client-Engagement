@@ -15,7 +15,7 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.db.models.rules import BusinessRule
+from app.db.models.rules import BusinessRule, MessageAngleCatalog
 from app.rules.engine import Resolution, resolve
 from app.rules.store import load_active_rules
 
@@ -40,6 +40,34 @@ def list_rule_versions(
             )
         )
     query = query.order_by(BusinessRule.version.desc())
+    return list(session.execute(query).all())
+
+
+def list_angle_status(
+    session: Session, *, active_on: date | None = None
+) -> list[tuple[str, int, date, date | None, bool]]:
+    """One row per (version, angle): (angle, version, valid_from, valid_to, held).
+
+    held is mutable independent of a deploy (ops flips it live), so this
+    reads message_angle_catalog directly rather than caching the answer
+    anywhere. active_on defaults to every row when None; the router passes
+    today's date so "held" answers "held right now" by default.
+    """
+    query = select(
+        MessageAngleCatalog.angle,
+        MessageAngleCatalog.version,
+        MessageAngleCatalog.valid_from,
+        MessageAngleCatalog.valid_to,
+        MessageAngleCatalog.held,
+    )
+    if active_on is not None:
+        query = query.where(MessageAngleCatalog.valid_from <= active_on).where(
+            or_(
+                MessageAngleCatalog.valid_to.is_(None),
+                MessageAngleCatalog.valid_to > active_on,
+            )
+        )
+    query = query.order_by(MessageAngleCatalog.angle, MessageAngleCatalog.version.desc())
     return list(session.execute(query).all())
 
 

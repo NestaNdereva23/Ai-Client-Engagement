@@ -33,6 +33,7 @@ from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.clients import (
     ClientActivityOut,
     ClientBandsOut,
+    ClientBookSummaryOut,
     ClientContactEventOut,
     ClientEnrollmentOut,
     ClientFlagsOut,
@@ -44,18 +45,25 @@ from app.schemas.clients import (
     ClientSummaryOut,
     ClientSuppressionOut,
     ClientTouchOut,
+    EnrollmentSummaryOut,
     SegmentBucketOut,
     SegmentDistributionOut,
+    SuppressionReasonCountOut,
+    SuppressionSummaryOut,
+    ValueRecencyBucketOut,
 )
 from app.services.clients import (
     ClientNotFound,
     ClientProfile,
+    client_book_summary,
+    enrollment_summary,
     get_client,
     get_client_name,
     get_client_profile,
     latest_call_brief,
     list_clients,
     segment_distribution,
+    suppression_summary,
 )
 
 router = APIRouter(tags=["clients"])
@@ -69,6 +77,7 @@ def _to_summary(row, *, call_brief: str | None = None) -> ClientSummaryOut:
         value_band=row.value_band,
         cadence_band=row.cadence_band,
         hold_band=row.hold_band,
+        purchase_depth=row.purchase_depth,
         message_angle=row.message_angle,
         priority_tier=row.priority_tier,
         call_brief=call_brief,
@@ -82,6 +91,7 @@ def get_clients(
     value_band: str | None = None,
     recency_band: str | None = None,
     purchase_depth: str | None = None,
+    cadence_band: str | None = None,
     message_angle: str | None = None,
     newly_dormant: bool | None = None,
     cursor: str | None = None,
@@ -97,6 +107,7 @@ def get_clients(
             value_band=value_band,
             recency_band=recency_band,
             purchase_depth=purchase_depth,
+            cadence_band=cadence_band,
             message_angle=message_angle,
             newly_dormant=newly_dormant,
             cursor=cursor,
@@ -105,6 +116,48 @@ def get_clients(
     except InvalidCursor:
         raise HTTPException(status_code=400, detail="invalid cursor") from None
     return Page(items=[_to_summary(r) for r in rows], next_cursor=next_cursor)
+
+
+@router.get("/clients/summary", response_model=ClientBookSummaryOut)
+def get_clients_summary(session: Session = Depends(get_session)) -> ClientBookSummaryOut:
+    """Book-wide client and fund counts. Registered ahead of
+    GET /clients/{client_id} so this static path is never shadowed by it.
+    """
+    summary = client_book_summary(session)
+    return ClientBookSummaryOut(total_clients=summary.total_clients, fund_count=summary.fund_count)
+
+
+@router.get("/clients/enrollment-summary", response_model=EnrollmentSummaryOut)
+def get_clients_enrollment_summary(
+    session: Session = Depends(get_session),
+) -> EnrollmentSummaryOut:
+    """Distinct clients currently enrolled vs. excluded, book-wide -- summing
+    each campaign's own count would double-count a client enrolled in more
+    than one. Registered ahead of GET /clients/{client_id}, same reason as
+    GET /clients/summary above.
+    """
+    summary = enrollment_summary(session)
+    return EnrollmentSummaryOut(
+        enrolled_count=summary.enrolled_count, excluded_count=summary.excluded_count
+    )
+
+
+@router.get("/clients/suppression-summary", response_model=SuppressionSummaryOut)
+def get_clients_suppression_summary(
+    session: Session = Depends(get_session),
+) -> SuppressionSummaryOut:
+    """Book-wide suppression count, with a reason breakdown. Registered
+    ahead of GET /clients/{client_id}, same reason as GET /clients/summary
+    above.
+    """
+    summary = suppression_summary(session)
+    return SuppressionSummaryOut(
+        suppressed_count=summary.suppressed_count,
+        by_reason=[
+            SuppressionReasonCountOut(reason=reason, count=count)
+            for reason, count in summary.by_reason
+        ],
+    )
 
 
 @router.get("/clients/{client_id}", response_model=ClientSummaryOut)
@@ -254,15 +307,29 @@ def get_client_name_detail(
 
 @router.get("/segments", response_model=SegmentDistributionOut)
 def get_segments(session: Session = Depends(get_session)) -> SegmentDistributionOut:
-    """Client counts grouped by purchase depth, value band, and message angle."""
+    """Client counts grouped by purchase depth, value band, cadence band,
+    message angle, and a value-band x recency-band cross-tab, plus the
+    population-wide data-quality flag counts a reader needs before treating
+    any bucket count as a complete one.
+    """
     distribution = segment_distribution(session)
     return SegmentDistributionOut(
         by_purchase_depth=[
             SegmentBucketOut(key=k, count=c) for k, c in distribution["by_purchase_depth"]
         ],
         by_value_band=[SegmentBucketOut(key=k, count=c) for k, c in distribution["by_value_band"]],
+        by_cadence_band=[
+            SegmentBucketOut(key=k, count=c) for k, c in distribution["by_cadence_band"]
+        ],
         by_message_angle=[
             SegmentBucketOut(key=k, count=c) for k, c in distribution["by_message_angle"]
         ],
+        by_value_and_recency=[
+            ValueRecencyBucketOut(value_band=v, recency_band=r, count=c)
+            for v, r, c in distribution["by_value_and_recency"]
+        ],
         stale_contact_count=distribution["stale_contact_count"],
+        history_censored_count=distribution["history_censored_count"],
+        purchases_censored_count=distribution["purchases_censored_count"],
+        unknown_recency_count=distribution["unknown_recency_count"],
     )

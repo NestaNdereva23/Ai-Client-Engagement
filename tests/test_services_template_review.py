@@ -21,6 +21,7 @@ from app.services.template_review import (
     TemplateNotFound,
     compute_edit_diff,
     decide_template,
+    decide_template_batch,
     get_template,
     get_template_review_history,
     list_pending_templates,
@@ -275,6 +276,91 @@ def test_get_template_review_history_accumulates_every_decision(template) -> Non
         session.commit()
         history = get_template_review_history(session, template_id)
     assert [a.outcome for a in history] == ["escalate", "approve"]
+
+
+@pytest.fixture
+def two_templates(campaign: int, run: str):
+    """Two pending_review templates in the same campaign, each its own run
+    (generation_run_id is unique per template); run just gets the fund and
+    client in place.
+    """
+    with SessionLocal() as session:
+        run_ids = []
+        template_ids = []
+        for _ in range(2):
+            run = persist_generation_run(session, accepted_state(CLIENT_ID), make_settings())
+            session.commit()
+            template = make_template(campaign, run.run_id)
+            session.add(template)
+            session.commit()
+            run_ids.append(run.run_id)
+            template_ids.append(template.template_id)
+
+    yield template_ids, campaign
+
+    with SessionLocal() as session:
+        session.execute(
+            delete(TemplateReviewAction).where(TemplateReviewAction.template_id.in_(template_ids))
+        )
+        session.execute(
+            delete(MessageTemplate).where(MessageTemplate.template_id.in_(template_ids))
+        )
+        session.execute(delete(GenerationRun).where(GenerationRun.run_id.in_(run_ids)))
+        session.commit()
+
+
+def test_decide_template_batch_approves_every_template_and_writes_one_action_each(
+    two_templates,
+) -> None:
+    template_ids, _campaign_id = two_templates
+    with SessionLocal() as session:
+        result = decide_template_batch(session, template_ids, outcome="approve", reviewer_id="r1")
+        session.commit()
+    assert [a.template_id for a in result.decided] == template_ids
+    assert result.failed == []
+
+    with SessionLocal() as session:
+        statuses = [get_template(session, tid).status for tid in template_ids]
+    assert statuses == ["approved", "approved"]
+
+
+def test_decide_template_batch_reports_a_missing_template_without_failing_the_rest(
+    template,
+) -> None:
+    template_id, _campaign_id = template
+    with SessionLocal() as session:
+        result = decide_template_batch(
+            session, [template_id, "not-a-real-id"], outcome="approve", reviewer_id="r1"
+        )
+        session.commit()
+
+    assert [a.template_id for a in result.decided] == [template_id]
+    assert [f.template_id for f in result.failed] == ["not-a-real-id"]
+    assert result.failed[0].error == "not_found"
+
+
+def test_decide_template_batch_reports_an_already_decided_template_without_failing_the_rest(
+    two_templates,
+) -> None:
+    template_ids, _campaign_id = two_templates
+    with SessionLocal() as session:
+        decide_template(session, template_ids[0], outcome="approve", reviewer_id="r1")
+        session.commit()
+
+        result = decide_template_batch(session, template_ids, outcome="reject", reviewer_id="r2")
+        session.commit()
+
+    assert [a.template_id for a in result.decided] == [template_ids[1]]
+    assert [f.template_id for f in result.failed] == [template_ids[0]]
+
+    with SessionLocal() as session:
+        assert get_template(session, template_ids[0]).status == "approved"
+        assert get_template(session, template_ids[1]).status == "rejected"
+
+
+def test_decide_template_batch_rejects_edit_approve(db: None) -> None:
+    with SessionLocal() as session, pytest.raises(EditedContentRequired):
+        decide_template_batch(session, ["irrelevant"], outcome="edit_approve", reviewer_id="r1")
 
 
 def test_compute_edit_diff_only_includes_changed_fields() -> None:

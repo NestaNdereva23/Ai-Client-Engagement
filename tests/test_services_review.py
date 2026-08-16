@@ -30,6 +30,7 @@ from app.services.review import (
     compute_edit_diff,
     create_outreach_message,
     decide,
+    decide_batch,
     get_message,
     get_review_history,
     list_pending_messages,
@@ -504,6 +505,93 @@ def test_decide_approve_stores_no_edit_diff(message) -> None:
     with SessionLocal() as session:
         stored = session.get(ReviewAction, action_id)
     assert stored.edit_diff is None
+
+
+def test_decide_batch_approves_every_message_and_writes_one_action_each(scenario) -> None:
+    client_id, run_id, campaign_id, _fund_id = scenario
+    with SessionLocal() as session:
+        run = session.get(GenerationRun, run_id)
+        first = create_outreach_message(session, run, campaign_id=campaign_id)
+        second_run = persist_generation_run(session, accepted_state(client_id), make_settings())
+        second = create_outreach_message(session, second_run, campaign_id=campaign_id)
+        session.commit()
+        message_ids = [first.message_id, second.message_id]
+
+    try:
+        with SessionLocal() as session:
+            result = decide_batch(session, message_ids, outcome="approve", reviewer_id="fa-1")
+            session.commit()
+        assert [a.message_id for a in result.decided] == message_ids
+        assert result.failed == []
+
+        with SessionLocal() as session:
+            statuses = [session.get(OutreachMessage, mid).status for mid in message_ids]
+        assert statuses == ["approved", "approved"]
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(ReviewAction).where(ReviewAction.message_id.in_(message_ids)))
+            session.execute(
+                delete(OutreachMessage).where(OutreachMessage.message_id.in_(message_ids))
+            )
+            session.execute(delete(GenerationRun).where(GenerationRun.run_id == second_run.run_id))
+            session.commit()
+
+
+def test_decide_batch_reports_a_missing_message_without_failing_the_rest(message) -> None:
+    with SessionLocal() as session:
+        result = decide_batch(
+            session, [message, "not-a-real-id"], outcome="approve", reviewer_id="fa-1"
+        )
+        session.commit()
+
+    assert [a.message_id for a in result.decided] == [message]
+    assert [f.message_id for f in result.failed] == ["not-a-real-id"]
+    assert result.failed[0].error == "not_found"
+
+    with SessionLocal() as session:
+        assert session.get(OutreachMessage, message).status == "approved"
+
+
+def test_decide_batch_reports_an_already_decided_message_without_failing_the_rest(
+    scenario,
+) -> None:
+    client_id, run_id, campaign_id, _fund_id = scenario
+    with SessionLocal() as session:
+        run = session.get(GenerationRun, run_id)
+        first = create_outreach_message(session, run, campaign_id=campaign_id)
+        second_run = persist_generation_run(session, accepted_state(client_id), make_settings())
+        second = create_outreach_message(session, second_run, campaign_id=campaign_id)
+        session.commit()
+        message_ids = [first.message_id, second.message_id]
+
+    try:
+        with SessionLocal() as session:
+            decide(session, first.message_id, outcome="approve", reviewer_id="fa-1")
+            session.commit()
+
+        with SessionLocal() as session:
+            result = decide_batch(session, message_ids, outcome="reject", reviewer_id="fa-2")
+            session.commit()
+
+        assert [a.message_id for a in result.decided] == [second.message_id]
+        assert [f.message_id for f in result.failed] == [first.message_id]
+
+        with SessionLocal() as session:
+            assert session.get(OutreachMessage, first.message_id).status == "approved"
+            assert session.get(OutreachMessage, second.message_id).status == "rejected"
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(ReviewAction).where(ReviewAction.message_id.in_(message_ids)))
+            session.execute(
+                delete(OutreachMessage).where(OutreachMessage.message_id.in_(message_ids))
+            )
+            session.execute(delete(GenerationRun).where(GenerationRun.run_id == second_run.run_id))
+            session.commit()
+
+
+def test_decide_batch_rejects_edit_approve() -> None:
+    with SessionLocal() as session, pytest.raises(EditedContentRequired):
+        decide_batch(session, ["irrelevant"], outcome="edit_approve", reviewer_id="fa-1")
 
 
 @pytest.mark.parametrize("outcome", ["approve", "edit_approve", "reject", "escalate", "hold"])

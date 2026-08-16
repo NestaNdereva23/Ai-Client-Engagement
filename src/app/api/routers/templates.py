@@ -13,6 +13,9 @@ from app.api.reviewer_auth import get_current_reviewer_id
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.templates import (
+    DecideBatchTemplateFailureOut,
+    DecideBatchTemplateRequest,
+    DecideBatchTemplateResultOut,
     DecideTemplateRequest,
     MessageTemplateDetail,
     MessageTemplateSummary,
@@ -22,6 +25,7 @@ from app.services.template_review import (
     EditedContentRequired,
     InvalidOutcome,
     TemplateAlreadyDecided,
+    decide_template_batch,
     get_template,
     get_template_review_history,
     list_pending_templates,
@@ -113,3 +117,38 @@ def decide_review(
         raise HTTPException(status_code=422, detail=str(exc)) from None
 
     return TemplateReviewActionOut.model_validate(action)
+
+
+@router.post("/decide-batch", response_model=DecideBatchTemplateResultOut)
+def decide_templates_batch(
+    body: DecideBatchTemplateRequest,
+    reviewer_id: str = Depends(get_current_reviewer_id),
+    session: Session = Depends(get_session),
+) -> DecideBatchTemplateResultOut:
+    """Approve, reject, escalate, or hold a list of templates in one call.
+
+    Applies the same decide_template() logic as POST .../decide to each
+    id in turn, writing one template_review_action and audit row per
+    template -- the same trail as calling it once per template, just one
+    request instead of N. A template that can't be decided (not found,
+    already decided) is reported in the response's failed list rather
+    than failing the whole batch. Requires the X-Reviewer-Key header;
+    every decision is recorded under the reviewer_id that key resolved to.
+    """
+    try:
+        result = decide_template_batch(
+            session,
+            body.template_ids,
+            outcome=body.outcome,
+            reviewer_id=reviewer_id,
+            reason=body.reason,
+        )
+        session.commit()
+    except (EditedContentRequired, InvalidOutcome) as exc:
+        session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    return DecideBatchTemplateResultOut(
+        decided=[TemplateReviewActionOut.model_validate(a) for a in result.decided],
+        failed=[DecideBatchTemplateFailureOut.model_validate(f) for f in result.failed],
+    )

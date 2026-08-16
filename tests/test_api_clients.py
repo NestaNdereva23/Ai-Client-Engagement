@@ -440,6 +440,136 @@ def test_segments_stale_contact_count_reflects_the_stale_client(two_clients) -> 
     assert after == before - 1
 
 
+def test_segments_includes_cadence_band_and_the_value_recency_cross_tab(two_clients) -> None:
+    response = client.get(SEGMENTS)
+    assert response.status_code == 200
+    body = response.json()
+    cadence = {row["key"]: row["count"] for row in body["by_cadence_band"]}
+    assert cadence.get("Periodic", 0) >= 1
+    cross = {
+        (row["value_band"], row["recency_band"]): row["count"]
+        for row in body["by_value_and_recency"]
+    }
+    assert cross.get(("High", "1 to 3y"), 0) >= 1
+
+
+def test_segments_data_quality_flag_counts_reflect_the_flags(two_clients) -> None:
+    first_id, _second_id, _fund_id = two_clients
+    before = client.get(SEGMENTS).json()
+
+    with SessionLocal() as session:
+        row = session.get(ClientFeatures, first_id)
+        row.history_censored = True
+        row.purchases_censored = True
+        session.commit()
+
+    after = client.get(SEGMENTS).json()
+    assert after["history_censored_count"] == before["history_censored_count"] + 1
+    assert after["purchases_censored_count"] == before["purchases_censored_count"] + 1
+
+
+def test_list_clients_filters_by_cadence_band(two_clients) -> None:
+    first_id, second_id, fund_id = two_clients
+    response = client.get(CLIENTS, params={"fund_id": fund_id, "cadence_band": "Periodic"})
+    ids = [row["client_id"] for row in response.json()["items"]]
+    assert second_id in ids
+    assert first_id not in ids
+
+
+def test_list_clients_includes_purchase_depth(two_clients) -> None:
+    first_id, _second_id, fund_id = two_clients
+    response = client.get(CLIENTS, params={"fund_id": fund_id, "client_id": first_id})
+    assert response.json()["items"][0]["purchase_depth"] == "single"
+
+
+# --- GET /clients/summary, /clients/enrollment-summary, /clients/suppression-summary
+
+
+def test_clients_summary_counts_total_clients_and_funds(db: None) -> None:
+    fund_id = 975
+    ids = [97501, 97502]
+    before = client.get(f"{CLIENTS}/summary").json()
+
+    with SessionLocal() as session:
+        session.add(Funds(unit_fund_id=fund_id, unit_fund_name="Summary Test Fund"))
+        session.commit()
+        session.add_all(
+            [
+                Clients(
+                    client_id=cid, unit_fund_id=fund_id, n_purchases_returned=0, n_sales_returned=0
+                )
+                for cid in ids
+            ]
+        )
+        session.commit()
+
+    try:
+        after = client.get(f"{CLIENTS}/summary").json()
+        assert after["total_clients"] == before["total_clients"] + len(ids)
+        assert after["fund_count"] == before["fund_count"] + 1
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(Clients).where(Clients.client_id.in_(ids)))
+            session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
+            session.commit()
+
+
+def test_enrollment_summary_counts_distinct_clients_by_status(two_clients) -> None:
+    first_id, second_id, _fund_id = two_clients
+    before = client.get(f"{CLIENTS}/enrollment-summary").json()
+
+    with SessionLocal() as session:
+        campaign = Campaign(name="enrollment summary test campaign")
+        session.add(campaign)
+        session.commit()
+        campaign_id = campaign.campaign_id
+        session.add_all(
+            [
+                Enrollment(campaign_id=campaign_id, client_id=first_id, status="enrolled"),
+                Enrollment(campaign_id=campaign_id, client_id=second_id, status="excluded"),
+            ]
+        )
+        session.commit()
+
+    try:
+        after = client.get(f"{CLIENTS}/enrollment-summary").json()
+        assert after["enrolled_count"] == before["enrolled_count"] + 1
+        assert after["excluded_count"] == before["excluded_count"] + 1
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(Enrollment).where(Enrollment.campaign_id == campaign_id))
+            session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
+            session.commit()
+
+
+def test_suppression_summary_counts_and_breaks_down_by_reason(two_clients) -> None:
+    first_id, second_id, _fund_id = two_clients
+    before = client.get(f"{CLIENTS}/suppression-summary").json()
+
+    with SessionLocal() as session:
+        session.add_all(
+            [
+                Suppression(client_id=first_id, reason="opt_out", source="test"),
+                Suppression(client_id=second_id, reason="bounce", source="test"),
+            ]
+        )
+        session.commit()
+
+    try:
+        after = client.get(f"{CLIENTS}/suppression-summary").json()
+        assert after["suppressed_count"] == before["suppressed_count"] + 2
+        before_reasons = {row["reason"]: row["count"] for row in before["by_reason"]}
+        after_reasons = {row["reason"]: row["count"] for row in after["by_reason"]}
+        assert after_reasons.get("opt_out", 0) == before_reasons.get("opt_out", 0) + 1
+        assert after_reasons.get("bounce", 0) == before_reasons.get("bounce", 0) + 1
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(Suppression).where(Suppression.client_id.in_([first_id, second_id]))
+            )
+            session.commit()
+
+
 # --- GET /clients/{id}/name: the gated name re-attachment ------------------
 
 

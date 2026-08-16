@@ -20,6 +20,7 @@ class ClientSummaryOut(BaseModel):
     value_band: str | None
     cadence_band: str | None
     hold_band: str | None
+    purchase_depth: str | None
     message_angle: str | None
     priority_tier: str | None
     call_brief: str | None = None
@@ -186,10 +187,49 @@ class SegmentBucketOut(BaseModel):
     count: int
 
 
+class ValueRecencyBucketOut(BaseModel):
+    """One cell of the value-band x recency-band cross-tab."""
+
+    value_band: str | None
+    recency_band: str | None
+    count: int
+
+
 class SegmentDistributionOut(BaseModel):
     by_purchase_depth: list[SegmentBucketOut]
     by_value_band: list[SegmentBucketOut]
+    by_cadence_band: list[SegmentBucketOut]
     by_message_angle: list[SegmentBucketOut]
+    by_value_and_recency: list[ValueRecencyBucketOut]
     # A contact over three years stale never blocks a send; this is visibility
     # into the ramp a batch should ease into, not a count of anything held.
     stale_contact_count: int
+    history_censored_count: int
+    purchases_censored_count: int
+    unknown_recency_count: int
+
+
+class ClientBookSummaryOut(BaseModel):
+    """Book-wide client and fund counts."""
+
+    total_clients: int
+    fund_count: int
+
+
+class EnrollmentSummaryOut(BaseModel):
+    """Distinct clients currently enrolled vs. excluded, book-wide."""
+
+    enrolled_count: int
+    excluded_count: int
+
+
+class SuppressionReasonCountOut(BaseModel):
+    reason: str
+    count: int
+
+
+class SuppressionSummaryOut(BaseModel):
+    """Book-wide suppression count, with a reason breakdown."""
+
+    suppressed_count: int
+    by_reason: list[SuppressionReasonCountOut]

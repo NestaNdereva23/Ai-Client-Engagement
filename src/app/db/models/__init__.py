@@ -8,6 +8,7 @@ from app.db.models.active_clients import (
     INTERACTION_TYPES,
     ActiveClientFund,
     ActiveClientInteraction,
+    ActiveTransaction,
 )
 from app.db.models.api import IdempotencyKey
 from app.db.models.audit import AuditLog
@@ -89,6 +90,7 @@ __all__ = [
     "TEMPLATE_REVIEW_OUTCOMES",
     "ActiveClientFund",
     "ActiveClientInteraction",
+    "ActiveTransaction",
     "AuditLog",
     "BusinessRule",
     "Campaign",

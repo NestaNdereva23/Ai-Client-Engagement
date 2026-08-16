@@ -241,8 +241,8 @@ class RiskDetectionWorker:
                 route_distribution=dict(route_distribution),
             )
 
-            prior_routes = {
-                (r.client_id, r.unit_fund_id): r.route
+            prior_rows = {
+                (r.client_id, r.unit_fund_id): r
                 for r in session.scalars(
                     select(ClientRiskFeatures).where(ClientRiskFeatures.client_id.in_(client_ids))
                 )
@@ -272,12 +272,17 @@ class RiskDetectionWorker:
                         credible_rhythm=m.rhythm_days is not None,
                         lapse_ratio=_lapse_ratio(m),
                     )
-                if prior_routes.get(key) != route.route:
+                prior_row = prior_rows.get(key)
+                prior_route = prior_row.route if prior_row is not None else None
+                prior_risk_band = prior_row.risk_band if prior_row is not None else None
+                if prior_route != route.route:
                     changes.append(
                         {
                             "client_id": m.client_id,
                             "unit_fund_id": m.unit_fund_id,
+                            "from_route": prior_route,
                             "route": route.route,
+                            "from_risk_band": prior_risk_band,
                             "risk_band": score.risk_band,
                             "reasons": score.risk_reasons,
                         }

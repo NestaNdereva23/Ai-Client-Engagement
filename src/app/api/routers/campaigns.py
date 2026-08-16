@@ -23,12 +23,20 @@ from app.schemas.campaigns import (
     BatchIngestResultOut,
     CampaignCreateOut,
     CampaignCreateRequest,
+    CampaignDetailOut,
     CampaignListItemOut,
+    CampaignReadinessOut,
     CampaignStepCreateRequest,
     CampaignStepOut,
     CampaignSummaryOut,
+    EnrollmentOut,
     GenerationBatchOut,
+    OutreachAnalyticsOut,
+    OutreachBucketOut,
+    OutreachTrendOut,
+    OutreachTrendPointOut,
     TouchOutcomeOut,
+    TouchSendOutcomeOut,
 )
 from app.schemas.review import OutreachMessageSummary
 from app.schemas.templates import (
@@ -44,17 +52,25 @@ from app.schemas.templates import (
 )
 from app.services.campaigns import (
     CampaignNotFound,
+    NonIncreasingStepOffset,
     add_campaign_step,
+    campaign_readiness,
     campaign_summary,
     create_campaign,
     draft_campaign_templates,
     estimate_campaign_templates,
+    get_campaign,
     get_campaign_batch,
     get_campaign_template_policy,
     ingest_campaign_batch,
     instantiate_campaign_template,
+    list_campaign_enrollments,
+    list_campaign_steps,
     list_campaigns,
+    outreach_analytics,
+    outreach_trend,
     run_campaign_generation,
+    send_campaign,
     set_campaign_template_policy,
     submit_campaign_batch,
 )
@@ -122,6 +138,84 @@ def post_campaign(
     )
 
 
+@router.get("/analytics", response_model=OutreachAnalyticsOut)
+def get_campaigns_analytics(session: Session = Depends(get_session)) -> OutreachAnalyticsOut:
+    """Book-wide outreach analytics across every campaign: the enrollment
+    funnel, cohort composition, drafting/review throughput, and how contact
+    ends -- the dormant-outreach counterpart to GET /risk/analytics, an
+    ops-facing read only.
+    """
+    analytics = outreach_analytics(session)
+    return OutreachAnalyticsOut(
+        total_enrolled=analytics.total_enrolled,
+        primary_count=analytics.primary_count,
+        suppressed_count=analytics.suppressed_count,
+        active_campaign_count=analytics.active_campaign_count,
+        by_enrollment_status=[
+            OutreachBucketOut(key=k, count=c) for k, c in analytics.by_enrollment_status
+        ],
+        by_value_band=[OutreachBucketOut(key=k, count=c) for k, c in analytics.by_value_band],
+        by_recency_band=[OutreachBucketOut(key=k, count=c) for k, c in analytics.by_recency_band],
+        by_priority_tier=[OutreachBucketOut(key=k, count=c) for k, c in analytics.by_priority_tier],
+        by_message_angle=[OutreachBucketOut(key=k, count=c) for k, c in analytics.by_message_angle],
+        by_message_status=[
+            OutreachBucketOut(key=k, count=c) for k, c in analytics.by_message_status
+        ],
+        by_review_outcome=[
+            OutreachBucketOut(key=k, count=c) for k, c in analytics.by_review_outcome
+        ],
+        by_contact_event=[OutreachBucketOut(key=k, count=c) for k, c in analytics.by_contact_event],
+        reengaged_count=analytics.reengaged_count,
+        reengagement_rate=analytics.reengagement_rate,
+    )
+
+
+@router.get("/analytics/trend", response_model=OutreachTrendOut)
+def get_campaigns_analytics_trend(
+    days: int = Query(default=30, ge=1, le=90),
+    session: Session = Depends(get_session),
+) -> OutreachTrendOut:
+    """The last `days` calendar days' book-wide send and response activity,
+    oldest first: the trend counterpart to the point-in-time /analytics
+    snapshot above. An ops-facing read only.
+    """
+    points = outreach_trend(session, days=days)
+    return OutreachTrendOut(
+        points=[
+            OutreachTrendPointOut(
+                day=p.day, touches_sent=p.touches_sent, replies=p.replies, bounces=p.bounces
+            )
+            for p in points
+        ]
+    )
+
+
+@router.get("/{campaign_id}", response_model=CampaignDetailOut)
+def get_campaign_detail(
+    campaign_id: int, session: Session = Depends(get_session)
+) -> CampaignDetailOut:
+    """One campaign's own fields, with no enrollment counts attached.
+
+    Separate from GET /campaigns/{campaign_id}/summary, which is counts
+    only, and from the list row, which a page landed on directly (a link,
+    a reload) has no earlier fetch to scavenge fields from.
+    """
+    try:
+        campaign = get_campaign(session, campaign_id)
+    except CampaignNotFound:
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    return CampaignDetailOut(
+        campaign_id=campaign.campaign_id,
+        name=campaign.name,
+        campaign_type=campaign.campaign_type,
+        status=campaign.status,
+        cohort_definition=campaign.cohort_definition,
+        start_date=campaign.start_date,
+        end_date=campaign.end_date,
+        created_at=campaign.created_at,
+    )
+
+
 @router.get("/{campaign_id}/summary", response_model=CampaignSummaryOut)
 def get_campaign_summary(
     campaign_id: int, session: Session = Depends(get_session)
@@ -132,6 +226,90 @@ def get_campaign_summary(
     except CampaignNotFound:
         raise HTTPException(status_code=404, detail="campaign not found") from None
     return CampaignSummaryOut(campaign_id=campaign_id, **summary)
+
+
+@router.get("/{campaign_id}/readiness", response_model=CampaignReadinessOut)
+def get_campaign_readiness(
+    campaign_id: int, session: Session = Depends(get_session)
+) -> CampaignReadinessOut:
+    """Per-status counts for this campaign's templates and messages.
+
+    Answers "is this campaign fully drafted and approved" in one read,
+    instead of paging GET /reviews?campaign_id= and GET
+    /templates?campaign_id= across every status and tallying client-side.
+    """
+    try:
+        counts = campaign_readiness(session, campaign_id)
+    except CampaignNotFound:
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    return CampaignReadinessOut(campaign_id=campaign_id, **counts)
+
+
+@router.get("/{campaign_id}/enrollments", response_model=Page[EnrollmentOut])
+def get_campaign_enrollments(
+    campaign_id: int,
+    cursor: str | None = None,
+    limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    session: Session = Depends(get_session),
+) -> Page[EnrollmentOut]:
+    """One campaign's enrollment roster, oldest enrollment first.
+
+    Distinct from GET /reviews?campaign_id=, which is message-level and
+    only surfaces clients that already have a generated touch -- an
+    enrolled client who hasn't been drafted for yet is invisible there but
+    shows up here.
+    """
+    try:
+        rows, next_cursor = list_campaign_enrollments(
+            session, campaign_id, cursor=cursor, limit=limit
+        )
+    except CampaignNotFound:
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    except InvalidCursor:
+        raise HTTPException(status_code=400, detail="invalid cursor") from None
+    items = [
+        EnrollmentOut(
+            enrollment_id=r.enrollment_id,
+            campaign_id=r.campaign_id,
+            client_id=r.client_id,
+            status=r.status,
+            current_step=r.current_step,
+            next_due_at=r.next_due_at,
+            priority_tier=r.priority_tier,
+            message_angle=r.message_angle,
+            value_band=r.value_band,
+            recency_band=r.recency_band,
+        )
+        for r in rows
+    ]
+    return Page(items=items, next_cursor=next_cursor)
+
+
+@router.get("/{campaign_id}/steps", response_model=list[CampaignStepOut])
+def get_campaign_steps(
+    campaign_id: int, session: Session = Depends(get_session)
+) -> list[CampaignStepOut]:
+    """A campaign's full send sequence, oldest step first.
+
+    Without this, a caller has no way to see steps a previous session
+    already persisted -- POST /{campaign_id}/steps only returns the one
+    step it just appended.
+    """
+    try:
+        steps = list_campaign_steps(session, campaign_id)
+    except CampaignNotFound:
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    return [
+        CampaignStepOut(
+            step_id=s.step_id,
+            campaign_id=s.campaign_id,
+            step_no=s.step_no,
+            offset_days=s.offset_days,
+            message_angle=s.message_angle,
+            template_ref=s.template_ref,
+        )
+        for s in steps
+    ]
 
 
 @router.post("/{campaign_id}/steps", response_model=CampaignStepOut, status_code=201)
@@ -145,6 +323,11 @@ def post_campaign_step(
     A campaign with no steps is enrolled but permanently idle: the
     eligibility gate refuses to generate a step that has no CampaignStep
     row, so this is required before /generate can do anything.
+
+    offset_days must be strictly greater than the previous step's: the
+    scheduler waits out the gap between two steps' offsets before the
+    later one is due, so an equal or smaller offset makes it due
+    immediately, the moment the step before it goes out.
     """
     try:
         step = add_campaign_step(
@@ -158,6 +341,9 @@ def post_campaign_step(
     except CampaignNotFound:
         session.rollback()
         raise HTTPException(status_code=404, detail="campaign not found") from None
+    except NonIncreasingStepOffset as exc:
+        session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     return CampaignStepOut(
         step_id=step.step_id,
         campaign_id=step.campaign_id,
@@ -204,6 +390,35 @@ def post_campaign_generate(
             generated=o.generated,
             reason=o.reason,
             touch_id=o.touch_id,
+        )
+        for o in outcomes
+    ]
+
+
+@router.post("/{campaign_id}/send", response_model=list[TouchSendOutcomeOut])
+def post_campaign_send(
+    campaign_id: int, session: Session = Depends(get_session)
+) -> list[TouchSendOutcomeOut]:
+    """Send every approved, not-yet-sent touch in this campaign right now.
+
+    Uses the stub sender until a real provider is wired in, so nothing is
+    actually delivered yet, but the send gate, the audit trail, and each
+    enrollment's advance to its next step all run for real. Flips the
+    campaign to running the first time anything in this call sends.
+    """
+    try:
+        outcomes = send_campaign(session, campaign_id)
+        session.commit()
+    except CampaignNotFound:
+        session.rollback()
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    return [
+        TouchSendOutcomeOut(
+            touch_id=o.touch_id,
+            enrollment_id=o.enrollment_id,
+            sent=o.sent,
+            delivery_status=o.delivery_status,
+            reason=o.reason,
         )
         for o in outcomes
     ]

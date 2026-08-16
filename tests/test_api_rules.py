@@ -12,9 +12,10 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
 
-from app.db.models.rules import BusinessRule
+from app.db.models.rules import BusinessRule, MessageAngleCatalog
 from app.db.session import SessionLocal
 from app.main import app
+from app.rules.catalog import AngleSpec, save_catalog_version
 from app.rules.store import RuleSpec, save_version
 
 client = TestClient(app)
@@ -89,3 +90,57 @@ def test_preview_422s_when_no_rule_set_is_active(active_version) -> None:
         f"{RULES}/preview", json={"purchase_depth": "single", "at": "1900-01-01"}
     )
     assert response.status_code == 422
+
+
+# --- GET /rules/angles: current held state ----------------------------------
+
+
+def _angle_spec(angle: str, *, held: bool) -> AngleSpec:
+    return AngleSpec(
+        angle=angle,
+        headline="test headline",
+        who="test who",
+        claim="test claim",
+        ask="test ask",
+        never="test never",
+        held=held,
+    )
+
+
+@pytest.fixture
+def held_and_unheld_angles(db: None):
+    held_angle = "test_held_angle_91"
+    unheld_angle = "test_unheld_angle_91"
+    with SessionLocal() as session:
+        save_catalog_version(
+            session,
+            _TEST_VERSION,
+            [_angle_spec(held_angle, held=True), _angle_spec(unheld_angle, held=False)],
+            valid_from=date(2020, 1, 1),
+        )
+        session.commit()
+
+    yield held_angle, unheld_angle
+
+    with SessionLocal() as session:
+        session.execute(
+            delete(MessageAngleCatalog).where(MessageAngleCatalog.version == _TEST_VERSION)
+        )
+        session.commit()
+
+
+def test_get_angles_reports_held_state(held_and_unheld_angles) -> None:
+    held_angle, unheld_angle = held_and_unheld_angles
+    response = client.get(f"{RULES}/angles")
+    assert response.status_code == 200
+    rows = {row["angle"]: row["held"] for row in response.json()}
+    assert rows[held_angle] is True
+    assert rows[unheld_angle] is False
+
+
+def test_get_angles_defaults_to_today_not_a_future_window(held_and_unheld_angles) -> None:
+    held_angle, _unheld_angle = held_and_unheld_angles
+    response = client.get(f"{RULES}/angles", params={"active_on": "1900-01-01"})
+    assert response.status_code == 200
+    angles = {row["angle"] for row in response.json()}
+    assert held_angle not in angles

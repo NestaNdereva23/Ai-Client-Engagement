@@ -115,6 +115,114 @@ def template(db: None):
         session.commit()
 
 
+@pytest.fixture
+def two_templates(db: None):
+    """Two pending_review message_templates, same campaign, for batch decide."""
+    fund_id = 976
+    client_id = 97601
+    with SessionLocal() as session:
+        session.add(Funds(unit_fund_id=fund_id, unit_fund_name="Test Fund"))
+        session.commit()
+        session.add(
+            Clients(
+                client_id=client_id,
+                unit_fund_id=fund_id,
+                n_purchases_returned=0,
+                n_sales_returned=0,
+            )
+        )
+        session.commit()
+        campaign = Campaign(name="api template batch test campaign")
+        session.add(campaign)
+        session.commit()
+        campaign_id = campaign.campaign_id
+
+        run_ids = []
+        template_ids = []
+        for _ in range(2):
+            run = persist_generation_run(session, accepted_state(client_id), make_settings())
+            row = MessageTemplate(
+                template_id=uuid4().hex,
+                campaign_id=campaign_id,
+                generation_run_id=run.run_id,
+                profile_key=PROFILE_KEY,
+                ai_draft_content={
+                    "subject": "Come back to {{fund_name}}",
+                    "body": "Dear {{first_name}}, we miss you.",
+                },
+            )
+            session.add(row)
+            session.commit()
+            run_ids.append(run.run_id)
+            template_ids.append(row.template_id)
+
+    yield template_ids, campaign_id
+
+    with SessionLocal() as session:
+        session.execute(
+            delete(TemplateReviewAction).where(TemplateReviewAction.template_id.in_(template_ids))
+        )
+        session.execute(
+            delete(MessageTemplate).where(MessageTemplate.template_id.in_(template_ids))
+        )
+        session.execute(delete(GenerationRun).where(GenerationRun.run_id.in_(run_ids)))
+        session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
+        session.execute(delete(Clients).where(Clients.client_id == client_id))
+        session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
+        session.commit()
+
+
+def test_decide_batch_approves_every_template(
+    configured_reviewers, two_templates, reviewer_1_headers
+) -> None:
+    template_ids, _campaign_id = two_templates
+    response = client.post(
+        f"{TEMPLATES}/decide-batch",
+        json={"template_ids": template_ids, "outcome": "approve"},
+        headers=reviewer_1_headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert [a["outcome"] for a in body["decided"]] == ["approve", "approve"]
+    assert body["failed"] == []
+
+    for template_id in template_ids:
+        detail = client.get(f"{TEMPLATES}/{template_id}").json()
+        assert detail["status"] == "approved"
+
+
+def test_decide_batch_reports_a_missing_template_without_failing_the_rest(
+    configured_reviewers, two_templates, reviewer_1_headers
+) -> None:
+    template_ids, _campaign_id = two_templates
+    response = client.post(
+        f"{TEMPLATES}/decide-batch",
+        json={"template_ids": [template_ids[0], "not-a-real-id"], "outcome": "approve"},
+        headers=reviewer_1_headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["decided"]) == 1
+    assert body["failed"] == [{"template_id": "not-a-real-id", "error": "not_found"}]
+
+
+def test_decide_batch_rejects_edit_approve(configured_reviewers, reviewer_1_headers) -> None:
+    response = client.post(
+        f"{TEMPLATES}/decide-batch",
+        json={"template_ids": ["irrelevant"], "outcome": "edit_approve"},
+        headers=reviewer_1_headers,
+    )
+    assert response.status_code == 422
+
+
+def test_decide_batch_with_no_reviewer_key_is_401(configured_reviewers, two_templates) -> None:
+    template_ids, _campaign_id = two_templates
+    response = client.post(
+        f"{TEMPLATES}/decide-batch", json={"template_ids": template_ids, "outcome": "approve"}
+    )
+    assert response.status_code == 401
+
+
 def test_list_templates_returns_the_pending_template(template) -> None:
     template_id, _campaign_id = template
     response = client.get(TEMPLATES)
