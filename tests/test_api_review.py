@@ -309,6 +309,57 @@ def test_decide_replays_the_first_result_for_a_repeated_idempotency_key(
             session.commit()
 
 
+def test_decide_batch_approves_every_message(
+    configured_reviewers, two_messages, reviewer_1_headers
+) -> None:
+    message_ids, _campaign_id = two_messages
+    response = client.post(
+        f"{REVIEWS}/decide-batch",
+        json={"message_ids": message_ids, "outcome": "approve"},
+        headers=reviewer_1_headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert [a["outcome"] for a in body["decided"]] == ["approve", "approve"]
+    assert body["failed"] == []
+
+    for message_id in message_ids:
+        detail = client.get(f"{REVIEWS}/{message_id}").json()
+        assert detail["status"] == "approved"
+
+
+def test_decide_batch_reports_a_missing_message_without_failing_the_rest(
+    configured_reviewers, two_messages, reviewer_1_headers
+) -> None:
+    message_ids, _campaign_id = two_messages
+    response = client.post(
+        f"{REVIEWS}/decide-batch",
+        json={"message_ids": [message_ids[0], "not-a-real-id"], "outcome": "approve"},
+        headers=reviewer_1_headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["decided"]) == 1
+    assert body["failed"] == [{"message_id": "not-a-real-id", "error": "not_found"}]
+
+
+def test_decide_batch_rejects_edit_approve(configured_reviewers, reviewer_1_headers) -> None:
+    response = client.post(
+        f"{REVIEWS}/decide-batch",
+        json={"message_ids": ["irrelevant"], "outcome": "edit_approve"},
+        headers=reviewer_1_headers,
+    )
+    assert response.status_code == 422
+
+
+def test_decide_batch_with_no_reviewer_key_is_401(configured_reviewers, two_messages) -> None:
+    message_ids, _campaign_id = two_messages
+    response = client.post(
+        f"{REVIEWS}/decide-batch", json={"message_ids": message_ids, "outcome": "approve"}
+    )
+    assert response.status_code == 401
+
+
 def test_list_reviews_pages_through_the_query_params(two_messages) -> None:
     message_ids, campaign_id = two_messages
     page_one = client.get(REVIEWS, params={"campaign_id": campaign_id, "limit": 1})

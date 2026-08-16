@@ -20,6 +20,7 @@ from __future__ import annotations
 import difflib
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
@@ -83,6 +84,25 @@ class TemplateNotApproved(Exception):
     """Instantiation was attempted against a message_template that is not approved."""
 
 
+@dataclass(frozen=True)
+class BatchDecideFailure:
+    """One message a decide_batch call could not decide, and why."""
+
+    message_id: str
+    error: str
+
+
+@dataclass(frozen=True)
+class BatchDecideResult:
+    """What one decide_batch call did: an action per message that decided
+    cleanly, and a reason per message that didn't. A failure never rolls
+    back the ones that succeeded.
+    """
+
+    decided: list[ReviewAction] = field(default_factory=list)
+    failed: list[BatchDecideFailure] = field(default_factory=list)
+
+
 def _first_name_from_full_name(full_name: str | None) -> str:
     """The greeting name from a stored full name, or a safe fallback when
     there is nothing on file; a real client should never receive a blank or
@@ -135,9 +155,9 @@ def resolve_placeholders(
         "month_they_left": month_they_left,
         "cadence_interval_days": cadence_interval_days,
     }
-    for field, value in placeholder_facts.items():
+    for field_name, value in placeholder_facts.items():
         if value is not None:
-            resolved = resolved.replace(f"{{{{{field}}}}}", str(value))
+            resolved = resolved.replace(f"{{{{{field_name}}}}}", str(value))
     return resolved
 
 
@@ -448,10 +468,10 @@ def compute_edit_diff(ai_draft_content: dict, edited_content: dict) -> dict[str,
     so an edit that only ever changed the subject shows no body diff.
     """
     diff: dict[str, list[str]] = {}
-    for field, after in edited_content.items():
-        before = ai_draft_content.get(field, "")
+    for field_name, after in edited_content.items():
+        before = ai_draft_content.get(field_name, "")
         if before != after:
-            diff[field] = _diff_lines(before, after)
+            diff[field_name] = _diff_lines(before, after)
     return diff
 
 
@@ -514,3 +534,45 @@ def decide(
     )
     session.flush()
     return action
+
+
+def decide_batch(
+    session: Session,
+    message_ids: list[str],
+    *,
+    outcome: str,
+    reviewer_id: str,
+    reason: str | None = None,
+) -> BatchDecideResult:
+    """Apply decide() to each message in message_ids, one at a time.
+
+    Same review_action and audit row per message as calling POST
+    .../decide once per id -- this just saves the round trips. A message
+    that can't be decided (not found, already decided) is skipped and
+    reported in .failed rather than aborting the rest of the batch.
+
+    edit_approve is refused up front: a batch shares one outcome and
+    reason across every message, and an edit is inherently per-message,
+    so there is no sensible edited_content to apply to all of them.
+    """
+    if outcome not in REVIEW_OUTCOMES:
+        raise InvalidOutcome(outcome)
+    if outcome == "edit_approve":
+        raise EditedContentRequired(
+            "edit_approve is not supported by decide_batch; edit messages one at a time"
+        )
+
+    decided: list[ReviewAction] = []
+    failed: list[BatchDecideFailure] = []
+    for message_id in message_ids:
+        try:
+            action = decide(
+                session, message_id, outcome=outcome, reviewer_id=reviewer_id, reason=reason
+            )
+        except MessageNotFound:
+            failed.append(BatchDecideFailure(message_id=message_id, error="not_found"))
+        except MessageAlreadyDecided as exc:
+            failed.append(BatchDecideFailure(message_id=message_id, error=str(exc)))
+        else:
+            decided.append(action)
+    return BatchDecideResult(decided=decided, failed=failed)

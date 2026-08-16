@@ -15,6 +15,19 @@ class RuleVersionOut(BaseModel):
     is_active: bool
 
 
+class AngleStatusOut(BaseModel):
+    """One message angle's current hold state, independent of any rule
+    version's deploy -- held is flipped live by ops (see
+    app.rules.catalog.angle_is_held).
+    """
+
+    angle: str
+    version: int
+    valid_from: date
+    valid_to: date | None
+    held: bool
+
+
 class RulePreviewRequest(BaseModel):
     """A feature tuple to dry-run through the active rule set."""
 

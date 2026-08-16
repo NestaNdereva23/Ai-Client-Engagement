@@ -23,6 +23,40 @@ ROUTES = (
     "monitor_only",
 )
 
+# How urgent each route is for a human to act on, lowest to highest. Used
+# only to label a route move as an improvement or an escalation -- it does
+# not affect routing itself. dust_cleanup sits at the bottom: balance is too
+# small to be worth an FA's time even though a signal fired, so leaving any
+# other route for dust_cleanup is always an improvement, never a regression.
+ROUTE_SEVERITY = {
+    "dust_cleanup": 0,
+    "monitor_only": 1,
+    "automated_nurture": 2,
+    "fa_digest_watch": 3,
+    "fa_call_priority": 4,
+}
+
+
+def route_direction(from_route: str | None, to_route: str) -> str | None:
+    """Whether a route move makes the client more or less urgent for a
+    human to act on -- not whether the client's own situation got better or
+    worse (a move to dust_cleanup is "less_urgent" even though it usually
+    means the client already withdrew almost everything).
+
+    "more_urgent" when to_route outranks from_route, "less_urgent" when it
+    ranks lower. None when there's no prior route to compare against (a
+    client's first-ever scored run).
+    """
+    if from_route is None:
+        return None
+    before = ROUTE_SEVERITY[from_route]
+    after = ROUTE_SEVERITY[to_route]
+    if after > before:
+        return "more_urgent"
+    if after < before:
+        return "less_urgent"
+    return "unchanged"
+
 
 @dataclass
 class RoutableRow:

@@ -11,7 +11,11 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
 
-from app.db.models.active_clients import ActiveClientFund, ActiveClientInteraction
+from app.db.models.active_clients import (
+    ActiveClientFund,
+    ActiveClientInteraction,
+    ActiveTransaction,
+)
 from app.db.models.audit import AuditLog
 from app.db.models.complaints import ClientComplaint
 from app.db.models.risk import ClientRiskFeatures, RiskRun, RiskSnapshot
@@ -63,6 +67,7 @@ def seeded_active_client(db):
                 ActiveClientFund.client_id == CLIENT_ID, ActiveClientFund.unit_fund_id == FUND_ID
             )
         )
+        session.execute(delete(ActiveTransaction).where(ActiveTransaction.client_id == CLIENT_ID))
         session.execute(delete(ClientComplaint).where(ClientComplaint.client_id == CLIENT_ID))
         session.execute(
             delete(AuditLog).where(
@@ -79,6 +84,10 @@ def _interactions_url(client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID) -
 
 def _profile_url(client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID) -> str:
     return f"/api/v1/active-clients/{client_id}/{unit_fund_id}/profile"
+
+
+def _transactions_url(client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID) -> str:
+    return f"/api/v1/active-clients/{client_id}/{unit_fund_id}/transactions"
 
 
 def test_post_interaction_missing_header_is_401(configured_reviewers, seeded_active_client) -> None:
@@ -224,6 +233,16 @@ def test_get_profile_returns_identity_and_bands(
                 channel="call",
             )
         )
+        session.add(
+            ActiveTransaction(
+                txn_id=9430100001,
+                txn_type="purchase",
+                client_id=CLIENT_ID,
+                unit_fund_id=FUND_ID,
+                txn_date=date(2026, 1, 5),
+                amount=10_000.0,
+            )
+        )
         session.commit()
 
     client.post(_interactions_url(), json={"type": "call_logged"}, headers=reviewer_1_headers)
@@ -234,19 +253,69 @@ def test_get_profile_returns_identity_and_bands(
         body = response.json()
         assert body["identity"]["client_id"] == CLIENT_ID
         assert body["identity"]["client_code"] == "C94301"
+        assert body["identity"]["balance"] == 50_000.0
+        assert body["identity"]["purchases_censored"] is False
+        assert body["identity"]["redemption_history_blind"] is False
         assert body["bands"]["risk_score"] == 55
         assert body["bands"]["risk_band"] == "High"
         assert body["bands"]["route"] == "fa_call_priority"
+        # _SIGNALS fires only sig_dormant; SIGNAL_ORDER is cadence_break,
+        # dormant, drawdown, ...
+        assert body["bands"]["risk_reason_tags"] == ["dormant"]
         assert len(body["risk_history"]) == 1
         assert body["risk_history"][0]["run_id"] == run_id
+        assert body["risk_history"][0]["risk_reason_tags"] == ["dormant"]
         assert len(body["complaints"]) == 1
         assert body["complaints"][0]["status"] == "open"
         assert len(body["interactions"]) == 1
         assert body["interactions"][0]["type"] == "call_logged"
+        assert len(body["transactions"]) == 1
+        assert body["transactions"][0]["txn_id"] == 9430100001
+        assert body["transactions"][0]["amount"] == 10_000.0
     finally:
         with SessionLocal() as session:
             session.execute(delete(RiskSnapshot).where(RiskSnapshot.run_id == run_id))
             session.execute(delete(RiskRun).where(RiskRun.run_id == run_id))
+            session.execute(
+                delete(ClientRiskFeatures).where(
+                    ClientRiskFeatures.client_id == CLIENT_ID,
+                    ClientRiskFeatures.unit_fund_id == FUND_ID,
+                )
+            )
+            session.commit()
+
+
+def test_get_profile_reports_primary_signal_magnitude(
+    configured_reviewers, seeded_active_client
+) -> None:
+    with SessionLocal() as session:
+        row = session.get(ActiveClientFund, (CLIENT_ID, FUND_ID))
+        row.last_purchase = date(2026, 1, 1)
+        session.add(
+            ClientRiskFeatures(
+                client_id=CLIENT_ID,
+                unit_fund_id=FUND_ID,
+                balance_tier="Small",
+                **_SIGNALS,
+                risk_score=55,
+                risk_band="High",
+                risk_reasons="No contribution in 12m",
+                aum_at_risk=50_000.0,
+                config_version=1,
+                route="fa_call_priority",
+                queue_rank=1,
+            )
+        )
+        session.commit()
+
+    try:
+        response = client.get(_profile_url())
+        assert response.status_code == 200
+        magnitude = response.json()["bands"]["primary_signal_magnitude"]
+        assert magnitude.startswith("No contribution in 12m: ")
+        assert "days since last purchase" in magnitude
+    finally:
+        with SessionLocal() as session:
             session.execute(
                 delete(ClientRiskFeatures).where(
                     ClientRiskFeatures.client_id == CLIENT_ID,
@@ -264,4 +333,396 @@ def test_get_profile_bands_are_null_without_a_risk_row(
     body = response.json()
     assert body["bands"]["risk_score"] is None
     assert body["bands"]["route"] is None
+    assert body["bands"]["risk_reason_tags"] == []
+    assert body["bands"]["primary_signal_magnitude"] is None
     assert body["risk_history"] == []
+    assert body["transactions"] == []
+
+
+def test_get_transactions_returns_most_recent_first(
+    configured_reviewers, seeded_active_client
+) -> None:
+    with SessionLocal() as session:
+        session.add_all(
+            [
+                ActiveTransaction(
+                    txn_id=9430100002,
+                    txn_type="purchase",
+                    client_id=CLIENT_ID,
+                    unit_fund_id=FUND_ID,
+                    txn_date=date(2026, 1, 1),
+                    amount=5_000.0,
+                ),
+                ActiveTransaction(
+                    txn_id=9430100003,
+                    txn_type="sale",
+                    client_id=CLIENT_ID,
+                    unit_fund_id=FUND_ID,
+                    txn_date=date(2026, 2, 1),
+                    amount=1_000.0,
+                    sale_type="partial_withdrawal",
+                ),
+            ]
+        )
+        session.commit()
+
+    response = client.get(_transactions_url())
+    assert response.status_code == 200
+    body = response.json()
+    assert [row["txn_id"] for row in body] == [9430100003, 9430100002]
+    assert body[0]["sale_type"] == "partial_withdrawal"
+
+
+def test_get_transactions_respects_limit(configured_reviewers, seeded_active_client) -> None:
+    with SessionLocal() as session:
+        session.add_all(
+            [
+                ActiveTransaction(
+                    txn_id=9430100004,
+                    txn_type="purchase",
+                    client_id=CLIENT_ID,
+                    unit_fund_id=FUND_ID,
+                    txn_date=date(2026, 1, 1),
+                    amount=1.0,
+                ),
+                ActiveTransaction(
+                    txn_id=9430100005,
+                    txn_type="purchase",
+                    client_id=CLIENT_ID,
+                    unit_fund_id=FUND_ID,
+                    txn_date=date(2026, 1, 2),
+                    amount=1.0,
+                ),
+            ]
+        )
+        session.commit()
+
+    response = client.get(_transactions_url(), params={"limit": 1})
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+
+
+def test_get_transactions_unknown_client_fund_is_empty_not_404() -> None:
+    response = client.get(_transactions_url(999999, 999999))
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_get_transactions_is_not_gated_by_the_reviewer_key(
+    configured_reviewers, seeded_active_client
+) -> None:
+    response = client.get(_transactions_url())
+    assert response.status_code == 200
+
+
+# --- GET .../contribution-percentile ----------------------------------------
+
+
+def _percentile_url(client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID) -> str:
+    return f"/api/v1/active-clients/{client_id}/{unit_fund_id}/contribution-percentile"
+
+
+def test_contribution_percentile_404s_for_unknown_client_fund() -> None:
+    response = client.get(_percentile_url(999999, 999999))
+    assert response.status_code == 404
+
+
+def test_contribution_percentile_sums_only_purchase_transactions(seeded_active_client) -> None:
+    with SessionLocal() as session:
+        session.add_all(
+            [
+                ActiveTransaction(
+                    txn_id=9430100020,
+                    txn_type="purchase",
+                    client_id=CLIENT_ID,
+                    unit_fund_id=FUND_ID,
+                    txn_date=date(2026, 1, 1),
+                    amount=7_000.0,
+                ),
+                ActiveTransaction(
+                    txn_id=9430100021,
+                    txn_type="sale",
+                    client_id=CLIENT_ID,
+                    unit_fund_id=FUND_ID,
+                    txn_date=date(2026, 1, 2),
+                    amount=3_000.0,
+                ),
+            ]
+        )
+        session.commit()
+
+    response = client.get(_percentile_url())
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_contribution"] == 7_000.0
+    assert body["purchases_censored"] is False
+
+
+def test_contribution_percentile_reflects_purchases_censored(seeded_active_client) -> None:
+    with SessionLocal() as session:
+        row = session.get(ActiveClientFund, (CLIENT_ID, FUND_ID))
+        row.purchases_censored = True
+        session.commit()
+
+    response = client.get(_percentile_url())
+    assert response.json()["purchases_censored"] is True
+
+
+def test_contribution_percentile_rank_moves_with_a_higher_book_entry(seeded_active_client) -> None:
+    with SessionLocal() as session:
+        session.add(
+            ActiveTransaction(
+                txn_id=9430100022,
+                txn_type="purchase",
+                client_id=CLIENT_ID,
+                unit_fund_id=FUND_ID,
+                txn_date=date(2026, 1, 1),
+                amount=5_000.0,
+            )
+        )
+        session.commit()
+
+    before = client.get(_percentile_url()).json()
+
+    higher_id, lower_id = 94390, 94391
+    with SessionLocal() as session:
+        session.add_all(
+            [
+                ActiveClientFund(
+                    client_id=higher_id, unit_fund_id=FUND_ID, n_purchases=1, n_sales=0
+                ),
+                ActiveClientFund(
+                    client_id=lower_id, unit_fund_id=FUND_ID, n_purchases=1, n_sales=0
+                ),
+            ]
+        )
+        session.commit()
+        session.add_all(
+            [
+                ActiveTransaction(
+                    txn_id=9430100023,
+                    txn_type="purchase",
+                    client_id=higher_id,
+                    unit_fund_id=FUND_ID,
+                    txn_date=date(2026, 1, 1),
+                    amount=50_000.0,
+                ),
+                ActiveTransaction(
+                    txn_id=9430100024,
+                    txn_type="purchase",
+                    client_id=lower_id,
+                    unit_fund_id=FUND_ID,
+                    txn_date=date(2026, 1, 1),
+                    amount=1.0,
+                ),
+            ]
+        )
+        session.commit()
+
+    try:
+        after = client.get(_percentile_url()).json()
+        assert after["book_size"] == before["book_size"] + 2
+        # Only the higher entry lands ahead of the target's total.
+        assert after["rank"] == before["rank"] + 1
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(ActiveTransaction).where(
+                    ActiveTransaction.client_id.in_([higher_id, lower_id])
+                )
+            )
+            session.execute(
+                delete(ActiveClientFund).where(
+                    ActiveClientFund.client_id.in_([higher_id, lower_id])
+                )
+            )
+            session.commit()
+
+
+# --- GET /active-clients: the paginated roster ------------------------------
+
+ROSTER = "/api/v1/active-clients"
+
+
+@pytest.fixture
+def seeded_roster(db):
+    scored_id, unscored_id = 94350, 94351
+    route = "roster_test_route_94350"
+    with SessionLocal() as session:
+        session.add_all(
+            [
+                ActiveClientFund(
+                    client_id=scored_id,
+                    unit_fund_id=FUND_ID,
+                    balance=1_000.0,
+                    n_purchases=1,
+                    n_sales=0,
+                ),
+                ActiveClientFund(
+                    client_id=unscored_id,
+                    unit_fund_id=FUND_ID,
+                    balance=2_000.0,
+                    n_purchases=1,
+                    n_sales=0,
+                ),
+            ]
+        )
+        session.commit()
+        session.add(
+            ClientRiskFeatures(
+                client_id=scored_id,
+                unit_fund_id=FUND_ID,
+                balance_tier="Small",
+                **_SIGNALS,
+                risk_score=20,
+                risk_band="Watch",
+                risk_reasons="No contribution in 12m",
+                aum_at_risk=100.0,
+                config_version=1,
+                route=route,
+                queue_rank=None,
+            )
+        )
+        session.commit()
+
+    yield scored_id, unscored_id, route
+
+    with SessionLocal() as session:
+        session.execute(
+            delete(ClientRiskFeatures).where(
+                ClientRiskFeatures.client_id.in_([scored_id, unscored_id])
+            )
+        )
+        session.execute(
+            delete(ActiveClientFund).where(ActiveClientFund.client_id.in_([scored_id, unscored_id]))
+        )
+        session.execute(
+            delete(ActiveClientInteraction).where(
+                ActiveClientInteraction.client_id.in_([scored_id, unscored_id])
+            )
+        )
+        session.execute(
+            delete(ClientComplaint).where(ClientComplaint.client_id.in_([scored_id, unscored_id]))
+        )
+        session.commit()
+
+
+def test_roster_includes_an_unscored_row_with_null_bands(seeded_roster) -> None:
+    _scored_id, unscored_id, _route = seeded_roster
+    seen: dict[int, dict] = {}
+    cursor = None
+    for _ in range(20):
+        params = {"limit": 50}
+        if cursor is not None:
+            params["cursor"] = cursor
+        response = client.get(ROSTER, params=params)
+        assert response.status_code == 200
+        body = response.json()
+        for row in body["items"]:
+            seen[row["client_id"]] = row
+        cursor = body["next_cursor"]
+        if cursor is None:
+            break
+    assert unscored_id in seen
+    assert seen[unscored_id]["risk_band"] is None
+
+
+def test_roster_filters_by_route(seeded_roster) -> None:
+    scored_id, _unscored_id, route = seeded_roster
+    response = client.get(ROSTER, params={"route": route, "limit": 200})
+    assert response.status_code == 200
+    ids = {row["client_id"] for row in response.json()["items"]}
+    assert ids == {scored_id}
+
+
+def test_roster_invalid_cursor_is_400(db) -> None:
+    response = client.get(ROSTER, params={"cursor": "not-a-cursor"})
+    assert response.status_code == 400
+
+
+def test_roster_filters_by_client_id(seeded_roster) -> None:
+    scored_id, unscored_id, _route = seeded_roster
+    response = client.get(ROSTER, params={"client_id": scored_id})
+    assert response.status_code == 200
+    ids = {row["client_id"] for row in response.json()["items"]}
+    assert ids == {scored_id}
+    assert unscored_id not in ids
+
+
+def test_roster_reports_fired_signal_tags_and_empty_for_unscored(seeded_roster) -> None:
+    scored_id, unscored_id, route = seeded_roster
+    response = client.get(ROSTER, params={"route": route, "limit": 200})
+    scored_row = next(r for r in response.json()["items"] if r["client_id"] == scored_id)
+    assert scored_row["risk_reason_tags"] == ["dormant"]
+
+    response = client.get(ROSTER, params={"client_id": unscored_id})
+    unscored_row = response.json()["items"][0]
+    assert unscored_row["risk_reason_tags"] == []
+
+
+def test_roster_reports_client_code_fund_name_and_briefing_available(seeded_roster) -> None:
+    scored_id, unscored_id, route = seeded_roster
+    response = client.get(ROSTER, params={"route": route, "limit": 200})
+    scored_row = next(r for r in response.json()["items"] if r["client_id"] == scored_id)
+    # No Funds row is seeded for FUND_ID in these tests, so fund_name falls
+    # back to "Fund {id}" -- the same fallback ActiveClientProfile uses.
+    assert scored_row["fund_name"] == f"Fund {FUND_ID}"
+    assert scored_row["client_code"] is None
+    # scored_id has both a client_risk_features row and an active_client_fund
+    # row, the same two-table existence check briefing_available_keys does,
+    # so a briefing can render even without the finer feature measures.
+    assert scored_row["briefing_available"] is True
+
+    # unscored_id has no client_risk_features row at all, so a briefing
+    # can't render.
+    response = client.get(ROSTER, params={"client_id": unscored_id})
+    unscored_row = response.json()["items"][0]
+    assert unscored_row["briefing_available"] is False
+
+
+def test_roster_reports_primary_signal_magnitude_and_none_for_unscored(seeded_roster) -> None:
+    scored_id, unscored_id, route = seeded_roster
+    response = client.get(ROSTER, params={"route": route, "limit": 200})
+    scored_row = next(r for r in response.json()["items"] if r["client_id"] == scored_id)
+    # _SIGNALS fires only sig_dormant, and no active feature measures are
+    # seeded, so the label alone comes back with no magnitude number.
+    assert scored_row["primary_signal_magnitude"] == "No contribution in 12m"
+
+    response = client.get(ROSTER, params={"client_id": unscored_id})
+    unscored_row = response.json()["items"][0]
+    assert unscored_row["primary_signal_magnitude"] is None
+
+
+def test_roster_reports_complaint_caveat_and_last_interaction(seeded_roster) -> None:
+    scored_id, unscored_id, _route = seeded_roster
+    with SessionLocal() as session:
+        session.add(
+            ClientComplaint(
+                client_id=scored_id,
+                opened_at=date.today(),
+                closed_at=None,
+                status="open",
+                category="service",
+                channel="call",
+            )
+        )
+        session.add(
+            ActiveClientInteraction(
+                client_id=scored_id,
+                unit_fund_id=FUND_ID,
+                type="call_logged",
+                note=None,
+                reviewer_id="fa-1",
+            )
+        )
+        session.commit()
+
+    response = client.get(ROSTER, params={"client_id": scored_id})
+    scored_row = response.json()["items"][0]
+    assert scored_row["complaint_caveat"] is True
+    assert scored_row["last_interaction_at"] is not None
+
+    response = client.get(ROSTER, params={"client_id": unscored_id})
+    unscored_row = response.json()["items"][0]
+    assert unscored_row["complaint_caveat"] is False
+    assert unscored_row["last_interaction_at"] is None

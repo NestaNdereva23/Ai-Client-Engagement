@@ -18,6 +18,9 @@ from app.db.session import get_session
 from app.llmops.tracing import get_shared_tracer
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.review import (
+    DecideBatchFailureOut,
+    DecideBatchRequest,
+    DecideBatchResultOut,
     DecideRequest,
     OutreachMessageDetail,
     OutreachMessageSummary,
@@ -33,6 +36,7 @@ from app.services.review import (
     list_pending_messages,
 )
 from app.services.review import decide as decide_message
+from app.services.review import decide_batch as decide_message_batch
 
 router = APIRouter(prefix="/reviews", tags=["review"])
 
@@ -114,6 +118,41 @@ def decide_review(
         raise HTTPException(status_code=422, detail=str(exc)) from None
 
     return ReviewActionOut.model_validate(action)
+
+
+@router.post("/decide-batch", response_model=DecideBatchResultOut)
+def decide_reviews_batch(
+    body: DecideBatchRequest,
+    reviewer_id: str = Depends(get_current_reviewer_id),
+    session: Session = Depends(get_session),
+) -> DecideBatchResultOut:
+    """Approve, reject, escalate, or hold a list of messages in one call.
+
+    Applies the same decide() logic as POST .../decide to each id in
+    turn, writing one review_action and audit row per message -- the same
+    trail as calling it once per message, just one request instead of N.
+    A message that can't be decided (not found, already decided) is
+    reported in the response's failed list rather than failing the whole
+    batch. Requires the X-Reviewer-Key header; every decision is recorded
+    under the reviewer_id that key resolved to.
+    """
+    try:
+        result = decide_message_batch(
+            session,
+            body.message_ids,
+            outcome=body.outcome,
+            reviewer_id=reviewer_id,
+            reason=body.reason,
+        )
+        session.commit()
+    except (EditedContentRequired, InvalidOutcome) as exc:
+        session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    return DecideBatchResultOut(
+        decided=[ReviewActionOut.model_validate(a) for a in result.decided],
+        failed=[DecideBatchFailureOut.model_validate(f) for f in result.failed],
+    )
 
 
 @router.post("/{message_id}/regenerate", response_model=OutreachMessageDetail)

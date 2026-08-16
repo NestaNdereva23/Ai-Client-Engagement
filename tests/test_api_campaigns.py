@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 
-from app.db.models.campaigns import CampaignStep, Enrollment
+from app.config import Settings
+from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
+from app.db.models.llmops import GenerationRun
+from app.db.models.message_template import MessageTemplate
 from app.db.models.models import ClientFeatures, Clients, Funds, PiiVault
-from app.db.models.outreach import Campaign
+from app.db.models.outreach import Campaign, OutreachMessage
 from app.db.models.template_generation_plan import TemplateGenerationPlan
 from app.db.session import SessionLocal
+from app.llmops.versions import persist_generation_run
 from app.main import app
 
 client = TestClient(app)
@@ -88,6 +94,141 @@ def test_campaign_summary_404s_for_an_unknown_campaign(db: None) -> None:
     assert response.status_code == 404
 
 
+def make_settings(**overrides) -> Settings:
+    defaults = {
+        "llm_provider": "anthropic",
+        "anthropic_api_key": "test-key",
+        "llm_model": "claude-opus-5",
+        "llm_temperature": None,
+        "llm_max_tokens": 1024,
+    }
+    defaults.update(overrides)
+    return Settings(**defaults)
+
+
+def accepted_state(client_id: int) -> dict:
+    return {
+        "run_id": str(uuid4()),
+        "trace_id": uuid4().hex,
+        "client_id": client_id,
+        "product": "money market",
+        "angle": "pick_up_again",
+        "prompt_variant": "pick_up_again",
+        "status": "accepted",
+        "attempts": 1,
+        "failed_guardrail": None,
+        "reason": None,
+        "raw_structured_output": {
+            "subject": "Come back to {{fund_name}}",
+            "body": "Dear {{first_name}}, we miss you.",
+        },
+    }
+
+
+PROFILE_KEY = {
+    "message_angle": "pick_up_again",
+    "priority_tier": "T3",
+    "product": "money market",
+    "has_cadence": True,
+    "stale_contact": False,
+    "exit_reason_charge_settled": False,
+    "fund_name_known": False,
+}
+
+
+@pytest.fixture
+def campaign_with_a_template_and_a_message(db: None):
+    """One campaign: one approved template, one pending_review message."""
+    fund_id = 97702
+    client_id = 97720
+    with SessionLocal() as session:
+        campaign = Campaign(name="test readiness campaign")
+        session.add(campaign)
+        session.add(Funds(unit_fund_id=fund_id, unit_fund_name="Test Fund"))
+        session.commit()
+        campaign_id = campaign.campaign_id
+
+        session.add(
+            Clients(
+                client_id=client_id,
+                unit_fund_id=fund_id,
+                n_purchases_returned=0,
+                n_sales_returned=0,
+            )
+        )
+        session.commit()
+
+        template_run = persist_generation_run(session, accepted_state(client_id), make_settings())
+        template = MessageTemplate(
+            template_id=uuid4().hex,
+            campaign_id=campaign_id,
+            generation_run_id=template_run.run_id,
+            profile_key=PROFILE_KEY,
+            ai_draft_content={"subject": "Subject", "body": "Body"},
+            status="approved",
+        )
+        session.add(template)
+
+        message_run = persist_generation_run(session, accepted_state(client_id), make_settings())
+        message = OutreachMessage(
+            message_id=uuid4().hex,
+            campaign_id=campaign_id,
+            generation_run_id=message_run.run_id,
+            client_id=client_id,
+            ai_draft_content={"subject": "Subject", "body": "Body"},
+        )
+        session.add(message)
+        session.commit()
+        run_ids = [template_run.run_id, message_run.run_id]
+
+    yield campaign_id
+
+    with SessionLocal() as session:
+        session.execute(delete(OutreachMessage).where(OutreachMessage.campaign_id == campaign_id))
+        session.execute(delete(MessageTemplate).where(MessageTemplate.campaign_id == campaign_id))
+        session.execute(delete(GenerationRun).where(GenerationRun.run_id.in_(run_ids)))
+        session.execute(delete(Clients).where(Clients.client_id == client_id))
+        session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
+        session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
+        session.commit()
+
+
+def test_campaign_readiness_returns_per_status_counts(
+    campaign_with_a_template_and_a_message,
+) -> None:
+    campaign_id = campaign_with_a_template_and_a_message
+    response = client.get(f"{CAMPAIGNS}/{campaign_id}/readiness")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["campaign_id"] == campaign_id
+    assert body["templates"] == {"approved": 1}
+    assert body["messages"] == {"pending_review": 1}
+
+
+def test_campaign_readiness_404s_for_an_unknown_campaign(db: None) -> None:
+    response = client.get(f"{CAMPAIGNS}/999999999/readiness")
+    assert response.status_code == 404
+
+
+def test_get_campaign_detail_returns_the_campaign_row(
+    campaign_with_a_suppressed_row,
+) -> None:
+    campaign_id = campaign_with_a_suppressed_row
+    response = client.get(f"{CAMPAIGNS}/{campaign_id}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["campaign_id"] == campaign_id
+    assert body["name"] == "test summary campaign"
+    assert body["campaign_type"] == "dormant_reengagement"
+    assert body["status"] == "draft"
+    assert "total_enrolled" not in body
+
+
+def test_get_campaign_detail_404s_for_an_unknown_campaign(db: None) -> None:
+    response = client.get(f"{CAMPAIGNS}/999999999")
+    assert response.status_code == 404
+
+
 def test_list_campaigns_carries_its_own_enrollment_counts(
     campaign_with_a_suppressed_row,
 ) -> None:
@@ -101,6 +242,44 @@ def test_list_campaigns_carries_its_own_enrollment_counts(
     assert row["primary_count"] == 1
     assert row["suppressed_count"] == 1
     assert row["name"] == "test summary campaign"
+
+
+def test_get_campaign_enrollments_returns_the_roster(
+    campaign_with_a_suppressed_row,
+) -> None:
+    campaign_id = campaign_with_a_suppressed_row
+    response = client.get(f"{CAMPAIGNS}/{campaign_id}/enrollments")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["next_cursor"] is None
+    client_ids = {row["client_id"] for row in body["items"]}
+    assert client_ids == {97710, 97711}
+    statuses = {row["status"] for row in body["items"]}
+    assert statuses == {"enrolled"}
+
+
+def test_get_campaign_enrollments_paginates(campaign_with_a_suppressed_row) -> None:
+    campaign_id = campaign_with_a_suppressed_row
+    first = client.get(f"{CAMPAIGNS}/{campaign_id}/enrollments", params={"limit": 1})
+    assert first.status_code == 200
+    first_body = first.json()
+    assert len(first_body["items"]) == 1
+    assert first_body["next_cursor"] is not None
+
+    second = client.get(
+        f"{CAMPAIGNS}/{campaign_id}/enrollments",
+        params={"limit": 1, "cursor": first_body["next_cursor"]},
+    )
+    assert second.status_code == 200
+    second_body = second.json()
+    assert len(second_body["items"]) == 1
+    assert second_body["items"][0]["client_id"] != first_body["items"][0]["client_id"]
+    assert second_body["next_cursor"] is None
+
+
+def test_get_campaign_enrollments_404s_for_an_unknown_campaign(db: None) -> None:
+    response = client.get(f"{CAMPAIGNS}/999999999/enrollments")
+    assert response.status_code == 404
 
 
 @pytest.fixture
@@ -230,11 +409,77 @@ def test_post_campaign_step_assigns_sequential_step_numbers(bare_campaign: int) 
     assert second.json()["campaign_id"] == bare_campaign
 
 
+def test_post_campaign_step_422s_for_an_offset_equal_to_the_previous_step(
+    bare_campaign: int,
+) -> None:
+    first = client.post(
+        f"{CAMPAIGNS}/{bare_campaign}/steps",
+        json={"offset_days": 0, "message_angle": "winback_habit"},
+    )
+    assert first.status_code == 201
+
+    second = client.post(
+        f"{CAMPAIGNS}/{bare_campaign}/steps",
+        json={"offset_days": 0, "message_angle": "winback_value"},
+    )
+    assert second.status_code == 422
+
+    # rejected: it did not get appended
+    steps = client.get(f"{CAMPAIGNS}/{bare_campaign}/steps").json()
+    assert [s["step_no"] for s in steps] == [1]
+
+
+def test_post_campaign_step_422s_for_an_offset_smaller_than_the_previous_step(
+    bare_campaign: int,
+) -> None:
+    first = client.post(
+        f"{CAMPAIGNS}/{bare_campaign}/steps",
+        json={"offset_days": 7, "message_angle": "winback_habit"},
+    )
+    assert first.status_code == 201
+
+    second = client.post(
+        f"{CAMPAIGNS}/{bare_campaign}/steps",
+        json={"offset_days": 3, "message_angle": "winback_value"},
+    )
+    assert second.status_code == 422
+
+
 def test_post_campaign_step_404s_for_an_unknown_campaign(db: None) -> None:
     response = client.post(
         f"{CAMPAIGNS}/999999999/steps",
         json={"offset_days": 0, "message_angle": "winback_habit"},
     )
+    assert response.status_code == 404
+
+
+def test_get_campaign_steps_returns_the_full_persisted_sequence(bare_campaign: int) -> None:
+    client.post(
+        f"{CAMPAIGNS}/{bare_campaign}/steps",
+        json={"offset_days": 0, "message_angle": "winback_habit"},
+    )
+    client.post(
+        f"{CAMPAIGNS}/{bare_campaign}/steps",
+        json={"offset_days": 7, "message_angle": "winback_value"},
+    )
+
+    response = client.get(f"{CAMPAIGNS}/{bare_campaign}/steps")
+
+    assert response.status_code == 200
+    steps = response.json()
+    assert [s["step_no"] for s in steps] == [1, 2]
+    assert [s["message_angle"] for s in steps] == ["winback_habit", "winback_value"]
+
+
+def test_get_campaign_steps_is_empty_for_a_stepless_campaign(bare_campaign: int) -> None:
+    response = client.get(f"{CAMPAIGNS}/{bare_campaign}/steps")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_get_campaign_steps_404s_for_an_unknown_campaign(db: None) -> None:
+    response = client.get(f"{CAMPAIGNS}/999999999/steps")
     assert response.status_code == 404
 
 
@@ -343,4 +588,93 @@ def test_instantiate_template_404s_for_a_template_outside_the_campaign(
     two_due_enrollments: int,
 ) -> None:
     response = client.post(f"{CAMPAIGNS}/{two_due_enrollments}/templates/not-a-real-id/instantiate")
+    assert response.status_code == 404
+
+
+@pytest.fixture
+def campaign_with_an_approved_touch(db: None):
+    """One draft campaign, one enrollment, one touch already generated and approved.
+
+    Ready for POST .../send to pick up: the touch has sent_at unset, its
+    message is approved, so send_due_touches finds exactly this one row.
+    """
+    fund_id = 97704
+    client_id = 97740
+    with SessionLocal() as session:
+        campaign = Campaign(name="test send campaign")
+        session.add(campaign)
+        session.add(Funds(unit_fund_id=fund_id, unit_fund_name="Test Fund"))
+        session.commit()
+        campaign_id = campaign.campaign_id
+        assert campaign.status == "draft"
+
+        session.add(
+            Clients(
+                client_id=client_id,
+                unit_fund_id=fund_id,
+                n_purchases_returned=0,
+                n_sales_returned=0,
+            )
+        )
+        session.commit()
+
+        enrollment = Enrollment(campaign_id=campaign_id, client_id=client_id)
+        session.add(enrollment)
+        session.commit()
+
+        message_run = persist_generation_run(session, accepted_state(client_id), make_settings())
+        message = OutreachMessage(
+            message_id=uuid4().hex,
+            campaign_id=campaign_id,
+            generation_run_id=message_run.run_id,
+            client_id=client_id,
+            ai_draft_content={"subject": "Subject", "body": "Body"},
+            status="approved",
+        )
+        session.add(message)
+        session.commit()
+
+        enrollment_id = enrollment.enrollment_id
+        message_run_id = message_run.run_id
+
+        touch = TouchLog(enrollment_id=enrollment_id, step_no=1, message_id=message.message_id)
+        session.add(touch)
+        session.commit()
+
+    yield campaign_id
+
+    with SessionLocal() as session:
+        session.execute(delete(TouchLog).where(TouchLog.enrollment_id == enrollment_id))
+        session.execute(delete(OutreachMessage).where(OutreachMessage.campaign_id == campaign_id))
+        session.execute(delete(GenerationRun).where(GenerationRun.run_id == message_run_id))
+        session.execute(delete(Enrollment).where(Enrollment.campaign_id == campaign_id))
+        session.execute(delete(Clients).where(Clients.client_id == client_id))
+        session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
+        session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
+        session.commit()
+
+
+def test_send_sends_the_approved_touch_and_flips_the_campaign_to_running(
+    campaign_with_an_approved_touch: int,
+) -> None:
+    response = client.post(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/send")
+    assert response.status_code == 200
+    outcomes = response.json()
+    assert len(outcomes) == 1
+    assert outcomes[0]["sent"] is True
+    assert outcomes[0]["delivery_status"] == "stubbed"
+
+    detail = client.get(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}")
+    assert detail.json()["status"] == "running"
+
+
+def test_send_is_a_no_op_the_second_time(campaign_with_an_approved_touch: int) -> None:
+    client.post(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/send")
+    response = client.post(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/send")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_send_404s_for_an_unknown_campaign(db: None) -> None:
+    response = client.post(f"{CAMPAIGNS}/9999999/send")
     assert response.status_code == 404

@@ -113,3 +113,39 @@ class ActiveClientInteraction(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class ActiveTransaction(Base):
+    """One purchase or sale observed for an active-book client-fund.
+
+    Upserted on txn_id (the source's own id, treated as globally unique the
+    same way the dormant Transactions table treats it) on every transform
+    run, so a transaction that ages out of the feed's own "last 5
+    purchases" / "last 2 sales" window on a later pull stays visible here
+    rather than disappearing -- this table accumulates across nightly runs,
+    the feed itself never does. Still not a claim of full lifetime history:
+    active_client_fund.purchases_censored / redemption_history_blind says
+    whether even the most recent pull was itself capped, and a transaction
+    that aged out before this table started accumulating is gone for good.
+
+    No foreign key to active_client_fund: ingestion and transform can see a
+    transaction for a client-fund before or without a settled
+    active_client_fund row for it (the same reasoning client_fund's sibling
+    Transactions table follows for `clients`).
+    """
+
+    __tablename__ = "active_transaction"
+    __table_args__ = (
+        Index("ix_active_transaction_client_fund", "client_id", "unit_fund_id", "txn_date"),
+    )
+
+    txn_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    txn_type: Mapped[str] = mapped_column(Text, nullable=False)
+    client_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    unit_fund_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    fund_short_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    txn_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    amount: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
+    unit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fees_incurred: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sale_type: Mapped[str | None] = mapped_column(Text, nullable=True)

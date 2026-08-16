@@ -90,3 +90,15 @@ SIGNAL_LABELS = {
 def fired_signals(row: ActiveFeatureMeasures, thresholds: Thresholds) -> dict[str, bool]:
     """Every signal's outcome for one row, keyed by signal name."""
     return {name: func(row, thresholds) for name, func in SIGNAL_FUNCS.items()}
+
+
+def fired_signal_tags(row: object) -> list[str]:
+    """Fired signal names for one already-scored row, "sig_" stripped, in
+    SIGNAL_ORDER -- the same order risk_reasons is joined in, and the same
+    short codes wherever this is computed (ClientRiskFeatures, RiskSnapshot,
+    DigestLine's own build step), so a client-fund reads the same tags
+    whether it showed up in today's digest, its risk history, or its
+    current bands. row is anything exposing the six sig_* attributes as
+    booleans -- an ORM row here, never the ScoreResult.signals dict itself.
+    """
+    return [name.removeprefix("sig_") for name in SIGNAL_ORDER if getattr(row, name)]

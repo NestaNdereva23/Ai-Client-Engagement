@@ -1,16 +1,17 @@
-"""Persist flattened active-clients output into active_client_fund.
+"""Persist flattened active-clients output into active_client_fund and
+active_transaction.
 
 Same idempotent-upsert pattern as transform/load.py: insert, updating the
 named columns when the composite key already exists. client_name goes only
 to pii_vault, the same as the dormant feed.
 
-Per-transaction rows are not persisted here: the shared transactions table
-carries a foreign key to clients, which only the dormant population lands in,
-and active_client_fund's own columns only need aggregates (counts, last
-dates), not the individual purchase/sale rows. flatten_active_run already
-re-derives those aggregates from raw_staging on every run, so the active-book
-feature derivation milestone can read transaction-level detail the same way,
-straight from flatten_active_run, without a table of its own.
+Per-transaction rows land in active_transaction, upserted on txn_id --
+a separate table from the dormant feed's own transactions, since that one's
+foreign key to clients only ever accepts the dormant population.
+active_client_fund's own columns still only carry aggregates (counts, last
+dates); the individual rows accumulate in active_transaction instead, across
+every nightly run, so one that ages out of the feed's own "last 5 purchases"
+/ "last 2 sales" window on a later pull stays visible rather than lost.
 """
 
 from __future__ import annotations
@@ -23,10 +24,15 @@ import structlog
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.db.models.active_clients import ActiveClientFund
+from app.db.models.active_clients import ActiveClientFund, ActiveTransaction
 from app.db.models.models import IngestionStatus, PiiVault
 from app.transform.active_features import ActiveFeatureMeasures, derive_active_measures
-from app.transform.active_flatten import ActiveClientRow, ActiveFlattenResult, flatten_active_run
+from app.transform.active_flatten import (
+    ActiveClientRow,
+    ActiveFlattenResult,
+    ActiveTxnRow,
+    flatten_active_run,
+)
 from app.transform.load import upsert
 
 logger = structlog.get_logger(__name__)
@@ -50,6 +56,17 @@ _ACTIVE_CLIENT_FUND_UPDATE = [
     "last_real_sale_date",
     "fee_runway_months",
 ]
+_ACTIVE_TXN_UPDATE = [
+    "txn_type",
+    "client_id",
+    "unit_fund_id",
+    "fund_short_name",
+    "txn_date",
+    "amount",
+    "unit_price",
+    "fees_incurred",
+    "sale_type",
+]
 _VAULT_UPDATE = ["client_name", "source"]
 
 
@@ -58,6 +75,7 @@ class ActivePersistCounts:
     """How many rows each table received, after de-duplication."""
 
     client_funds: int = 0
+    transactions: int = 0
     vault: int = 0
 
 
@@ -89,6 +107,21 @@ def _vault_dict(c: ActiveClientRow, source: str | None) -> dict[str, Any]:
     return {"client_id": c.client_id, "client_name": c.client_name, "source": source}
 
 
+def _active_txn_dict(t: ActiveTxnRow) -> dict[str, Any]:
+    return {
+        "txn_id": t.txn_id,
+        "txn_type": t.txn_type,
+        "client_id": t.client_id,
+        "unit_fund_id": t.unit_fund_id,
+        "fund_short_name": t.fund_short_name,
+        "txn_date": t.date,
+        "amount": t.amount,
+        "unit_price": t.unit_price,
+        "fees_incurred": t.fees_incurred,
+        "sale_type": t.sale_type,
+    }
+
+
 def _log_reconciliation(result: ActiveFlattenResult) -> None:
     """Report per-fund headcount so a shortfall is visible, not inferred.
 
@@ -104,8 +137,8 @@ def _log_reconciliation(result: ActiveFlattenResult) -> None:
 def persist_active_result(
     session: Session, result: ActiveFlattenResult, source: str | None = None
 ) -> ActivePersistCounts:
-    """Upsert a flattened active-clients result into active_client_fund and
-    the shared vault.
+    """Upsert a flattened active-clients result into active_client_fund,
+    active_transaction, and the shared vault.
     """
     _log_reconciliation(result)
 
@@ -117,6 +150,11 @@ def persist_active_result(
         for c in result.clients
     }
     vault = {c.client_id: _vault_dict(c, source) for c in result.clients}
+    # Keyed into a dict first, same as client_funds/vault above, so a
+    # transaction repeated across pages in this run becomes one upsert.
+    transactions = {
+        t.txn_id: _active_txn_dict(t) for t in result.transactions if t.txn_id is not None
+    }
 
     counts = ActivePersistCounts()
     counts.client_funds = upsert(
@@ -126,6 +164,9 @@ def persist_active_result(
         ("client_id", "unit_fund_id"),
         _ACTIVE_CLIENT_FUND_UPDATE,
         extra_set={"updated_at": func.now()},
+    )
+    counts.transactions = upsert(
+        session, ActiveTransaction, list(transactions.values()), "txn_id", _ACTIVE_TXN_UPDATE
     )
     counts.vault = upsert(
         session,

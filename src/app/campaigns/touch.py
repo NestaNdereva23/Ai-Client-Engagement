@@ -213,6 +213,60 @@ def send_touch(session: Session, touch: TouchLog, *, sender: SenderFn = stub_sen
     return touch
 
 
+@dataclass(frozen=True)
+class SendOutcome:
+    """What happened when one touch's approved message was handed to the sender."""
+
+    touch_id: int
+    enrollment_id: int
+    sent: bool
+    delivery_status: str | None = None
+    reason: str | None = None
+
+
+def send_due_touches(
+    session: Session, *, campaign_id: int, sender: SenderFn = stub_sender
+) -> list[SendOutcome]:
+    """Send every approved, not-yet-sent touch in this campaign.
+
+    A touch qualifies once generate_touch gave it a message and review
+    approved that message; send_touch does the real send-gate recheck and
+    enrollment advance for each one. One touch failing, blocked by a stop
+    condition that appeared since approval, does not stop the rest of the
+    batch: it is recorded as its own outcome and the loop moves on.
+    """
+    touches = session.execute(
+        select(TouchLog)
+        .join(OutreachMessage, OutreachMessage.message_id == TouchLog.message_id)
+        .join(Enrollment, Enrollment.enrollment_id == TouchLog.enrollment_id)
+        .where(
+            Enrollment.campaign_id == campaign_id,
+            TouchLog.sent_at.is_(None),
+            OutreachMessage.status == "approved",
+        )
+        .order_by(TouchLog.touch_id)
+    ).scalars()
+
+    outcomes = []
+    for touch in touches:
+        try:
+            send_touch(session, touch, sender=sender)
+        except SendBlocked as exc:
+            outcomes.append(
+                SendOutcome(touch.touch_id, touch.enrollment_id, sent=False, reason=exc.reason)
+            )
+            continue
+        outcomes.append(
+            SendOutcome(
+                touch.touch_id,
+                touch.enrollment_id,
+                sent=True,
+                delivery_status=touch.delivery_status,
+            )
+        )
+    return outcomes
+
+
 def reconcile_enrollment(session: Session, enrollment: Enrollment) -> Enrollment:
     """Catch current_step up to what touch_log shows actually sent.
 

@@ -46,6 +46,7 @@ _CLIENT_COLUMNS = (
     ClientFeatures.value_band,
     ClientFeatures.cadence_band,
     ClientFeatures.hold_band,
+    ClientFeatures.purchase_depth,
     ClientMessageIndicators.message_angle,
     ClientMessageIndicators.priority_tier,
 )
@@ -72,6 +73,7 @@ def _apply_bucket_filters(
     value_band: str | None,
     recency_band: str | None,
     purchase_depth: str | None,
+    cadence_band: str | None,
     message_angle: str | None,
     newly_dormant: bool | None,
 ):
@@ -89,6 +91,8 @@ def _apply_bucket_filters(
         query = query.where(ClientFeatures.recency_band == recency_band)
     if purchase_depth is not None:
         query = query.where(ClientFeatures.purchase_depth == purchase_depth)
+    if cadence_band is not None:
+        query = query.where(ClientFeatures.cadence_band == cadence_band)
     if message_angle is not None:
         query = query.where(ClientMessageIndicators.message_angle == message_angle)
     if newly_dormant is not None:
@@ -108,6 +112,7 @@ def list_clients(
     value_band: str | None = None,
     recency_band: str | None = None,
     purchase_depth: str | None = None,
+    cadence_band: str | None = None,
     message_angle: str | None = None,
     newly_dormant: bool | None = None,
     cursor: str | None = None,
@@ -122,6 +127,7 @@ def list_clients(
         value_band=value_band,
         recency_band=recency_band,
         purchase_depth=purchase_depth,
+        cadence_band=cadence_band,
         message_angle=message_angle,
         newly_dormant=newly_dormant,
     )
@@ -145,6 +151,7 @@ def resolve_cohort_client_ids(
     value_band: str | None = None,
     recency_band: str | None = None,
     purchase_depth: str | None = None,
+    cadence_band: str | None = None,
     message_angle: str | None = None,
     newly_dormant: bool | None = None,
 ) -> list[int]:
@@ -161,6 +168,7 @@ def resolve_cohort_client_ids(
         value_band=value_band,
         recency_band=recency_band,
         purchase_depth=purchase_depth,
+        cadence_band=cadence_band,
         message_angle=message_angle,
         newly_dormant=newly_dormant,
     )
@@ -365,8 +373,12 @@ def get_client_name(
     return name
 
 
-def segment_distribution(session: Session) -> dict[str, list[tuple[str, int]] | int]:
-    """Client counts grouped by purchase depth, value band, and message angle."""
+def segment_distribution(session: Session) -> dict[str, list[tuple] | int]:
+    """Client counts grouped by purchase depth, value band, cadence band,
+    message angle, and a value-band x recency-band cross-tab, plus scalar
+    counts of the data-quality flags a reader needs before treating any of
+    the above as a complete count.
+    """
 
     def _counts(column) -> list[tuple[str, int]]:
         return list(
@@ -375,16 +387,95 @@ def segment_distribution(session: Session) -> dict[str, list[tuple[str, int]] | 
             ).all()
         )
 
-    stale_count = (
+    def _flag_count(column) -> int:
+        return (
+            session.execute(
+                select(func.count()).select_from(ClientFeatures).where(column)
+            ).scalar_one()
+            or 0
+        )
+
+    cross_tab = list(
         session.execute(
-            select(func.count()).select_from(ClientFeatures).where(ClientFeatures.stale_contact)
-        ).scalar_one()
-        or 0
+            select(ClientFeatures.value_band, ClientFeatures.recency_band, func.count())
+            .group_by(ClientFeatures.value_band, ClientFeatures.recency_band)
+            .order_by(func.count().desc())
+        ).all()
     )
 
     return {
         "by_purchase_depth": _counts(ClientFeatures.purchase_depth),
         "by_value_band": _counts(ClientFeatures.value_band),
+        "by_cadence_band": _counts(ClientFeatures.cadence_band),
         "by_message_angle": _counts(ClientMessageIndicators.message_angle),
-        "stale_contact_count": stale_count,
+        "by_value_and_recency": cross_tab,
+        "stale_contact_count": _flag_count(ClientFeatures.stale_contact),
+        "history_censored_count": _flag_count(ClientFeatures.history_censored),
+        "purchases_censored_count": _flag_count(ClientFeatures.purchases_censored),
+        "unknown_recency_count": _flag_count(ClientFeatures.recency_band == "Unknown"),
     }
+
+
+@dataclass(frozen=True)
+class ClientBookSummary:
+    total_clients: int
+    fund_count: int
+
+
+def client_book_summary(session: Session) -> ClientBookSummary:
+    """Book-wide client and fund counts, read straight off clients/funds."""
+    total_clients = session.scalar(select(func.count()).select_from(Clients)) or 0
+    fund_count = session.scalar(select(func.count()).select_from(Funds)) or 0
+    return ClientBookSummary(total_clients=total_clients, fund_count=fund_count)
+
+
+@dataclass(frozen=True)
+class EnrollmentSummary:
+    enrolled_count: int
+    excluded_count: int
+
+
+def enrollment_summary(session: Session) -> EnrollmentSummary:
+    """Distinct clients currently enrolled vs. excluded, book-wide.
+
+    Summing each campaign's own enrollment count would double-count a
+    client enrolled in more than one campaign, so this counts distinct
+    client_id directly off enrollment.status instead. enrolled_count is
+    "enrolled" or "in_progress" (an active enrollment right now);
+    excluded_count is the "excluded" terminal status -- the two status
+    values with an obvious direct mapping, not an invented category.
+    """
+    enrolled = session.scalar(
+        select(func.count(func.distinct(Enrollment.client_id))).where(
+            Enrollment.status.in_(("enrolled", "in_progress"))
+        )
+    )
+    excluded = session.scalar(
+        select(func.count(func.distinct(Enrollment.client_id))).where(
+            Enrollment.status == "excluded"
+        )
+    )
+    return EnrollmentSummary(enrolled_count=enrolled or 0, excluded_count=excluded or 0)
+
+
+@dataclass(frozen=True)
+class SuppressionSummary:
+    suppressed_count: int
+    by_reason: list[tuple[str, int]]
+
+
+def suppression_summary(session: Session) -> SuppressionSummary:
+    """Book-wide suppression count and a reason breakdown.
+
+    client_id is suppression's primary key -- one row per client already,
+    so count(*) is already a distinct-client count.
+    """
+    suppressed_count = session.scalar(select(func.count()).select_from(Suppression)) or 0
+    by_reason = list(
+        session.execute(
+            select(Suppression.reason, func.count())
+            .group_by(Suppression.reason)
+            .order_by(func.count().desc())
+        ).all()
+    )
+    return SuppressionSummary(suppressed_count=suppressed_count, by_reason=by_reason)

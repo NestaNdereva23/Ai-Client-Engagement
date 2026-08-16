@@ -8,6 +8,7 @@ govern an instantiated outreach_message's own, separate review_action.
 from __future__ import annotations
 
 import difflib
+from dataclasses import dataclass, field
 
 import structlog
 from sqlalchemy import select, tuple_
@@ -47,6 +48,25 @@ class EditedContentRequired(Exception):
 
 class InvalidOutcome(Exception):
     """outcome is not one of the five allowed review outcomes."""
+
+
+@dataclass(frozen=True)
+class BatchDecideTemplateFailure:
+    """One template a decide_template_batch call could not decide, and why."""
+
+    template_id: str
+    error: str
+
+
+@dataclass(frozen=True)
+class BatchDecideTemplateResult:
+    """What one decide_template_batch call did: an action per template that
+    decided cleanly, and a reason per template that didn't. A failure never
+    rolls back the ones that succeeded.
+    """
+
+    decided: list[TemplateReviewAction] = field(default_factory=list)
+    failed: list[BatchDecideTemplateFailure] = field(default_factory=list)
 
 
 def list_pending_templates(
@@ -108,10 +128,10 @@ def compute_edit_diff(ai_draft_content: dict, edited_content: dict) -> dict[str,
     """A per-field unified diff between what the model wrote and what the
     reviewer changed it to."""
     diff: dict[str, list[str]] = {}
-    for field, after in edited_content.items():
-        before = ai_draft_content.get(field, "")
+    for field_name, after in edited_content.items():
+        before = ai_draft_content.get(field_name, "")
         if before != after:
-            diff[field] = _diff_lines(before, after)
+            diff[field_name] = _diff_lines(before, after)
     return diff
 
 
@@ -171,3 +191,45 @@ def decide_template(
     )
     session.flush()
     return action
+
+
+def decide_template_batch(
+    session: Session,
+    template_ids: list[str],
+    *,
+    outcome: str,
+    reviewer_id: str,
+    reason: str | None = None,
+) -> BatchDecideTemplateResult:
+    """Apply decide_template() to each template in template_ids, one at a time.
+
+    Same template_review_action and audit row per template as calling POST
+    .../decide once per id -- this just saves the round trips. A template
+    that can't be decided (not found, already decided) is skipped and
+    reported in .failed rather than aborting the rest of the batch.
+
+    edit_approve is refused up front: a batch shares one outcome and
+    reason across every template, and an edit is inherently per-template,
+    so there is no sensible edited_content to apply to all of them.
+    """
+    if outcome not in TEMPLATE_REVIEW_OUTCOMES:
+        raise InvalidOutcome(outcome)
+    if outcome == "edit_approve":
+        raise EditedContentRequired(
+            "edit_approve is not supported by decide_template_batch; edit templates one at a time"
+        )
+
+    decided: list[TemplateReviewAction] = []
+    failed: list[BatchDecideTemplateFailure] = []
+    for template_id in template_ids:
+        try:
+            action = decide_template(
+                session, template_id, outcome=outcome, reviewer_id=reviewer_id, reason=reason
+            )
+        except TemplateNotFound:
+            failed.append(BatchDecideTemplateFailure(template_id=template_id, error="not_found"))
+        except TemplateAlreadyDecided as exc:
+            failed.append(BatchDecideTemplateFailure(template_id=template_id, error=str(exc)))
+        else:
+            decided.append(action)
+    return BatchDecideTemplateResult(decided=decided, failed=failed)

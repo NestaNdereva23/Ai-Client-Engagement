@@ -18,7 +18,7 @@ from app.db.models.complaints import ClientComplaint
 from app.db.models.risk import RiskSnapshot
 from app.ingestion.fa_assignment_source import FaAssignmentSource
 from app.risk.history import delta_for
-from app.risk.signals import SIGNAL_ORDER
+from app.risk.signals import fired_signal_tags
 
 # Routes a digest line ever exists for: the two an FA needs to see, in the
 # order the notebook renders them (call queue first).
@@ -55,14 +55,6 @@ class DigestGroupData:
     total_eligible: int
     total_aum_at_risk: float
     lines: list[DigestLineData]
-
-
-def _reason_tags(row: RiskSnapshot) -> list[str]:
-    """Fired signal names for one row, "sig_" stripped, in the same
-    declaration order risk_reasons is joined in -- a machine-readable form
-    of the same prose string, not a second source of truth.
-    """
-    return [name.removeprefix("sig_") for name in SIGNAL_ORDER if getattr(row, name)]
 
 
 @dataclass
@@ -128,7 +120,7 @@ def build_digest(
                 risk_score=row.risk_score,
                 risk_band=row.risk_band,
                 risk_reasons=row.risk_reasons,
-                risk_reason_tags=_reason_tags(row),
+                risk_reason_tags=fired_signal_tags(row),
                 aum_at_risk=row.aum_at_risk,
                 score_delta=delta_for(session, row.client_id, row.unit_fund_id, risk_run_id),
                 route=row.route,
