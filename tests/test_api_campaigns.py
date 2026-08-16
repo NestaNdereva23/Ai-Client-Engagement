@@ -15,7 +15,7 @@ from app.db.models.message_template import MessageTemplate
 from app.db.models.models import ClientFeatures, Clients, Funds, PiiVault
 from app.db.models.outreach import Campaign, OutreachMessage
 from app.db.models.template_generation_plan import TemplateGenerationPlan
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, restricted_session
 from app.llmops.versions import persist_generation_run
 from app.main import app
 
@@ -618,6 +618,15 @@ def campaign_with_an_approved_touch(db: None):
         )
         session.commit()
 
+    with restricted_session() as session:
+        session.add(
+            PiiVault(
+                client_id=client_id, client_name="Test Client", contact_email="test@example.com"
+            )
+        )
+        session.commit()
+
+    with SessionLocal() as session:
         enrollment = Enrollment(campaign_id=campaign_id, client_id=client_id)
         session.add(enrollment)
         session.commit()
@@ -651,6 +660,10 @@ def campaign_with_an_approved_touch(db: None):
         session.execute(delete(Clients).where(Clients.client_id == client_id))
         session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
         session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
+        session.commit()
+
+    with restricted_session() as session:
+        session.execute(delete(PiiVault).where(PiiVault.client_id == client_id))
         session.commit()
 
 
