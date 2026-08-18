@@ -7,11 +7,19 @@ clients.py router, on purpose: that router reads client_fund, this one
 reads active_client_fund, and the two populations must never share a route
 that could return the wrong record for a coincidentally matching id.
 
-POST .../interactions is the one write path here, gated the same way the
-review/template decide endpoints are: the X-Reviewer-Key stopgap
-(app.api.reviewer_auth) resolves the caller to a reviewer_id server-side,
-never a self-reported one, and every write is audited. Every GET read here
-carries no PII and stays ungated, the same as GET /clients/{id}/profile.
+POST .../interactions is the one write path here. It used to be gated the
+same way the review/template decide endpoints are (the X-Reviewer-Key
+stopgap resolving the caller to a reviewer_id server-side); as of
+2026-08-18 it no longer requires that header -- an FA re-entering a
+credential to log a call, snooze, or dismiss was worse friction than the
+gate was worth for a write that carries no PII and stays fully audited,
+just attributed by the caller's fa_id (a required query param) instead of
+a resolved reviewer_id. This is the same deliberate exception
+GET /briefing/... already made (see that router's docstring) applied to a
+write instead of a read; review/template decide keep the real gate, since
+those really do need a server-resolved identity, not a self-reported one.
+Every GET read here carries no PII and stays ungated, the same as
+GET /clients/{id}/profile.
 """
 
 from __future__ import annotations
@@ -21,7 +29,6 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from app.api.reviewer_auth import get_current_reviewer_id
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.risk.signals import fired_signal_tags
@@ -167,14 +174,14 @@ def post_interaction(
     client_id: int,
     unit_fund_id: int,
     body: InteractionCreate,
-    reviewer_id: str = Depends(get_current_reviewer_id),
+    fa_id: str = Query(..., description="The logging FA's identifier, recorded on the log entry."),
     session: Session = Depends(get_session),
 ) -> InteractionOut:
     """Log a call, a snooze, or a dismiss against one digest line.
 
-    Requires the X-Reviewer-Key header; the log entry is recorded under
-    the reviewer_id that key resolved to. 404s when the client-fund isn't
-    in the active book at all.
+    No X-Reviewer-Key required (see this module's docstring for why); the
+    log entry is recorded under the caller-supplied fa_id instead. 404s
+    when the client-fund isn't in the active book at all.
     """
     try:
         row = record_interaction(
@@ -183,7 +190,7 @@ def post_interaction(
             unit_fund_id,
             type=body.type,
             note=body.note,
-            reviewer_id=reviewer_id,
+            reviewer_id=fa_id,
         )
     except ActiveClientNotFound:
         raise HTTPException(status_code=404, detail="active client-fund not found") from None

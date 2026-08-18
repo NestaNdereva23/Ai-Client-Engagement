@@ -51,6 +51,7 @@ def build_and_persist_digest(
             route=line.route,
             in_call_queue=line.in_call_queue,
             complaint_caveat=line.complaint_caveat,
+            deprioritized=line.deprioritized,
         )
         for line in result.lines
     )

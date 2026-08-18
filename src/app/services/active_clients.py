@@ -63,12 +63,26 @@ def record_interaction(
 ) -> ActiveClientInteraction:
     """Log one FA action against a client-fund, or raise ActiveClientNotFound.
 
-    reviewer_id is the caller X-Reviewer-Key resolved to (see
-    app.api.reviewer_auth), never a self-reported field on the request
-    body. Audited the same as every other write path in this codebase.
+    reviewer_id names who logged it. As of 2026-08-18 the caller
+    (api/routers/active_clients.py::post_interaction) passes its required
+    fa_id query param here, not an X-Reviewer-Key-resolved identity -- this
+    write path deliberately isn't gated, see that router's module
+    docstring for why. Still audited the same as every other write path in
+    this codebase, just self-reported rather than server-resolved.
+
+    Stamps the client-fund's current risk_band onto the row (null if it has
+    never been scored), so a later digest build can tell whether the risk
+    got worse after this was logged -- see digest/build.py.
     """
     if session.get(ActiveClientFund, (client_id, unit_fund_id)) is None:
         raise ActiveClientNotFound(f"{client_id}/{unit_fund_id}")
+
+    risk_band = session.scalar(
+        select(ClientRiskFeatures.risk_band).where(
+            ClientRiskFeatures.client_id == client_id,
+            ClientRiskFeatures.unit_fund_id == unit_fund_id,
+        )
+    )
 
     row = ActiveClientInteraction(
         client_id=client_id,
@@ -76,6 +90,7 @@ def record_interaction(
         type=type,
         note=note,
         reviewer_id=reviewer_id,
+        risk_band_at_interaction=risk_band,
     )
     session.add(row)
     session.flush()

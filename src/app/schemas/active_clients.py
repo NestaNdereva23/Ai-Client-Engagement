@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-InteractionType = Literal["call_logged", "snoozed", "dismissed"]
+InteractionType = Literal["call_logged", "snoozed", "dismissed", "email_sent"]
 
 
 class InteractionCreate(BaseModel):
@@ -28,6 +28,7 @@ class InteractionOut(BaseModel):
     type: str
     note: str | None
     reviewer_id: str
+    risk_band_at_interaction: str | None
     created_at: datetime
 
 

@@ -40,6 +40,7 @@ class DigestLineView:
     route: str
     in_call_queue: bool
     complaint_caveat: bool
+    deprioritized: bool
     briefing_available: bool
 
 
@@ -106,6 +107,7 @@ def get_today_digest_group(session: Session, group_key: str) -> DigestGroupView:
             route=r.route,
             in_call_queue=r.in_call_queue,
             complaint_caveat=r.complaint_caveat,
+            deprioritized=r.deprioritized,
             briefing_available=(r.client_id, r.unit_fund_id) in available,
         )
         for r in rows

@@ -26,6 +26,10 @@ class DigestLineOut(BaseModel):
     route: str
     in_call_queue: bool
     complaint_caveat: bool
+    # True when an FA manager already acted on this client-fund and their
+    # risk band hasn't risen since -- it ranks below every untouched or
+    # escalated line in its group, rather than being hidden outright.
+    deprioritized: bool
     # Whether AM11's on-demand briefing has enough data to render for this
     # client-fund right now -- a cheap existence check, not the briefing
     # text itself. See GET /briefing/{client_id}/{unit_fund_id}.

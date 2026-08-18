@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete
 
+from app.db.models.active_clients import ActiveClientInteraction
 from app.db.models.complaints import ClientComplaint
 from app.db.models.risk import RiskRun, RiskSnapshot
 from app.db.session import SessionLocal
@@ -69,6 +70,11 @@ def cleanup():
         if client_ids:
             session.execute(
                 delete(ClientComplaint).where(ClientComplaint.client_id.in_(client_ids))
+            )
+            session.execute(
+                delete(ActiveClientInteraction).where(
+                    ActiveClientInteraction.client_id.in_(client_ids)
+                )
             )
         session.commit()
 
@@ -265,3 +271,107 @@ def test_rebuilding_from_the_same_run_gives_the_same_lines(db, cleanup) -> None:
     for key in first.groups:
         assert first.groups[key].lines == second.groups[key].lines
         assert first.groups[key].total_eligible == second.groups[key].total_eligible
+
+
+def _log_interaction(
+    session, client_id: int, *, type: str = "call_logged", risk_band_at_interaction: str | None
+) -> None:
+    session.add(
+        ActiveClientInteraction(
+            client_id=client_id,
+            unit_fund_id=FUND_ID,
+            type=type,
+            reviewer_id="fa-1",
+            risk_band_at_interaction=risk_band_at_interaction,
+        )
+    )
+
+
+def test_untouched_client_outranks_a_touched_one_despite_lower_fund_at_risk(db, cleanup) -> None:
+    run_ids, client_ids = cleanup
+    untouched, touched = 93013, 93014
+    client_ids.extend([untouched, touched])
+
+    with SessionLocal() as session:
+        run_id = _run(session)
+        run_ids.append(run_id)
+        _seed(session, run_id, untouched, 40, 5_000.0, "fa_watchlist")
+        _seed(session, run_id, touched, 40, 50_000.0, "fa_watchlist")
+        # Same band now ("Watch", _score's hardcoded band) as when the call
+        # was logged -- nothing got worse, so this stays deprioritized.
+        _log_interaction(session, touched, risk_band_at_interaction="Watch")
+        session.commit()
+
+        result = build_digest(
+            session,
+            run_id,
+            fa_assignment_source=FakeFaAssignmentSource({}),
+            cap_per_group=12,
+        )
+
+    lines = {line.client_id: line for line in result.groups[f"fund:{FUND_ID}"].lines}
+    ordered = [line.client_id for line in result.groups[f"fund:{FUND_ID}"].lines]
+    assert ordered == [untouched, touched]
+    assert lines[untouched].deprioritized is False
+    assert lines[touched].deprioritized is True
+
+
+def test_escalated_band_since_interaction_ranks_with_the_untouched_tier(db, cleanup) -> None:
+    run_ids, client_ids = cleanup
+    untouched, escalated, deprioritized = 93015, 93016, 93017
+    client_ids.extend([untouched, escalated, deprioritized])
+
+    with SessionLocal() as session:
+        run_id = _run(session)
+        run_ids.append(run_id)
+        _seed(session, run_id, untouched, 40, 10_000.0, "fa_watchlist")
+        _seed(session, run_id, escalated, 40, 5_000.0, "fa_watchlist")
+        _seed(session, run_id, deprioritized, 40, 50_000.0, "fa_watchlist")
+        # escalated's band was "Low" when dismissed; today's run scores them
+        # "Watch" (_score's hardcoded band) -- risen, so the escape hatch
+        # applies even though their fund_at_risk is the lowest of the three.
+        _log_interaction(session, escalated, type="dismissed", risk_band_at_interaction="Low")
+        _log_interaction(session, deprioritized, risk_band_at_interaction="Watch")
+        session.commit()
+
+        result = build_digest(
+            session,
+            run_id,
+            fa_assignment_source=FakeFaAssignmentSource({}),
+            cap_per_group=12,
+        )
+
+    lines = {line.client_id: line for line in result.groups[f"fund:{FUND_ID}"].lines}
+    ordered = [line.client_id for line in result.groups[f"fund:{FUND_ID}"].lines]
+    # Both tiers still rank by fund_at_risk within themselves: untouched
+    # (10,000) beats escalated (5,000) in tier 0, then deprioritized
+    # (50,000) trails last despite the largest fund_at_risk of the three.
+    assert ordered == [untouched, escalated, deprioritized]
+    assert lines[untouched].deprioritized is False
+    assert lines[escalated].deprioritized is False
+    assert lines[deprioritized].deprioritized is True
+
+
+def test_interaction_with_no_band_on_file_stays_deprioritized(db, cleanup) -> None:
+    run_ids, client_ids = cleanup
+    client_id = 93018
+    client_ids.append(client_id)
+
+    with SessionLocal() as session:
+        run_id = _run(session)
+        run_ids.append(run_id)
+        _seed(session, run_id, client_id, 40, 10_000.0, "fa_watchlist")
+        # Logged before the client was ever scored -- nothing to compare
+        # today's band against, so it can't earn the escalation escape hatch.
+        _log_interaction(session, client_id, risk_band_at_interaction=None)
+        session.commit()
+
+        result = build_digest(
+            session,
+            run_id,
+            fa_assignment_source=FakeFaAssignmentSource({}),
+            cap_per_group=12,
+        )
+
+    line = result.groups[f"fund:{FUND_ID}"].lines[0]
+    assert line.deprioritized is True

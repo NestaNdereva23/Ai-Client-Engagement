@@ -93,6 +93,13 @@ class DigestLine(Base):
     complaint_caveat: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )
+    # True when an FA manager already acted on this client-fund (call,
+    # snooze, dismiss, or email) and their risk band hasn't risen since --
+    # digest/build.py ranks these below every untouched or escalated line
+    # within the group, this just carries that fact onto the persisted row.
+    deprioritized: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
