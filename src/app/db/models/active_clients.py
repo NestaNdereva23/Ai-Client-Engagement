@@ -5,11 +5,11 @@ dormant table's columns describe a relationship that has already ended; an
 active relationship has no exit yet, so a shared schema would leave half its
 columns meaningless on every row.
 
-Ingestion fills the directly observed columns: balance, purchase/sale counts
-and dates, censoring flags, computed_at. transform/active_features.py derives
-the rest (rhythm_days, ticket_trend, and the others below) from the same
-transactions on every transform run; a row stays null on those columns only
-until the first successful transform.
+Ingestion fills the directly observed columns: balance, deposit/withdrawal
+counts and dates, capping flags, computed_at. transform/active_features.py
+derives the rest (typical_gap_days, deposit_trend, and the others below)
+from the same transactions on every transform run; a row stays null on
+those columns only until the first successful transform.
 """
 
 from __future__ import annotations
@@ -45,16 +45,16 @@ class ActiveClientFund(Base):
     unit_fund_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     client_code: Mapped[str | None] = mapped_column(Text, nullable=True)
     balance: Mapped[float | None] = mapped_column(Float, nullable=True)
-    n_purchases: Mapped[int] = mapped_column(Integer, nullable=False)
-    n_sales: Mapped[int] = mapped_column(Integer, nullable=False)
-    last_purchase: Mapped[date | None] = mapped_column(Date, nullable=True)
-    last_sale: Mapped[date | None] = mapped_column(Date, nullable=True)
-    purchases_censored: Mapped[bool] = mapped_column(
+    n_deposits: Mapped[int] = mapped_column(Integer, nullable=False)
+    n_withdrawals: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_deposit_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    last_withdrawal_slot_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    deposit_count_capped: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )
-    # True when the sale window is full, so older redemptions are hidden --
-    # the active-book counterpart of client_fund.history_censored.
-    redemption_history_blind: Mapped[bool] = mapped_column(
+    # True when the withdrawal window is full, so older withdrawals are
+    # hidden -- the active-book counterpart of client_fund.history_censored.
+    withdrawal_history_hidden: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )
     computed_at: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -62,18 +62,18 @@ class ActiveClientFund(Base):
     # Derived measures, computed by transform/active_features.py from the
     # client's own transactions. Null here means "not yet computed", not
     # "zero".
-    rhythm_days: Mapped[float | None] = mapped_column(Float, nullable=True)
-    avg_ticket: Mapped[float | None] = mapped_column(Float, nullable=True)
-    max_ticket: Mapped[float | None] = mapped_column(Float, nullable=True)
-    last_ticket: Mapped[float | None] = mapped_column(Float, nullable=True)
-    ticket_trend: Mapped[float | None] = mapped_column(Float, nullable=True)
-    # A genuine client-initiated redemption, filtered to exclude system-driven
-    # sales (the SYSTEM_SALE_MAX heuristic).
-    largest_real_sale: Mapped[float | None] = mapped_column(Float, nullable=True)
-    # The most recent date among real sales, not among every sale slot --
-    # see transform/active_features.py::_last_real_sale_date.
-    last_real_sale_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    fee_runway_months: Mapped[float | None] = mapped_column(Float, nullable=True)
+    typical_gap_days: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_deposit_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_deposit_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_deposit_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    deposit_trend: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # A genuine client-initiated withdrawal, filtered to exclude
+    # system-driven withdrawals (the SYSTEM_FEE_MAX rule of thumb).
+    largest_withdrawal: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The most recent date among real withdrawals, not among every
+    # withdrawal slot -- see transform/active_features.py::_last_withdrawal_date.
+    last_withdrawal_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    months_until_empty: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -124,7 +124,7 @@ class ActiveTransaction(Base):
     purchases" / "last 2 sales" window on a later pull stays visible here
     rather than disappearing -- this table accumulates across nightly runs,
     the feed itself never does. Still not a claim of full lifetime history:
-    active_client_fund.purchases_censored / redemption_history_blind says
+    active_client_fund.deposit_count_capped / withdrawal_history_hidden says
     whether even the most recent pull was itself capped, and a transaction
     that aged out before this table started accumulating is gone for good.
 

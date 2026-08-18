@@ -31,11 +31,11 @@ FUND_ID = 943
 CLIENT_ID = 94301
 
 _SIGNALS = {
-    "sig_drawdown": False,
+    "sig_heavy_withdrawal": False,
     "sig_dormant": True,
-    "sig_cadence_break": False,
+    "sig_broken_pattern": False,
     "sig_shrinking": False,
-    "sig_fee_erosion": False,
+    "sig_going_dormant": False,
     "sig_never_repeated": False,
 }
 
@@ -49,8 +49,8 @@ def seeded_active_client(db):
                 unit_fund_id=FUND_ID,
                 client_code="C94301",
                 balance=50_000.0,
-                n_purchases=2,
-                n_sales=0,
+                n_deposits=2,
+                n_withdrawals=0,
             )
         )
         session.commit()
@@ -197,8 +197,8 @@ def test_get_profile_returns_identity_and_bands(
             ScoreResult(
                 risk_score=55,
                 risk_band="High",
-                risk_reasons="No contribution in 12m",
-                aum_at_risk=50_000.0,
+                risk_reasons="No deposit in 12 months",
+                fund_at_risk=50_000.0,
                 signals=_SIGNALS,
                 recency_band="1-2y",
                 balance_tier="Small",
@@ -206,8 +206,8 @@ def test_get_profile_returns_identity_and_bands(
             ),
             RouteResult(route="fa_call_priority", queue_rank=1, complaint_caveat=False),
             config_version=1,
-            credible_rhythm=True,
-            lapse_ratio=1.0,
+            pattern_is_reliable=True,
+            overdue_multiple=1.0,
         )
         session.add(
             ClientRiskFeatures(
@@ -217,8 +217,8 @@ def test_get_profile_returns_identity_and_bands(
                 **_SIGNALS,
                 risk_score=55,
                 risk_band="High",
-                risk_reasons="No contribution in 12m",
-                aum_at_risk=50_000.0,
+                risk_reasons="No deposit in 12 months",
+                fund_at_risk=50_000.0,
                 config_version=1,
                 route="fa_call_priority",
                 queue_rank=1,
@@ -254,13 +254,13 @@ def test_get_profile_returns_identity_and_bands(
         assert body["identity"]["client_id"] == CLIENT_ID
         assert body["identity"]["client_code"] == "C94301"
         assert body["identity"]["balance"] == 50_000.0
-        assert body["identity"]["purchases_censored"] is False
-        assert body["identity"]["redemption_history_blind"] is False
+        assert body["identity"]["deposit_count_capped"] is False
+        assert body["identity"]["withdrawal_history_hidden"] is False
         assert body["bands"]["risk_score"] == 55
         assert body["bands"]["risk_band"] == "High"
         assert body["bands"]["route"] == "fa_call_priority"
-        # _SIGNALS fires only sig_dormant; SIGNAL_ORDER is cadence_break,
-        # dormant, drawdown, ...
+        # _SIGNALS fires only sig_dormant; SIGNAL_ORDER is broken_pattern,
+        # dormant, heavy_withdrawal, ...
         assert body["bands"]["risk_reason_tags"] == ["dormant"]
         assert len(body["risk_history"]) == 1
         assert body["risk_history"][0]["run_id"] == run_id
@@ -290,7 +290,7 @@ def test_get_profile_reports_primary_signal_magnitude(
 ) -> None:
     with SessionLocal() as session:
         row = session.get(ActiveClientFund, (CLIENT_ID, FUND_ID))
-        row.last_purchase = date(2026, 1, 1)
+        row.last_deposit_date = date(2026, 1, 1)
         session.add(
             ClientRiskFeatures(
                 client_id=CLIENT_ID,
@@ -299,8 +299,8 @@ def test_get_profile_reports_primary_signal_magnitude(
                 **_SIGNALS,
                 risk_score=55,
                 risk_band="High",
-                risk_reasons="No contribution in 12m",
-                aum_at_risk=50_000.0,
+                risk_reasons="No deposit in 12 months",
+                fund_at_risk=50_000.0,
                 config_version=1,
                 route="fa_call_priority",
                 queue_rank=1,
@@ -312,8 +312,8 @@ def test_get_profile_reports_primary_signal_magnitude(
         response = client.get(_profile_url())
         assert response.status_code == 200
         magnitude = response.json()["bands"]["primary_signal_magnitude"]
-        assert magnitude.startswith("No contribution in 12m: ")
-        assert "days since last purchase" in magnitude
+        assert magnitude.startswith("No deposit in 12 months: ")
+        assert "days since last deposit" in magnitude
     finally:
         with SessionLocal() as session:
             session.execute(
@@ -415,19 +415,19 @@ def test_get_transactions_is_not_gated_by_the_reviewer_key(
     assert response.status_code == 200
 
 
-# --- GET .../contribution-percentile ----------------------------------------
+# --- GET .../deposit-percentile ---------------------------------------------
 
 
 def _percentile_url(client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID) -> str:
-    return f"/api/v1/active-clients/{client_id}/{unit_fund_id}/contribution-percentile"
+    return f"/api/v1/active-clients/{client_id}/{unit_fund_id}/deposit-percentile"
 
 
-def test_contribution_percentile_404s_for_unknown_client_fund() -> None:
+def test_deposit_percentile_404s_for_unknown_client_fund() -> None:
     response = client.get(_percentile_url(999999, 999999))
     assert response.status_code == 404
 
 
-def test_contribution_percentile_sums_only_purchase_transactions(seeded_active_client) -> None:
+def test_deposit_percentile_sums_only_purchase_transactions(seeded_active_client) -> None:
     with SessionLocal() as session:
         session.add_all(
             [
@@ -454,21 +454,21 @@ def test_contribution_percentile_sums_only_purchase_transactions(seeded_active_c
     response = client.get(_percentile_url())
     assert response.status_code == 200
     body = response.json()
-    assert body["total_contribution"] == 7_000.0
-    assert body["purchases_censored"] is False
+    assert body["total_deposits"] == 7_000.0
+    assert body["deposit_count_capped"] is False
 
 
-def test_contribution_percentile_reflects_purchases_censored(seeded_active_client) -> None:
+def test_deposit_percentile_reflects_deposit_count_capped(seeded_active_client) -> None:
     with SessionLocal() as session:
         row = session.get(ActiveClientFund, (CLIENT_ID, FUND_ID))
-        row.purchases_censored = True
+        row.deposit_count_capped = True
         session.commit()
 
     response = client.get(_percentile_url())
-    assert response.json()["purchases_censored"] is True
+    assert response.json()["deposit_count_capped"] is True
 
 
-def test_contribution_percentile_rank_moves_with_a_higher_book_entry(seeded_active_client) -> None:
+def test_deposit_percentile_rank_moves_with_a_higher_book_entry(seeded_active_client) -> None:
     with SessionLocal() as session:
         session.add(
             ActiveTransaction(
@@ -489,10 +489,10 @@ def test_contribution_percentile_rank_moves_with_a_higher_book_entry(seeded_acti
         session.add_all(
             [
                 ActiveClientFund(
-                    client_id=higher_id, unit_fund_id=FUND_ID, n_purchases=1, n_sales=0
+                    client_id=higher_id, unit_fund_id=FUND_ID, n_deposits=1, n_withdrawals=0
                 ),
                 ActiveClientFund(
-                    client_id=lower_id, unit_fund_id=FUND_ID, n_purchases=1, n_sales=0
+                    client_id=lower_id, unit_fund_id=FUND_ID, n_deposits=1, n_withdrawals=0
                 ),
             ]
         )
@@ -555,15 +555,15 @@ def seeded_roster(db):
                     client_id=scored_id,
                     unit_fund_id=FUND_ID,
                     balance=1_000.0,
-                    n_purchases=1,
-                    n_sales=0,
+                    n_deposits=1,
+                    n_withdrawals=0,
                 ),
                 ActiveClientFund(
                     client_id=unscored_id,
                     unit_fund_id=FUND_ID,
                     balance=2_000.0,
-                    n_purchases=1,
-                    n_sales=0,
+                    n_deposits=1,
+                    n_withdrawals=0,
                 ),
             ]
         )
@@ -576,8 +576,8 @@ def seeded_roster(db):
                 **_SIGNALS,
                 risk_score=20,
                 risk_band="Watch",
-                risk_reasons="No contribution in 12m",
-                aum_at_risk=100.0,
+                risk_reasons="No deposit in 12 months",
+                fund_at_risk=100.0,
                 config_version=1,
                 route=route,
                 queue_rank=None,
@@ -686,7 +686,7 @@ def test_roster_reports_primary_signal_magnitude_and_none_for_unscored(seeded_ro
     scored_row = next(r for r in response.json()["items"] if r["client_id"] == scored_id)
     # _SIGNALS fires only sig_dormant, and no active feature measures are
     # seeded, so the label alone comes back with no magnitude number.
-    assert scored_row["primary_signal_magnitude"] == "No contribution in 12m"
+    assert scored_row["primary_signal_magnitude"] == "No deposit in 12 months"
 
     response = client.get(ROSTER, params={"client_id": unscored_id})
     unscored_row = response.json()["items"][0]

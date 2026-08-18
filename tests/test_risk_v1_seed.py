@@ -28,16 +28,16 @@ def test_v1_weights_name_every_signal_and_sum_to_100(db) -> None:
 
 
 def test_v1_currency_thresholds_are_kes_not_usd(db) -> None:
-    """DUST_BALANCE, MATERIAL_BALANCE, and SYSTEM_SALE_MAX are all read
+    """TINY_BALANCE, WORTH_A_CALL_BALANCE, and SYSTEM_FEE_MAX are all read
     directly off KES-denominated figures in the notebook -- none of them
     are a USD amount needing conversion.
     """
     with SessionLocal() as session:
         config = load_active_config(session, IN_FORCE)
     assert config is not None
-    assert config.thresholds["DUST_BALANCE"] == 100
-    assert config.thresholds["SYSTEM_SALE_MAX"] == 100
-    assert config.thresholds["MATERIAL_BALANCE"] == 10_000
+    assert config.thresholds["TINY_BALANCE"] == 100
+    assert config.thresholds["SYSTEM_FEE_MAX"] == 100
+    assert config.thresholds["WORTH_A_CALL_BALANCE"] == 10_000
     assert config.thresholds["FEE_PER_MONTH"] == 50
 
 

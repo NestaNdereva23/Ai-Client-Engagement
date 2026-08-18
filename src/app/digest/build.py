@@ -22,7 +22,7 @@ from app.risk.signals import fired_signal_tags
 
 # Routes a digest line ever exists for: the two an FA needs to see, in the
 # order the notebook renders them (call queue first).
-DIGEST_ROUTES = ("fa_call_priority", "fa_digest_watch")
+DIGEST_ROUTES = ("fa_call_priority", "fa_watchlist")
 
 
 def group_key_for(fa_id: int | None, unit_fund_id: int) -> str:
@@ -42,7 +42,7 @@ class DigestLineData:
     risk_band: str
     risk_reasons: str
     risk_reason_tags: list[str]
-    aum_at_risk: float
+    fund_at_risk: float
     score_delta: int | None
     route: str
     in_call_queue: bool
@@ -53,7 +53,7 @@ class DigestLineData:
 class DigestGroupData:
     group_key: str
     total_eligible: int
-    total_aum_at_risk: float
+    total_fund_at_risk: float
     lines: list[DigestLineData]
 
 
@@ -75,7 +75,7 @@ def build_digest(
     cap_per_group: int,
 ) -> DigestBuildResult:
     """Everyone routed to a call-queue or watch line in this run, grouped by
-    FA (falling back to fund), sorted by aum_at_risk within each group, and
+    FA (falling back to fund), sorted by fund_at_risk within each group, and
     capped -- exactly the reads Section 16 describes.
     """
     snapshots = list(
@@ -106,10 +106,10 @@ def build_digest(
 
     groups: dict[str, DigestGroupData] = {}
     for key, rows in by_group.items():
-        rows.sort(key=lambda r: r.aum_at_risk, reverse=True)
+        rows.sort(key=lambda r: r.fund_at_risk, reverse=True)
         # The true total, over every eligible row -- not just the ones the
         # cap below keeps in `lines`.
-        total_aum_at_risk = sum(row.aum_at_risk for row in rows)
+        total_fund_at_risk = sum(row.fund_at_risk for row in rows)
         capped = rows[:cap_per_group]
         lines = [
             DigestLineData(
@@ -121,7 +121,7 @@ def build_digest(
                 risk_band=row.risk_band,
                 risk_reasons=row.risk_reasons,
                 risk_reason_tags=fired_signal_tags(row),
-                aum_at_risk=row.aum_at_risk,
+                fund_at_risk=row.fund_at_risk,
                 score_delta=delta_for(session, row.client_id, row.unit_fund_id, risk_run_id),
                 route=row.route,
                 in_call_queue=row.queue_rank is not None,
@@ -132,7 +132,7 @@ def build_digest(
         groups[key] = DigestGroupData(
             group_key=key,
             total_eligible=len(rows),
-            total_aum_at_risk=total_aum_at_risk,
+            total_fund_at_risk=total_fund_at_risk,
             lines=lines,
         )
 

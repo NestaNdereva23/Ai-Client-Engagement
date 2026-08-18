@@ -17,23 +17,23 @@ from app.risk.store import (
 )
 
 _WEIGHTS = {
-    "sig_drawdown": 30,
+    "sig_heavy_withdrawal": 30,
     "sig_dormant": 25,
-    "sig_cadence_break": 20,
+    "sig_broken_pattern": 20,
     "sig_shrinking": 15,
-    "sig_fee_erosion": 7,
+    "sig_going_dormant": 7,
     "sig_never_repeated": 3,
 }
 _THRESHOLDS = {
     "DORMANT_DAYS": 365,
-    "DRAWDOWN_HEAVY": 0.50,
-    "LAPSE_MULTIPLE": 3.0,
-    "DECLINE_SLOPE": -0.10,
-    "DUST_BALANCE": 100,
-    "MATERIAL_BALANCE": 10_000,
-    "FEE_RUNWAY_MONTHS": 12,
+    "HEAVY_WITHDRAWAL_PCT": 0.50,
+    "OVERDUE_MULTIPLE": 3.0,
+    "SHRINKING_TREND": -0.10,
+    "TINY_BALANCE": 100,
+    "WORTH_A_CALL_BALANCE": 10_000,
+    "MONTHS_UNTIL_EMPTY": 12,
     "FEE_PER_MONTH": 50,
-    "SYSTEM_SALE_MAX": 100,
+    "SYSTEM_FEE_MAX": 100,
     "RISK_BAND_CUTOFFS": [0, 24, 49, 74],
 }
 
@@ -50,7 +50,7 @@ def cleanup_versions():
 
 def test_weights_must_sum_to_100(db, cleanup_versions) -> None:
     cleanup_versions.append(90001)
-    bad_weights = {**_WEIGHTS, "sig_drawdown": 31}  # now sums to 101
+    bad_weights = {**_WEIGHTS, "sig_heavy_withdrawal": 31}  # now sums to 101
     with SessionLocal() as session, pytest.raises(RiskConfigValidationError, match="sum to 100"):
         save_config_version(
             session,
@@ -83,7 +83,7 @@ def test_weights_must_name_every_signal(db, cleanup_versions) -> None:
 
 def test_thresholds_must_be_complete(db, cleanup_versions) -> None:
     cleanup_versions.append(90003)
-    missing = {k: v for k, v in _THRESHOLDS.items() if k != "SYSTEM_SALE_MAX"}
+    missing = {k: v for k, v in _THRESHOLDS.items() if k != "SYSTEM_FEE_MAX"}
     with (
         SessionLocal() as session,
         pytest.raises(RiskConfigValidationError, match="missing thresholds"),

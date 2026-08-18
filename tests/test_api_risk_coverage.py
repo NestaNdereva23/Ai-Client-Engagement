@@ -28,11 +28,11 @@ client = TestClient(app)
 FUND_ID = 944
 
 SIGNALS = {
-    "sig_drawdown": False,
+    "sig_heavy_withdrawal": False,
     "sig_dormant": True,
-    "sig_cadence_break": False,
+    "sig_broken_pattern": False,
     "sig_shrinking": False,
-    "sig_fee_erosion": False,
+    "sig_going_dormant": False,
     "sig_never_repeated": False,
 }
 
@@ -41,8 +41,8 @@ def _score() -> ScoreResult:
     return ScoreResult(
         risk_score=40,
         risk_band="Watch",
-        risk_reasons="No contribution in 12m",
-        aum_at_risk=5_000.0,
+        risk_reasons="No deposit in 12 months",
+        fund_at_risk=5_000.0,
         signals=SIGNALS,
         recency_band="1-2y",
         balance_tier="Small",
@@ -92,7 +92,7 @@ def test_book_size_counts_every_active_client_fund_row(db, cleanup) -> None:
         for client_id in ids:
             session.add(
                 ActiveClientFund(
-                    client_id=client_id, unit_fund_id=FUND_ID, n_purchases=1, n_sales=0
+                    client_id=client_id, unit_fund_id=FUND_ID, n_deposits=1, n_withdrawals=0
                 )
             )
         session.commit()
@@ -117,10 +117,10 @@ def test_scored_count_is_the_latest_completed_runs_snapshot_count(db, cleanup) -
                 client_id,
                 FUND_ID,
                 _score(),
-                RouteResult(route="fa_digest_watch", queue_rank=None, complaint_caveat=False),
+                RouteResult(route="fa_watchlist", queue_rank=None, complaint_caveat=False),
                 config_version=1,
-                credible_rhythm=True,
-                lapse_ratio=1.0,
+                pattern_is_reliable=True,
+                overdue_multiple=1.0,
             )
         session.commit()
 
@@ -146,10 +146,10 @@ def test_a_still_running_run_is_never_the_latest(db, cleanup) -> None:
             completed_id,
             FUND_ID,
             _score(),
-            RouteResult(route="fa_digest_watch", queue_rank=None, complaint_caveat=False),
+            RouteResult(route="fa_watchlist", queue_rank=None, complaint_caveat=False),
             config_version=1,
-            credible_rhythm=True,
-            lapse_ratio=1.0,
+            pattern_is_reliable=True,
+            overdue_multiple=1.0,
         )
         session.add(RiskRun(run_id=running_run_id, state="running", config_version=1))
         session.flush()
@@ -159,10 +159,10 @@ def test_a_still_running_run_is_never_the_latest(db, cleanup) -> None:
             running_id,
             FUND_ID,
             _score(),
-            RouteResult(route="fa_digest_watch", queue_rank=None, complaint_caveat=False),
+            RouteResult(route="fa_watchlist", queue_rank=None, complaint_caveat=False),
             config_version=1,
-            credible_rhythm=True,
-            lapse_ratio=1.0,
+            pattern_is_reliable=True,
+            overdue_multiple=1.0,
         )
         session.commit()
 

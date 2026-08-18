@@ -19,14 +19,9 @@ from sqlalchemy.orm import Session
 
 from app.db.models.models import IngestionStatus, RawStaging
 from app.ingestion.contracts_active import ActiveClientRecord, ActiveFundRecord
-from app.transform.flatten import (
-    PURCHASE_CAP,
-    SALE_CAP,
-    FlattenCounters,
-    max_date,
-    parse_amount,
-    parse_date,
-)
+from app.transform.flatten import PURCHASE_CAP as DEPOSIT_CAP
+from app.transform.flatten import SALE_CAP as WITHDRAWAL_CAP
+from app.transform.flatten import FlattenCounters, max_date, parse_amount, parse_date
 
 
 @dataclass
@@ -36,12 +31,12 @@ class ActiveClientRow:
     client_name: str | None
     unit_fund_id: int
     balance: float | None
-    n_purchases: int
-    n_sales: int
-    last_purchase: date | None
-    last_sale: date | None
-    purchases_censored: bool
-    redemption_history_blind: bool
+    n_deposits: int
+    n_withdrawals: int
+    last_deposit_date: date | None
+    last_withdrawal_slot_date: date | None
+    deposit_count_capped: bool
+    withdrawal_history_hidden: bool
     computed_at: str | None
 
 
@@ -114,24 +109,24 @@ def flatten_active_payload(
                 result.counters.clients_skipped += 1
                 continue
 
-            purchases = client_raw.get("last_5_purchases") or []
-            sales = client_raw.get("last_2_sales") or []
-            purchase_rows = [
+            deposits = client_raw.get("last_5_purchases") or []
+            withdrawals = client_raw.get("last_2_sales") or []
+            deposit_rows = [
                 _active_txn_row(t, client, fund.unit_fund_id, "purchase", result.counters)
-                for t in purchases
+                for t in deposits
             ]
-            sale_rows = [
+            withdrawal_rows = [
                 _active_txn_row(t, client, fund.unit_fund_id, "sale", result.counters)
-                for t in sales
+                for t in withdrawals
             ]
-            result.transactions.extend(purchase_rows)
-            result.transactions.extend(sale_rows)
+            result.transactions.extend(deposit_rows)
+            result.transactions.extend(withdrawal_rows)
 
-            last_purchase = max_date([r.date for r in purchase_rows])
-            last_sale = max_date([r.date for r in sale_rows])
+            last_deposit_date = max_date([r.date for r in deposit_rows])
+            last_withdrawal_slot_date = max_date([r.date for r in withdrawal_rows])
 
-            purchases_censored = len(purchases) >= PURCHASE_CAP
-            redemption_history_blind = len(sales) >= SALE_CAP
+            deposit_count_capped = len(deposits) >= DEPOSIT_CAP
+            withdrawal_history_hidden = len(withdrawals) >= WITHDRAWAL_CAP
 
             result.clients.append(
                 ActiveClientRow(
@@ -140,12 +135,12 @@ def flatten_active_payload(
                     client_name=client.client_name,
                     unit_fund_id=fund.unit_fund_id,
                     balance=client.balance,
-                    n_purchases=len(purchases),
-                    n_sales=len(sales),
-                    last_purchase=last_purchase,
-                    last_sale=last_sale,
-                    purchases_censored=purchases_censored,
-                    redemption_history_blind=redemption_history_blind,
+                    n_deposits=len(deposits),
+                    n_withdrawals=len(withdrawals),
+                    last_deposit_date=last_deposit_date,
+                    last_withdrawal_slot_date=last_withdrawal_slot_date,
+                    deposit_count_capped=deposit_count_capped,
+                    withdrawal_history_hidden=withdrawal_history_hidden,
                     computed_at=client.computed_at,
                 )
             )

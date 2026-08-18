@@ -31,16 +31,16 @@ def _row(**overrides) -> ClientRiskFeatures:
     base = dict(
         client_id=90101,
         unit_fund_id=10,
-        sig_drawdown=False,
+        sig_heavy_withdrawal=False,
         sig_dormant=True,
-        sig_cadence_break=False,
+        sig_broken_pattern=False,
         sig_shrinking=False,
-        sig_fee_erosion=False,
+        sig_going_dormant=False,
         sig_never_repeated=True,
         risk_score=28,
         risk_band="Watch",
-        risk_reasons="No contribution in 12m; Never made a second deposit",
-        aum_at_risk=140_000.0,
+        risk_reasons="No deposit in 12 months; Never made a second deposit",
+        fund_at_risk=140_000.0,
         config_version=1,
     )
     base.update(overrides)
@@ -62,15 +62,15 @@ def test_a_compose_score_result_round_trips(db, cleanup_rows) -> None:
     assert row is not None
     assert row.risk_score == 28
     assert row.risk_band == "Watch"
-    assert row.aum_at_risk == 140_000.0
+    assert row.fund_at_risk == 140_000.0
     # Deferred columns are genuinely optional -- not backfilled with a guess.
     assert row.recency_band is None
     assert row.balance_tier is None
     assert row.value_tier is None
     assert row.route is None
     assert row.queue_rank is None
-    # credible_rhythm defaults false when not given.
-    assert row.credible_rhythm is False
+    # pattern_is_reliable defaults false when not given.
+    assert row.pattern_is_reliable is False
 
 
 def test_risk_score_is_required(db) -> None:

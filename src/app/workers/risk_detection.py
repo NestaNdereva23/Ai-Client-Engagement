@@ -62,18 +62,18 @@ _FEATURE_UPDATE_COLUMNS = [
     "recency_band",
     "balance_tier",
     "value_tier",
-    "credible_rhythm",
-    "lapse_ratio",
-    "sig_drawdown",
+    "pattern_is_reliable",
+    "overdue_multiple",
+    "sig_heavy_withdrawal",
     "sig_dormant",
-    "sig_cadence_break",
+    "sig_broken_pattern",
     "sig_shrinking",
-    "sig_fee_erosion",
+    "sig_going_dormant",
     "sig_never_repeated",
     "risk_score",
     "risk_band",
     "risk_reasons",
-    "aum_at_risk",
+    "fund_at_risk",
     "config_version",
     "route",
     "queue_rank",
@@ -97,15 +97,15 @@ class RiskRunResult:
     digest_run_id: int | None = None
 
 
-def _lapse_ratio(m: ActiveFeatureMeasures) -> float | None:
-    """How many multiples of their own rhythm a client is overdue by.
+def _overdue_multiple(m: ActiveFeatureMeasures) -> float | None:
+    """How many multiples of their own pattern a client is overdue by.
 
-    None whenever there is no credible rhythm or no purchase to measure
-    against -- the same evidence gate sig_cadence_break uses.
+    None whenever there is no reliable pattern or no deposit to measure
+    against -- the same evidence gate sig_broken_pattern uses.
     """
-    if m.rhythm_days is None or m.rhythm_days == 0 or m.days_since_purchase is None:
+    if m.typical_gap_days is None or m.typical_gap_days == 0 or m.days_since_deposit is None:
         return None
-    return m.days_since_purchase / m.rhythm_days
+    return m.days_since_deposit / m.typical_gap_days
 
 
 def _feature_row(
@@ -121,13 +121,13 @@ def _feature_row(
         "recency_band": score.recency_band,
         "balance_tier": score.balance_tier,
         "value_tier": score.value_tier,
-        "credible_rhythm": m.rhythm_days is not None,
-        "lapse_ratio": _lapse_ratio(m),
+        "pattern_is_reliable": m.typical_gap_days is not None,
+        "overdue_multiple": _overdue_multiple(m),
         **score.signals,
         "risk_score": score.risk_score,
         "risk_band": score.risk_band,
         "risk_reasons": score.risk_reasons,
-        "aum_at_risk": score.aum_at_risk,
+        "fund_at_risk": score.fund_at_risk,
         "config_version": config_version,
         "route": route_str,
         "queue_rank": queue_rank,
@@ -191,7 +191,7 @@ class RiskDetectionWorker:
             measures = derive_active_measures(
                 flat,
                 reference_date=run.reference_ts,
-                system_sale_max=config_row.thresholds["SYSTEM_SALE_MAX"],
+                system_fee_max=config_row.thresholds["SYSTEM_FEE_MAX"],
                 fee_per_month=config_row.thresholds["FEE_PER_MONTH"],
             )
             logger.info("risk_detection.transformed", run_id=run.run_id, client_funds=len(measures))
@@ -226,7 +226,7 @@ class RiskDetectionWorker:
                         balance=m.balance,
                         risk_score=score.risk_score,
                         sig_dormant=score.signals["sig_dormant"],
-                        aum_at_risk=score.aum_at_risk,
+                        fund_at_risk=score.fund_at_risk,
                         has_open_complaint=m.client_id in complaint_ids,
                         suppressed=m.client_id in suppressed_ids,
                     )
@@ -269,8 +269,8 @@ class RiskDetectionWorker:
                         score,
                         route,
                         config_row.version,
-                        credible_rhythm=m.rhythm_days is not None,
-                        lapse_ratio=_lapse_ratio(m),
+                        pattern_is_reliable=m.typical_gap_days is not None,
+                        overdue_multiple=_overdue_multiple(m),
                     )
                 prior_row = prior_rows.get(key)
                 prior_route = prior_row.route if prior_row is not None else None

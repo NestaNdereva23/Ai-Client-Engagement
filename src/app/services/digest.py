@@ -35,7 +35,7 @@ class DigestLineView:
     risk_band: str
     risk_reasons: str
     risk_reason_tags: list[str]
-    aum_at_risk: float
+    fund_at_risk: float
     score_delta: int | None
     route: str
     in_call_queue: bool
@@ -53,7 +53,7 @@ class DigestGroupView:
     group_key: str
     total_eligible: int
     overflow_count: int
-    total_aum_at_risk: float
+    total_fund_at_risk: float
     lines: list[DigestLineView]
 
 
@@ -88,7 +88,7 @@ def get_today_digest_group(session: Session, group_key: str) -> DigestGroupView:
         )
     )
     total_eligible = rows[0].group_total if rows else 0
-    total_aum_at_risk = rows[0].group_aum_total if rows else 0.0
+    total_fund_at_risk = rows[0].group_fund_value_total if rows else 0.0
     overflow_count = max(total_eligible - len(rows), 0)
 
     available = briefing_available_keys(session, [(r.client_id, r.unit_fund_id) for r in rows])
@@ -101,7 +101,7 @@ def get_today_digest_group(session: Session, group_key: str) -> DigestGroupView:
             risk_band=r.risk_band,
             risk_reasons=r.risk_reasons,
             risk_reason_tags=list(r.risk_reason_tags),
-            aum_at_risk=r.aum_at_risk,
+            fund_at_risk=r.fund_at_risk,
             score_delta=r.score_delta,
             route=r.route,
             in_call_queue=r.in_call_queue,
@@ -118,6 +118,6 @@ def get_today_digest_group(session: Session, group_key: str) -> DigestGroupView:
         group_key=group_key,
         total_eligible=total_eligible,
         overflow_count=overflow_count,
-        total_aum_at_risk=total_aum_at_risk,
+        total_fund_at_risk=total_fund_at_risk,
         lines=lines,
     )

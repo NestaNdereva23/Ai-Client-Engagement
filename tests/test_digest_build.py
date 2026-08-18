@@ -22,11 +22,11 @@ from app.risk.scoring import ScoreResult
 FUND_ID = 930
 
 SIGNALS = {
-    "sig_drawdown": False,
+    "sig_heavy_withdrawal": False,
     "sig_dormant": True,
-    "sig_cadence_break": False,
+    "sig_broken_pattern": False,
     "sig_shrinking": False,
-    "sig_fee_erosion": False,
+    "sig_going_dormant": False,
     "sig_never_repeated": False,
 }
 
@@ -45,12 +45,12 @@ class FakeFaAssignmentSource:
         ]
 
 
-def _score(risk_score: int, aum_at_risk: float) -> ScoreResult:
+def _score(risk_score: int, fund_at_risk: float) -> ScoreResult:
     return ScoreResult(
         risk_score=risk_score,
         risk_band="Watch",
-        risk_reasons="No contribution in 12m",
-        aum_at_risk=aum_at_risk,
+        risk_reasons="No deposit in 12 months",
+        fund_at_risk=fund_at_risk,
         signals=SIGNALS,
         recency_band="1-2y",
         balance_tier="Small",
@@ -85,7 +85,7 @@ def _seed(
     run_id: str,
     client_id: int,
     risk_score: int,
-    aum_at_risk: float,
+    fund_at_risk: float,
     route: str,
     queue_rank: int | None = None,
 ) -> None:
@@ -94,11 +94,11 @@ def _seed(
         run_id,
         client_id,
         FUND_ID,
-        _score(risk_score, aum_at_risk),
+        _score(risk_score, fund_at_risk),
         RouteResult(route=route, queue_rank=queue_rank, complaint_caveat=False),
         config_version=1,
-        credible_rhythm=True,
-        lapse_ratio=1.0,
+        pattern_is_reliable=True,
+        overdue_multiple=1.0,
     )
 
 
@@ -110,8 +110,8 @@ def test_falls_back_to_fund_when_fa_id_is_null(db, cleanup) -> None:
     with SessionLocal() as session:
         run_id = _run(session)
         run_ids.append(run_id)
-        _seed(session, run_id, client_a, 40, 10_000.0, "fa_digest_watch")
-        _seed(session, run_id, client_b, 40, 10_000.0, "fa_digest_watch")
+        _seed(session, run_id, client_a, 40, 10_000.0, "fa_watchlist")
+        _seed(session, run_id, client_b, 40, 10_000.0, "fa_watchlist")
         session.commit()
 
         result = build_digest(
@@ -136,8 +136,8 @@ def test_groups_by_fa_id_when_one_is_assigned(db, cleanup) -> None:
     with SessionLocal() as session:
         run_id = _run(session)
         run_ids.append(run_id)
-        _seed(session, run_id, client_a, 40, 10_000.0, "fa_digest_watch")
-        _seed(session, run_id, client_b, 40, 10_000.0, "fa_digest_watch")
+        _seed(session, run_id, client_a, 40, 10_000.0, "fa_watchlist")
+        _seed(session, run_id, client_b, 40, 10_000.0, "fa_watchlist")
         session.commit()
 
         result = build_digest(
@@ -152,16 +152,16 @@ def test_groups_by_fa_id_when_one_is_assigned(db, cleanup) -> None:
     assert [line.client_id for line in result.groups[f"fund:{FUND_ID}"].lines] == [client_b]
 
 
-def test_sort_order_is_aum_at_risk_not_score(db, cleanup) -> None:
+def test_sort_order_is_fund_at_risk_not_score(db, cleanup) -> None:
     run_ids, client_ids = cleanup
-    high_score_low_aum, low_score_high_aum = 93005, 93006
-    client_ids.extend([high_score_low_aum, low_score_high_aum])
+    high_score_low_fund_at_risk, low_score_high_fund_at_risk = 93005, 93006
+    client_ids.extend([high_score_low_fund_at_risk, low_score_high_fund_at_risk])
 
     with SessionLocal() as session:
         run_id = _run(session)
         run_ids.append(run_id)
-        _seed(session, run_id, high_score_low_aum, 80, 1_000.0, "fa_digest_watch")
-        _seed(session, run_id, low_score_high_aum, 30, 5_000.0, "fa_digest_watch")
+        _seed(session, run_id, high_score_low_fund_at_risk, 80, 1_000.0, "fa_watchlist")
+        _seed(session, run_id, low_score_high_fund_at_risk, 30, 5_000.0, "fa_watchlist")
         session.commit()
 
         result = build_digest(
@@ -172,7 +172,10 @@ def test_sort_order_is_aum_at_risk_not_score(db, cleanup) -> None:
         )
 
     lines = result.groups[f"fund:{FUND_ID}"].lines
-    assert [line.client_id for line in lines] == [low_score_high_aum, high_score_low_aum]
+    assert [line.client_id for line in lines] == [
+        low_score_high_fund_at_risk,
+        high_score_low_fund_at_risk,
+    ]
     assert [line.rank for line in lines] == [1, 2]
 
 
@@ -185,7 +188,7 @@ def test_cap_leaves_the_rest_countable_as_overflow(db, cleanup) -> None:
         run_id = _run(session)
         run_ids.append(run_id)
         for i, client_id in enumerate(ids):
-            _seed(session, run_id, client_id, 40, float(1000 * (i + 1)), "fa_digest_watch")
+            _seed(session, run_id, client_id, 40, float(1000 * (i + 1)), "fa_watchlist")
         session.commit()
 
         result = build_digest(
@@ -209,8 +212,8 @@ def test_open_complaint_sets_the_caveat(db, cleanup) -> None:
     with SessionLocal() as session:
         run_id = _run(session)
         run_ids.append(run_id)
-        _seed(session, run_id, with_complaint, 40, 10_000.0, "fa_digest_watch")
-        _seed(session, run_id, without, 40, 9_000.0, "fa_digest_watch")
+        _seed(session, run_id, with_complaint, 40, 10_000.0, "fa_watchlist")
+        _seed(session, run_id, without, 40, 9_000.0, "fa_watchlist")
         session.add(
             ClientComplaint(
                 client_id=with_complaint,

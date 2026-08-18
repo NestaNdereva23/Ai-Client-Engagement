@@ -65,8 +65,8 @@ def _seed_fund_row(client_id: int, client_code: str | None = None) -> None:
                 client_id=client_id,
                 unit_fund_id=FUND_ID,
                 client_code=client_code,
-                n_purchases=1,
-                n_sales=0,
+                n_deposits=1,
+                n_withdrawals=0,
             )
         )
         session.commit()
@@ -87,11 +87,11 @@ def test_more_urgent_and_less_urgent_are_labelled(seeded) -> None:
             {
                 "client_id": more_urgent_id,
                 "unit_fund_id": FUND_ID,
-                "from_route": "fa_digest_watch",
+                "from_route": "fa_watchlist",
                 "route": "fa_call_priority",
                 "from_risk_band": "High",
                 "risk_band": "Critical",
-                "reasons": "sig_drawdown",
+                "reasons": "sig_heavy_withdrawal",
             },
             {
                 "client_id": less_urgent_id,
@@ -106,7 +106,7 @@ def test_more_urgent_and_less_urgent_are_labelled(seeded) -> None:
                 "client_id": first_scored_id,
                 "unit_fund_id": FUND_ID,
                 "from_route": None,
-                "route": "automated_nurture",
+                "route": "auto_checkin",
                 "risk_band": "Watch",
                 "reasons": "sig_shrinking",
             },
@@ -121,7 +121,7 @@ def test_more_urgent_and_less_urgent_are_labelled(seeded) -> None:
     rows = {row["client_id"]: row for row in body["items"]}
 
     more_urgent = rows[more_urgent_id]
-    assert more_urgent["from_route"] == "fa_digest_watch"
+    assert more_urgent["from_route"] == "fa_watchlist"
     assert more_urgent["to_route"] == "fa_call_priority"
     assert more_urgent["direction"] == "more_urgent"
     assert more_urgent["from_risk_band"] == "High"
@@ -154,7 +154,7 @@ def test_defaults_to_the_latest_run_with_changes(seeded) -> None:
                 "client_id": older_client,
                 "unit_fund_id": FUND_ID,
                 "from_route": "monitor_only",
-                "route": "automated_nurture",
+                "route": "auto_checkin",
                 "risk_band": "Watch",
                 "reasons": "",
             }
@@ -167,7 +167,7 @@ def test_defaults_to_the_latest_run_with_changes(seeded) -> None:
                 "client_id": newer_client,
                 "unit_fund_id": FUND_ID,
                 "from_route": "monitor_only",
-                "route": "automated_nurture",
+                "route": "auto_checkin",
                 "risk_band": "Watch",
                 "reasons": "",
             }
@@ -195,7 +195,7 @@ def test_pagination_is_capped_at_ten_by_default(seeded) -> None:
                 "client_id": cid,
                 "unit_fund_id": FUND_ID,
                 "from_route": "monitor_only",
-                "route": "automated_nurture",
+                "route": "auto_checkin",
                 "risk_band": "Watch",
                 "reasons": "",
             }

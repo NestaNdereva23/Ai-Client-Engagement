@@ -22,14 +22,14 @@ from app.risk.signals import SIGNAL_FUNCS
 # missing one of these can't be saved.
 _REQUIRED_THRESHOLDS = (
     "DORMANT_DAYS",
-    "DRAWDOWN_HEAVY",
-    "LAPSE_MULTIPLE",
-    "DECLINE_SLOPE",
-    "DUST_BALANCE",
-    "MATERIAL_BALANCE",
-    "FEE_RUNWAY_MONTHS",
+    "HEAVY_WITHDRAWAL_PCT",
+    "OVERDUE_MULTIPLE",
+    "SHRINKING_TREND",
+    "TINY_BALANCE",
+    "WORTH_A_CALL_BALANCE",
+    "MONTHS_UNTIL_EMPTY",
     "FEE_PER_MONTH",
-    "SYSTEM_SALE_MAX",
+    "SYSTEM_FEE_MAX",
     "RISK_BAND_CUTOFFS",
 )
 

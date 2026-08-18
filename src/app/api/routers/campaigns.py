@@ -29,6 +29,7 @@ from app.schemas.campaigns import (
     CampaignStepCreateRequest,
     CampaignStepOut,
     CampaignSummaryOut,
+    CampaignValueOut,
     EnrollmentOut,
     GenerationBatchOut,
     OutreachAnalyticsOut,
@@ -56,6 +57,7 @@ from app.services.campaigns import (
     add_campaign_step,
     campaign_readiness,
     campaign_summary,
+    campaign_value,
     create_campaign,
     draft_campaign_templates,
     estimate_campaign_templates,
@@ -226,6 +228,18 @@ def get_campaign_summary(
     except CampaignNotFound:
         raise HTTPException(status_code=404, detail="campaign not found") from None
     return CampaignSummaryOut(campaign_id=campaign_id, **summary)
+
+
+@router.get("/{campaign_id}/value", response_model=CampaignValueOut)
+def get_campaign_value(
+    campaign_id: int, session: Session = Depends(get_session)
+) -> CampaignValueOut:
+    """What this campaign's enrolled cohort was worth, for ROI reporting."""
+    try:
+        value = campaign_value(session, campaign_id)
+    except CampaignNotFound:
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    return CampaignValueOut(campaign_id=campaign_id, **value)
 
 
 @router.get("/{campaign_id}/readiness", response_model=CampaignReadinessOut)

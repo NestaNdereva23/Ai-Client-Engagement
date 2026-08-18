@@ -19,11 +19,11 @@ from app.db.session import SessionLocal
 from app.workers.risk_detection import RiskDetectionWorker
 
 FUND_ID = 920
-CALL_CLIENT_ID = 92001  # material balance, dormant, no rhythm -> fa_call_priority
-DUST_CLIENT_ID = 92002  # dust balance, dormant -> dust_cleanup
+CALL_CLIENT_ID = 92001  # worth-a-call balance, dormant, no pattern -> fa_call_priority
+TINY_CLIENT_ID = 92002  # tiny balance, dormant -> small_balance_review
 
 # Well past DORMANT_DAYS (365) before any real "now" this suite runs against.
-OLD_PURCHASE_DATE = "2020-01-01T00:00:00"
+OLD_DEPOSIT_DATE = "2020-01-01T00:00:00"
 
 
 class FakeClient:
@@ -42,7 +42,7 @@ def _client_row(client_id: int, balance: float) -> dict:
         "client_code": f"C{client_id}",
         "client_name": "Test Client",
         "balance": balance,
-        "last_5_purchases": [{"id": client_id * 10, "number": "500", "date": OLD_PURCHASE_DATE}],
+        "last_5_purchases": [{"id": client_id * 10, "number": "500", "date": OLD_DEPOSIT_DATE}],
         "last_2_sales": [],
     }
 
@@ -56,7 +56,7 @@ def _payload() -> dict:
                 "client_count": 2,
                 "clients": [
                     _client_row(CALL_CLIENT_ID, balance=200_000.0),
-                    _client_row(DUST_CLIENT_ID, balance=50.0),
+                    _client_row(TINY_CLIENT_ID, balance=50.0),
                 ],
             }
         ]
@@ -101,7 +101,7 @@ def cleanup_risk_runs():
             session.execute(text("DELETE FROM raw_staging WHERE run_id = :r"), {"r": run_id})
             session.execute(text("DELETE FROM ingestion_status WHERE run_id = :r"), {"r": run_id})
             session.execute(delete(AuditLog).where(AuditLog.run_id == run_id))
-        client_ids = [CALL_CLIENT_ID, DUST_CLIENT_ID]
+        client_ids = [CALL_CLIENT_ID, TINY_CLIENT_ID]
         session.execute(
             delete(ClientRiskFeatures).where(ClientRiskFeatures.client_id.in_(client_ids))
         )
@@ -118,7 +118,7 @@ def test_full_run_produces_expected_state(db, cleanup_risk_runs) -> None:
 
     assert result.state == "completed"
     assert result.clients_seen == 2
-    assert result.route_distribution == {"fa_call_priority": 1, "dust_cleanup": 1}
+    assert result.route_distribution == {"fa_call_priority": 1, "small_balance_review": 1}
     assert result.routes_changed == 2  # both clients are new -> both "changed" from no prior route
 
     with SessionLocal() as session:
@@ -131,23 +131,23 @@ def test_full_run_produces_expected_state(db, cleanup_risk_runs) -> None:
             row.client_id: row
             for row in session.scalars(select(RiskSnapshot).where(RiskSnapshot.run_id == run_id))
         }
-        assert set(snapshots) == {CALL_CLIENT_ID, DUST_CLIENT_ID}
+        assert set(snapshots) == {CALL_CLIENT_ID, TINY_CLIENT_ID}
         assert snapshots[CALL_CLIENT_ID].route == "fa_call_priority"
         assert snapshots[CALL_CLIENT_ID].queue_rank == 1
         assert snapshots[CALL_CLIENT_ID].sig_dormant is True
-        assert snapshots[DUST_CLIENT_ID].route == "dust_cleanup"
-        assert snapshots[DUST_CLIENT_ID].queue_rank is None
+        assert snapshots[TINY_CLIENT_ID].route == "small_balance_review"
+        assert snapshots[TINY_CLIENT_ID].queue_rank is None
 
         features = {
             row.client_id: row
             for row in session.scalars(
                 select(ClientRiskFeatures).where(
-                    ClientRiskFeatures.client_id.in_([CALL_CLIENT_ID, DUST_CLIENT_ID])
+                    ClientRiskFeatures.client_id.in_([CALL_CLIENT_ID, TINY_CLIENT_ID])
                 )
             )
         }
         assert features[CALL_CLIENT_ID].route == "fa_call_priority"
-        assert features[DUST_CLIENT_ID].route == "dust_cleanup"
+        assert features[TINY_CLIENT_ID].route == "small_balance_review"
 
         route_audit = session.scalar(
             select(AuditLog).where(AuditLog.run_id == run_id, AuditLog.action == "route")

@@ -29,6 +29,12 @@ def test_extract_issue_reads_the_weekly_tag() -> None:
     assert extract_issue("no tag here") is None
 
 
+def test_extract_issue_reads_a_dot_separated_tag() -> None:
+    # Some issues print the tag as "#32.2026" instead of "#32/2026"; both mean the
+    # same week/year and should normalize to the same slash form.
+    assert extract_issue("Title, & Cytonn Weekly #32.2026 Executive Summary") == "32/2026"
+
+
 def test_issue_to_date_is_the_week_monday() -> None:
     assert issue_to_date("29/2026") == date.fromisocalendar(2026, 29, 1)
     assert issue_to_date(None) is None

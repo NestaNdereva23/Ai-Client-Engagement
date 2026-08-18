@@ -30,9 +30,9 @@ class RiskAnalyticsOut(BaseModel):
     """Coverage plus book-wide cuts: risk-band, route, balance-tier,
     value-tier, and recency-band distribution; how often each of the six
     signals fires; and which signal most often drives the score
-    (primary_signal_distribution). Plus total_aum_at_risk, the book-wide sum
-    -- unlike DigestGroupOut's own total_aum_at_risk, which is scoped to one
-    FA/fund group, this one is summed across the whole active book.
+    (primary_signal_distribution). Plus total_fund_at_risk, the book-wide
+    sum -- unlike DigestGroupOut's own total_fund_at_risk, which is scoped
+    to one FA/fund group, this one is summed across the whole active book.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -47,7 +47,7 @@ class RiskAnalyticsOut(BaseModel):
     by_recency_band: list[RiskBucketOut]
     signal_frequency: list[RiskBucketOut]
     primary_signal_distribution: list[RiskBucketOut]
-    total_aum_at_risk: float
+    total_fund_at_risk: float
 
 
 class RiskTrendPointOut(BaseModel):
@@ -58,7 +58,7 @@ class RiskTrendPointOut(BaseModel):
     run_id: str
     as_of: datetime | None
     by_risk_band: list[RiskBucketOut]
-    total_aum_at_risk: float
+    total_fund_at_risk: float
     avg_risk_score: float
 
 
@@ -70,8 +70,8 @@ class RiskTrendOut(BaseModel):
     points: list[RiskTrendPointOut]
 
 
-class DustCleanupLineOut(BaseModel):
-    """One client-fund currently routed to dust_cleanup."""
+class SmallBalanceReviewLineOut(BaseModel):
+    """One client-fund currently routed to small_balance_review."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -81,4 +81,4 @@ class DustCleanupLineOut(BaseModel):
     risk_score: int
     risk_band: str
     risk_reasons: str
-    aum_at_risk: float
+    fund_at_risk: float
