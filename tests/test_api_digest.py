@@ -26,21 +26,21 @@ client = TestClient(app)
 FUND_ID = 932
 
 SIGNALS = {
-    "sig_drawdown": False,
+    "sig_heavy_withdrawal": False,
     "sig_dormant": True,
-    "sig_cadence_break": False,
+    "sig_broken_pattern": False,
     "sig_shrinking": False,
-    "sig_fee_erosion": False,
+    "sig_going_dormant": False,
     "sig_never_repeated": False,
 }
 
 
-def _score(risk_score: int, aum_at_risk: float) -> ScoreResult:
+def _score(risk_score: int, fund_at_risk: float) -> ScoreResult:
     return ScoreResult(
         risk_score=risk_score,
         risk_band="Watch",
-        risk_reasons="No contribution in 12m",
-        aum_at_risk=aum_at_risk,
+        risk_reasons="No deposit in 12 months",
+        fund_at_risk=fund_at_risk,
         signals=SIGNALS,
         recency_band="1-2y",
         balance_tier="Small",
@@ -71,10 +71,10 @@ def _seed_digest(session, run_id: str, client_id: int, cap: int = 12) -> None:
         client_id,
         FUND_ID,
         _score(45, 12_000.0),
-        RouteResult(route="fa_digest_watch", queue_rank=None, complaint_caveat=False),
+        RouteResult(route="fa_watchlist", queue_rank=None, complaint_caveat=False),
         config_version=1,
-        credible_rhythm=True,
-        lapse_ratio=1.0,
+        pattern_is_reliable=True,
+        overdue_multiple=1.0,
     )
     session.flush()
     digest_run = DigestRun(risk_run_id=run_id)
@@ -90,10 +90,10 @@ def _seed_digest(session, run_id: str, client_id: int, cap: int = 12) -> None:
             unit_fund_id=FUND_ID,
             risk_score=45,
             risk_band="Watch",
-            risk_reasons="No contribution in 12m",
-            aum_at_risk=12_000.0,
+            risk_reasons="No deposit in 12 months",
+            fund_at_risk=12_000.0,
             score_delta=None,
-            route="fa_digest_watch",
+            route="fa_watchlist",
             in_call_queue=False,
             complaint_caveat=False,
         )
@@ -144,12 +144,12 @@ def test_no_digest_generated_today_is_a_404(db) -> None:
     assert response.status_code == 404
 
 
-def _score_with_signals(risk_score: int, aum_at_risk: float, signals: dict) -> ScoreResult:
+def _score_with_signals(risk_score: int, fund_at_risk: float, signals: dict) -> ScoreResult:
     return ScoreResult(
         risk_score=risk_score,
         risk_band="Watch",
-        risk_reasons="No contribution in 12m",
-        aum_at_risk=aum_at_risk,
+        risk_reasons="No deposit in 12 months",
+        fund_at_risk=fund_at_risk,
         signals=signals,
         recency_band="1-2y",
         balance_tier="Small",
@@ -162,11 +162,11 @@ def test_risk_reason_tags_match_the_fired_signals(db, cleanup) -> None:
     cleanup.append(run_id)
     client_id = 93203
     signals = {
-        "sig_drawdown": True,
+        "sig_heavy_withdrawal": True,
         "sig_dormant": True,
-        "sig_cadence_break": False,
+        "sig_broken_pattern": False,
         "sig_shrinking": False,
-        "sig_fee_erosion": False,
+        "sig_going_dormant": False,
         "sig_never_repeated": False,
     }
 
@@ -179,10 +179,10 @@ def test_risk_reason_tags_match_the_fired_signals(db, cleanup) -> None:
             client_id,
             FUND_ID,
             _score_with_signals(45, 12_000.0, signals),
-            RouteResult(route="fa_digest_watch", queue_rank=None, complaint_caveat=False),
+            RouteResult(route="fa_watchlist", queue_rank=None, complaint_caveat=False),
             config_version=1,
-            credible_rhythm=True,
-            lapse_ratio=1.0,
+            pattern_is_reliable=True,
+            overdue_multiple=1.0,
         )
         session.commit()
         build_and_persist_digest(
@@ -193,12 +193,13 @@ def test_risk_reason_tags_match_the_fired_signals(db, cleanup) -> None:
     response = client.get(f"/api/v1/digest/fund:{FUND_ID}")
     assert response.status_code == 200
     line = response.json()["lines"][0]
-    # SIGNAL_ORDER is cadence_break, dormant, drawdown, shrinking,
-    # fee_erosion, never_repeated -- dormant and drawdown fired, in that order.
-    assert line["risk_reason_tags"] == ["dormant", "drawdown"]
+    # SIGNAL_ORDER is broken_pattern, dormant, heavy_withdrawal, shrinking,
+    # going_dormant, never_repeated -- dormant and heavy_withdrawal fired,
+    # in that order.
+    assert line["risk_reason_tags"] == ["dormant", "heavy_withdrawal"]
 
 
-def test_total_aum_at_risk_includes_clients_left_off_by_the_cap(db, cleanup) -> None:
+def test_total_fund_at_risk_includes_clients_left_off_by_the_cap(db, cleanup) -> None:
     run_id = uuid4().hex
     cleanup.append(run_id)
     shown, overflow = 93204, 93205
@@ -212,10 +213,10 @@ def test_total_aum_at_risk_includes_clients_left_off_by_the_cap(db, cleanup) -> 
             shown,
             FUND_ID,
             _score_with_signals(50, 20_000.0, SIGNALS),
-            RouteResult(route="fa_digest_watch", queue_rank=None, complaint_caveat=False),
+            RouteResult(route="fa_watchlist", queue_rank=None, complaint_caveat=False),
             config_version=1,
-            credible_rhythm=True,
-            lapse_ratio=1.0,
+            pattern_is_reliable=True,
+            overdue_multiple=1.0,
         )
         write_snapshot(
             session,
@@ -223,10 +224,10 @@ def test_total_aum_at_risk_includes_clients_left_off_by_the_cap(db, cleanup) -> 
             overflow,
             FUND_ID,
             _score_with_signals(40, 5_000.0, SIGNALS),
-            RouteResult(route="fa_digest_watch", queue_rank=None, complaint_caveat=False),
+            RouteResult(route="fa_watchlist", queue_rank=None, complaint_caveat=False),
             config_version=1,
-            credible_rhythm=True,
-            lapse_ratio=1.0,
+            pattern_is_reliable=True,
+            overdue_multiple=1.0,
         )
         session.commit()
         build_and_persist_digest(
@@ -239,7 +240,7 @@ def test_total_aum_at_risk_includes_clients_left_off_by_the_cap(db, cleanup) -> 
     body = response.json()
     assert body["overflow_count"] == 1
     assert len(body["lines"]) == 1
-    assert body["total_aum_at_risk"] == 25_000.0
+    assert body["total_fund_at_risk"] == 25_000.0
 
 
 def test_briefing_available_reflects_current_risk_and_active_data(db, cleanup) -> None:
@@ -257,10 +258,10 @@ def test_briefing_available_reflects_current_risk_and_active_data(db, cleanup) -
                 client_id,
                 FUND_ID,
                 _score_with_signals(45, 10_000.0, SIGNALS),
-                RouteResult(route="fa_digest_watch", queue_rank=None, complaint_caveat=False),
+                RouteResult(route="fa_watchlist", queue_rank=None, complaint_caveat=False),
                 config_version=1,
-                credible_rhythm=True,
-                lapse_ratio=1.0,
+                pattern_is_reliable=True,
+                overdue_multiple=1.0,
             )
         # Only has_data gets the client_risk_features + active_client_fund
         # rows get_briefing needs; missing_data has neither.
@@ -272,10 +273,10 @@ def test_briefing_available_reflects_current_risk_and_active_data(db, cleanup) -
                 **SIGNALS,
                 risk_score=45,
                 risk_band="Watch",
-                risk_reasons="No contribution in 12m",
-                aum_at_risk=10_000.0,
+                risk_reasons="No deposit in 12 months",
+                fund_at_risk=10_000.0,
                 config_version=1,
-                route="fa_digest_watch",
+                route="fa_watchlist",
                 queue_rank=None,
             )
         )
@@ -285,8 +286,8 @@ def test_briefing_available_reflects_current_risk_and_active_data(db, cleanup) -
                 unit_fund_id=FUND_ID,
                 client_code="C93206",
                 balance=10_000.0,
-                n_purchases=1,
-                n_sales=0,
+                n_deposits=1,
+                n_withdrawals=0,
             )
         )
         session.commit()

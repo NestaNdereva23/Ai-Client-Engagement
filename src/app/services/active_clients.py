@@ -116,13 +116,13 @@ def list_transactions(
     *,
     limit: int | None = None,
 ) -> list[ActiveTransaction]:
-    """This client-fund's observed purchases and sales, most recent first,
-    a row with no parsed date last rather than dropped. Accumulated across
-    every nightly transform run -- see
+    """This client-fund's observed deposits and withdrawals, most recent
+    first, a row with no parsed date last rather than dropped. Accumulated
+    across every nightly transform run -- see
     app.db.models.active_clients.ActiveTransaction -- so this can hold more
     than the feed's own "last 5 purchases" / "last 2 sales" per-pull cap,
     though never a claim of full lifetime history: see
-    ActiveClientFund.purchases_censored / redemption_history_blind.
+    ActiveClientFund.deposit_count_capped / withdrawal_history_hidden.
     """
     query = (
         select(ActiveTransaction)
@@ -184,12 +184,12 @@ def get_active_client_profile(
         psm = primary_signal_magnitude(
             signals=_signals_dict(risk),
             weights=_config_weights(session, risk.config_version),
-            last_purchase=active.last_purchase,
-            lapse_ratio=risk.lapse_ratio,
-            largest_real_sale=active.largest_real_sale,
+            last_deposit=active.last_deposit_date,
+            overdue_multiple=risk.overdue_multiple,
+            largest_withdrawal=active.largest_withdrawal,
             balance=active.balance,
-            ticket_trend=active.ticket_trend,
-            fee_runway_months=active.fee_runway_months,
+            deposit_trend=active.deposit_trend,
+            months_until_empty=active.months_until_empty,
         )
 
     risk_history = list(
@@ -220,30 +220,29 @@ def get_active_client_profile(
 
 
 @dataclass(frozen=True)
-class ContributionPercentile:
-    """Where one client-fund's observed lifetime purchase total ranks
+class DepositPercentile:
+    """Where one client-fund's observed lifetime deposit total ranks
     against the whole active book's.
     """
 
-    total_contribution: float
+    total_deposits: float
     book_size: int
     rank: int
     percentile: float | None
-    purchases_censored: bool
+    deposit_count_capped: bool
 
 
-def contribution_percentile(
-    session: Session, client_id: int, unit_fund_id: int
-) -> ContributionPercentile:
-    """Rank this client-fund's observed purchase total against every
+def deposit_percentile(session: Session, client_id: int, unit_fund_id: int) -> DepositPercentile:
+    """Rank this client-fund's observed deposit total against every
     active_client_fund row -- the same "book" book_coverage() uses.
 
-    "Observed" purchase total, summed from active_transaction, not a claim
-    of full lifetime history -- purchases_censored carries the same caveat
-    ActiveClientIdentityOut already attaches to the raw transaction list.
-    Raises ActiveClientNotFound when there is no active_client_fund row.
-    No SQL window function: a book-wide count-below/count-above comparison,
-    the same plain-aggregate idiom every other query in this module uses.
+    "Observed" deposit total, summed from active_transaction, not a claim
+    of full lifetime history -- deposit_count_capped carries the same
+    caveat ActiveClientIdentityOut already attaches to the raw transaction
+    list. Raises ActiveClientNotFound when there is no active_client_fund
+    row. No SQL window function: a book-wide count-below/count-above
+    comparison, the same plain-aggregate idiom every other query in this
+    module uses.
     """
     active = session.get(ActiveClientFund, (client_id, unit_fund_id))
     if active is None:
@@ -291,12 +290,12 @@ def contribution_percentile(
     )
     percentile = round(100.0 * below / (book_size - 1), 1) if book_size > 1 else None
 
-    return ContributionPercentile(
-        total_contribution=own_total,
+    return DepositPercentile(
+        total_deposits=own_total,
         book_size=book_size,
         rank=above + 1,
         percentile=percentile,
-        purchases_censored=active.purchases_censored,
+        deposit_count_capped=active.deposit_count_capped,
     )
 
 
@@ -311,7 +310,7 @@ def list_active_roster(
 ):
     """Every active_client_fund row, left-joined to its current risk row,
     keyset-paginated on (client_id, unit_fund_id) -- the same composite
-    cursor app.services.risk.list_dust_cleanup_queue already uses. A
+    cursor app.services.risk.list_small_balance_review_queue already uses. A
     client-fund with no client_risk_features row yet (unscored) still
     appears here, with null risk fields, not a gap in the roster.
 
@@ -335,20 +334,20 @@ def list_active_roster(
             ActiveClientFund.unit_fund_id,
             ActiveClientFund.client_code,
             ActiveClientFund.balance,
-            ActiveClientFund.last_purchase,
-            ActiveClientFund.largest_real_sale,
-            ActiveClientFund.ticket_trend,
-            ActiveClientFund.fee_runway_months,
+            ActiveClientFund.last_deposit_date,
+            ActiveClientFund.largest_withdrawal,
+            ActiveClientFund.deposit_trend,
+            ActiveClientFund.months_until_empty,
             ClientRiskFeatures.risk_band,
             ClientRiskFeatures.risk_score,
-            ClientRiskFeatures.aum_at_risk,
+            ClientRiskFeatures.fund_at_risk,
             ClientRiskFeatures.route,
-            ClientRiskFeatures.lapse_ratio,
-            ClientRiskFeatures.sig_cadence_break,
+            ClientRiskFeatures.overdue_multiple,
+            ClientRiskFeatures.sig_broken_pattern,
             ClientRiskFeatures.sig_dormant,
-            ClientRiskFeatures.sig_drawdown,
+            ClientRiskFeatures.sig_heavy_withdrawal,
             ClientRiskFeatures.sig_shrinking,
-            ClientRiskFeatures.sig_fee_erosion,
+            ClientRiskFeatures.sig_going_dormant,
             ClientRiskFeatures.sig_never_repeated,
             RiskConfigVersion.weights,
         )
@@ -433,17 +432,17 @@ def list_active_roster(
             "balance": r.balance,
             "risk_band": r.risk_band,
             "risk_score": r.risk_score,
-            "aum_at_risk": r.aum_at_risk,
+            "fund_at_risk": r.fund_at_risk,
             "route": r.route,
             "primary_signal_magnitude": primary_signal_magnitude(
                 signals={name: getattr(r, name) for name in SIGNAL_ORDER},
                 weights=r.weights or {},
-                last_purchase=r.last_purchase,
-                lapse_ratio=r.lapse_ratio,
-                largest_real_sale=r.largest_real_sale,
+                last_deposit=r.last_deposit_date,
+                overdue_multiple=r.overdue_multiple,
+                largest_withdrawal=r.largest_withdrawal,
                 balance=r.balance,
-                ticket_trend=r.ticket_trend,
-                fee_runway_months=r.fee_runway_months,
+                deposit_trend=r.deposit_trend,
+                months_until_empty=r.months_until_empty,
             ),
             "briefing_available": (r.client_id, r.unit_fund_id) in briefing_available,
             "risk_reason_tags": fired_signal_tags(r),
@@ -612,9 +611,10 @@ def _months_ago(reference: date, months: int) -> date:
 
 @dataclass(frozen=True)
 class TransactionAnalytics:
-    """Book-wide transaction patterns over the trailing window: purchase and
-    sale volume by month, and a breakdown of sale_type among sales -- the
-    only two cuts active_transaction supports without a client-fund scope.
+    """Book-wide transaction patterns over the trailing window: deposit and
+    withdrawal volume by month, and a breakdown of sale_type among
+    withdrawals -- the only two cuts active_transaction supports without a
+    client-fund scope.
     """
 
     by_month: list[tuple[date, str, int, float, float | None]]
@@ -622,10 +622,11 @@ class TransactionAnalytics:
 
 
 def transaction_analytics(session: Session, *, months: int = 12) -> TransactionAnalytics:
-    """Book-wide purchase/sale volume by month (trailing `months` months)
-    and a sale_type breakdown among sales, both read from active_transaction
-    -- the accumulated observed history, same table contribution_percentile
-    reads, not the feed's own capped last_5_purchases/last_2_sales window.
+    """Book-wide deposit/withdrawal volume by month (trailing `months`
+    months) and a sale_type breakdown among withdrawals, both read from
+    active_transaction -- the accumulated observed history, same table
+    deposit_percentile reads, not the feed's own capped
+    last_5_purchases/last_2_sales window.
 
     Rows with no txn_date (an ingestion gap, see ActiveTransaction's own
     docstring) are excluded from by_month, since they cannot be placed on

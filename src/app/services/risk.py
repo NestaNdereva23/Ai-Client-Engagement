@@ -21,13 +21,13 @@ from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_pair_cursor, encod
 from app.risk.magnitude import pick_primary_signal
 from app.risk.signals import SIGNAL_ORDER
 
-DUST_CLEANUP_ROUTE = "dust_cleanup"
+SMALL_BALANCE_REVIEW_ROUTE = "small_balance_review"
 
 
-def list_dust_cleanup_queue(
+def list_small_balance_review_queue(
     session: Session, *, cursor: str | None = None, limit: int = DEFAULT_LIMIT
 ) -> tuple[list[ClientRiskFeatures], str | None]:
-    """The current dust_cleanup population, ordered by (client_id,
+    """The current small_balance_review population, ordered by (client_id,
     unit_fund_id).
 
     Read-only, on purpose: ops takes a waive/notify/close decision manually,
@@ -37,7 +37,7 @@ def list_dust_cleanup_queue(
     path this codebase provides.
     """
     limit = clamp_limit(limit)
-    query = select(ClientRiskFeatures).where(ClientRiskFeatures.route == DUST_CLEANUP_ROUTE)
+    query = select(ClientRiskFeatures).where(ClientRiskFeatures.route == SMALL_BALANCE_REVIEW_ROUTE)
     if cursor is not None:
         after_client_id, after_unit_fund_id = decode_pair_cursor(cursor)
         query = query.where(
@@ -108,8 +108,8 @@ class RiskAnalytics:
     balance-tier, value-tier, and recency-band distribution, how often each
     signal fires, and which signal most often drives the score -- the
     candidate cuts the active-book analytics page was scoped around. Plus
-    total_aum_at_risk, the book-wide sum of the same column
-    DigestGroupData.total_aum_at_risk sums per FA/fund group.
+    total_fund_at_risk, the book-wide sum of the same column
+    DigestGroupData.total_fund_at_risk sums per FA/fund group.
     """
 
     book_size: int
@@ -122,7 +122,7 @@ class RiskAnalytics:
     by_recency_band: list[tuple[str | None, int]]
     signal_frequency: list[tuple[str, int]]
     primary_signal_distribution: list[tuple[str, int]]
-    total_aum_at_risk: float
+    total_fund_at_risk: float
 
 
 def _primary_signal_distribution(session: Session) -> list[tuple[str, int]]:
@@ -194,8 +194,8 @@ def risk_analytics(session: Session) -> RiskAnalytics:
         for name in SIGNAL_ORDER
     ]
 
-    total_aum_at_risk = (
-        session.scalar(select(func.coalesce(func.sum(ClientRiskFeatures.aum_at_risk), 0.0))) or 0.0
+    total_fund_at_risk = (
+        session.scalar(select(func.coalesce(func.sum(ClientRiskFeatures.fund_at_risk), 0.0))) or 0.0
     )
 
     return RiskAnalytics(
@@ -209,21 +209,21 @@ def risk_analytics(session: Session) -> RiskAnalytics:
         by_recency_band=_counts(ClientRiskFeatures.recency_band),
         signal_frequency=signal_frequency,
         primary_signal_distribution=_primary_signal_distribution(session),
-        total_aum_at_risk=total_aum_at_risk,
+        total_fund_at_risk=total_fund_at_risk,
     )
 
 
 @dataclass(frozen=True)
 class RiskTrendPoint:
     """One completed nightly run's book-wide numbers: band composition,
-    total AUM at risk, and average score, read from risk_snapshot -- the
+    total fund at risk, and average score, read from risk_snapshot -- the
     append-only history client_risk_features itself doesn't carry.
     """
 
     run_id: str
     as_of: datetime | None
     by_risk_band: list[tuple[str, int]]
-    total_aum_at_risk: float
+    total_fund_at_risk: float
     avg_risk_score: float
 
 
@@ -255,9 +255,9 @@ def risk_trend(session: Session, *, runs: int = 30) -> list[RiskTrendPoint]:
                 .order_by(func.count().desc())
             ).all()
         )
-        total_aum_at_risk = (
+        total_fund_at_risk = (
             session.scalar(
-                select(func.coalesce(func.sum(RiskSnapshot.aum_at_risk), 0.0)).where(
+                select(func.coalesce(func.sum(RiskSnapshot.fund_at_risk), 0.0)).where(
                     RiskSnapshot.run_id == run.run_id
                 )
             )
@@ -276,7 +276,7 @@ def risk_trend(session: Session, *, runs: int = 30) -> list[RiskTrendPoint]:
                 run_id=run.run_id,
                 as_of=run.finished_at,
                 by_risk_band=by_risk_band,
-                total_aum_at_risk=total_aum_at_risk,
+                total_fund_at_risk=total_fund_at_risk,
                 avg_risk_score=float(avg_risk_score),
             )
         )

@@ -58,7 +58,7 @@ def test_shape_includes_run_id_and_counts(seeded_runs) -> None:
         run_id,
         clients_seen=5,
         routes_changed=3,
-        route_distribution={"fa_call_priority": 2, "dust_cleanup": 1},
+        route_distribution={"fa_call_priority": 2, "small_balance_review": 1},
     )
 
     response = client.get(URL)
@@ -69,7 +69,7 @@ def test_shape_includes_run_id_and_counts(seeded_runs) -> None:
     row = next(item for item in body["items"] if item["run_id"] == run_id)
     assert row["clients_seen"] == 5
     assert row["routes_changed"] == 3
-    assert row["route_distribution"] == {"fa_call_priority": 2, "dust_cleanup": 1}
+    assert row["route_distribution"] == {"fa_call_priority": 2, "small_balance_review": 1}
     assert row["as_of"] is not None
 
 
@@ -149,7 +149,7 @@ def test_more_urgent_and_less_urgent_counts_come_from_the_route_audit_entry(seed
                     {
                         "client_id": 1,
                         "unit_fund_id": 1,
-                        "from_route": "fa_digest_watch",
+                        "from_route": "fa_watchlist",
                         "route": "fa_call_priority",
                         "risk_band": "Critical",
                         "reasons": "",
@@ -166,7 +166,7 @@ def test_more_urgent_and_less_urgent_counts_come_from_the_route_audit_entry(seed
                         "client_id": 3,
                         "unit_fund_id": 1,
                         "from_route": None,
-                        "route": "automated_nurture",
+                        "route": "auto_checkin",
                         "risk_band": "Watch",
                         "reasons": "",
                     },

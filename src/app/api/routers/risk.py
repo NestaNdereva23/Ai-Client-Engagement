@@ -8,14 +8,19 @@ from sqlalchemy.orm import Session
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.risk import (
-    DustCleanupLineOut,
     RiskAnalyticsOut,
     RiskBucketOut,
     RiskCoverageOut,
     RiskTrendOut,
     RiskTrendPointOut,
+    SmallBalanceReviewLineOut,
 )
-from app.services.risk import book_coverage, list_dust_cleanup_queue, risk_analytics, risk_trend
+from app.services.risk import (
+    book_coverage,
+    list_small_balance_review_queue,
+    risk_analytics,
+    risk_trend,
+)
 
 router = APIRouter(prefix="/risk", tags=["risk"])
 
@@ -48,7 +53,7 @@ def get_risk_analytics(session: Session = Depends(get_session)) -> RiskAnalytics
         primary_signal_distribution=[
             RiskBucketOut(key=k, count=c) for k, c in analytics.primary_signal_distribution
         ],
-        total_aum_at_risk=analytics.total_aum_at_risk,
+        total_fund_at_risk=analytics.total_fund_at_risk,
     )
 
 
@@ -58,7 +63,7 @@ def get_risk_trend(
     session: Session = Depends(get_session),
 ) -> RiskTrendOut:
     """The last `runs` completed nightly runs' book-wide numbers, oldest
-    first: band composition, total AUM at risk, and average score. An
+    first: band composition, total fund at risk, and average score. An
     ops-facing read only, the trend counterpart to the point-in-time
     /analytics snapshot above.
     """
@@ -69,7 +74,7 @@ def get_risk_trend(
                 run_id=p.run_id,
                 as_of=p.as_of,
                 by_risk_band=[RiskBucketOut(key=k, count=c) for k, c in p.by_risk_band],
-                total_aum_at_risk=p.total_aum_at_risk,
+                total_fund_at_risk=p.total_fund_at_risk,
                 avg_risk_score=p.avg_risk_score,
             )
             for p in points
@@ -77,20 +82,22 @@ def get_risk_trend(
     )
 
 
-@router.get("/queues/dust_cleanup", response_model=Page[DustCleanupLineOut])
-def get_dust_cleanup_queue(
+@router.get("/queues/small_balance_review", response_model=Page[SmallBalanceReviewLineOut])
+def get_small_balance_review_queue(
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
-) -> Page[DustCleanupLineOut]:
-    """The current dust_cleanup population, an ops-facing read only.
+) -> Page[SmallBalanceReviewLineOut]:
+    """The current small_balance_review population, an ops-facing read only.
 
     No send capability sits anywhere near this route: nothing in campaigns/
     ever reads it, and this endpoint itself has no write action attached to
     it either.
     """
     try:
-        rows, next_cursor = list_dust_cleanup_queue(session, cursor=cursor, limit=limit)
+        rows, next_cursor = list_small_balance_review_queue(session, cursor=cursor, limit=limit)
     except InvalidCursor:
         raise HTTPException(status_code=400, detail="invalid cursor") from None
-    return Page(items=[DustCleanupLineOut.model_validate(r) for r in rows], next_cursor=next_cursor)
+    return Page(
+        items=[SmallBalanceReviewLineOut.model_validate(r) for r in rows], next_cursor=next_cursor
+    )

@@ -71,7 +71,7 @@ def briefing_available_keys(
 
 def _days_since(occurred: date | None, reference_date: date) -> int | None:
     """Days from occurred to reference_date, clipped at zero. Same clipping
-    active_features.py::_days_since_purchase uses, for the same reason: a
+    active_features.py::_days_since_deposit uses, for the same reason: a
     date after the reference point is a data quirk, not a real future event.
     """
     if occurred is None:
@@ -79,16 +79,16 @@ def _days_since(occurred: date | None, reference_date: date) -> int | None:
     return max(0, (reference_date - occurred).days)
 
 
-def _drawdown_depth(largest_real_sale: float | None, balance: float | None) -> float | None:
-    """The largest real sale as a share of the balance implied before it
-    happened. Mirrors active_features.py::_drawdown_ratio.
+def _withdrawal_pct(largest_withdrawal: float | None, balance: float | None) -> float | None:
+    """The largest withdrawal as a share of the balance implied before it
+    happened. Mirrors active_features.py::_withdrawal_pct.
     """
-    if largest_real_sale is None or balance is None:
+    if largest_withdrawal is None or balance is None:
         return None
-    implied_prior_balance = balance + largest_real_sale
-    if implied_prior_balance <= 0:
+    balance_before_withdrawal = balance + largest_withdrawal
+    if balance_before_withdrawal <= 0:
         return None
-    return largest_real_sale / implied_prior_balance
+    return largest_withdrawal / balance_before_withdrawal
 
 
 def _holds_both_funds(session: Session, client_id: int, unit_fund_id: int) -> bool:
@@ -119,15 +119,15 @@ def _fund_name(session: Session, unit_fund_id: int) -> str:
     return name if name is not None else f"Fund {unit_fund_id}"
 
 
-def _fee_runway_threshold(session: Session, config_version: int) -> float:
-    """The FEE_RUNWAY_MONTHS threshold the config version that scored this
+def _months_until_empty_threshold(session: Session, config_version: int) -> float:
+    """The MONTHS_UNTIL_EMPTY threshold the config version that scored this
     client used, so the briefing's fee caveat is judged against the same
     number the score itself was computed with.
     """
     thresholds = session.scalar(
         select(RiskConfigVersion.thresholds).where(RiskConfigVersion.version == config_version)
     )
-    return float(thresholds["FEE_RUNWAY_MONTHS"]) if thresholds else float("inf")
+    return float(thresholds["MONTHS_UNTIL_EMPTY"]) if thresholds else float("inf")
 
 
 def _client_name(client_id: int) -> str | None:
@@ -155,7 +155,6 @@ def get_briefing(
     unit_fund_id: int,
     *,
     viewing_fa_id: str,
-    reviewer_id: str | None = None,
     reference_date: date | None = None,
 ) -> BriefingView:
     """Render one client-fund's briefing and audit the view.
@@ -179,22 +178,22 @@ def get_briefing(
         route=risk.route,
         balance=active.balance if active.balance is not None else 0.0,
         balance_tier=risk.balance_tier or "Unknown",
-        days_since_purchase=_days_since(active.last_purchase, ref),
-        last_ticket=active.last_ticket,
-        own_rhythm_days=active.rhythm_days,
-        overdue_multiple=risk.lapse_ratio,
-        typical_ticket=active.avg_ticket,
-        largest_ticket=active.max_ticket,
-        ticket_trend=active.ticket_trend,
-        largest_real_redemption=active.largest_real_sale,
-        drawdown_depth=_drawdown_depth(active.largest_real_sale, active.balance),
-        days_since_real_redemption=_days_since(active.last_real_sale_date, ref),
+        days_since_deposit=_days_since(active.last_deposit_date, ref),
+        last_deposit_amount=active.last_deposit_amount,
+        typical_gap_days=active.typical_gap_days,
+        overdue_multiple=risk.overdue_multiple,
+        typical_deposit_amount=active.avg_deposit_amount,
+        largest_deposit_amount=active.max_deposit_amount,
+        deposit_trend=active.deposit_trend,
+        largest_withdrawal=active.largest_withdrawal,
+        withdrawal_pct=_withdrawal_pct(active.largest_withdrawal, active.balance),
+        days_since_withdrawal=_days_since(active.last_withdrawal_date, ref),
         signals=signals,
-        purchases_censored=active.purchases_censored,
-        redemption_history_blind=active.redemption_history_blind,
+        deposit_count_capped=active.deposit_count_capped,
+        withdrawal_history_hidden=active.withdrawal_history_hidden,
         holds_both_funds=_holds_both_funds(session, client_id, unit_fund_id),
-        fee_runway_months=active.fee_runway_months,
-        fee_runway_threshold=_fee_runway_threshold(session, risk.config_version),
+        months_until_empty=active.months_until_empty,
+        months_until_empty_threshold=_months_until_empty_threshold(session, risk.config_version),
         has_open_complaint=_has_open_complaint(session, client_id),
     )
     text = render_briefing(facts)
@@ -210,7 +209,7 @@ def get_briefing(
         action="view",
         entity_id=str(client_id),
         actor_id=viewing_fa_id,
-        detail={"unit_fund_id": unit_fund_id, "route": risk.route, "reviewer_id": reviewer_id},
+        detail={"unit_fund_id": unit_fund_id, "route": risk.route},
     )
     session.commit()
 

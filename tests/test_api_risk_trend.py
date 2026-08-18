@@ -29,23 +29,23 @@ client = TestClient(app)
 FUND_ID = 946
 
 SIGNALS = {
-    "sig_drawdown": False,
+    "sig_heavy_withdrawal": False,
     "sig_dormant": True,
-    "sig_cadence_break": False,
+    "sig_broken_pattern": False,
     "sig_shrinking": False,
-    "sig_fee_erosion": False,
+    "sig_going_dormant": False,
     "sig_never_repeated": False,
 }
 
 
 def _score(
-    *, risk_band: str = "Watch", risk_score: int = 40, aum_at_risk: float = 5_000.0
+    *, risk_band: str = "Watch", risk_score: int = 40, fund_at_risk: float = 5_000.0
 ) -> ScoreResult:
     return ScoreResult(
         risk_score=risk_score,
         risk_band=risk_band,
-        risk_reasons="No contribution in 12m",
-        aum_at_risk=aum_at_risk,
+        risk_reasons="No deposit in 12 months",
+        fund_at_risk=fund_at_risk,
         signals=SIGNALS,
         recency_band="1-2y",
         balance_tier="Small",
@@ -101,11 +101,11 @@ def test_latest_completed_run_appears_as_the_most_recent_point(cleanup) -> None:
             run_id,
             client_id,
             FUND_ID,
-            _score(risk_band="Critical", risk_score=90, aum_at_risk=1_234.0),
+            _score(risk_band="Critical", risk_score=90, fund_at_risk=1_234.0),
             RouteResult(route="fa_call_priority", queue_rank=1, complaint_caveat=False),
             config_version=1,
-            credible_rhythm=True,
-            lapse_ratio=1.0,
+            pattern_is_reliable=True,
+            overdue_multiple=1.0,
         )
         session.commit()
 
@@ -115,7 +115,7 @@ def test_latest_completed_run_appears_as_the_most_recent_point(cleanup) -> None:
     assert point["run_id"] == run_id
     assert point["as_of"] is not None
     assert point["avg_risk_score"] == pytest.approx(90.0)
-    assert point["total_aum_at_risk"] == pytest.approx(1_234.0)
+    assert point["total_fund_at_risk"] == pytest.approx(1_234.0)
     assert point["by_risk_band"] == [{"key": "Critical", "count": 1}]
 
 
@@ -136,10 +136,10 @@ def test_a_still_running_run_never_appears(cleanup) -> None:
             completed_id,
             FUND_ID,
             _score(),
-            RouteResult(route="fa_digest_watch", queue_rank=None, complaint_caveat=False),
+            RouteResult(route="fa_watchlist", queue_rank=None, complaint_caveat=False),
             config_version=1,
-            credible_rhythm=True,
-            lapse_ratio=1.0,
+            pattern_is_reliable=True,
+            overdue_multiple=1.0,
         )
         session.add(RiskRun(run_id=running_run_id, state="running", config_version=1))
         session.flush()
@@ -149,10 +149,10 @@ def test_a_still_running_run_never_appears(cleanup) -> None:
             running_id,
             FUND_ID,
             _score(),
-            RouteResult(route="fa_digest_watch", queue_rank=None, complaint_caveat=False),
+            RouteResult(route="fa_watchlist", queue_rank=None, complaint_caveat=False),
             config_version=1,
-            credible_rhythm=True,
-            lapse_ratio=1.0,
+            pattern_is_reliable=True,
+            overdue_multiple=1.0,
         )
         session.commit()
 

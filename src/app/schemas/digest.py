@@ -18,10 +18,10 @@ class DigestLineOut(BaseModel):
     risk_score: int
     risk_band: str
     risk_reasons: str
-    # risk_reasons split into short codes (e.g. "cadence_break", "dormant"),
+    # risk_reasons split into short codes (e.g. "broken_pattern", "dormant"),
     # the same fired signals, for a console to render as chips.
     risk_reason_tags: list[str]
-    aum_at_risk: float
+    fund_at_risk: float
     score_delta: int | None
     route: str
     in_call_queue: bool
@@ -43,7 +43,7 @@ class DigestGroupOut(BaseModel):
     group_key: str
     total_eligible: int
     overflow_count: int
-    # The true aum_at_risk sum across every eligible client today, including
+    # The true fund_at_risk sum across every eligible client today, including
     # the overflow_count ones never returned in `lines`.
-    total_aum_at_risk: float
+    total_fund_at_risk: float
     lines: list[DigestLineOut]

@@ -13,7 +13,7 @@ from app.transform.active_features import (
     BALANCE_TIER_CUTOFFS,
     FEE_PER_MONTH,
     RECENCY_BAND_CUTOFFS,
-    SYSTEM_SALE_MAX,
+    SYSTEM_FEE_MAX,
     VALUE_TIER_CUTOFFS,
     balance_tier,
     derive_active_measures,
@@ -27,8 +27,8 @@ ANCHOR = datetime(2026, 7, 23, 9, 0, tzinfo=EAT)
 
 
 def _payload(
-    purchases: list[tuple[int, str, str]],
-    sales: list[tuple[int, str, str]] | None = None,
+    deposits: list[tuple[int, str, str]],
+    withdrawals: list[tuple[int, str, str]] | None = None,
     balance: float = 42_000.0,
 ) -> dict[str, Any]:
     """One client in one fund. Each txn tuple is (id, date, amount)."""
@@ -44,11 +44,11 @@ def _payload(
                         "balance": balance,
                         "last_5_purchases": [
                             {"id": i, "date": d, "number": a, "unit_fund_id": 10}
-                            for (i, d, a) in purchases
+                            for (i, d, a) in deposits
                         ],
                         "last_2_sales": [
                             {"id": i, "date": d, "number": a, "unit_fund_id": 10}
-                            for (i, d, a) in (sales or [])
+                            for (i, d, a) in (withdrawals or [])
                         ],
                     }
                 ],
@@ -71,164 +71,167 @@ def test_same_payload_gives_identical_output() -> None:
             (2, "2024-02-01T00:00:00", "50000"),
             (3, "2024-03-15T00:00:00", "10000"),
         ],
-        sales=[(50, "2024-04-01T00:00:00", "20000")],
+        withdrawals=[(50, "2024-04-01T00:00:00", "20000")],
     )
     first = _only(payload)
     second = _only(payload)
     assert first == second
 
 
-def test_rhythm_excludes_same_day_batch() -> None:
-    # Two purchases booked the same day, then one a month later. The same-day
-    # pair must not register as a zero-day cadence.
-    purchases = [
+def test_typical_gap_excludes_same_day_batch() -> None:
+    # Two deposits booked the same day, then one a month later. The same-day
+    # pair must not register as a zero-day pattern.
+    deposits = [
         (1, "2024-01-01T00:00:00", "50000"),
         (2, "2024-01-01T00:00:00", "50000"),
         (3, "2024-02-01T00:00:00", "50000"),  # 31 days after the batch date
     ]
-    m = _only(_payload(purchases))
-    assert m.rhythm_days == 31
+    m = _only(_payload(deposits))
+    assert m.typical_gap_days == 31
 
 
-def test_rhythm_none_with_single_purchase_date() -> None:
+def test_typical_gap_none_with_single_deposit_date() -> None:
     m = _only(_payload([(1, "2024-01-01T00:00:00", "50000")]))
-    assert m.rhythm_days is None
+    assert m.typical_gap_days is None
 
 
-def test_purchase_cap_flags_censored() -> None:
-    purchases = [(i, f"2024-0{i}-01T00:00:00", "10000") for i in range(1, 6)]  # 5 = the cap
-    m = _only(_payload(purchases))
-    assert m.purchases_censored is True
+def test_deposit_cap_flags_capped() -> None:
+    deposits = [(i, f"2024-0{i}-01T00:00:00", "10000") for i in range(1, 6)]  # 5 = the cap
+    m = _only(_payload(deposits))
+    assert m.deposit_count_capped is True
 
 
-def test_both_sale_slots_as_fee_postings_flags_redemption_blind() -> None:
-    fee_amount = str(SYSTEM_SALE_MAX - 1)
-    sales = [
+def test_both_withdrawal_slots_as_fee_postings_flags_history_hidden() -> None:
+    fee_amount = str(SYSTEM_FEE_MAX - 1)
+    withdrawals = [
         (50, "2024-01-01T00:00:00", fee_amount),
         (51, "2024-02-01T00:00:00", fee_amount),
     ]
-    m = _only(_payload([(1, "2024-01-01T00:00:00", "10000")], sales=sales))
-    assert m.redemption_history_blind is True
-    assert m.largest_real_sale is None
+    m = _only(_payload([(1, "2024-01-01T00:00:00", "10000")], withdrawals=withdrawals))
+    assert m.withdrawal_history_hidden is True
+    assert m.largest_withdrawal is None
 
 
-def test_real_sale_above_threshold_is_visible_despite_fee_posting() -> None:
-    sales = [
-        (50, "2024-01-01T00:00:00", str(SYSTEM_SALE_MAX - 1)),  # fee posting
+def test_real_withdrawal_above_threshold_is_visible_despite_fee_posting() -> None:
+    withdrawals = [
+        (50, "2024-01-01T00:00:00", str(SYSTEM_FEE_MAX - 1)),  # fee posting
         (51, "2024-02-01T00:00:00", "15000"),  # a real withdrawal
     ]
-    m = _only(_payload([(1, "2024-01-01T00:00:00", "10000")], sales=sales))
-    assert m.largest_real_sale == 15000.0
-    # The sale window is full, but a real redemption IS visible in it, so
-    # this is truncated history, not a blind one.
-    assert m.redemption_history_blind is False
+    m = _only(_payload([(1, "2024-01-01T00:00:00", "10000")], withdrawals=withdrawals))
+    assert m.largest_withdrawal == 15000.0
+    # The withdrawal window is full, but a real withdrawal IS visible in it,
+    # so this is capped history, not hidden.
+    assert m.withdrawal_history_hidden is False
 
 
-def test_one_fee_posting_alone_is_not_blind() -> None:
-    """A single fee-posting sale doesn't fill the window (SALE_CAP is 2), so
-    there's nothing to be blind about yet -- just no real sale seen so far.
+def test_one_fee_posting_alone_is_not_hidden() -> None:
+    """A single fee-posting withdrawal doesn't fill the window
+    (WITHDRAWAL_CAP is 2), so there's nothing to be hidden about yet --
+    just no real withdrawal seen so far.
     """
-    sales = [(50, "2024-01-01T00:00:00", str(SYSTEM_SALE_MAX - 1))]
-    m = _only(_payload([(1, "2024-01-01T00:00:00", "10000")], sales=sales))
-    assert m.largest_real_sale is None
-    assert m.redemption_history_blind is False
+    withdrawals = [(50, "2024-01-01T00:00:00", str(SYSTEM_FEE_MAX - 1))]
+    m = _only(_payload([(1, "2024-01-01T00:00:00", "10000")], withdrawals=withdrawals))
+    assert m.largest_withdrawal is None
+    assert m.withdrawal_history_hidden is False
 
 
-def test_ticket_trend_needs_three_points() -> None:
+def test_deposit_trend_needs_three_points() -> None:
     two_points = [
         (1, "2024-01-01T00:00:00", "100000"),
         (2, "2024-02-01T00:00:00", "10000"),
     ]
-    assert _only(_payload(two_points)).ticket_trend is None
+    assert _only(_payload(two_points)).deposit_trend is None
 
     three_points = [*two_points, (3, "2024-03-01T00:00:00", "1000")]
-    trend = _only(_payload(three_points)).ticket_trend
+    trend = _only(_payload(three_points)).deposit_trend
     assert trend is not None
-    assert trend < 0  # each ticket smaller than the last
+    assert trend < 0  # each deposit smaller than the last
 
 
-def test_last_ticket_is_the_most_recent_purchase() -> None:
-    purchases = [
+def test_last_deposit_amount_is_the_most_recent_deposit() -> None:
+    deposits = [
         (1, "2024-01-01T00:00:00", "100000"),
         (2, "2024-03-01T00:00:00", "5000"),  # most recent by date
     ]
-    assert _only(_payload(purchases)).last_ticket == 5000.0
+    assert _only(_payload(deposits)).last_deposit_amount == 5000.0
 
 
-def test_drawdown_ratio_uses_implied_prior_balance() -> None:
-    # balance now is 200,000 after a real sale of 50,000, so the implied
-    # prior balance is 250,000 and the drawdown ratio is 50,000 / 250,000 = 0.2.
+def test_withdrawal_pct_uses_balance_before_withdrawal() -> None:
+    # balance now is 200,000 after a real withdrawal of 50,000, so the
+    # balance before the withdrawal is 250,000 and withdrawal_pct is
+    # 50,000 / 250,000 = 0.2.
     m = _only(
         _payload(
             [(1, "2024-01-01T00:00:00", "10000")],
-            sales=[(50, "2024-02-01T00:00:00", "50000")],
+            withdrawals=[(50, "2024-02-01T00:00:00", "50000")],
             balance=200_000.0,
         )
     )
-    assert m.drawdown_ratio == 0.2
+    assert m.withdrawal_pct == 0.2
 
 
-def test_last_real_sale_date_is_the_most_recent_not_the_largest() -> None:
-    # An older, larger real sale and a more recent, smaller one: the date
-    # tracks the most recent real sale, independent of largest_real_sale.
+def test_last_withdrawal_date_is_the_most_recent_not_the_largest() -> None:
+    # An older, larger real withdrawal and a more recent, smaller one: the
+    # date tracks the most recent real withdrawal, independent of
+    # largest_withdrawal.
     m = _only(
         _payload(
             [(1, "2024-01-01T00:00:00", "10000")],
-            sales=[
+            withdrawals=[
                 (50, "2024-02-01T00:00:00", "80000"),
                 (51, "2024-06-01T00:00:00", "20000"),
             ],
             balance=200_000.0,
         )
     )
-    assert m.largest_real_sale == 80000.0
-    assert m.last_real_sale_date == date(2024, 6, 1)
+    assert m.largest_withdrawal == 80000.0
+    assert m.last_withdrawal_date == date(2024, 6, 1)
 
 
-def test_last_real_sale_date_ignores_system_fee_postings() -> None:
+def test_last_withdrawal_date_ignores_system_fee_postings() -> None:
     m = _only(
         _payload(
             [(1, "2024-01-01T00:00:00", "10000")],
-            sales=[(50, "2024-06-01T00:00:00", str(SYSTEM_SALE_MAX))],
+            withdrawals=[(50, "2024-06-01T00:00:00", str(SYSTEM_FEE_MAX))],
         )
     )
-    assert m.largest_real_sale is None
-    assert m.last_real_sale_date is None
+    assert m.largest_withdrawal is None
+    assert m.last_withdrawal_date is None
 
 
-def test_fee_runway_uses_the_fixed_deduction_rate_not_observed_sales() -> None:
-    """fee_runway_months is balance / FEE_PER_MONTH, a fixed rate -- not an
+def test_months_until_empty_uses_the_fixed_deduction_rate_not_observed_withdrawals() -> None:
+    """months_until_empty is balance / FEE_PER_MONTH, a fixed rate -- not an
     average of whatever fee postings happen to be visible for this client.
     """
     m = _only(
         _payload(
             [(1, "2024-01-01T00:00:00", "10000")],
-            sales=[(50, "2024-02-01T00:00:00", "1")],  # a fee posting of a different size
+            withdrawals=[(50, "2024-02-01T00:00:00", "1")],  # a fee posting of a different size
             balance=FEE_PER_MONTH * 10,
         )
     )
-    assert m.fee_runway_months == 10.0
+    assert m.months_until_empty == 10.0
 
 
-def test_fee_runway_ignores_a_client_with_no_visible_sales_at_all() -> None:
+def test_months_until_empty_ignores_a_client_with_no_visible_withdrawals_at_all() -> None:
     m = _only(_payload([(1, "2024-01-01T00:00:00", "10000")], balance=FEE_PER_MONTH * 6))
-    assert m.fee_runway_months == 6.0
+    assert m.months_until_empty == 6.0
 
 
-def test_recency_counts_days_since_purchase_not_any_transaction() -> None:
+def test_recency_counts_days_since_deposit_not_any_transaction() -> None:
     m = _only(
         _payload(
             [(1, "2024-06-01T00:00:00", "10000")],
-            sales=[(50, "2026-07-20T00:00:00", "10000")],  # a much more recent sale
+            withdrawals=[(50, "2026-07-20T00:00:00", "10000")],  # a much more recent withdrawal
         )
     )
-    # Anchored 2026-07-23: days since the purchase, not the more recent sale.
-    assert m.days_since_purchase == (ANCHOR.date() - date(2024, 6, 1)).days
+    # Anchored 2026-07-23: days since the deposit, not the more recent withdrawal.
+    assert m.days_since_deposit == (ANCHOR.date() - date(2024, 6, 1)).days
 
 
 def test_recency_none_without_a_reference_date() -> None:
     m = _only(_payload([(1, "2024-01-01T00:00:00", "10000")]), reference_date=None)
-    assert m.days_since_purchase is None
+    assert m.days_since_deposit is None
 
 
 # --- bucketing: balance_tier, recency_band, value_tier ---
@@ -239,9 +242,9 @@ def test_balance_tier_unknown_when_balance_missing() -> None:
 
 
 def test_balance_tier_boundaries() -> None:
-    dust_max, micro_max, small_max, core_max, premium_max = BALANCE_TIER_CUTOFFS
-    assert balance_tier(dust_max) == "Dust"
-    assert balance_tier(dust_max + 1) == "Micro"
+    tiny_max, micro_max, small_max, core_max, premium_max = BALANCE_TIER_CUTOFFS
+    assert balance_tier(tiny_max) == "Tiny"
+    assert balance_tier(tiny_max + 1) == "Micro"
     assert balance_tier(micro_max) == "Micro"
     assert balance_tier(micro_max + 1) == "Small"
     assert balance_tier(small_max) == "Small"
@@ -270,7 +273,7 @@ def test_recency_band_boundaries() -> None:
     assert recency_band(two_y + 1) == "2y+"
 
 
-def test_value_tier_unknown_when_avg_ticket_missing() -> None:
+def test_value_tier_unknown_when_avg_deposit_amount_missing() -> None:
     assert value_tier(None) == "Unknown"
 
 

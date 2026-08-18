@@ -23,11 +23,11 @@ CLIENT_ID = 90201
 UNIT_FUND_ID = 10
 
 SIGNALS = {
-    "sig_drawdown": False,
+    "sig_heavy_withdrawal": False,
     "sig_dormant": True,
-    "sig_cadence_break": False,
+    "sig_broken_pattern": False,
     "sig_shrinking": False,
-    "sig_fee_erosion": False,
+    "sig_going_dormant": False,
     "sig_never_repeated": False,
 }
 
@@ -36,8 +36,8 @@ def _score(risk_score: int) -> ScoreResult:
     return ScoreResult(
         risk_score=risk_score,
         risk_band="Watch",
-        risk_reasons="No contribution in 12m",
-        aum_at_risk=float(risk_score) * 1000,
+        risk_reasons="No deposit in 12 months",
+        fund_at_risk=float(risk_score) * 1000,
         signals=SIGNALS,
         recency_band="1-2y",
         balance_tier="Small",
@@ -45,7 +45,7 @@ def _score(risk_score: int) -> ScoreResult:
     )
 
 
-_ROUTE = RouteResult(route="fa_digest_watch", queue_rank=None, complaint_caveat=False)
+_ROUTE = RouteResult(route="fa_watchlist", queue_rank=None, complaint_caveat=False)
 
 
 @pytest.fixture
@@ -77,8 +77,8 @@ def test_a_snapshot_round_trips(db, cleanup) -> None:
             _score(28),
             _ROUTE,
             config_version=1,
-            credible_rhythm=True,
-            lapse_ratio=1.2,
+            pattern_is_reliable=True,
+            overdue_multiple=1.2,
         )
         session.commit()
 
@@ -88,7 +88,7 @@ def test_a_snapshot_round_trips(db, cleanup) -> None:
     assert row.run_id == run_id
     assert row.risk_score == 28
     assert row.sig_dormant is True
-    assert row.route == "fa_digest_watch"
+    assert row.route == "fa_watchlist"
 
 
 def test_a_second_write_for_the_same_run_client_fund_is_a_hard_error(db, cleanup) -> None:
@@ -102,8 +102,8 @@ def test_a_second_write_for_the_same_run_client_fund_is_a_hard_error(db, cleanup
             _score(10),
             _ROUTE,
             config_version=1,
-            credible_rhythm=False,
-            lapse_ratio=None,
+            pattern_is_reliable=False,
+            overdue_multiple=None,
         )
         session.commit()
 
@@ -116,8 +116,8 @@ def test_a_second_write_for_the_same_run_client_fund_is_a_hard_error(db, cleanup
             _score(90),
             _ROUTE,
             config_version=1,
-            credible_rhythm=False,
-            lapse_ratio=None,
+            pattern_is_reliable=False,
+            overdue_multiple=None,
         )
         session.commit()
 
@@ -133,8 +133,8 @@ def test_delta_is_none_on_a_clients_first_ever_run(db, cleanup) -> None:
             _score(20),
             _ROUTE,
             config_version=1,
-            credible_rhythm=True,
-            lapse_ratio=1.0,
+            pattern_is_reliable=True,
+            overdue_multiple=1.0,
         )
         session.commit()
 
@@ -153,8 +153,8 @@ def test_delta_is_the_signed_difference_on_a_second_run(db, cleanup) -> None:
             _score(20),
             _ROUTE,
             config_version=1,
-            credible_rhythm=True,
-            lapse_ratio=1.0,
+            pattern_is_reliable=True,
+            overdue_multiple=1.0,
         )
         session.commit()
 
@@ -168,8 +168,8 @@ def test_delta_is_the_signed_difference_on_a_second_run(db, cleanup) -> None:
             _score(35),
             _ROUTE,
             config_version=1,
-            credible_rhythm=True,
-            lapse_ratio=1.4,
+            pattern_is_reliable=True,
+            overdue_multiple=1.4,
         )
         session.commit()
 
@@ -188,8 +188,8 @@ def test_a_declining_score_gives_a_negative_delta(db, cleanup) -> None:
             _score(50),
             _ROUTE,
             config_version=1,
-            credible_rhythm=True,
-            lapse_ratio=1.0,
+            pattern_is_reliable=True,
+            overdue_multiple=1.0,
         )
         session.commit()
 
@@ -203,8 +203,8 @@ def test_a_declining_score_gives_a_negative_delta(db, cleanup) -> None:
             _score(30),
             _ROUTE,
             config_version=1,
-            credible_rhythm=True,
-            lapse_ratio=1.0,
+            pattern_is_reliable=True,
+            overdue_multiple=1.0,
         )
         session.commit()
 
@@ -231,8 +231,8 @@ def test_history_survives_a_third_run_untouched(db, cleanup) -> None:
                 _score(score),
                 _ROUTE,
                 config_version=1,
-                credible_rhythm=True,
-                lapse_ratio=1.0,
+                pattern_is_reliable=True,
+                overdue_multiple=1.0,
             )
             session.commit()
 

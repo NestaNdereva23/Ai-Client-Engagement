@@ -42,8 +42,8 @@ class ActiveClientIdentityOut(BaseModel):
     # Whether even the most recent pull was itself capped at "last 5
     # purchases" / "last 2 sales" -- the caveat a ledger/money view needs
     # before treating `transactions` as a complete history.
-    purchases_censored: bool
-    redemption_history_blind: bool
+    deposit_count_capped: bool
+    withdrawal_history_hidden: bool
 
 
 class ActiveClientBandsOut(BaseModel):
@@ -57,7 +57,7 @@ class ActiveClientBandsOut(BaseModel):
     recency_band: str | None
     balance_tier: str | None
     value_tier: str | None
-    credible_rhythm: bool
+    pattern_is_reliable: bool
     risk_score: int | None
     risk_band: str | None
     risk_reasons: str | None
@@ -68,10 +68,10 @@ class ActiveClientBandsOut(BaseModel):
     # directly. Empty when there is no risk row yet, not a 404.
     risk_reason_tags: list[str]
     route: str | None
-    aum_at_risk: float | None
+    fund_at_risk: float | None
     # The label and magnitude of whichever fired signal weighs heaviest in
-    # this client's own risk_config_version, e.g. "Heavy redemption: 63% of
-    # balance withdrawn in one sale". None when there is no risk row yet or
+    # this client's own risk_config_version, e.g. "Heavy withdrawal: 63% of
+    # balance withdrawn at once". None when there is no risk row yet or
     # nothing fired -- see app.risk.magnitude.primary_signal_magnitude.
     primary_signal_magnitude: str | None
 
@@ -102,10 +102,10 @@ class ActiveClientComplaintOut(BaseModel):
 
 
 class ActiveTransactionOut(BaseModel):
-    """One purchase or sale observed for this client-fund, accumulated
+    """One deposit or withdrawal observed for this client-fund, accumulated
     across nightly pulls -- see app.db.models.active_clients.ActiveTransaction.
     Not a claim of full lifetime history: check
-    ActiveClientIdentityOut.purchases_censored / redemption_history_blind
+    ActiveClientIdentityOut.deposit_count_capped / withdrawal_history_hidden
     first.
     """
 
@@ -123,17 +123,17 @@ class ActiveTransactionOut(BaseModel):
     sale_type: str | None
 
 
-class ContributionPercentileOut(BaseModel):
-    """Where this client-fund's observed lifetime purchase total ranks
+class DepositPercentileOut(BaseModel):
+    """Where this client-fund's observed lifetime deposit total ranks
     against the whole active book. Not a claim of full lifetime history --
-    see purchases_censored before treating total_contribution as complete.
+    see deposit_count_capped before treating total_deposits as complete.
     """
 
-    total_contribution: float
+    total_deposits: float
     book_size: int
     rank: int
     percentile: float | None
-    purchases_censored: bool
+    deposit_count_capped: bool
 
 
 class ActiveClientRosterLineOut(BaseModel):
@@ -150,7 +150,7 @@ class ActiveClientRosterLineOut(BaseModel):
     balance: float | None
     risk_band: str | None
     risk_score: int | None
-    aum_at_risk: float | None
+    fund_at_risk: float | None
     route: str | None
     # Fired signal short codes, computed the same way
     # ActiveClientBandsOut.risk_reason_tags is -- empty when there is no
@@ -199,8 +199,9 @@ class RouteChangeDetailOut(BaseModel):
     or "less_urgent" (moved to a route that needs a human less urgently),
     or None for a client's first-ever scored run, when there's no
     from_route to compare against. This is about queue priority only, not
-    the client's own situation -- a move to dust_cleanup is "less_urgent"
-    even when it means the client already withdrew almost everything.
+    the client's own situation -- a move to small_balance_review is
+    "less_urgent" even when it means the client already withdrew almost
+    everything.
     from_risk_band is the risk band this client-fund carried before this
     run; None on a first-ever scored run, same as from_route.
     """
@@ -244,7 +245,7 @@ class ActiveClientProfileOut(BaseModel):
 
 
 class TransactionMonthOut(BaseModel):
-    """One month's purchase or sale volume, book-wide."""
+    """One month's deposit or withdrawal volume, book-wide."""
 
     month: date
     txn_type: str
@@ -254,7 +255,7 @@ class TransactionMonthOut(BaseModel):
 
 
 class SaleTypeBucketOut(BaseModel):
-    """One sale_type's share of every observed sale, book-wide."""
+    """One sale_type's share of every observed withdrawal, book-wide."""
 
     sale_type: str | None
     count: int
@@ -262,10 +263,10 @@ class SaleTypeBucketOut(BaseModel):
 
 
 class TransactionAnalyticsOut(BaseModel):
-    """Book-wide transaction patterns: purchase/sale volume by month over
-    the trailing window, and a sale_type breakdown among sales. Read from
-    active_transaction, the accumulated observed history -- see that
-    table's own docstring for what "observed" does and doesn't cover.
+    """Book-wide transaction patterns: deposit/withdrawal volume by month
+    over the trailing window, and a sale_type breakdown among withdrawals.
+    Read from active_transaction, the accumulated observed history -- see
+    that table's own docstring for what "observed" does and doesn't cover.
     """
 
     by_month: list[TransactionMonthOut]

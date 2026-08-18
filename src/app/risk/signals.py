@@ -2,9 +2,9 @@
 
 Each is a pure function over one client-fund's ActiveFeatureMeasures and the
 active thresholds dict from RiskConfigVersion. A signal a client's own data
-can't speak to (a missing rhythm, no visible real sale, and so on) returns
-False rather than guessing: a signal is only allowed to fire on evidence
-actually present in the row.
+can't speak to (a missing pattern, no visible real withdrawal, and so on)
+returns False rather than guessing: a signal is only allowed to fire on
+evidence actually present in the row.
 
 These are rules, not a model, because each one has to survive being explained
 to a compliance reviewer, and each has to point at a different action. A
@@ -19,70 +19,70 @@ from app.transform.active_features import ActiveFeatureMeasures
 Thresholds = dict[str, float]
 
 
-def sig_drawdown(row: ActiveFeatureMeasures, thresholds: Thresholds) -> bool:
-    """A real redemption worth at least DRAWDOWN_HEAVY of the implied prior balance."""
-    if row.drawdown_ratio is None:
+def sig_heavy_withdrawal(row: ActiveFeatureMeasures, thresholds: Thresholds) -> bool:
+    """A real withdrawal worth at least HEAVY_WITHDRAWAL_PCT of the balance before it."""
+    if row.withdrawal_pct is None:
         return False
-    return row.drawdown_ratio >= thresholds["DRAWDOWN_HEAVY"]
+    return row.withdrawal_pct >= thresholds["HEAVY_WITHDRAWAL_PCT"]
 
 
 def sig_dormant(row: ActiveFeatureMeasures, thresholds: Thresholds) -> bool:
-    """No purchase in over DORMANT_DAYS."""
-    if row.days_since_purchase is None:
+    """No deposit in over DORMANT_DAYS."""
+    if row.days_since_deposit is None:
         return False
-    return row.days_since_purchase > thresholds["DORMANT_DAYS"]
+    return row.days_since_deposit > thresholds["DORMANT_DAYS"]
 
 
-def sig_cadence_break(row: ActiveFeatureMeasures, thresholds: Thresholds) -> bool:
-    """Overdue past LAPSE_MULTIPLE times their own rhythm.
+def sig_broken_pattern(row: ActiveFeatureMeasures, thresholds: Thresholds) -> bool:
+    """Overdue past OVERDUE_MULTIPLE times their own deposit pattern.
 
-    A client with no credible rhythm (fewer than two purchase dates) has
+    A client with no reliable pattern (fewer than two deposit dates) has
     nothing to be overdue against, so this never fires for them.
     """
-    if row.rhythm_days is None or row.days_since_purchase is None:
+    if row.typical_gap_days is None or row.days_since_deposit is None:
         return False
-    return row.days_since_purchase > thresholds["LAPSE_MULTIPLE"] * row.rhythm_days
+    return row.days_since_deposit > thresholds["OVERDUE_MULTIPLE"] * row.typical_gap_days
 
 
 def sig_shrinking(row: ActiveFeatureMeasures, thresholds: Thresholds) -> bool:
-    """Ticket size trending down in log space."""
-    if row.ticket_trend is None:
+    """Deposit size trending down in log space."""
+    if row.deposit_trend is None:
         return False
-    return row.ticket_trend < thresholds["DECLINE_SLOPE"]
+    return row.deposit_trend < thresholds["SHRINKING_TREND"]
 
 
-def sig_fee_erosion(row: ActiveFeatureMeasures, thresholds: Thresholds) -> bool:
-    """Balance covers under FEE_RUNWAY_MONTHS of the observed recurring fee."""
-    if row.fee_runway_months is None:
+def sig_going_dormant(row: ActiveFeatureMeasures, thresholds: Thresholds) -> bool:
+    """Balance covers under MONTHS_UNTIL_EMPTY of the observed recurring fee."""
+    if row.months_until_empty is None:
         return False
-    return row.fee_runway_months < thresholds["FEE_RUNWAY_MONTHS"]
+    return row.months_until_empty < thresholds["MONTHS_UNTIL_EMPTY"]
 
 
 def sig_never_repeated(row: ActiveFeatureMeasures, thresholds: Thresholds) -> bool:
-    """Exactly one purchase, ever."""
-    return row.n_purchases == 1
+    """Exactly one deposit, ever."""
+    return row.n_deposits == 1
 
 
 # Declaration order, matching the notebook's own section order (9.1 to 9.6),
 # not weight order. risk/scoring.py joins fired reasons in this order, so a
 # reason string is reproducible the same way the notebook's own is.
 SIGNAL_FUNCS = {
-    "sig_cadence_break": sig_cadence_break,
+    "sig_broken_pattern": sig_broken_pattern,
     "sig_dormant": sig_dormant,
-    "sig_drawdown": sig_drawdown,
+    "sig_heavy_withdrawal": sig_heavy_withdrawal,
     "sig_shrinking": sig_shrinking,
-    "sig_fee_erosion": sig_fee_erosion,
+    "sig_going_dormant": sig_going_dormant,
     "sig_never_repeated": sig_never_repeated,
 }
 SIGNAL_ORDER = tuple(SIGNAL_FUNCS)
 
 # The notebook's own wording, verbatim, since this is the text an FA reads.
 SIGNAL_LABELS = {
-    "sig_cadence_break": "Broke their own cadence",
-    "sig_dormant": "No contribution in 12m",
-    "sig_drawdown": "Heavy redemption",
+    "sig_broken_pattern": "Broke their own pattern",
+    "sig_dormant": "No deposit in 12 months",
+    "sig_heavy_withdrawal": "Heavy withdrawal",
     "sig_shrinking": "Shrinking deposits",
-    "sig_fee_erosion": "Fees will empty the account",
+    "sig_going_dormant": "Fees will empty the account",
     "sig_never_repeated": "Never made a second deposit",
 }
 

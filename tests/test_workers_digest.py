@@ -22,11 +22,11 @@ from app.workers.digest import build_and_persist_digest
 FUND_ID = 931
 
 SIGNALS = {
-    "sig_drawdown": False,
+    "sig_heavy_withdrawal": False,
     "sig_dormant": True,
-    "sig_cadence_break": False,
+    "sig_broken_pattern": False,
     "sig_shrinking": False,
-    "sig_fee_erosion": False,
+    "sig_going_dormant": False,
     "sig_never_repeated": False,
 }
 
@@ -36,12 +36,12 @@ class FakeFaAssignmentSource:
         return []
 
 
-def _score(risk_score: int, aum_at_risk: float) -> ScoreResult:
+def _score(risk_score: int, fund_at_risk: float) -> ScoreResult:
     return ScoreResult(
         risk_score=risk_score,
         risk_band="Watch",
-        risk_reasons="No contribution in 12m",
-        aum_at_risk=aum_at_risk,
+        risk_reasons="No deposit in 12 months",
+        fund_at_risk=fund_at_risk,
         signals=SIGNALS,
         recency_band="1-2y",
         balance_tier="Small",
@@ -85,10 +85,10 @@ def test_persists_lines_and_audits_generation(db, cleanup) -> None:
             client_id,
             FUND_ID,
             _score(45, 12_000.0),
-            RouteResult(route="fa_digest_watch", queue_rank=None, complaint_caveat=False),
+            RouteResult(route="fa_watchlist", queue_rank=None, complaint_caveat=False),
             config_version=1,
-            credible_rhythm=True,
-            lapse_ratio=1.0,
+            pattern_is_reliable=True,
+            overdue_multiple=1.0,
         )
         session.commit()
 
@@ -131,8 +131,8 @@ def test_persisting_twice_from_the_same_run_gives_the_same_line_content(db, clea
             _score(60, 30_000.0),
             RouteResult(route="fa_call_priority", queue_rank=1, complaint_caveat=False),
             config_version=1,
-            credible_rhythm=True,
-            lapse_ratio=1.0,
+            pattern_is_reliable=True,
+            overdue_multiple=1.0,
         )
         session.commit()
 
@@ -159,7 +159,7 @@ def test_persisting_twice_from_the_same_run_gives_the_same_line_content(db, clea
                     r.unit_fund_id,
                     r.risk_score,
                     r.risk_band,
-                    r.aum_at_risk,
+                    r.fund_at_risk,
                     r.route,
                     r.in_call_queue,
                 )

@@ -20,14 +20,14 @@ def _days_since(occurred: date | None, reference_date: date) -> int | None:
     return max(0, (reference_date - occurred).days)
 
 
-def _drawdown_ratio(largest_real_sale: float | None, balance: float | None) -> float | None:
-    """Mirrors app.services.briefing._drawdown_depth."""
-    if largest_real_sale is None or balance is None:
+def _withdrawal_pct(largest_withdrawal: float | None, balance: float | None) -> float | None:
+    """Mirrors app.services.briefing._withdrawal_pct."""
+    if largest_withdrawal is None or balance is None:
         return None
-    implied_prior_balance = balance + largest_real_sale
-    if implied_prior_balance <= 0:
+    balance_before_withdrawal = balance + largest_withdrawal
+    if balance_before_withdrawal <= 0:
         return None
-    return largest_real_sale / implied_prior_balance
+    return largest_withdrawal / balance_before_withdrawal
 
 
 def pick_primary_signal(signals: dict[str, bool], weights: dict[str, float]) -> str | None:
@@ -47,27 +47,27 @@ def pick_primary_signal(signals: dict[str, bool], weights: dict[str, float]) -> 
 def _magnitude_text(
     name: str,
     *,
-    days_since_purchase: int | None,
-    lapse_ratio: float | None,
-    drawdown_ratio: float | None,
-    ticket_trend: float | None,
-    fee_runway_months: float | None,
+    days_since_deposit: int | None,
+    overdue_multiple: float | None,
+    withdrawal_pct: float | None,
+    deposit_trend: float | None,
+    months_until_empty: float | None,
 ) -> str | None:
     """The magnitude phrase for one signal, or None when the row doesn't
     carry the number that signal needs -- a gap to hide, not a crash.
     """
-    if name == "sig_dormant" and days_since_purchase is not None:
-        return f"{days_since_purchase} days since last purchase"
-    if name == "sig_cadence_break" and lapse_ratio is not None:
-        return f"{lapse_ratio:.1f}x their own purchase rhythm"
-    if name == "sig_drawdown" and drawdown_ratio is not None:
-        return f"{drawdown_ratio * 100:.0f}% of balance withdrawn in one sale"
-    if name == "sig_shrinking" and ticket_trend is not None:
-        return f"ticket size declining, slope {ticket_trend:.2f}"
-    if name == "sig_fee_erosion" and fee_runway_months is not None:
-        return f"{fee_runway_months:.1f} months of fee runway left"
+    if name == "sig_dormant" and days_since_deposit is not None:
+        return f"{days_since_deposit} days since last deposit"
+    if name == "sig_broken_pattern" and overdue_multiple is not None:
+        return f"{overdue_multiple:.1f}x their own deposit pattern"
+    if name == "sig_heavy_withdrawal" and withdrawal_pct is not None:
+        return f"{withdrawal_pct * 100:.0f}% of balance withdrawn at once"
+    if name == "sig_shrinking" and deposit_trend is not None:
+        return f"deposit size declining, slope {deposit_trend:.2f}"
+    if name == "sig_going_dormant" and months_until_empty is not None:
+        return f"{months_until_empty:.1f} months until the balance empties"
     if name == "sig_never_repeated":
-        return "only one purchase, ever"
+        return "only one deposit, ever"
     return None
 
 
@@ -75,12 +75,12 @@ def primary_signal_magnitude(
     *,
     signals: dict[str, bool],
     weights: dict[str, float],
-    last_purchase: date | None,
-    lapse_ratio: float | None,
-    largest_real_sale: float | None,
+    last_deposit: date | None,
+    overdue_multiple: float | None,
+    largest_withdrawal: float | None,
     balance: float | None,
-    ticket_trend: float | None,
-    fee_runway_months: float | None,
+    deposit_trend: float | None,
+    months_until_empty: float | None,
     reference_date: date | None = None,
 ) -> str | None:
     """One line: the label and magnitude of whichever fired signal carries
@@ -95,11 +95,11 @@ def primary_signal_magnitude(
     ref = reference_date if reference_date is not None else date.today()
     magnitude = _magnitude_text(
         name,
-        days_since_purchase=_days_since(last_purchase, ref),
-        lapse_ratio=lapse_ratio,
-        drawdown_ratio=_drawdown_ratio(largest_real_sale, balance),
-        ticket_trend=ticket_trend,
-        fee_runway_months=fee_runway_months,
+        days_since_deposit=_days_since(last_deposit, ref),
+        overdue_multiple=overdue_multiple,
+        withdrawal_pct=_withdrawal_pct(largest_withdrawal, balance),
+        deposit_trend=deposit_trend,
+        months_until_empty=months_until_empty,
     )
     label = SIGNAL_LABELS[name]
     return f"{label}: {magnitude}" if magnitude else label

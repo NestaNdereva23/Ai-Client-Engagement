@@ -47,7 +47,7 @@ from app.db.models.campaigns import (
 )
 from app.db.models.generation_batch import GenerationBatch
 from app.db.models.message_template import MessageTemplate
-from app.db.models.models import ClientFeatures
+from app.db.models.models import ClientFeatures, Clients
 from app.db.models.outreach import Campaign, OutreachMessage, ReviewAction
 from app.db.models.rules import ClientMessageIndicators
 from app.llmops.tracing import Tracer
@@ -171,6 +171,39 @@ def campaign_summary(session: Session, campaign_id: int) -> dict[str, int]:
         "total_enrolled": total,
         "primary_count": primary,
         "suppressed_count": total - primary,
+    }
+
+
+def campaign_value(session: Session, campaign_id: int) -> dict[str, float | int]:
+    """What one campaign's cohort was worth, for ROI reporting.
+
+    Sums total_purchase_amount (KES, the client's own historical buying,
+    not their current balance) across primary enrollment rows only, the
+    same "one person counts once" scope campaign_summary's primary_count
+    and outreach_analytics use. A suppressed row is a duplicate person, not
+    a second member of the cohort, so summing it too would double-count
+    that person's value.
+    """
+    if session.get(Campaign, campaign_id) is None:
+        raise CampaignNotFound(campaign_id)
+
+    row = session.execute(
+        select(
+            func.count(Clients.client_id),
+            func.coalesce(func.sum(Clients.total_purchase_amount), 0.0),
+        )
+        .select_from(Enrollment)
+        .join(Clients, Clients.client_id == Enrollment.client_id)
+        .where(
+            Enrollment.campaign_id == campaign_id,
+            Enrollment.is_primary_contact_row.is_(True),
+        )
+    ).one()
+    valued_count, estimated_value = row
+
+    return {
+        "valued_count": valued_count,
+        "estimated_value": float(estimated_value),
     }
 
 

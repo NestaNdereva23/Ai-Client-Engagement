@@ -33,7 +33,7 @@ from app.schemas.active_clients import (
     ActiveClientRiskHistoryEntryOut,
     ActiveClientRosterLineOut,
     ActiveTransactionOut,
-    ContributionPercentileOut,
+    DepositPercentileOut,
     InteractionCreate,
     InteractionOut,
     RouteChangeDetailOut,
@@ -46,7 +46,7 @@ from app.schemas.active_clients import (
 from app.services.active_clients import (
     ActiveClientNotFound,
     ActiveClientProfile,
-    contribution_percentile,
+    deposit_percentile,
     get_active_client_profile,
     list_active_roster,
     list_interactions,
@@ -139,9 +139,9 @@ def get_transaction_analytics(
     months: int = Query(default=12, ge=1, le=36),
     session: Session = Depends(get_session),
 ) -> TransactionAnalyticsOut:
-    """Book-wide purchase/sale volume by month over the trailing `months`
-    months, plus a sale_type breakdown among sales. Carries no PII, so it
-    is not gated behind the reviewer key.
+    """Book-wide deposit/withdrawal volume by month over the trailing
+    `months` months, plus a sale_type breakdown among withdrawals. Carries
+    no PII, so it is not gated behind the reviewer key.
     """
     analytics = transaction_analytics(session, months=months)
     return TransactionAnalyticsOut(
@@ -214,38 +214,38 @@ def get_transactions(
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
 ) -> list[ActiveTransactionOut]:
-    """This client-fund's observed purchases and sales, most recent first.
-    Carries no PII, so it is not gated behind the reviewer key. Not
+    """This client-fund's observed deposits and withdrawals, most recent
+    first. Carries no PII, so it is not gated behind the reviewer key. Not
     a claim of full lifetime history -- see
-    ActiveClientProfileOut.identity.purchases_censored /
-    redemption_history_blind.
+    ActiveClientProfileOut.identity.deposit_count_capped /
+    withdrawal_history_hidden.
     """
     rows = list_transactions(session, client_id, unit_fund_id, limit=limit)
     return [ActiveTransactionOut.model_validate(r) for r in rows]
 
 
 @router.get(
-    "/{client_id}/{unit_fund_id}/contribution-percentile",
-    response_model=ContributionPercentileOut,
+    "/{client_id}/{unit_fund_id}/deposit-percentile",
+    response_model=DepositPercentileOut,
 )
-def get_contribution_percentile(
+def get_deposit_percentile(
     client_id: int, unit_fund_id: int, session: Session = Depends(get_session)
-) -> ContributionPercentileOut:
-    """Where this client-fund's observed lifetime purchase total ranks
+) -> DepositPercentileOut:
+    """Where this client-fund's observed lifetime deposit total ranks
     against the whole active book. Carries no PII, so it is not gated
     behind the reviewer key. 404s when the client-fund isn't in the active
     book at all.
     """
     try:
-        result = contribution_percentile(session, client_id, unit_fund_id)
+        result = deposit_percentile(session, client_id, unit_fund_id)
     except ActiveClientNotFound:
         raise HTTPException(status_code=404, detail="active client not found") from None
-    return ContributionPercentileOut(
-        total_contribution=result.total_contribution,
+    return DepositPercentileOut(
+        total_deposits=result.total_deposits,
         book_size=result.book_size,
         rank=result.rank,
         percentile=result.percentile,
-        purchases_censored=result.purchases_censored,
+        deposit_count_capped=result.deposit_count_capped,
     )
 
 
@@ -259,20 +259,20 @@ def _to_profile_out(profile: ActiveClientProfile) -> ActiveClientProfileOut:
             client_code=active.client_code,
             fund_name=profile.fund_name,
             balance=active.balance,
-            purchases_censored=active.purchases_censored,
-            redemption_history_blind=active.redemption_history_blind,
+            deposit_count_capped=active.deposit_count_capped,
+            withdrawal_history_hidden=active.withdrawal_history_hidden,
         ),
         bands=ActiveClientBandsOut(
             recency_band=risk.recency_band if risk else None,
             balance_tier=risk.balance_tier if risk else None,
             value_tier=risk.value_tier if risk else None,
-            credible_rhythm=risk.credible_rhythm if risk else False,
+            pattern_is_reliable=risk.pattern_is_reliable if risk else False,
             risk_score=risk.risk_score if risk else None,
             risk_band=risk.risk_band if risk else None,
             risk_reasons=risk.risk_reasons if risk else None,
             risk_reason_tags=fired_signal_tags(risk) if risk else [],
             route=risk.route if risk else None,
-            aum_at_risk=risk.aum_at_risk if risk else None,
+            fund_at_risk=risk.fund_at_risk if risk else None,
             primary_signal_magnitude=profile.primary_signal_magnitude,
         ),
         risk_history=[

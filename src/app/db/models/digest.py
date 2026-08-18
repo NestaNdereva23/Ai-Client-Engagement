@@ -46,7 +46,7 @@ class DigestRun(Base):
 
 class DigestLine(Base):
     """One client-fund's line within one FA's (or fund's) group, capped and
-    ranked within that group by aum_at_risk.
+    ranked within that group by fund_at_risk.
 
     group_key is "fa:<fa_id>" or "fund:<unit_fund_id>", matching the
     FaAssignment fallback: grouped by fund whenever fa_id is null. Every line
@@ -64,10 +64,12 @@ class DigestLine(Base):
     )
     group_key: Mapped[str] = mapped_column(Text, nullable=False)
     group_total: Mapped[int] = mapped_column(Integer, nullable=False)
-    # The true aum_at_risk sum across every eligible row in this group, not
+    # The true fund_at_risk sum across every eligible row in this group, not
     # just the ones the per-group cap kept -- duplicated onto every line in
     # a group, the same way group_total already is.
-    group_aum_total: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0"))
+    group_fund_value_total: Mapped[float] = mapped_column(
+        Float, nullable=False, server_default=text("0")
+    )
     rank: Mapped[int] = mapped_column(Integer, nullable=False)
 
     client_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -81,7 +83,7 @@ class DigestLine(Base):
     risk_reason_tags: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, server_default=text("'[]'")
     )
-    aum_at_risk: Mapped[float] = mapped_column(Float, nullable=False)
+    fund_at_risk: Mapped[float] = mapped_column(Float, nullable=False)
     # None when there is no prior run to compare against, never a fabricated
     # zero -- the same rule risk/history.py::delta_for already follows.
     score_delta: Mapped[int | None] = mapped_column(Integer, nullable=True)

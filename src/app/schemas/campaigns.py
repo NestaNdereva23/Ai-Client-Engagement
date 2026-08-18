@@ -70,6 +70,21 @@ class CampaignSummaryOut(BaseModel):
     suppressed_count: int
 
 
+class CampaignValueOut(BaseModel):
+    """What one campaign's cohort was worth, for ROI reporting.
+
+    estimated_value sums total_purchase_amount (KES) across primary
+    enrollment rows only, the same scope campaign_summary's primary_count
+    uses. valued_count is how many of those rows actually joined to a
+    Clients row, which should equal primary_count from GET
+    .../summary unless a client record is missing.
+    """
+
+    campaign_id: int
+    valued_count: int
+    estimated_value: float
+
+
 class CampaignReadinessOut(BaseModel):
     """Per-status counts for one campaign's templates and messages, so
     "is this campaign fully drafted and approved" is one read instead of

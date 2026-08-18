@@ -31,8 +31,8 @@ def write_snapshot(
     route: RouteResult,
     config_version: int,
     *,
-    credible_rhythm: bool,
-    lapse_ratio: float | None,
+    pattern_is_reliable: bool,
+    overdue_multiple: float | None,
 ) -> RiskSnapshot:
     """Append one client-fund's numbers for one run."""
     row = RiskSnapshot(
@@ -42,12 +42,12 @@ def write_snapshot(
         recency_band=score.recency_band,
         balance_tier=score.balance_tier,
         value_tier=score.value_tier,
-        credible_rhythm=credible_rhythm,
-        lapse_ratio=lapse_ratio,
+        pattern_is_reliable=pattern_is_reliable,
+        overdue_multiple=overdue_multiple,
         risk_score=score.risk_score,
         risk_band=score.risk_band,
         risk_reasons=score.risk_reasons,
-        aum_at_risk=score.aum_at_risk,
+        fund_at_risk=score.fund_at_risk,
         config_version=config_version,
         route=route.route,
         queue_rank=route.queue_rank,

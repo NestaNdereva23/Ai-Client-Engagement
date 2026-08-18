@@ -1,5 +1,9 @@
-"""Interim protection for the endpoints that re-attach a client's real name,
-render a briefing, or record a review decision.
+"""Interim protection for the endpoints that re-attach a client's real name
+or record a review decision.
+
+GET /briefing/{client_id}/{unit_fund_id} also re-attaches a real name but
+deliberately does not use this dependency -- see api/routers/briefing.py for
+why. Don't assume every real-name read in this codebase is gated by it.
 
 Nothing in this codebase authenticates a human reviewer with a real login
 yet -- no session, no role. The safe default, until real auth exists, is a

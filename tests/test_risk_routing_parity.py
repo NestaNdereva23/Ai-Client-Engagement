@@ -29,12 +29,12 @@ from app.risk.routing import RoutableRow, route_population
 EXPECTED_ROUTE_COUNTS = {
     "monitor_only": 18709,
     "fa_call_priority": 150,
-    "fa_digest_watch": 1493,
-    "automated_nurture": 4604,
-    "dust_cleanup": 2525,
+    "fa_watchlist": 1493,
+    "auto_checkin": 4604,
+    "small_balance_review": 2525,
 }
 
-THRESHOLDS = {"DUST_BALANCE": 100, "MATERIAL_BALANCE": 10_000}
+THRESHOLDS = {"TINY_BALANCE": 100, "WORTH_A_CALL_BALANCE": 10_000}
 
 
 def _config() -> RiskConfigVersion:
@@ -72,7 +72,7 @@ def routed(rows) -> dict[tuple[int, int], tuple[dict[str, str], str, str]]:
             balance=float(r["balance"]),
             risk_score=float(r["risk_score"]),
             sig_dormant=_flag(r["sig_dormant"]),
-            aum_at_risk=float(r["aum_at_risk"]),
+            fund_at_risk=float(r["fund_at_risk"]),
         )
         for r in rows
     ]

@@ -1,6 +1,7 @@
-"""Tests for GET /briefing/{client_id}/{unit_fund_id}: the reviewer-key
-gate (re-attaches a name, same stopgap as GET /clients/{id}/name), the
-404-vs-data-missing distinction, and that both audit rows land on every call.
+"""Tests for GET /briefing/{client_id}/{unit_fund_id}: that it re-attaches
+a real name with no X-Reviewer-Key required (unlike GET /clients/{id}/name),
+the 404-vs-data-missing distinction, and that both audit rows land on every
+call, attributed to fa_id rather than a reviewer key.
 """
 
 from __future__ import annotations
@@ -25,11 +26,11 @@ FUND_ID = 940
 CLIENT_ID = 94001
 
 _SIGNALS = {
-    "sig_drawdown": True,
+    "sig_heavy_withdrawal": True,
     "sig_dormant": True,
-    "sig_cadence_break": False,
+    "sig_broken_pattern": False,
     "sig_shrinking": False,
-    "sig_fee_erosion": False,
+    "sig_going_dormant": False,
     "sig_never_repeated": False,
 }
 
@@ -42,12 +43,12 @@ def seeded_client(db):
                 client_id=CLIENT_ID,
                 unit_fund_id=FUND_ID,
                 balance_tier="Institutional",
-                lapse_ratio=None,
+                overdue_multiple=None,
                 **_SIGNALS,
                 risk_score=60,
                 risk_band="High",
-                risk_reasons="Heavy redemption; No contribution in 12m",
-                aum_at_risk=1_000_000.0,
+                risk_reasons="Heavy withdrawal; No deposit in 12 months",
+                fund_at_risk=1_000_000.0,
                 config_version=1,
                 route="fa_call_priority",
                 queue_rank=1,
@@ -59,13 +60,13 @@ def seeded_client(db):
                 unit_fund_id=FUND_ID,
                 client_code="C94001",
                 balance=1_000_000.0,
-                n_purchases=1,
-                n_sales=1,
-                last_purchase=date(2024, 1, 1),
-                last_real_sale_date=date(2024, 6, 1),
-                largest_real_sale=200_000.0,
-                purchases_censored=False,
-                redemption_history_blind=False,
+                n_deposits=1,
+                n_withdrawals=1,
+                last_deposit_date=date(2024, 1, 1),
+                last_withdrawal_date=date(2024, 6, 1),
+                largest_withdrawal=200_000.0,
+                deposit_count_capped=False,
+                withdrawal_history_hidden=False,
             )
         )
         session.add(PiiVault(client_id=CLIENT_ID, client_name="Jane Doe"))
@@ -98,32 +99,24 @@ def _url(client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID) -> str:
     return f"/api/v1/briefing/{client_id}/{unit_fund_id}?fa_id=fa-77"
 
 
-def test_missing_header_is_401(configured_reviewers, seeded_client) -> None:
-    response = client.get(_url())
-    assert response.status_code == 401
-
-
-def test_wrong_key_is_401(configured_reviewers, seeded_client) -> None:
-    response = client.get(_url(), headers={"X-Reviewer-Key": "wrong"})
-    assert response.status_code == 401
-
-
-def test_no_key_configured_is_503(
-    unconfigured_reviewers, seeded_client, reviewer_1_headers
+def test_no_reviewer_key_needed_even_when_none_are_configured(
+    unconfigured_reviewers, seeded_client
 ) -> None:
-    response = client.get(_url(), headers=reviewer_1_headers)
-    assert response.status_code == 503
+    """The one deliberate exception to the reviewer-key stopgap: unlike
+    GET /clients/{id}/name, this succeeds with no X-Reviewer-Key header at
+    all, even with an empty reviewer roster.
+    """
+    response = client.get(_url())
+    assert response.status_code == 200
 
 
-def test_unknown_client_fund_is_404(configured_reviewers, db, reviewer_1_headers) -> None:
-    response = client.get(_url(999999, 999999), headers=reviewer_1_headers)
+def test_unknown_client_fund_is_404(db) -> None:
+    response = client.get(_url(999999, 999999))
     assert response.status_code == 404
 
 
-def test_returns_the_rendered_briefing_and_the_real_name(
-    configured_reviewers, seeded_client, reviewer_1_headers
-) -> None:
-    response = client.get(_url(), headers=reviewer_1_headers)
+def test_returns_the_rendered_briefing_and_the_real_name(seeded_client) -> None:
+    response = client.get(_url())
     assert response.status_code == 200
     body = response.json()
     assert body["client_id"] == CLIENT_ID
@@ -131,22 +124,18 @@ def test_returns_the_rendered_briefing_and_the_real_name(
     assert body["client_name"] == "Jane Doe"
     assert "CLIENT BRIEFING" in body["text"]
     assert "Risk 60/100 (High)   Route: fa_call_priority" in body["text"]
-    assert "Heavy redemption" in body["text"]
+    assert "Heavy withdrawal" in body["text"]
 
 
-def test_basis_lists_the_fired_signals_in_order(
-    configured_reviewers, seeded_client, reviewer_1_headers
-) -> None:
-    response = client.get(_url(), headers=reviewer_1_headers)
+def test_basis_lists_the_fired_signals_in_order(seeded_client) -> None:
+    response = client.get(_url())
     assert response.status_code == 200
-    # seeded_client fires sig_drawdown and sig_dormant only (see _SIGNALS),
-    # in SIGNAL_ORDER: cadence_break, dormant, drawdown, ...
-    assert response.json()["basis"] == ["No contribution in 12m", "Heavy redemption"]
+    # seeded_client fires sig_heavy_withdrawal and sig_dormant only (see
+    # _SIGNALS), in SIGNAL_ORDER: broken_pattern, dormant, heavy_withdrawal, ...
+    assert response.json()["basis"] == ["No deposit in 12 months", "Heavy withdrawal"]
 
 
-def test_open_complaint_shows_the_caveat(
-    configured_reviewers, seeded_client, reviewer_1_headers
-) -> None:
+def test_open_complaint_shows_the_caveat(seeded_client) -> None:
     with SessionLocal() as session:
         session.add(
             ClientComplaint(
@@ -159,15 +148,13 @@ def test_open_complaint_shows_the_caveat(
         )
         session.commit()
 
-    response = client.get(_url(), headers=reviewer_1_headers)
+    response = client.get(_url())
     assert response.status_code == 200
     assert "this client has an open complaint" in response.json()["text"]
 
 
-def test_both_audit_rows_are_written_on_every_call(
-    configured_reviewers, seeded_client, reviewer_1_headers
-) -> None:
-    response = client.get(_url(), headers=reviewer_1_headers)
+def test_both_audit_rows_are_written_on_every_call(seeded_client) -> None:
+    response = client.get(_url())
     assert response.status_code == 200
 
     with SessionLocal() as session:
@@ -192,6 +179,6 @@ def test_both_audit_rows_are_written_on_every_call(
 
     assert view_rows, "expected a risk_briefing view audit row"
     assert view_rows[0].actor_id == "fa-77"
-    assert view_rows[0].detail["reviewer_id"] == "fa-1"
+    assert "reviewer_id" not in view_rows[0].detail
     assert vault_rows, "expected a pii_vault read audit row"
     assert vault_rows[0].detail["purpose"] == "risk_briefing"

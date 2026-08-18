@@ -32,8 +32,12 @@ def test_stub_returns_null_fa_id_for_every_relationship(db):
     with SessionLocal() as session:
         session.add_all(
             [
-                ActiveClientFund(client_id=client_id, unit_fund_id=10, n_purchases=1, n_sales=0),
-                ActiveClientFund(client_id=client_id, unit_fund_id=20, n_purchases=1, n_sales=0),
+                ActiveClientFund(
+                    client_id=client_id, unit_fund_id=10, n_deposits=1, n_withdrawals=0
+                ),
+                ActiveClientFund(
+                    client_id=client_id, unit_fund_id=20, n_deposits=1, n_withdrawals=0
+                ),
             ]
         )
         session.commit()

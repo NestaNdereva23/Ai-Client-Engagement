@@ -44,11 +44,12 @@ class RiskConfigVersion(Base):
 
     config_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, unique=True, index=True)
-    # One weight per signal name (sig_drawdown, sig_dormant, ...), summing to 100.
+    # One weight per signal name (sig_heavy_withdrawal, sig_dormant, ...), summing to 100.
     weights: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    # DORMANT_DAYS, DRAWDOWN_HEAVY, LAPSE_MULTIPLE, DECLINE_SLOPE, DUST_BALANCE,
-    # MATERIAL_BALANCE, FEE_RUNWAY_MONTHS, FEE_PER_MONTH, SYSTEM_SALE_MAX, and
-    # RISK_BAND_CUTOFFS (four ascending cutoffs for None/Low/Watch/High/Critical).
+    # DORMANT_DAYS, HEAVY_WITHDRAWAL_PCT, OVERDUE_MULTIPLE, SHRINKING_TREND,
+    # TINY_BALANCE, WORTH_A_CALL_BALANCE, MONTHS_UNTIL_EMPTY, FEE_PER_MONTH,
+    # SYSTEM_FEE_MAX, and RISK_BAND_CUTOFFS (four ascending cutoffs for
+    # None/Low/Watch/High/Critical).
     thresholds: Mapped[dict] = mapped_column(JSONB, nullable=False)
     fa_call_capacity: Mapped[int] = mapped_column(Integer, nullable=False)
     at_risk_min: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -72,11 +73,11 @@ class ClientRiskFeatures(Base):
     cache of the most recent row of).
 
     Columns this milestone (score composition) fills: the six sig_* signals,
-    risk_score, risk_band, risk_reasons, aum_at_risk, credible_rhythm,
-    lapse_ratio, recency_band, balance_tier, and value_tier -- everything
-    compose_score produces from an ActiveFeatureMeasures row and the active
-    config. route and queue_rank are the routing milestone's job and stay
-    null until then.
+    risk_score, risk_band, risk_reasons, fund_at_risk, pattern_is_reliable,
+    overdue_multiple, recency_band, balance_tier, and value_tier --
+    everything compose_score produces from an ActiveFeatureMeasures row and
+    the active config. route and queue_rank are the routing milestone's job
+    and stay null until then.
     """
 
     __tablename__ = "client_risk_features"
@@ -91,16 +92,16 @@ class ClientRiskFeatures(Base):
     balance_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
     value_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    credible_rhythm: Mapped[bool] = mapped_column(
+    pattern_is_reliable: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )
-    lapse_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    overdue_multiple: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    sig_drawdown: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    sig_heavy_withdrawal: Mapped[bool] = mapped_column(Boolean, nullable=False)
     sig_dormant: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    sig_cadence_break: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    sig_broken_pattern: Mapped[bool] = mapped_column(Boolean, nullable=False)
     sig_shrinking: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    sig_fee_erosion: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    sig_going_dormant: Mapped[bool] = mapped_column(Boolean, nullable=False)
     sig_never_repeated: Mapped[bool] = mapped_column(Boolean, nullable=False)
 
     risk_score: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -108,7 +109,7 @@ class ClientRiskFeatures(Base):
     # Never shipped without the score: joined labels of fired signals, or
     # "no signal" when none fired.
     risk_reasons: Mapped[str] = mapped_column(Text, nullable=False)
-    aum_at_risk: Mapped[float] = mapped_column(Float, nullable=False)
+    fund_at_risk: Mapped[float] = mapped_column(Float, nullable=False)
 
     # Which config version produced this row, so a score is always
     # explainable against the exact constants that made it.
@@ -184,22 +185,22 @@ class RiskSnapshot(Base):
     recency_band: Mapped[str | None] = mapped_column(Text, nullable=True)
     balance_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
     value_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
-    credible_rhythm: Mapped[bool] = mapped_column(
+    pattern_is_reliable: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )
-    lapse_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    overdue_multiple: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    sig_drawdown: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    sig_heavy_withdrawal: Mapped[bool] = mapped_column(Boolean, nullable=False)
     sig_dormant: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    sig_cadence_break: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    sig_broken_pattern: Mapped[bool] = mapped_column(Boolean, nullable=False)
     sig_shrinking: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    sig_fee_erosion: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    sig_going_dormant: Mapped[bool] = mapped_column(Boolean, nullable=False)
     sig_never_repeated: Mapped[bool] = mapped_column(Boolean, nullable=False)
 
     risk_score: Mapped[int] = mapped_column(Integer, nullable=False)
     risk_band: Mapped[str] = mapped_column(Text, nullable=False)
     risk_reasons: Mapped[str] = mapped_column(Text, nullable=False)
-    aum_at_risk: Mapped[float] = mapped_column(Float, nullable=False)
+    fund_at_risk: Mapped[float] = mapped_column(Float, nullable=False)
     config_version: Mapped[int] = mapped_column(Integer, nullable=False)
 
     route: Mapped[str | None] = mapped_column(Text, nullable=True)

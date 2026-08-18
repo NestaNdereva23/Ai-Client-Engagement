@@ -30,7 +30,7 @@ class ScoreResult:
     risk_score: float
     risk_band: str
     risk_reasons: str
-    aum_at_risk: float
+    fund_at_risk: float
     signals: dict[str, bool]
     recency_band: str
     balance_tier: str
@@ -75,15 +75,15 @@ def compose_score(row: ActiveFeatureMeasures, config: RiskConfigVersion) -> Scor
     score = sum(int(signals[name]) * config.weights[name] for name in SIGNAL_ORDER)
     band = _band(score, config.thresholds["RISK_BAND_CUTOFFS"])
     reasons = _reasons(signals)
-    aum_at_risk = (row.balance or 0.0) * score / 100
+    fund_at_risk = (row.balance or 0.0) * score / 100
 
     return ScoreResult(
         risk_score=score,
         risk_band=band,
         risk_reasons=reasons,
-        aum_at_risk=aum_at_risk,
+        fund_at_risk=fund_at_risk,
         signals=signals,
-        recency_band=_recency_band(row.days_since_purchase),
+        recency_band=_recency_band(row.days_since_deposit),
         balance_tier=_balance_tier(row.balance),
-        value_tier=_value_tier(row.avg_ticket),
+        value_tier=_value_tier(row.avg_deposit_amount),
     )

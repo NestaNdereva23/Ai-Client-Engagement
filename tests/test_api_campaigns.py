@@ -94,6 +94,87 @@ def test_campaign_summary_404s_for_an_unknown_campaign(db: None) -> None:
     assert response.status_code == 404
 
 
+@pytest.fixture
+def campaign_with_valued_clients(db: None):
+    """One campaign, one suppressed duplicate, so the value sum can be
+    checked against only the primary row's purchase amount.
+    """
+    fund_id = 97702
+    primary_id, suppressed_id = 97720, 97721
+    with SessionLocal() as session:
+        row = Campaign(name="test value campaign")
+        session.add(row)
+        session.add(Funds(unit_fund_id=fund_id, unit_fund_name="Test Fund"))
+        session.commit()
+        campaign_id = row.campaign_id
+
+        session.add(
+            Clients(
+                client_id=primary_id,
+                unit_fund_id=fund_id,
+                n_purchases_returned=0,
+                n_sales_returned=0,
+                total_purchase_amount=125_000.0,
+            )
+        )
+        session.add(
+            Clients(
+                client_id=suppressed_id,
+                unit_fund_id=fund_id,
+                n_purchases_returned=0,
+                n_sales_returned=0,
+                total_purchase_amount=99_000.0,
+            )
+        )
+        session.add_all(
+            [
+                PiiVault(client_id=primary_id, client_name="Valued Person"),
+                PiiVault(client_id=suppressed_id, client_name="Valued Person"),
+            ]
+        )
+        session.commit()
+        session.add_all(
+            [
+                Enrollment(
+                    campaign_id=campaign_id,
+                    client_id=primary_id,
+                    is_primary_contact_row=True,
+                ),
+                Enrollment(
+                    campaign_id=campaign_id,
+                    client_id=suppressed_id,
+                    is_primary_contact_row=False,
+                ),
+            ]
+        )
+        session.commit()
+
+    yield campaign_id
+
+    with SessionLocal() as session:
+        session.execute(delete(Enrollment).where(Enrollment.campaign_id == campaign_id))
+        session.execute(delete(PiiVault).where(PiiVault.client_id.in_((primary_id, suppressed_id))))
+        session.execute(delete(Clients).where(Clients.client_id.in_((primary_id, suppressed_id))))
+        session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
+        session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
+        session.commit()
+
+
+def test_campaign_value_sums_primary_rows_only(campaign_with_valued_clients) -> None:
+    campaign_id = campaign_with_valued_clients
+    response = client.get(f"{CAMPAIGNS}/{campaign_id}/value")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["campaign_id"] == campaign_id
+    assert body["valued_count"] == 1
+    assert body["estimated_value"] == 125_000.0
+
+
+def test_campaign_value_404s_for_an_unknown_campaign(db: None) -> None:
+    response = client.get(f"{CAMPAIGNS}/999999999/value")
+    assert response.status_code == 404
+
+
 def make_settings(**overrides) -> Settings:
     defaults = {
         "llm_provider": "anthropic",

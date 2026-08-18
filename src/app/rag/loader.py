@@ -14,7 +14,7 @@ from datetime import date
 
 from pypdf import PdfReader
 
-_ISSUE = re.compile(r"Cytonn\s+Weekly\s*#?\s*(\d{1,2})\s*/\s*(\d{4})", re.I)
+_ISSUE = re.compile(r"Cytonn\s+Weekly\s*#?\s*(\d{1,2})\s*[/.]\s*(\d{4})", re.I)
 _PAGE_NUMBER_LINE = re.compile(r"^\s*\d{1,3}\s*$")
 # Smart punctuation folded to ASCII so the text is uniform for scanning and prompts.
 _PUNCT = {

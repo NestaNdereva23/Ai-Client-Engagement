@@ -120,7 +120,7 @@ def test_mixed_date_and_string_amount_parsed(db, cleanup_runs, normalized_ids):
             select(ActiveClientFund).where(ActiveClientFund.client_id == 9101)
         ).scalar_one()
         assert row.balance == 42000.0
-        assert row.last_purchase.isoformat() == "2026-07-01"
+        assert row.last_deposit_date.isoformat() == "2026-07-01"
 
 
 def test_sale_type_survives_flatten(db, cleanup_runs, normalized_ids):

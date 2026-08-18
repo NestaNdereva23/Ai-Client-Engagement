@@ -24,11 +24,11 @@ client = TestClient(app)
 FUND_ID = 945
 
 _ALL_FALSE = {
-    "sig_drawdown": False,
+    "sig_heavy_withdrawal": False,
     "sig_dormant": False,
-    "sig_cadence_break": False,
+    "sig_broken_pattern": False,
     "sig_shrinking": False,
-    "sig_fee_erosion": False,
+    "sig_going_dormant": False,
     "sig_never_repeated": False,
 }
 
@@ -52,8 +52,8 @@ def _row(
         **signals,
         risk_score=30,
         risk_band=risk_band,
-        risk_reasons="No contribution in 12m",
-        aum_at_risk=100.0,
+        risk_reasons="No deposit in 12 months",
+        fund_at_risk=100.0,
         config_version=1,
         route=route,
         queue_rank=None,
@@ -93,22 +93,22 @@ def test_shape_includes_coverage_and_all_breakdowns() -> None:
     assert isinstance(body["by_recency_band"], list)
     assert isinstance(body["signal_frequency"], list)
     assert isinstance(body["primary_signal_distribution"], list)
-    assert isinstance(body["total_aum_at_risk"], float)
+    assert isinstance(body["total_fund_at_risk"], float)
 
 
-def test_total_aum_at_risk_reflects_a_newly_scored_client(cleanup) -> None:
+def test_total_fund_at_risk_reflects_a_newly_scored_client(cleanup) -> None:
     client_ids = cleanup
     client_id = 94504
     client_ids.append(client_id)
-    before = _analytics()["total_aum_at_risk"]
+    before = _analytics()["total_fund_at_risk"]
 
     with SessionLocal() as session:
         row = _row(client_id, risk_band="High", route=None, signals=_ALL_FALSE)
-        row.aum_at_risk = 2_500.0
+        row.fund_at_risk = 2_500.0
         session.add(row)
         session.commit()
 
-    after = _analytics()["total_aum_at_risk"]
+    after = _analytics()["total_fund_at_risk"]
     assert after == pytest.approx(before + 2_500.0)
 
 
