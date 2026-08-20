@@ -4,12 +4,16 @@ A 4xx's code and message say what to fix; detail carries structured extras
 like field-level validation errors when there are any, null otherwise. A 5xx
 stays opaque, logged server side but never described to the caller, so an
 internal failure never leaks implementation detail.
+
+code normally comes from the status alone, so two different 404s look the
+same to a caller. An endpoint that needs them told apart raises ApiError
+with its own code rather than making the caller read the message string.
 """
 
 from __future__ import annotations
 
 import structlog
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -27,6 +31,19 @@ _CODES_BY_STATUS = {
 }
 
 
+class ApiError(HTTPException):
+    """An HTTPException that names the envelope code itself.
+
+    Use it where one status covers two situations a caller must handle
+    differently. Everything else keeps raising a plain HTTPException and
+    keeps the code the status maps to.
+    """
+
+    def __init__(self, status_code: int, code: str, detail: str) -> None:
+        super().__init__(status_code=status_code, detail=detail)
+        self.code = code
+
+
 def _envelope(code: str, message: str, detail: object | None = None) -> dict:
     return {"error": {"code": code, "message": message, "detail": detail}}
 
@@ -36,7 +53,7 @@ def register_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(StarletteHTTPException)
     async def handle_http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:
-        code = _CODES_BY_STATUS.get(exc.status_code, "http_error")
+        code = getattr(exc, "code", None) or _CODES_BY_STATUS.get(exc.status_code, "http_error")
         return JSONResponse(status_code=exc.status_code, content=_envelope(code, str(exc.detail)))
 
     @app.exception_handler(RequestValidationError)

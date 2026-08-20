@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, select, text
 
+from app.campaigns.cohorts import CohortSlot
 from app.config import Settings
 from app.db.models.audit import AuditLog
 from app.db.models.llmops import Evaluation, GenerationRun
@@ -139,7 +140,13 @@ def _reviewed_message(
         session, make_state(client_id, angle=angle, priority_tier=priority_tier), make_settings()
     )
     session.commit()
-    message = create_outreach_message(session, run, campaign_id=campaign_id)
+    # This helper drives every review outcome, including reject/escalate/
+    # hold; a cohort message only ever allows approve/edit_approve, so
+    # opt out of cohort sampling here -- ground-truth export is what's
+    # under test, not that restriction.
+    message = create_outreach_message(
+        session, run, campaign_id=campaign_id, cohort_slot=CohortSlot(None, False)
+    )
     session.commit()
     decide(session, message.message_id, outcome=outcome, reviewer_id="fa-1")
     session.commit()

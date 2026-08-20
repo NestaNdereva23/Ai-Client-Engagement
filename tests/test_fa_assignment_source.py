@@ -11,10 +11,12 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import delete
 
-from app.config import Settings
+from app.config import FaRecord, Settings
 from app.db.models.active_clients import ActiveClientFund
+from app.db.models.fa_assignment import FaAssignment
 from app.db.session import SessionLocal
 from app.ingestion.fa_assignment_source import (
+    DbFaAssignmentSource,
     FaAssignmentRecord,
     FaAssignmentSource,
     StubFaAssignmentSource,
@@ -101,3 +103,80 @@ def test_null_fa_id_falls_back_to_fund_grouping():
 
     assert _digest_group_key(stub_record) == ("fund", 10)
     assert _digest_group_key(real_record) == ("fa", 55)
+
+
+def test_roster_parses_into_records():
+    settings = Settings(
+        fa_roster="1:FA One:fa1@example.com:19, 2:FA Two:fa2@example.com:12",
+    )
+    assert settings.fa_records == (
+        FaRecord(fa_id=1, name="FA One", email="fa1@example.com", daily_capacity=19),
+        FaRecord(fa_id=2, name="FA Two", email="fa2@example.com", daily_capacity=12),
+    )
+
+
+def test_roster_drops_bad_entries_without_taking_the_rest_down():
+    settings = Settings(
+        fa_roster=(
+            "1:FA One:fa1@example.com:19,"
+            "nope,"  # not enough fields
+            "x:FA Bad:bad@example.com:5,"  # id is not a number
+            "3:FA Three:fa3@example.com:zero,"  # capacity is not a number
+            "4::fa4@example.com:5,"  # no name
+            "5:FA Five:fa5@example.com:0,"  # capacity of nobody
+            "1:FA Duplicate:dupe@example.com:9,"  # id already seen
+            "6:FA Six:fa6@example.com:7"
+        )
+    )
+    assert [record.fa_id for record in settings.fa_records] == [1, 6]
+    assert settings.fa_records[0].name == "FA One"
+
+
+def test_empty_roster_selects_the_stub():
+    source = get_fa_assignment_source(settings=Settings(fa_roster="", fa_assignment_source=""))
+    assert isinstance(source, StubFaAssignmentSource)
+
+
+def test_a_seeded_roster_selects_the_database_source():
+    source = get_fa_assignment_source(
+        settings=Settings(fa_roster="1:FA One:fa1@example.com:19", fa_assignment_source="")
+    )
+    assert isinstance(source, DbFaAssignmentSource)
+
+
+def test_db_source_returns_empty_without_a_session():
+    assert DbFaAssignmentSource().fetch_assignments([1, 2, 3]) == []
+
+
+def test_db_source_reads_what_the_allocation_wrote(db):
+    client_id = 26101
+    with SessionLocal() as session:
+        session.add_all(
+            [
+                FaAssignment(
+                    client_id=client_id,
+                    unit_fund_id=10,
+                    fa_id=4,
+                    fa_name="FA Four",
+                    source="roster",
+                ),
+                FaAssignment(
+                    client_id=client_id,
+                    unit_fund_id=20,
+                    fa_id=4,
+                    fa_name="FA Four",
+                    source="roster",
+                ),
+            ]
+        )
+        session.commit()
+
+    try:
+        with SessionLocal() as session:
+            result = DbFaAssignmentSource(session=session).fetch_assignments([client_id])
+        assert {(r.unit_fund_id, r.fa_id) for r in result} == {(10, 4), (20, 4)}
+        assert all(r.fa_name == "FA Four" and r.source == "roster" for r in result)
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(FaAssignment).where(FaAssignment.client_id == client_id))
+            session.commit()

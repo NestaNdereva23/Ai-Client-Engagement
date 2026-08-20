@@ -12,8 +12,11 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 
+import app.api.routers.briefing as briefing_router
+from app.config import get_settings
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.audit import AuditLog
+from app.db.models.briefing import BriefingNarrative
 from app.db.models.complaints import ClientComplaint
 from app.db.models.models import PiiVault
 from app.db.models.risk import ClientRiskFeatures
@@ -85,6 +88,10 @@ def seeded_client(db):
             )
         )
         session.execute(delete(PiiVault).where(PiiVault.client_id == CLIENT_ID))
+        # A narration stored by one test is served to the next one asking
+        # for the same client, which is the point of storing it and exactly
+        # what must not leak across tests.
+        session.execute(delete(BriefingNarrative).where(BriefingNarrative.client_id == CLIENT_ID))
         session.execute(delete(ClientComplaint).where(ClientComplaint.client_id == CLIENT_ID))
         session.execute(
             delete(AuditLog).where(
@@ -95,8 +102,47 @@ def seeded_client(db):
         session.commit()
 
 
+class _ScriptedLLMClient:
+    model = "briefing-stub"
+
+    def __init__(self, response: str) -> None:
+        self._response = response
+
+    def generate(self, *, system: str, user: str) -> str:
+        return self._response
+
+
+@pytest.fixture
+def ai_briefing_enabled(monkeypatch):
+    """Turn settings.ai_briefing_enabled on for one test, through the real
+    config path (env var + cache_clear) so every module that calls
+    get_settings() -- the router and the service both -- agrees, rather
+    than needing each module's own imported binding patched separately.
+    """
+    monkeypatch.setenv("AI_BRIEFING_ENABLED", "true")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture
+def ai_briefing_disabled(monkeypatch):
+    """The mirror of ai_briefing_enabled, set explicitly rather than left to
+    the schema default: a developer .env that turns the feature on would
+    otherwise make the off case call a real model.
+    """
+    monkeypatch.setenv("AI_BRIEFING_ENABLED", "false")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 def _url(client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID) -> str:
     return f"/api/v1/briefing/{client_id}/{unit_fund_id}?fa_id=fa-77"
+
+
+def _narrative_url(client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID) -> str:
+    return f"/api/v1/briefing/{client_id}/{unit_fund_id}/narrative?fa_id=fa-77"
 
 
 def test_no_reviewer_key_needed_even_when_none_are_configured(
@@ -182,3 +228,105 @@ def test_both_audit_rows_are_written_on_every_call(seeded_client) -> None:
     assert "reviewer_id" not in view_rows[0].detail
     assert vault_rows, "expected a pii_vault read audit row"
     assert vault_rows[0].detail["purpose"] == "risk_briefing"
+
+
+# --- GET /briefing/{id}/{fund}/narrative (AM15) ------------------------------
+
+
+def test_narrative_route_404s_when_the_feature_is_off(ai_briefing_disabled, seeded_client) -> None:
+    """Off is the default (config.py::ai_briefing_enabled): the route
+    behaves as though it does not exist, the deterministic briefing above
+    stays the only one there is.
+    """
+    response = client.get(_narrative_url())
+    assert response.status_code == 404
+    assert "not enabled" in response.json()["error"]["message"]
+    assert response.json()["error"]["code"] == "narrative_disabled"
+
+
+def test_narrative_route_404s_differently_when_the_client_is_unknown(
+    ai_briefing_enabled, db
+) -> None:
+    """The other 404 on this route keeps the plain not_found code, so a
+    caller can tell a switched-off feature from a client we have no data on
+    without reading the message.
+    """
+    response = client.get(_narrative_url(999999, 999999))
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+def test_narrative_route_returns_a_clean_narrative_when_enabled(
+    monkeypatch, ai_briefing_enabled, seeded_client
+) -> None:
+    narrative_text = "This client has gone quiet and broke their own pattern recently."
+    monkeypatch.setattr(
+        briefing_router,
+        "get_briefing_llm_client",
+        lambda settings: _ScriptedLLMClient(narrative_text),
+    )
+
+    response = client.get(_narrative_url())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "narrative"
+    assert body["text"] == narrative_text
+    assert body["client_name"] == "Jane Doe"
+    assert body["basis"] == ["No deposit in 12 months", "Heavy withdrawal"]
+
+
+def test_narrative_route_falls_back_to_the_deterministic_text_on_an_ungrounded_reply(
+    monkeypatch, ai_briefing_enabled, seeded_client
+) -> None:
+    ungrounded = "This client's balance is down 42% since last quarter."
+    monkeypatch.setattr(
+        briefing_router, "get_briefing_llm_client", lambda settings: _ScriptedLLMClient(ungrounded)
+    )
+
+    response = client.get(_narrative_url())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "deterministic_fallback"
+    assert "CLIENT BRIEFING" in body["text"]
+    assert ungrounded not in body["text"]
+
+
+def test_narrative_view_is_audited_with_its_mode(
+    monkeypatch, ai_briefing_enabled, seeded_client
+) -> None:
+    monkeypatch.setattr(
+        briefing_router,
+        "get_briefing_llm_client",
+        lambda settings: _ScriptedLLMClient("A short clean narrative with no figures at all."),
+    )
+
+    response = client.get(_narrative_url())
+    assert response.status_code == 200
+
+    with SessionLocal() as session:
+        view_rows = session.scalars(
+            select(AuditLog)
+            .where(
+                AuditLog.entity_type == "risk_briefing",
+                AuditLog.action == "view",
+                AuditLog.entity_id == str(CLIENT_ID),
+            )
+            .order_by(AuditLog.log_id.desc())
+        ).all()
+        crossing_rows = session.scalars(
+            select(AuditLog)
+            .where(
+                AuditLog.entity_type == "risk_briefing",
+                AuditLog.action == "narrate",
+                AuditLog.entity_id == str(CLIENT_ID),
+            )
+            .order_by(AuditLog.log_id.desc())
+        ).all()
+
+    assert view_rows, "expected a risk_briefing view audit row"
+    assert view_rows[0].detail["mode"] == "narrative"
+    assert crossing_rows, "expected a risk_briefing narrate (boundary) audit row"
+    assert crossing_rows[0].detail["inbound"] == "pass"
+    assert crossing_rows[0].detail["outbound"] == "pass"

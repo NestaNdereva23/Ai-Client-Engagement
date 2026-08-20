@@ -115,7 +115,7 @@ class ActiveClientInteraction(Base):
     # row was written, or null if it had never been scored yet. Lets the
     # digest build tell whether a client got worse after an FA manager acted
     # on them, without a second nearest-snapshot lookup -- see
-    # digest/build.py::_is_deprioritized.
+    # digest/build.py::is_deprioritized.
     risk_band_at_interaction: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

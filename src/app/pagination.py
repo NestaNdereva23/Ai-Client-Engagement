@@ -21,10 +21,17 @@ T = TypeVar("T")
 
 
 class Page(BaseModel, Generic[T]):
-    """One page of a list endpoint's results."""
+    """One page of a list endpoint's results.
+
+    total_count is the count across every page under the same filters, not
+    just this one -- optional because it costs an extra query, so a caller
+    only pays for it where a total is actually shown (e.g. a queue badge).
+    Left unset, it stays None rather than being silently wrong.
+    """
 
     items: list[T]
     next_cursor: str | None = None
+    total_count: int | None = None
 
 
 class InvalidCursor(Exception):

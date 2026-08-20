@@ -15,6 +15,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from app.risk.routing import ROUTES
+from app.risk.scoring import RISK_BANDS
+from app.transform.active_features import BALANCE_TIERS, VALUE_TIERS
+from app.transform.active_features import RECENCY_BANDS as RISK_RECENCY_BANDS
 from app.transform.features import (
     CADENCE_BANDS,
     EXIT_REASONS,
@@ -29,6 +33,15 @@ from app.transform.features import (
 # The schema a message is stamped with, so it can be explained later even if
 # the fields change. Bump on any change to the fields or their meaning.
 MODEL_FACT_BLOCK_VERSION = 2
+
+# Same purpose as MODEL_FACT_BLOCK_VERSION, for RiskFactBlock.
+RISK_FACT_BLOCK_VERSION = 1
+
+# A deposit trend's direction, band-only. Mirrors transform/features.py's own
+# _trend_band split of the same TREND_EPS constant -- briefing/render.py
+# already makes this exact three-way comparison inline, in prose; this just
+# gives the comparison a name so it can be a fact-block field instead.
+DEPOSIT_TREND_BANDS = ("rising", "flat", "falling", "unknown")
 
 _MONTH_FORMAT = re.compile(r"^\d{4}-\d{2}$")
 
@@ -104,6 +117,49 @@ class ModelFactBlock(BaseModel):
         closed instance, so a key outside this schema can never appear here
         however permitted_keys is set.
         """
+        raw = self.model_dump(exclude_none=True)
+        if permitted_keys is None:
+            return raw
+        allowed = set(permitted_keys)
+        return {key: value for key, value in raw.items() if key in allowed}
+
+
+class RiskFactBlock(BaseModel):
+    """The closed, band-only set of real figures a briefing narrative may cite.
+
+    Mirrors ModelFactBlock's discipline for the active-book risk briefing
+    (AM15): every field is a band already computed and reviewed elsewhere in
+    this codebase (RISK_BANDS, ROUTES, BALANCE_TIERS, RECENCY_BANDS,
+    VALUE_TIERS, FUND_DISPLAY_NAMES, the six sig_* signals) or a boolean
+    caveat -- no name, code, exact amount, or exact date. Nothing here is a
+    new statistical cutoff; see privacy/fact_block.py's construction site in
+    services/briefing.py for where each field comes from.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    risk_band: _band(RISK_BANDS) | None = None
+    route: _band(ROUTES) | None = None
+    balance_tier: _band(BALANCE_TIERS) | None = None
+    recency_band: _band(RISK_RECENCY_BANDS) | None = None
+    value_tier: _band(VALUE_TIERS) | None = None
+    deposit_trend_band: _band(DEPOSIT_TREND_BANDS) | None = None
+    fund_name: _band(FUND_DISPLAY_NAMES.values()) | None = None
+
+    sig_heavy_withdrawal: bool | None = None
+    sig_dormant: bool | None = None
+    sig_broken_pattern: bool | None = None
+    sig_shrinking: bool | None = None
+    sig_going_dormant: bool | None = None
+    sig_never_repeated: bool | None = None
+
+    deposit_count_capped: bool | None = None
+    withdrawal_history_hidden: bool | None = None
+    holds_both_funds: bool | None = None
+    has_open_complaint: bool | None = None
+
+    def to_dict(self, permitted_keys: Sequence[str] | None = None) -> dict[str, Any]:
+        """Same contract as ModelFactBlock.to_dict."""
         raw = self.model_dump(exclude_none=True)
         if permitted_keys is None:
             return raw

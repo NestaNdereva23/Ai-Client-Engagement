@@ -10,9 +10,19 @@ Stages, in order:
     2. Transform into active_client_fund and derive the behavioural measures.
     3. Fetch open complaints and FA assignments for this run's population.
     4. Evaluate the six signals and compose a score for every client-fund.
-    5. Route.
+    5. Route, then assign each client to an account manager and lend out
+       any call-queue overflow for the night. A client over their advisor's
+       capacity with nobody free to take the call is demoted to the
+       watchlist route instead of piling onto that advisor's list.
     6. Write one risk_snapshot row per client-fund and upsert
        client_risk_features to the latest values.
+    7. Email each rostered account manager their morning call list. Best
+       effort, after the run has already committed, and does not wait on
+       step 8: the email carries counts and money only, no per-client
+       detail, so it has nothing to gain from the narrations being ready.
+    8. Pre-draft the AI narrations for the clients the digest surfaced, when
+       that feature is on. Best effort too, and runs last precisely because
+       nothing ahead of it depends on it finishing.
 
 A completed run is never redone: calling run() again with the same run_id
 just returns its summary. A run that failed partway resumes: ingestion picks
@@ -42,8 +52,10 @@ from app.db.session import SessionLocal
 from app.ingestion.complaints_source import ComplaintsSource, get_complaints_source
 from app.ingestion.endpoints import resolve_endpoint
 from app.ingestion.fa_assignment_source import FaAssignmentSource, get_fa_assignment_source
+from app.privacy.llm_client import get_briefing_llm_client
+from app.risk.fa_allocation import ClientLoad
 from app.risk.history import write_snapshot
-from app.risk.routing import RoutableRow, route_population
+from app.risk.routing import RoutableRow, RouteResult, route_population
 from app.risk.scoring import ScoreResult, compose_score
 from app.risk.signals import SIGNAL_ORDER
 from app.risk.store import active_config_version
@@ -52,7 +64,10 @@ from app.transform.active_flatten import flatten_active_run
 from app.transform.active_load import persist_active_result
 from app.transform.load import upsert
 from app.workers.digest import build_and_persist_digest
+from app.workers.digest_email import send_digest_emails
+from app.workers.fa_assignment import allocate_and_persist
 from app.workers.ingestion import IngestionWorker
+from app.workers.narrative import warm_digest_narratives
 
 logger = structlog.get_logger(__name__)
 
@@ -134,6 +149,29 @@ def _feature_row(
     }
 
 
+def _client_loads(
+    measures: dict[tuple[int, int], ActiveFeatureMeasures],
+    scores: dict[tuple[int, int], ScoreResult],
+    routes: dict[tuple[int, int], Any],
+) -> list[ClientLoad]:
+    """One ClientLoad per client, summed across every fund they hold.
+
+    An advisor owns a person, not a relationship, so the money at risk that
+    decides who carries what is the client's total, and a client counts
+    against a call queue once however many of their funds landed in it.
+    """
+    totals: dict[int, float] = {}
+    in_queue: set[int] = set()
+    for key, m in measures.items():
+        totals[m.client_id] = totals.get(m.client_id, 0.0) + scores[key].fund_at_risk
+        if routes[key].route == "fa_call_priority":
+            in_queue.add(m.client_id)
+    return [
+        ClientLoad(client_id=client_id, fund_at_risk=total, in_call_queue=client_id in in_queue)
+        for client_id, total in sorted(totals.items())
+    ]
+
+
 def _signal_counts(scores: dict[tuple[int, int], ScoreResult]) -> dict[str, int]:
     counts = dict.fromkeys(SIGNAL_ORDER, 0)
     for score in scores.values():
@@ -141,6 +179,25 @@ def _signal_counts(scores: dict[tuple[int, int], ScoreResult]) -> dict[str, int]
             if score.signals[name]:
                 counts[name] += 1
     return counts
+
+
+def _demote_over_capacity(routes: dict[tuple[int, int], RouteResult], demoted: set[int]) -> int:
+    """Move a demoted client's call-queue lines to the watchlist route.
+
+    Called after allocate_and_persist decides which clients are over their
+    advisor's capacity with nobody else to take the call -- see
+    risk/fa_allocation.py::_lend_overflow. A client's whole call queue for
+    the night moves, not just one fund, since capacity measures calls to
+    the person, not to a fund. Mutates routes in place so every read after
+    this point, snapshots and features included, sees the demotion.
+    """
+    moved = 0
+    for (client_id, _), route in routes.items():
+        if client_id in demoted and route.route == "fa_call_priority":
+            route.route = "fa_watchlist"
+            route.queue_rank = None
+            moved += 1
+    return moved
 
 
 class RiskDetectionWorker:
@@ -232,13 +289,25 @@ class RiskDetectionWorker:
                     )
                 )
             routes = route_population(routable, config_row)
-            route_distribution = Counter(r.route for r in routes.values())
             signal_counts = _signal_counts(scores)
+
+            roster = get_settings().fa_records
+            allocation = allocate_and_persist(
+                session,
+                run.run_id,
+                roster=roster,
+                clients=_client_loads(measures, scores, routes),
+                keys=list(measures),
+            )
+            demoted_count = _demote_over_capacity(routes, allocation.demoted)
+
+            route_distribution = Counter(r.route for r in routes.values())
             logger.info(
                 "risk_detection.scored",
                 run_id=run.run_id,
                 signals_fired=signal_counts,
                 route_distribution=dict(route_distribution),
+                capacity_demoted=demoted_count,
             )
 
             prior_rows = {
@@ -310,11 +379,20 @@ class RiskDetectionWorker:
                     detail={"changed": changes, "changed_count": len(changes)},
                 )
 
+            # An advisor's own capacity is the real ceiling on how many
+            # clients they can be handed in a morning; the config's cap is
+            # only a fallback for a book with no roster behind it.
+            cap_per_group = (
+                max(record.daily_capacity for record in roster)
+                if roster
+                else config_row.digest_cap_per_group
+            )
             digest_run = build_and_persist_digest(
                 session,
                 run.run_id,
                 fa_assignment_source=fa_source,
-                cap_per_group=config_row.digest_cap_per_group,
+                cap_per_group=cap_per_group,
+                covering=allocation.covering,
             )
             logger.info(
                 "risk_detection.digest_built",
@@ -338,6 +416,9 @@ class RiskDetectionWorker:
             )
             session.commit()
 
+            self._send_digest_emails(digest_run.digest_run_id, allocation.covering)
+            self._warm_narratives(digest_run.digest_run_id)
+
             result = RiskRunResult(
                 run_id=run.run_id,
                 state=run.state,
@@ -355,6 +436,50 @@ class RiskDetectionWorker:
             raise
         finally:
             session.close()
+
+    def _warm_narratives(self, digest_run_id: int) -> None:
+        """Pre-draft narrations for the clients this digest surfaces.
+
+        Runs last, after the digest emails are already out: drafting can
+        take minutes on a slow model, and nothing ahead of it, the email
+        included, waits on it. In its own session, and swallows everything:
+        the run's real work is done by this point, and a model being slow
+        or down is not a reason to fail a pass that already scored and
+        routed the whole book. Skipped when the feature is off or the limit
+        is zero.
+        """
+        settings = get_settings()
+        if not settings.ai_briefing_enabled or settings.briefing_prewarm_limit <= 0:
+            return
+        try:
+            with self._session_factory() as session:
+                warm_digest_narratives(
+                    session,
+                    digest_run_id,
+                    get_briefing_llm_client(settings),
+                    limit=settings.briefing_prewarm_limit,
+                )
+        except Exception:
+            logger.exception("risk_detection.narrative_warm_failed", digest_run_id=digest_run_id)
+
+    def _send_digest_emails(self, digest_run_id: int, covering: dict[int, int]) -> None:
+        """Mail each rostered advisor their morning summary for this digest.
+
+        Runs right after the risk run commits, ahead of the narration
+        warm-up: the email carries counts and money only, no per-client
+        detail, so it never waits on a narration to be ready. In its own
+        session, and swallows everything for the same reason the warm-up
+        does: the run has already committed, and a mail server being down
+        at 6am is not a reason to fail a pass that scored and routed the
+        whole book. Nothing happens at all without a roster.
+        """
+        if not get_settings().fa_records:
+            return
+        try:
+            with self._session_factory() as session:
+                send_digest_emails(session, digest_run_id, covering=covering)
+        except Exception:
+            logger.exception("risk_detection.digest_email_failed", digest_run_id=digest_run_id)
 
     def _ingest(self, run: RiskRun) -> None:
         """Pull the active-clients feed into raw_staging, keyed by this run's own id."""

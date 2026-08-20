@@ -56,6 +56,13 @@ class BriefingFacts:
     months_until_empty: float | None
     months_until_empty_threshold: float
     has_open_complaint: bool
+    # Not read by render_briefing itself -- carried here only so
+    # services/briefing.py's narrative path (AM15) reads the same
+    # already-gathered row this dataclass represents, rather than a second
+    # query that could disagree with it. None when the nightly job hasn't
+    # bucketed this client-fund yet.
+    recency_band: str | None = None
+    value_tier: str | None = None
 
 
 def render_briefing(facts: BriefingFacts) -> str:

@@ -14,7 +14,9 @@ happened, since every run writes its snapshots before the next run starts.
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from collections.abc import Sequence
+
+from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
 from app.db.models.risk import RiskSnapshot
@@ -98,3 +100,36 @@ def delta_for(session: Session, client_id: int, unit_fund_id: int, run_id: str) 
     if previous is None:
         return None
     return current.risk_score - previous.risk_score
+
+
+def previous_scores(
+    session: Session, run_id: str, keys: Sequence[tuple[int, int]]
+) -> dict[tuple[int, int], int]:
+    """Each key's risk_score from the most recent run before this one.
+
+    One read for the whole population, so a caller counting how many clients
+    got worse overnight does not pay two queries per client the way
+    delta_for does. A key with no earlier snapshot is absent from the
+    result, which is the same "no history yet" delta_for reports as None.
+    """
+    keys = list(keys)
+    if not keys:
+        return {}
+    latest = (
+        select(
+            RiskSnapshot.client_id,
+            RiskSnapshot.unit_fund_id,
+            RiskSnapshot.risk_score,
+        )
+        .where(
+            RiskSnapshot.run_id != run_id,
+            tuple_(RiskSnapshot.client_id, RiskSnapshot.unit_fund_id).in_(keys),
+        )
+        .distinct(RiskSnapshot.client_id, RiskSnapshot.unit_fund_id)
+        .order_by(
+            RiskSnapshot.client_id,
+            RiskSnapshot.unit_fund_id,
+            RiskSnapshot.snapshot_id.desc(),
+        )
+    )
+    return {(row.client_id, row.unit_fund_id): row.risk_score for row in session.execute(latest)}

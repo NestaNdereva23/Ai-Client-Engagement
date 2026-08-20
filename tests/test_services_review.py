@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, select, text
 
+from app.campaigns.cohorts import CohortSlot
 from app.config import Settings
 from app.db.models.audit import AuditLog
 from app.db.models.llmops import GenerationRun
@@ -201,6 +202,9 @@ def scenario(roles):
     with SessionLocal() as session:
         session.execute(delete(OutreachMessage).where(OutreachMessage.generation_run_id == run_id))
         session.execute(delete(GenerationRun).where(GenerationRun.run_id == run_id))
+        # create_outreach_message resolves/creates a review_cohort as a side
+        # effect (campaign x the run's priority_tier); its campaign_id FK
+        # cascades, so deleting the campaign below cleans it up too.
         session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
         session.execute(delete(PiiVault).where(PiiVault.client_id == client_id))
         session.execute(delete(Clients).where(Clients.client_id == client_id))
@@ -293,11 +297,19 @@ def test_create_outreach_message_falls_back_when_the_vault_has_no_name(scenario)
 
 @pytest.fixture
 def message(scenario):
-    """The scenario's run turned into a pending_review outreach_message."""
+    """The scenario's run turned into a pending_review outreach_message.
+
+    Explicitly opted out of cohort sampling (cohort_slot=None cohort_id):
+    this fixture backs the generic decide() outcome tests, which exercise
+    every outcome including reject/escalate/hold -- a cohort message
+    refuses those by design. See test_review_cohorts.py for that behaviour.
+    """
     _client_id, run_id, campaign_id, _fund_id = scenario
     with SessionLocal() as session:
         run = session.get(GenerationRun, run_id)
-        created = create_outreach_message(session, run, campaign_id=campaign_id)
+        created = create_outreach_message(
+            session, run, campaign_id=campaign_id, cohort_slot=CohortSlot(None, False)
+        )
         session.commit()
         message_id = created.message_id
 
@@ -335,13 +347,19 @@ def test_list_pending_messages_paginates_across_two_pages(scenario) -> None:
     client_id, run_id, campaign_id, _fund_id = scenario
     with SessionLocal() as session:
         run = session.get(GenerationRun, run_id)
-        first = create_outreach_message(session, run, campaign_id=campaign_id)
+        # Outside cohort sampling, so both messages stay in the default
+        # queue view and this stays a test about paging, not sampling.
+        first = create_outreach_message(
+            session, run, campaign_id=campaign_id, cohort_slot=CohortSlot(None, False)
+        )
         session.commit()
         first_id = first.message_id
 
     with SessionLocal() as session:
         second_run = persist_generation_run(session, accepted_state(client_id), make_settings())
-        second = create_outreach_message(session, second_run, campaign_id=campaign_id)
+        second = create_outreach_message(
+            session, second_run, campaign_id=campaign_id, cohort_slot=CohortSlot(None, False)
+        )
         session.commit()
         second_run_id, second_id = second_run.run_id, second.message_id
 
@@ -558,9 +576,13 @@ def test_decide_batch_reports_an_already_decided_message_without_failing_the_res
     client_id, run_id, campaign_id, _fund_id = scenario
     with SessionLocal() as session:
         run = session.get(GenerationRun, run_id)
-        first = create_outreach_message(session, run, campaign_id=campaign_id)
+        first = create_outreach_message(
+            session, run, campaign_id=campaign_id, cohort_slot=CohortSlot(None, False)
+        )
         second_run = persist_generation_run(session, accepted_state(client_id), make_settings())
-        second = create_outreach_message(session, second_run, campaign_id=campaign_id)
+        second = create_outreach_message(
+            session, second_run, campaign_id=campaign_id, cohort_slot=CohortSlot(None, False)
+        )
         session.commit()
         message_ids = [first.message_id, second.message_id]
 

@@ -21,6 +21,11 @@ from app.campaigns.batch_generation import submit_batch as submit_campaign_batch
 from app.campaigns.enrollment import enroll_cohort
 from app.campaigns.estimation import TemplateEstimate, estimate_templates_sql
 from app.campaigns.generation import generate_for_enrollment
+from app.campaigns.generation_cost import DEFAULT_MODEL, CampaignCostEstimate
+from app.campaigns.generation_cost import estimate_generation_cost as _estimate_generation_cost
+from app.campaigns.generation_cost import (
+    list_generation_cost_models as _list_generation_cost_models,
+)
 from app.campaigns.instantiation import instantiate_template as instantiate_template_run
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT
 from app.campaigns.template_generation import TemplateDraftOutcome, draft_templates_for_campaign
@@ -34,7 +39,6 @@ from app.campaigns.touch import (
     SendOutcome,
     TouchRunOutcome,
     run_due_enrollments,
-    stub_sender,
 )
 from app.campaigns.touch import send_due_touches as send_due_touches_run
 from app.config import Settings
@@ -46,10 +50,12 @@ from app.db.models.campaigns import (
     TouchLog,
 )
 from app.db.models.generation_batch import GenerationBatch
+from app.db.models.generation_cost import GenerationCostConfigVersion
 from app.db.models.message_template import MessageTemplate
 from app.db.models.models import ClientFeatures, Clients
 from app.db.models.outreach import Campaign, OutreachMessage, ReviewAction
 from app.db.models.rules import ClientMessageIndicators
+from app.delivery.sender import build_email_sender
 from app.llmops.tracing import Tracer
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_id_cursor, encode_id_cursor
 from app.privacy.llm_client import LLMClient
@@ -421,9 +427,14 @@ def run_campaign_generation(
 
 
 def send_campaign(
-    session: Session, campaign_id: int, *, sender: SenderFn = stub_sender
+    session: Session, campaign_id: int, *, sender: SenderFn | None = None
 ) -> list[SendOutcome]:
     """Send every approved, not-yet-sent touch in this campaign right now.
+
+    sender defaults to build_email_sender(): the real mail path, through
+    whatever Mailer app.delivery.mailer.get_mailer() resolves to for the
+    running environment. Pass a different sender (the campaigns.touch stub,
+    or a test fake) to override it.
 
     Flips the campaign's own status from draft to running the first time
     anything in this call actually sends -- a no-op once it already has a
@@ -434,7 +445,9 @@ def send_campaign(
     if campaign is None:
         raise CampaignNotFound(campaign_id)
 
-    outcomes = send_due_touches_run(session, campaign_id=campaign_id, sender=sender)
+    outcomes = send_due_touches_run(
+        session, campaign_id=campaign_id, sender=sender or build_email_sender()
+    )
     if campaign.status == "draft" and any(o.sent for o in outcomes):
         campaign.status = "running"
         session.flush()
@@ -552,6 +565,32 @@ def estimate_campaign_templates(
     if session.get(Campaign, campaign_id) is None:
         raise CampaignNotFound(campaign_id)
     return estimate_templates_sql(session, campaign_id, limit=limit)
+
+
+def estimate_campaign_generation_cost(
+    session: Session,
+    campaign_id: int,
+    *,
+    model: str = DEFAULT_MODEL,
+    limit: int = DEFAULT_BATCH_LIMIT,
+) -> CampaignCostEstimate:
+    """What drafting this campaign would cost, single-generation and
+    templates side by side, at `model`'s active rate.
+
+    Raises CampaignNotFound the same way the other campaign-scoped calls do,
+    and (uncaught here) UnknownGenerationModel if `model` isn't supported or
+    GenerationCostConfigMissing if it has no rate configured.
+    """
+    if session.get(Campaign, campaign_id) is None:
+        raise CampaignNotFound(campaign_id)
+    return _estimate_generation_cost(session, campaign_id, model=model, limit=limit)
+
+
+def list_generation_cost_models(session: Session) -> list[GenerationCostConfigVersion]:
+    """The active generation cost rate for every supported model, so a
+    campaign's cost estimate can be re-priced against any of them.
+    """
+    return _list_generation_cost_models(session)
 
 
 def get_campaign_template_policy(session: Session, campaign_id: int) -> EffectivePolicy:

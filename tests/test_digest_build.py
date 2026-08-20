@@ -1,6 +1,6 @@
 """Tests for digest/build.py: grouping (with the FA-to-fund fallback), sort
-order, the per-group cap, the complaint caveat, and that a rebuild from the
-same risk_run_id gives back the same lines.
+order, the per-group cap's batch boundaries, the complaint caveat, and that
+a rebuild from the same risk_run_id gives back the same lines.
 """
 
 from __future__ import annotations
@@ -185,7 +185,7 @@ def test_sort_order_is_fund_at_risk_not_score(db, cleanup) -> None:
     assert [line.rank for line in lines] == [1, 2]
 
 
-def test_cap_leaves_the_rest_countable_as_overflow(db, cleanup) -> None:
+def test_cap_size_sets_batch_boundaries_but_keeps_everyone(db, cleanup) -> None:
     run_ids, client_ids = cleanup
     ids = [93007, 93008, 93009]
     client_ids.extend(ids)
@@ -205,9 +205,12 @@ def test_cap_leaves_the_rest_countable_as_overflow(db, cleanup) -> None:
         )
 
     group = result.groups[f"fund:{FUND_ID}"]
+    # cap_per_group=2 with 3 eligible rows makes two batches (2, then 1),
+    # but build_digest never drops anyone -- reveal-the-next-batch is a
+    # read-time decision (app/services/digest.py), not a build-time one.
     assert group.total_eligible == 3
-    assert len(group.lines) == 2
-    assert group.total_eligible - len(group.lines) == 1  # "and 1 more"
+    assert len(group.lines) == 3
+    assert [line.batch for line in group.lines] == [0, 0, 1]
 
 
 def test_open_complaint_sets_the_caveat(db, cleanup) -> None:
@@ -375,3 +378,30 @@ def test_interaction_with_no_band_on_file_stays_deprioritized(db, cleanup) -> No
 
     line = result.groups[f"fund:{FUND_ID}"].lines[0]
     assert line.deprioritized is True
+
+
+def test_a_lent_client_groups_under_the_stand_in(db, cleanup) -> None:
+    run_ids, client_ids = cleanup
+    owned, lent = 93041, 93042
+    client_ids.extend([owned, lent])
+
+    with SessionLocal() as session:
+        run_id = _run(session)
+        run_ids.append(run_id)
+        _seed(session, run_id, owned, 40, 10_000.0, "fa_call_priority", queue_rank=1)
+        _seed(session, run_id, lent, 40, 9_000.0, "fa_call_priority", queue_rank=2)
+        session.commit()
+
+        result = build_digest(
+            session,
+            run_id,
+            fa_assignment_source=FakeFaAssignmentSource({(owned, FUND_ID): 7, (lent, FUND_ID): 7}),
+            cap_per_group=12,
+            covering={lent: 8},
+        )
+
+    assert [line.client_id for line in result.groups["fa:7"].lines] == [owned]
+    lent_line = result.groups["fa:8"].lines[0]
+    assert lent_line.client_id == lent
+    assert lent_line.covering_for_fa_id == 7
+    assert result.groups["fa:7"].lines[0].covering_for_fa_id is None

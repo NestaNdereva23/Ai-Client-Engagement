@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from uuid import uuid4
 
 import pytest
@@ -10,12 +11,15 @@ from sqlalchemy import delete, select
 
 from app.config import Settings
 from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
+from app.db.models.generation_cost import GenerationCostConfigVersion
 from app.db.models.llmops import GenerationRun
 from app.db.models.message_template import MessageTemplate
 from app.db.models.models import ClientFeatures, Clients, Funds, PiiVault
 from app.db.models.outreach import Campaign, OutreachMessage
 from app.db.models.template_generation_plan import TemplateGenerationPlan
 from app.db.session import SessionLocal, restricted_session
+from app.delivery import sender as sender_module
+from app.delivery.mailer import NullMailer
 from app.llmops.versions import persist_generation_run
 from app.main import app
 
@@ -173,6 +177,190 @@ def test_campaign_value_sums_primary_rows_only(campaign_with_valued_clients) -> 
 def test_campaign_value_404s_for_an_unknown_campaign(db: None) -> None:
     response = client.get(f"{CAMPAIGNS}/999999999/value")
     assert response.status_code == 404
+
+
+GENERATION_COST_TEST_VERSION = 90310
+
+
+@pytest.fixture
+def campaign_with_generation_cost_steps(db: None):
+    """Two primary enrollments, one suppressed duplicate, and a two-step
+    sequence, plus a generation cost rate valid from well in the past.
+
+    The rate is seeded here rather than relied on from the migration: the
+    test database is built from Base.metadata.create_all, which creates the
+    table but does not run the migration's seed insert.
+    """
+    fund_id = 97760
+    primary_a, primary_b, suppressed = 97761, 97762, 97763
+    with SessionLocal() as session:
+        row = Campaign(name="test generation cost campaign")
+        session.add(row)
+        session.add(Funds(unit_fund_id=fund_id, unit_fund_name="Test Fund"))
+        session.add(
+            GenerationCostConfigVersion(
+                version=GENERATION_COST_TEST_VERSION,
+                model="claude-haiku-4-5-20251001",
+                cost_per_generation_usd=0.002877,
+                cost_per_generation_kes=0.37,
+                valid_from=date(2020, 1, 1),
+                valid_to=None,
+            )
+        )
+        session.commit()
+        campaign_id = row.campaign_id
+
+        for client_id in (primary_a, primary_b, suppressed):
+            session.add(
+                Clients(
+                    client_id=client_id,
+                    unit_fund_id=fund_id,
+                    n_purchases_returned=0,
+                    n_sales_returned=0,
+                )
+            )
+        session.add_all(
+            [
+                PiiVault(client_id=primary_a, client_name="Person A"),
+                PiiVault(client_id=primary_b, client_name="Person B"),
+                PiiVault(client_id=suppressed, client_name="Person A"),
+            ]
+        )
+        session.commit()
+        session.add_all(
+            [
+                Enrollment(
+                    campaign_id=campaign_id, client_id=primary_a, is_primary_contact_row=True
+                ),
+                Enrollment(
+                    campaign_id=campaign_id, client_id=primary_b, is_primary_contact_row=True
+                ),
+                Enrollment(
+                    campaign_id=campaign_id, client_id=suppressed, is_primary_contact_row=False
+                ),
+                CampaignStep(
+                    campaign_id=campaign_id, step_no=1, offset_days=0, message_angle="pick_up_again"
+                ),
+                CampaignStep(
+                    campaign_id=campaign_id, step_no=2, offset_days=7, message_angle="pick_up_again"
+                ),
+            ]
+        )
+        session.commit()
+
+    yield campaign_id
+
+    with SessionLocal() as session:
+        session.execute(delete(CampaignStep).where(CampaignStep.campaign_id == campaign_id))
+        session.execute(delete(Enrollment).where(Enrollment.campaign_id == campaign_id))
+        session.execute(
+            delete(PiiVault).where(PiiVault.client_id.in_((primary_a, primary_b, suppressed)))
+        )
+        session.execute(
+            delete(Clients).where(Clients.client_id.in_((primary_a, primary_b, suppressed)))
+        )
+        session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
+        session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
+        session.execute(
+            delete(GenerationCostConfigVersion).where(
+                GenerationCostConfigVersion.version == GENERATION_COST_TEST_VERSION
+            )
+        )
+        session.commit()
+
+
+def test_campaign_generation_cost_prices_the_enrolled_cohort_per_step(
+    campaign_with_generation_cost_steps,
+) -> None:
+    campaign_id = campaign_with_generation_cost_steps
+    response = client.get(f"{CAMPAIGNS}/{campaign_id}/generation-cost")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["campaign_id"] == campaign_id
+    assert body["model"] == "claude-haiku-4-5-20251001"
+    assert body["step_count"] == 2
+    # Two primary rows; the suppressed duplicate never sends and isn't priced.
+    assert body["enrolled_clients"] == 2
+
+    single = body["single_generation"]
+    assert single["count_per_step"] == 2
+    rate_kes = body["rate_per_generation_kes"]
+    assert single["cost_per_step_kes"] == pytest.approx(2 * rate_kes)
+    assert single["total_cost_kes"] == pytest.approx(single["cost_per_step_kes"] * 2)
+
+    # No ClientFeatures/indicators are seeded, so no bucket clears the
+    # template eligibility gate; the template scenario prices at zero.
+    templates = body["templates"]
+    assert templates["count_per_step"] == 0
+    assert templates["total_cost_kes"] == 0
+
+
+def test_campaign_generation_cost_404s_for_an_unknown_campaign(db: None) -> None:
+    response = client.get(f"{CAMPAIGNS}/999999999/generation-cost")
+    assert response.status_code == 404
+
+
+def test_campaign_generation_cost_can_be_repriced_by_model(
+    campaign_with_generation_cost_steps,
+) -> None:
+    campaign_id = campaign_with_generation_cost_steps
+    opus_version = 90311
+    with SessionLocal() as session:
+        session.add(
+            GenerationCostConfigVersion(
+                version=opus_version,
+                model="claude-opus-5",
+                cost_per_generation_usd=0.014375,
+                cost_per_generation_kes=1.85,
+                # Must be at least as recent as the seed migration's rate
+                # (2026-08-19) for active_generation_cost_config to pick this
+                # version as the one in force; the seed's valid_to is null,
+                # so it stays active until something newer supersedes it.
+                valid_from=date.today(),
+                valid_to=None,
+            )
+        )
+        session.commit()
+    try:
+        response = client.get(
+            f"{CAMPAIGNS}/{campaign_id}/generation-cost", params={"model": "claude-opus-5"}
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["model"] == "claude-opus-5"
+        assert body["config_version"] == opus_version
+        assert body["single_generation"]["cost_per_step_kes"] == pytest.approx(2 * 1.85)
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(GenerationCostConfigVersion).where(
+                    GenerationCostConfigVersion.version == opus_version
+                )
+            )
+            session.commit()
+
+
+def test_campaign_generation_cost_400s_for_an_unknown_model(
+    campaign_with_generation_cost_steps,
+) -> None:
+    campaign_id = campaign_with_generation_cost_steps
+    response = client.get(
+        f"{CAMPAIGNS}/{campaign_id}/generation-cost", params={"model": "claude-mythos-5"}
+    )
+    assert response.status_code == 400
+
+
+def test_generation_cost_models_lists_the_configured_rate(
+    campaign_with_generation_cost_steps,
+) -> None:
+    # The fixture's dependency on `db` also seeds the haiku rate this reads.
+    response = client.get(f"{CAMPAIGNS}/generation-cost/models")
+    assert response.status_code == 200
+    body = response.json()
+    haiku = next(m for m in body if m["model"] == "claude-haiku-4-5-20251001")
+    assert haiku["label"] == "Claude Haiku 4.5"
+    assert haiku["rate_per_generation_kes"] == pytest.approx(0.37)
 
 
 def make_settings(**overrides) -> Settings:
@@ -719,6 +907,7 @@ def campaign_with_an_approved_touch(db: None):
             generation_run_id=message_run.run_id,
             client_id=client_id,
             ai_draft_content={"subject": "Subject", "body": "Body"},
+            personalized_content={"subject": "Subject", "body": "Body"},
             status="approved",
         )
         session.add(message)
@@ -748,21 +937,34 @@ def campaign_with_an_approved_touch(db: None):
         session.commit()
 
 
+@pytest.fixture
+def unconfigured_mailer(monkeypatch) -> NullMailer:
+    """Point the campaign sender at a recording no-op, so POST .../send never
+    opens a real socket regardless of the local .env's own SMTP settings.
+    """
+    mailer = NullMailer(sender="ace@example.com")
+    monkeypatch.setattr(sender_module, "get_mailer", lambda *args, **kwargs: mailer)
+    return mailer
+
+
 def test_send_sends_the_approved_touch_and_flips_the_campaign_to_running(
-    campaign_with_an_approved_touch: int,
+    campaign_with_an_approved_touch: int, unconfigured_mailer: NullMailer
 ) -> None:
     response = client.post(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/send")
     assert response.status_code == 200
     outcomes = response.json()
     assert len(outcomes) == 1
     assert outcomes[0]["sent"] is True
-    assert outcomes[0]["delivery_status"] == "stubbed"
+    assert outcomes[0]["delivery_status"] == "recorded"
+    assert [m.to for m in unconfigured_mailer.sent_messages] == ["test@example.com"]
 
     detail = client.get(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}")
     assert detail.json()["status"] == "running"
 
 
-def test_send_is_a_no_op_the_second_time(campaign_with_an_approved_touch: int) -> None:
+def test_send_is_a_no_op_the_second_time(
+    campaign_with_an_approved_touch: int, unconfigured_mailer: NullMailer
+) -> None:
     client.post(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/send")
     response = client.post(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/send")
     assert response.status_code == 200

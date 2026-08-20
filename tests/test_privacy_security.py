@@ -18,6 +18,7 @@ import pytest
 from sqlalchemy import delete, select
 
 from app.agents.graph import load_client_facts
+from app.briefing.render import BriefingFacts
 from app.db.models.audit import AuditLog
 from app.db.models.models import (
     ClientFeatures,
@@ -34,6 +35,7 @@ from app.db.session import SessionLocal
 from app.privacy.boundary import run_model_boundary, to_model_context
 from app.privacy.fact_block import ModelFactBlock
 from app.privacy.scanners import InboundLeak, OutboundLeak
+from app.services.briefing import to_risk_fact_block
 
 EAT = timezone(timedelta(hours=3))
 ANCHOR = datetime(2026, 7, 23, 9, 0, tzinfo=EAT)
@@ -282,3 +284,94 @@ def test_a_cadence_fact_built_through_modelfactblock_is_simply_absent() -> None:
     payload = ModelFactBlock(cadence_band="None", invested_every_n_days=30).to_dict()
     assert "invested_every_n_days" not in payload
     assert run_model_boundary(payload, lambda p: "draft") == "draft"
+
+
+# --- the risk fact-block path (AM15): same guarantee, active-book vocabulary -
+
+
+def _briefing_facts(**overrides) -> BriefingFacts:
+    """One realistic client-fund's gathered facts, standing in for what
+    services.briefing.gather_briefing_facts would actually return -- carrying the
+    exact figures and the pseudonymous client_code a real row would, so the
+    projection below has something real to fail to leak.
+    """
+    defaults = dict(
+        client_code="C-94001",
+        fund_name="Cytonn Money Market Fund",
+        risk_score=87,
+        risk_band="Critical",
+        route="fa_call_priority",
+        balance=4_466_000.0,
+        balance_tier="Institutional",
+        days_since_deposit=410,
+        last_deposit_amount=250_000.0,
+        typical_gap_days=30.0,
+        overdue_multiple=13.7,
+        typical_deposit_amount=180_000.0,
+        largest_deposit_amount=500_000.0,
+        deposit_trend=-0.42,
+        largest_withdrawal=900_000.0,
+        withdrawal_pct=0.65,
+        days_since_withdrawal=90,
+        signals={
+            "sig_broken_pattern": True,
+            "sig_dormant": True,
+            "sig_heavy_withdrawal": True,
+            "sig_shrinking": True,
+            "sig_going_dormant": False,
+            "sig_never_repeated": False,
+        },
+        deposit_count_capped=True,
+        withdrawal_history_hidden=True,
+        holds_both_funds=True,
+        months_until_empty=2.0,
+        months_until_empty_threshold=6.0,
+        has_open_complaint=True,
+        recency_band="1-2y",
+        value_tier="High",
+    )
+    defaults.update(overrides)
+    return BriefingFacts(**defaults)
+
+
+def test_to_risk_fact_block_payload_carries_no_pii_or_exact_figure() -> None:
+    real_values = ["Jane Wanjiru", "C-94001"]
+    facts = _briefing_facts()
+
+    risk_fact_block = to_risk_fact_block(facts)
+    payload = risk_fact_block.to_dict()
+
+    assert "client_code" not in payload
+    assert "client_id" not in payload
+    assert "risk_score" not in payload
+    assert "balance" not in payload
+
+    sent: list[dict[str, Any]] = []
+
+    def capturing_model_call(sent_payload: dict[str, Any]) -> str:
+        sent.append(sent_payload)
+        return "This client has gone quiet and broke their own pattern."
+
+    draft = run_model_boundary(payload, capturing_model_call, identifiers=real_values)
+
+    assert not _carries_pii(draft, real_values)
+    assert len(sent) == 1
+    serialized = " ".join(str(value) for value in sent[0].values())
+    assert not _carries_pii(serialized, real_values)
+    # Every exact figure facts carried -- the score, the balance, every KES
+    # amount, every ratio, every days-since-X count -- stays out, not just
+    # rounded: RiskFactBlock declares no field that could carry any of them.
+    for exact in (
+        "87",
+        "4466000",
+        "410",
+        "250000",
+        "13.7",
+        "180000",
+        "500000",
+        "900000",
+        "90",
+        "2.0",
+    ):
+        assert exact not in serialized
+    assert not _EXACT_DATE.search(serialized)

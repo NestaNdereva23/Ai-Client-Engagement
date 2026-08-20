@@ -265,7 +265,10 @@ def test_instantiate_message_builds_a_call_brief_when_the_tiers_contract_calls_f
                     review_sample_rate=1.0,
                 )
             ],
-            valid_from=date(2020, 1, 1),
+            # Today, not some far-back date: the seeded contract is in
+            # force from today too, and a tie on valid_from is broken by
+            # the higher version, which is this one.
+            valid_from=date.today(),
         )
         session.commit()
 
@@ -318,7 +321,10 @@ def test_instantiate_message_auto_approves_when_the_tiers_sampling_says_so(
                     review_sample_rate=0.5,
                 )
             ],
-            valid_from=date(2020, 1, 1),
+            # Today, not some far-back date: the seeded contract is in
+            # force from today too, and a tie on valid_from is broken by
+            # the higher version, which is this one.
+            valid_from=date.today(),
         )
         session.commit()
 

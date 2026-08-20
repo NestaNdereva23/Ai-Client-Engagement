@@ -21,11 +21,11 @@ import difflib
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 import structlog
-from sqlalchemy import select, tuple_
+from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.orm import Session
 
 from app.agents.email_agent import render_call_brief
@@ -37,17 +37,23 @@ from app.agents.guardrails import (
     instance_numeric_traceability_check,
 )
 from app.audit.log import record_audit
+from app.campaigns.cohorts import CohortSlot, resolve_cohort_slot
 from app.config import get_settings
 from app.db.models.llmops import GenerationRun, PromptVersion
 from app.db.models.message_template import MessageTemplate
 from app.db.models.models import Clients, Funds, PiiVault
-from app.db.models.outreach import REVIEW_OUTCOMES, OutreachMessage, ReviewAction
+from app.db.models.outreach import REVIEW_OUTCOMES, OutreachMessage, ReviewAction, ReviewCohort
 from app.db.models.rules import TierContract
 from app.db.models.views import llm_client_context
 from app.db.session import restricted_session
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_cursor, encode_cursor
 from app.rules.catalog import load_angle
 from app.rules.tier_contract import instance_needs_review, load_tier
+
+# Outcomes never allowed on a message that belongs to a sampling cohort --
+# a cohort message only ever gets approved (as-is or edited), the same
+# restriction the review queue UI enforces by not offering the buttons.
+_COHORT_DISALLOWED_OUTCOMES = ("reject", "escalate", "hold")
 
 logger = structlog.get_logger(__name__)
 
@@ -82,6 +88,28 @@ class InvalidOutcome(Exception):
 
 class TemplateNotApproved(Exception):
     """Instantiation was attempted against a message_template that is not approved."""
+
+
+class CohortNotFound(Exception):
+    """No review_cohort exists with the given id."""
+
+
+class CohortNotReady(Exception):
+    """approve_cohort_remainder was called before every sample was decided."""
+
+    def __init__(self, status: str) -> None:
+        self.status = status
+        super().__init__(status)
+
+
+@dataclass(frozen=True)
+class CohortReadyInfo:
+    """A cohort whose last sample was just decided, and how many other
+    messages in it are still waiting on the bulk approval this unlocks.
+    """
+
+    cohort_id: str
+    remaining_count: int
 
 
 @dataclass(frozen=True)
@@ -208,13 +236,26 @@ def _resolve_first_name(client_id: int) -> str:
 
 
 def create_outreach_message(
-    session: Session, run: GenerationRun, *, campaign_id: int, call_brief: str | None = None
+    session: Session,
+    run: GenerationRun,
+    *,
+    campaign_id: int,
+    call_brief: str | None = None,
+    cohort_slot: CohortSlot | None = None,
 ) -> OutreachMessage:
     """Re-attach real values to an accepted run and store the result.
 
     ai_draft_content is copied from the run unchanged; personalized_content
     is computed fresh here. call_brief, when given, is stored as-is -- it
     carries no placeholder, so there is nothing to personalize.
+
+    cohort_slot decides whether this single-generated message belongs to a
+    review sampling cohort, and whether it's one of the cohort's samples.
+    Left unset (the normal case), it's resolved automatically from the
+    run's own priority_tier, claiming a fresh slot in that campaign x
+    tier's cohort. A caller replacing one message with another for the
+    same client (regenerate_message) passes the old message's slot through
+    explicitly instead, so a regenerate doesn't consume a second slot.
     """
     fund_name = _resolve_fund_name(session, run.client_id)
     first_name = _resolve_first_name(run.client_id)
@@ -222,6 +263,11 @@ def create_outreach_message(
     personalized = personalize_content(
         run.ai_draft_content, first_name=first_name, fund_name=fund_name
     )
+
+    if cohort_slot is None:
+        cohort_slot = resolve_cohort_slot(
+            session, campaign_id=campaign_id, priority_tier=run.priority_tier
+        )
 
     message = OutreachMessage(
         message_id=uuid.uuid4().hex,
@@ -231,6 +277,8 @@ def create_outreach_message(
         ai_draft_content=run.ai_draft_content,
         personalized_content=personalized,
         call_brief=call_brief,
+        cohort_id=cohort_slot.cohort_id,
+        is_sample=cohort_slot.is_sample,
     )
     session.add(message)
     record_audit(
@@ -397,11 +445,29 @@ def instantiate_message(
     return message
 
 
+def _pending_messages_filters(
+    *, status: str, campaign_id: int | None, only_sampled: bool
+) -> list[Any]:
+    """The where-clauses list_pending_messages and count_pending_messages
+    both filter on -- kept in one place so a count can never drift from
+    what the page beside it actually shows.
+    """
+    clauses: list[Any] = [OutreachMessage.status == status]
+    if campaign_id is not None:
+        clauses.append(OutreachMessage.campaign_id == campaign_id)
+    if only_sampled:
+        clauses.append(
+            or_(OutreachMessage.cohort_id.is_(None), OutreachMessage.is_sample.is_(True))
+        )
+    return clauses
+
+
 def list_pending_messages(
     session: Session,
     *,
     status: str = "pending_review",
     campaign_id: int | None = None,
+    only_sampled: bool = True,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> tuple[list[OutreachMessage], str | None]:
@@ -410,11 +476,19 @@ def list_pending_messages(
     Ordered by (created_at, message_id) rather than created_at alone, so two
     messages created in the same instant still sort deterministically and a
     cursor built from one of them is unambiguous.
+
+    only_sampled (default True) hides a cohort's non-sample messages -- the
+    ones riding on their cohort's sample outcome rather than being
+    individually surfaced. A message with no cohort at all (template
+    instances, anything predating cohort sampling) is unaffected either
+    way. Pass False to see everything, e.g. a campaign manager checking a
+    cohort's non-sample messages before they're auto-approved.
     """
     limit = clamp_limit(limit)
-    query = select(OutreachMessage).where(OutreachMessage.status == status)
-    if campaign_id is not None:
-        query = query.where(OutreachMessage.campaign_id == campaign_id)
+    filters = _pending_messages_filters(
+        status=status, campaign_id=campaign_id, only_sampled=only_sampled
+    )
+    query = select(OutreachMessage).where(*filters)
     if cursor is not None:
         after_created_at, after_id = decode_cursor(cursor)
         query = query.where(
@@ -430,6 +504,27 @@ def list_pending_messages(
         last = rows[-1]
         next_cursor = encode_cursor(last.created_at, last.message_id)
     return rows, next_cursor
+
+
+def count_pending_messages(
+    session: Session,
+    *,
+    status: str = "pending_review",
+    campaign_id: int | None = None,
+    only_sampled: bool = True,
+) -> int:
+    """How many messages list_pending_messages' filters would return in
+    total, across every page -- what a queue badge shows.
+    """
+    return session.scalar(
+        select(func.count())
+        .select_from(OutreachMessage)
+        .where(
+            *_pending_messages_filters(
+                status=status, campaign_id=campaign_id, only_sampled=only_sampled
+            )
+        )
+    )
 
 
 def get_message(session: Session, message_id: str) -> OutreachMessage:
@@ -504,6 +599,8 @@ def decide(
     message = get_message(session, message_id)
     if message.status in _TERMINAL_STATUSES:
         raise MessageAlreadyDecided(f"{message_id} is already {message.status}")
+    if message.cohort_id is not None and outcome in _COHORT_DISALLOWED_OUTCOMES:
+        raise InvalidOutcome(outcome)
 
     message_angle, priority_tier = _label_for_message(session, message)
     edit_diff = (
@@ -573,6 +670,105 @@ def decide_batch(
             failed.append(BatchDecideFailure(message_id=message_id, error="not_found"))
         except MessageAlreadyDecided as exc:
             failed.append(BatchDecideFailure(message_id=message_id, error=str(exc)))
+        except InvalidOutcome as exc:
+            # Only reachable here for a per-message refusal (a cohort
+            # message disallowing reject/escalate/hold): outcome itself was
+            # already validated against REVIEW_OUTCOMES above, once, for
+            # the whole batch.
+            failed.append(BatchDecideFailure(message_id=message_id, error=str(exc)))
         else:
             decided.append(action)
     return BatchDecideResult(decided=decided, failed=failed)
+
+
+def check_cohort_ready(session: Session, message: OutreachMessage) -> CohortReadyInfo | None:
+    """Whether the message just decided was its cohort's last pending
+    sample, and if so, flip the cohort to ready_to_approve_rest.
+
+    Call after a successful decide() on a message with cohort_id set.
+    Returns None for anything that isn't a decided sample, for a cohort
+    that isn't still sampling, or while other samples are still pending.
+    A cohort with nothing left to bulk-approve (every message was a
+    sample) is marked completed here directly rather than left dangling
+    in ready_to_approve_rest with nothing for approve_cohort_remainder to
+    do.
+    """
+    if message.cohort_id is None or not message.is_sample:
+        return None
+    cohort = session.get(ReviewCohort, message.cohort_id)
+    if cohort is None or cohort.status != "sampling":
+        return None
+
+    pending_samples = session.scalar(
+        select(func.count())
+        .select_from(OutreachMessage)
+        .where(
+            OutreachMessage.cohort_id == cohort.cohort_id,
+            OutreachMessage.is_sample.is_(True),
+            OutreachMessage.status == "pending_review",
+        )
+    )
+    if pending_samples:
+        return None
+
+    remaining_rest = session.scalar(
+        select(func.count())
+        .select_from(OutreachMessage)
+        .where(
+            OutreachMessage.cohort_id == cohort.cohort_id,
+            OutreachMessage.is_sample.is_(False),
+            OutreachMessage.status == "pending_review",
+        )
+    )
+    if not remaining_rest:
+        cohort.status = "completed"
+        cohort.completed_at = datetime.now(UTC)
+        session.flush()
+        return None
+
+    cohort.status = "ready_to_approve_rest"
+    session.flush()
+    return CohortReadyInfo(cohort_id=cohort.cohort_id, remaining_count=remaining_rest)
+
+
+def approve_cohort_remainder(
+    session: Session, cohort_id: str, *, reviewer_id: str
+) -> BatchDecideResult:
+    """Approve every message riding on a cohort's now-approved sample.
+
+    Refuses (CohortNotReady) unless every sample already has a decision --
+    check_cohort_ready is what flips a cohort into that state, so a stray
+    early call can't jump the queue. Applies decide_batch the same way any
+    other bulk approval does, one review_action and audit row per message,
+    then marks the cohort completed.
+    """
+    cohort = session.get(ReviewCohort, cohort_id)
+    if cohort is None:
+        raise CohortNotFound(cohort_id)
+    if cohort.status != "ready_to_approve_rest":
+        raise CohortNotReady(cohort.status)
+
+    message_ids = list(
+        session.scalars(
+            select(OutreachMessage.message_id).where(
+                OutreachMessage.cohort_id == cohort_id,
+                OutreachMessage.is_sample.is_(False),
+                OutreachMessage.status == "pending_review",
+            )
+        ).all()
+    )
+    result = (
+        decide_batch(
+            session,
+            message_ids,
+            outcome="approve",
+            reviewer_id=reviewer_id,
+            reason="cohort sample approved",
+        )
+        if message_ids
+        else BatchDecideResult()
+    )
+    cohort.status = "completed"
+    cohort.completed_at = datetime.now(UTC)
+    session.flush()
+    return result

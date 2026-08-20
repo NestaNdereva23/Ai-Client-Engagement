@@ -1,14 +1,17 @@
 """The FA-assignment source: a contract fixed now so a real source can swap
 in later with no change to whoever calls it.
 
-The active-clients feed carries no FA (relationship-manager) field today, so
-StubFaAssignmentSource is the only implementation: it returns fa_id=None for
-every client-fund relationship it is asked about. The digest builder treats
-a null fa_id as "group by fund instead". Every caller downstream depends
-only on the FaAssignmentSource protocol, never on StubFaAssignmentSource
-directly, so the day Cytonn supplies a real FA field or mapping, a new class
-implementing fetch_assignments and one line in app/config.py is the whole
-change.
+The active-clients feed carries no FA (relationship-manager) field, so there
+is nothing to read one from. Two implementations:
+
+StubFaAssignmentSource returns fa_id=None for every client-fund it is asked
+about, and the digest builder treats a null fa_id as "group by fund
+instead". DbFaAssignmentSource reads fa_assignment, which the nightly
+allocation fills in from the roster seeded in the environment.
+
+Every caller downstream depends only on the FaAssignmentSource protocol, so
+the day Cytonn does supply a real FA field, a new class implementing
+fetch_assignments and one line in app/config.py is the whole change.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.db.models.active_clients import ActiveClientFund
+from app.db.models.fa_assignment import FaAssignment
 
 
 class FaAssignmentRecord(BaseModel):
@@ -79,15 +83,52 @@ class StubFaAssignmentSource:
         ]
 
 
+class DbFaAssignmentSource:
+    """Returns whatever fa_assignment already holds for the clients asked
+    about, and nothing else.
+
+    Reading is deliberately separate from deciding: the nightly allocation
+    in risk/fa_allocation.py works out who owns whom and writes the rows,
+    this only reads them back. Keeping the two apart means each can be
+    tested on its own, and the digest never depends on an allocation having
+    just run. A client-fund with no row here simply comes back absent, and
+    the digest falls back to grouping it by fund, exactly as the stub makes
+    it do everywhere.
+    """
+
+    def __init__(self, session: Session | None = None) -> None:
+        self._session = session
+
+    def fetch_assignments(self, client_ids: Sequence[int]) -> list[FaAssignmentRecord]:
+        if self._session is None or not client_ids:
+            return []
+        rows = self._session.scalars(
+            select(FaAssignment).where(FaAssignment.client_id.in_(client_ids))
+        )
+        return [
+            FaAssignmentRecord(
+                client_id=row.client_id,
+                unit_fund_id=row.unit_fund_id,
+                fa_id=row.fa_id,
+                fa_name=row.fa_name,
+                source=row.source,
+            )
+            for row in rows
+        ]
+
+
 def get_fa_assignment_source(
     session: Session | None = None, settings: Settings | None = None
 ) -> FaAssignmentSource:
     """Build the configured FaAssignmentSource. The one place an
     implementation is chosen; downstream code only ever depends on the
-    protocol.
+    protocol. With nothing configured, a seeded roster selects the database
+    source and no roster selects the stub.
     """
     settings = settings or get_settings()
-    source = settings.fa_assignment_source
+    source = settings.fa_assignment_source or ("db" if settings.fa_records else "stub")
     if source == "stub":
         return StubFaAssignmentSource(session=session)
+    if source == "db":
+        return DbFaAssignmentSource(session=session)
     raise ValueError(f"unknown FA-assignment source: {source!r}")
