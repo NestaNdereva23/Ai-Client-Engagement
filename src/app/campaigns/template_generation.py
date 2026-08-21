@@ -25,6 +25,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
+import structlog
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -58,6 +59,8 @@ from app.privacy.boundary import AuditSink
 from app.privacy.fact_block import FUND_DISPLAY_NAMES
 from app.privacy.llm_client import LLMClient
 from app.rag.grounding import GroundingChunk
+
+logger = structlog.get_logger(__name__)
 
 # label, placeholder field name -- the five facts every bucket may stand a
 # token in for, regardless of whether this profile happens to use them.
@@ -238,6 +241,7 @@ class TemplateDraftOutcome:
     drafted_count: int
     skipped_existing: int
     failed_guardrails: int
+    failed_errors: int
     policy: EffectivePolicy
 
 
@@ -353,21 +357,40 @@ def draft_templates_for_campaign(
 
     templates: list[MessageTemplate] = []
     failed_guardrails = 0
+    failed_errors = 0
     for bucket in to_draft:
-        template = draft_template(
-            session,
-            bucket,
-            campaign_id=campaign_id,
-            settings=settings,
-            llm_client=llm_client,
-            guardrail_checks=guardrail_checks,
-            audit=audit,
-            tracer=tracer,
-        )
+        # Committed per bucket rather than once at the end: an unexpected
+        # error from one bucket (a provider timeout, a network blip) is
+        # caught and counted rather than left to propagate, so it does not
+        # roll back every template already drafted ahead of it in this
+        # call. A caught bucket is simply not drafted this run; it is
+        # picked up again the next time this endpoint is called.
+        try:
+            template = draft_template(
+                session,
+                bucket,
+                campaign_id=campaign_id,
+                settings=settings,
+                llm_client=llm_client,
+                guardrail_checks=guardrail_checks,
+                audit=audit,
+                tracer=tracer,
+            )
+        except Exception:
+            session.rollback()
+            logger.exception(
+                "draft_templates_for_campaign.draft_failed",
+                campaign_id=campaign_id,
+                profile_key=bucket.profile_key.as_dict(),
+            )
+            failed_errors += 1
+            continue
+
         if template is not None:
             templates.append(template)
         else:
             failed_guardrails += 1
+        session.commit()
 
     plan = TemplateGenerationPlan(
         campaign_id=campaign_id,
@@ -376,6 +399,7 @@ def draft_templates_for_campaign(
         drafted_count=len(templates),
         skipped_existing=skipped_existing,
         failed_guardrails=failed_guardrails,
+        failed_errors=failed_errors,
         policy_source=policy.source,
         policy_max_templates=policy.max_templates,
         policy_max_templates_pct=policy.max_templates_pct,
@@ -394,6 +418,7 @@ def draft_templates_for_campaign(
             "drafted_count": len(templates),
             "skipped_existing": skipped_existing,
             "failed_guardrails": failed_guardrails,
+            "failed_errors": failed_errors,
         },
     )
 
@@ -404,5 +429,6 @@ def draft_templates_for_campaign(
         drafted_count=len(templates),
         skipped_existing=skipped_existing,
         failed_guardrails=failed_guardrails,
+        failed_errors=failed_errors,
         policy=policy,
     )

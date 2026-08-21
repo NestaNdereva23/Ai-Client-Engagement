@@ -718,7 +718,11 @@ def test_submit_batch_gives_two_clients_on_the_same_angle_an_identical_cached_bl
 
     context_loader = make_varying_facts_context_loader(
         {
-            client_ids[0]: {"stale_contact": True},
+            client_ids[0]: {
+                "cadence_band": "Regular",
+                "invested_every_n_days": 30,
+                "stale_contact": True,
+            },
             client_ids[1]: {"stale_contact": False},
         }
     )

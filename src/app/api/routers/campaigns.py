@@ -730,6 +730,7 @@ def post_campaign_templates_draft(
         drafted_count=outcome.drafted_count,
         skipped_existing=outcome.skipped_existing,
         failed_guardrails=outcome.failed_guardrails,
+        failed_errors=outcome.failed_errors,
         policy=_policy_out(outcome.policy),
         templates=[MessageTemplateSummary.model_validate(t) for t in outcome.templates],
     )

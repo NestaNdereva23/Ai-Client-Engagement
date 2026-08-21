@@ -22,6 +22,7 @@ class FakeBrief:
     claim: str = "A genuine, measurable savings rhythm that stopped"
     ask: str = "Resume the exact cadence they already had"
     never: str = "Never state an exact purchase count"
+    use: str = "Reference the cadence placeholder if given; support with product info"
 
 
 @dataclass(frozen=True)

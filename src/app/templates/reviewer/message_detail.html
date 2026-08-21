@@ -37,6 +37,9 @@
   <p><strong>May claim:</strong> {{ context.angle_spec.claim }}</p>
   <p><strong>Asks for:</strong> {{ context.angle_spec.ask }}</p>
   <p><strong>Must never say:</strong> {{ context.angle_spec.never }}</p>
+  {% if context.angle_spec.use %}
+  <p><strong>How RAG facts may be used:</strong> {{ context.angle_spec.use }}</p>
+  {% endif %}
 </div>
 {% endif %}
 

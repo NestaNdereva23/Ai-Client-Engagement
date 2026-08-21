@@ -174,7 +174,9 @@ class DraftTemplatesResult(BaseModel):
     in force resolved to, or null for no limit), and drafted_count (what
     actually landed). skipped_existing counts buckets a previous call
     already templated; failed_guardrails counts ones this call attempted
-    but every guardrail retry rejected.
+    but every guardrail retry rejected; failed_errors counts ones an
+    unexpected error interrupted before a guardrail verdict was ever
+    reached, and which are picked up again the next call.
     """
 
     estimated_templates: int
@@ -182,5 +184,6 @@ class DraftTemplatesResult(BaseModel):
     drafted_count: int
     skipped_existing: int
     failed_guardrails: int
+    failed_errors: int
     policy: TemplatePolicyOut
     templates: list[MessageTemplateSummary]

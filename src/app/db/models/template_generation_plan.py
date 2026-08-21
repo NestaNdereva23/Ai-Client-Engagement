@@ -38,6 +38,7 @@ class TemplateGenerationPlan(Base):
         CheckConstraint("drafted_count >= 0", name="ck_tgp_drafted_nonneg"),
         CheckConstraint("skipped_existing >= 0", name="ck_tgp_skipped_nonneg"),
         CheckConstraint("failed_guardrails >= 0", name="ck_tgp_failed_nonneg"),
+        CheckConstraint("failed_errors >= 0", name="ck_tgp_failed_errors_nonneg"),
         CheckConstraint("policy_source IN ('campaign', 'default')", name="ck_tgp_policy_source"),
     )
 
@@ -52,6 +53,11 @@ class TemplateGenerationPlan(Base):
     drafted_count: Mapped[int] = mapped_column(Integer, nullable=False)
     skipped_existing: Mapped[int] = mapped_column(Integer, nullable=False)
     failed_guardrails: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Buckets this call attempted but an unexpected error (a provider
+    # timeout, a network blip) interrupted before a guardrail verdict was
+    # ever reached. Distinct from failed_guardrails: these were never
+    # rejected on the merits, and are picked up again the next call.
+    failed_errors: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     # "campaign" or "default" -- where the limit above came from.
     policy_source: Mapped[str] = mapped_column(Text, nullable=False)
     policy_max_templates: Mapped[int | None] = mapped_column(Integer, nullable=True)

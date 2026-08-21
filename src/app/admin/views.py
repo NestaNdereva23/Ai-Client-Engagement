@@ -101,6 +101,7 @@ class MessageAngleCatalogAdmin(_ReadOnlyView, model=MessageAngleCatalog):
         MessageAngleCatalog.version,
         MessageAngleCatalog.angle,
         MessageAngleCatalog.headline,
+        MessageAngleCatalog.use,
         MessageAngleCatalog.held,
         MessageAngleCatalog.valid_from,
         MessageAngleCatalog.valid_to,

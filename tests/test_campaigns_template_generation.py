@@ -184,7 +184,9 @@ def test_bucket_facts_drives_the_same_conditional_prohibitions_as_the_profile() 
         fund_name_known=False,
     )
     prohibitions = conditional_prohibitions(bucket_facts(key))
-    assert any("over three years old" in line for line in prohibitions)
+    # stale_contact is internal targeting context only and drives no
+    # client-facing instruction; only the exit reason does.
+    assert not any("confirm" in line.lower() for line in prohibitions)
     assert any("charge, not a" in line for line in prohibitions)
 
 
@@ -726,6 +728,58 @@ def test_a_guardrail_failure_leaves_nothing_to_skip_so_it_drafts_again(
     assert second.skipped_existing == 2
     assert second.drafted_count == 1
     assert [t.profile_key["product"] for t in second.templates] == ["high yield"]
+
+
+def test_an_unexpected_error_on_one_bucket_does_not_lose_buckets_already_drafted(
+    multi_bucket_cohort: int,
+) -> None:
+    """draft_templates_for_campaign commits per bucket, so a provider error on
+    one bucket must not roll back templates already drafted for the others
+    in the same call -- the whole reason it commits per bucket rather than
+    once at the end."""
+
+    class FlakyLLMClient:
+        model = "stub"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate(self, *, system: str, user: str) -> str:
+            self.calls += 1
+            if self.calls == 2:  # high yield, the second bucket in priority order
+                raise RuntimeError("provider timed out")
+            return draft_json(body="Dear {{first_name}}, come back to us.")
+
+    with SessionLocal() as session:
+        outcome = draft_templates_for_campaign(
+            session,
+            multi_bucket_cohort,
+            settings=make_settings(),
+            llm_client=FlakyLLMClient(),
+            context_loader=_fixed_context_loader,
+        )
+        session.commit()
+
+    assert outcome.drafted_count == 2
+    assert outcome.failed_errors == 1
+    assert outcome.failed_guardrails == 0
+    assert [t.profile_key["product"] for t in outcome.templates] == ["money market", "fixed income"]
+
+    with SessionLocal() as session:
+        plan = session.scalar(
+            select(TemplateGenerationPlan).where(
+                TemplateGenerationPlan.campaign_id == multi_bucket_cohort
+            )
+        )
+        assert plan is not None
+        assert plan.failed_errors == 1
+        # The bucket the error interrupted has no message_template row at
+        # all, so a later call sees it as a plain candidate again, the same
+        # as a guardrail failure.
+        rows = session.scalars(
+            select(MessageTemplate).where(MessageTemplate.campaign_id == multi_bucket_cohort)
+        ).all()
+    assert {row.profile_key["product"] for row in rows} == {"money market", "fixed income"}
 
 
 def test_a_human_rejected_template_is_redrafted_not_skipped(multi_bucket_cohort: int) -> None:
