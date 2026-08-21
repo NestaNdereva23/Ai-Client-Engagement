@@ -1,0 +1,61 @@
+services:
+  ace:
+    build:
+      context: .
+    restart: unless-stopped
+    env_file: .env.prod
+    depends_on:
+      ace-db:
+        condition: service_healthy
+    networks: [backend]
+
+  ace-db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - ace_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [backend]
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx:/etc/nginx/conf.d:ro
+      - certbot_www:/var/www/certbot:ro
+      - certbot_certs:/etc/letsencrypt:ro
+    depends_on:
+      - ace
+    networks: [backend]
+
+  # Renews the certificate twice a day; a no-op every time except the ~2
+  # days a year it's actually due. Issuing the first certificate is a
+  # manual one-off command -- see deploy/nginx/README.md.
+  certbot:
+    image: certbot/certbot:latest
+    restart: unless-stopped
+    entrypoint: ["sh", "-c"]
+    command:
+      - "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done"
+    volumes:
+      - certbot_www:/var/www/certbot
+      - certbot_certs:/etc/letsencrypt
+
+volumes:
+  ace_pgdata:
+  certbot_www:
+  certbot_certs:
+
+networks:
+  backend:
