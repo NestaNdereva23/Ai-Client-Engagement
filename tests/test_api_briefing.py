@@ -1,7 +1,7 @@
 """Tests for GET /briefing/{client_id}/{unit_fund_id}: that it re-attaches
 a real name with no X-Reviewer-Key required (unlike GET /clients/{id}/name),
 the 404-vs-data-missing distinction, and that both audit rows land on every
-call, attributed to fa_id rather than a reviewer key.
+call, attributed to username rather than a reviewer key.
 """
 
 from __future__ import annotations
@@ -138,11 +138,11 @@ def ai_briefing_disabled(monkeypatch):
 
 
 def _url(client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID) -> str:
-    return f"/api/v1/briefing/{client_id}/{unit_fund_id}?fa_id=fa-77"
+    return f"/api/v1/briefing/{client_id}/{unit_fund_id}?username=fa-77"
 
 
 def _narrative_url(client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID) -> str:
-    return f"/api/v1/briefing/{client_id}/{unit_fund_id}/narrative?fa_id=fa-77"
+    return f"/api/v1/briefing/{client_id}/{unit_fund_id}/narrative?username=fa-77"
 
 
 def test_no_reviewer_key_needed_even_when_none_are_configured(

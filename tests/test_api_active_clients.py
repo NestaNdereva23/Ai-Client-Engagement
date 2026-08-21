@@ -1,6 +1,6 @@
 """Tests for the active-client console endpoints: logging an interaction
-(fa_id attribution with no reviewer-key gate, the audit row, the 404 for an
-unknown client-fund), reading the interaction history back, and the
+(username attribution with no reviewer-key gate, the audit row, the 404 for
+an unknown client-fund), reading the interaction history back, and the
 profile read.
 """
 
@@ -84,9 +84,9 @@ def _interactions_url(client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID) -
 
 
 def _post_interactions_url(
-    client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID, fa_id: str = "fa-77"
+    client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID, username: str = "fa-77"
 ) -> str:
-    return f"{_interactions_url(client_id, unit_fund_id)}?fa_id={fa_id}"
+    return f"{_interactions_url(client_id, unit_fund_id)}?username={username}"
 
 
 def _profile_url(client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID) -> str:
@@ -102,13 +102,13 @@ def test_post_interaction_needs_no_reviewer_key_even_when_none_are_configured(
 ) -> None:
     """Same deliberate exception GET /briefing/... makes: this write
     succeeds with no X-Reviewer-Key header at all, even with an empty
-    reviewer roster, because it's attributed by fa_id instead.
+    reviewer roster, because it's attributed by username instead.
     """
     response = client.post(_post_interactions_url(), json={"type": "call_logged"})
     assert response.status_code == 201
 
 
-def test_post_interaction_missing_fa_id_is_422(seeded_active_client) -> None:
+def test_post_interaction_missing_username_is_422(seeded_active_client) -> None:
     response = client.post(_interactions_url(), json={"type": "call_logged"})
     assert response.status_code == 422
 
@@ -121,9 +121,11 @@ def test_post_interaction_unknown_client_fund_is_404() -> None:
     assert response.status_code == 404
 
 
-def test_post_interaction_records_fa_id_not_a_resolved_reviewer_id(seeded_active_client) -> None:
+def test_post_interaction_records_username_not_a_resolved_reviewer_id(
+    seeded_active_client,
+) -> None:
     response = client.post(
-        _post_interactions_url(fa_id="fa-1"),
+        _post_interactions_url(username="fa-1"),
         json={"type": "call_logged", "note": "left a voicemail"},
     )
     assert response.status_code == 201
@@ -195,8 +197,8 @@ def test_post_interaction_stamps_the_current_risk_band(seeded_active_client) -> 
 
 
 def test_get_interactions_returns_most_recent_first(seeded_active_client) -> None:
-    client.post(_post_interactions_url(fa_id="fa-1"), json={"type": "snoozed"})
-    client.post(_post_interactions_url(fa_id="fa-2"), json={"type": "dismissed"})
+    client.post(_post_interactions_url(username="fa-1"), json={"type": "snoozed"})
+    client.post(_post_interactions_url(username="fa-2"), json={"type": "dismissed"})
 
     response = client.get(_interactions_url())
     assert response.status_code == 200
@@ -207,7 +209,7 @@ def test_get_interactions_returns_most_recent_first(seeded_active_client) -> Non
 
 
 def test_get_interactions_since_filter_excludes_older_rows(seeded_active_client) -> None:
-    client.post(_post_interactions_url(fa_id="fa-1"), json={"type": "snoozed"})
+    client.post(_post_interactions_url(username="fa-1"), json={"type": "snoozed"})
 
     far_future = (date.today() + timedelta(days=3650)).isoformat()
     response = client.get(_interactions_url(), params={"since": far_future})
@@ -286,7 +288,7 @@ def test_get_profile_returns_identity_and_bands(seeded_active_client) -> None:
         )
         session.commit()
 
-    client.post(_post_interactions_url(fa_id="fa-1"), json={"type": "call_logged"})
+    client.post(_post_interactions_url(username="fa-1"), json={"type": "call_logged"})
 
     try:
         response = client.get(_profile_url())

@@ -149,12 +149,12 @@ def test_groups_by_fa_id_when_one_is_assigned(db, cleanup) -> None:
         result = build_digest(
             session,
             run_id,
-            fa_assignment_source=FakeFaAssignmentSource({(client_a, FUND_ID): 7}),
+            fa_assignment_source=FakeFaAssignmentSource({(client_a, FUND_ID): "fa-7"}),
             cap_per_group=12,
         )
 
-    assert set(result.groups) == {"fa:7", f"fund:{FUND_ID}"}
-    assert [line.client_id for line in result.groups["fa:7"].lines] == [client_a]
+    assert set(result.groups) == {"fa:fa-7", f"fund:{FUND_ID}"}
+    assert [line.client_id for line in result.groups["fa:fa-7"].lines] == [client_a]
     assert [line.client_id for line in result.groups[f"fund:{FUND_ID}"].lines] == [client_b]
 
 
@@ -395,13 +395,15 @@ def test_a_lent_client_groups_under_the_stand_in(db, cleanup) -> None:
         result = build_digest(
             session,
             run_id,
-            fa_assignment_source=FakeFaAssignmentSource({(owned, FUND_ID): 7, (lent, FUND_ID): 7}),
+            fa_assignment_source=FakeFaAssignmentSource(
+                {(owned, FUND_ID): "fa-7", (lent, FUND_ID): "fa-7"}
+            ),
             cap_per_group=12,
-            covering={lent: 8},
+            covering={lent: "fa-8"},
         )
 
-    assert [line.client_id for line in result.groups["fa:7"].lines] == [owned]
-    lent_line = result.groups["fa:8"].lines[0]
+    assert [line.client_id for line in result.groups["fa:fa-7"].lines] == [owned]
+    lent_line = result.groups["fa:fa-8"].lines[0]
     assert lent_line.client_id == lent
-    assert lent_line.covering_for_fa_id == 7
-    assert result.groups["fa:7"].lines[0].covering_for_fa_id is None
+    assert lent_line.covering_for_fa_id == "fa-7"
+    assert result.groups["fa:fa-7"].lines[0].covering_for_fa_id is None

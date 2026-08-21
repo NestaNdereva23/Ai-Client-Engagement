@@ -26,8 +26,8 @@ FUND_ONE = 941
 FUND_TWO = 942
 
 ROSTER = (
-    FaRecord(fa_id=61, name="FA Sixty One", email="fa61@example.com", daily_capacity=1),
-    FaRecord(fa_id=62, name="FA Sixty Two", email="fa62@example.com", daily_capacity=1),
+    FaRecord(fa_id="fa-61", name="FA Sixty One", email="fa61@example.com", daily_capacity=1),
+    FaRecord(fa_id="fa-62", name="FA Sixty Two", email="fa62@example.com", daily_capacity=1),
 )
 
 KEYS = [(CLIENT_A, FUND_ONE), (CLIENT_A, FUND_TWO), (CLIENT_B, FUND_ONE)]

@@ -30,8 +30,10 @@ from app.workers.digest_email import send_digest_emails
 FUND_ID = 9531
 CLIENTS = [26421, 26422, 26423, 26424]
 
-ASHA = FaRecord(fa_id=8801, name="Advisor Asha", email="asha@example.com", daily_capacity=19)
-BRIAN = FaRecord(fa_id=8802, name="Advisor Brian", email="brian@example.com", daily_capacity=19)
+ASHA = FaRecord(fa_id="fa-8801", name="Advisor Asha", email="asha@example.com", daily_capacity=19)
+BRIAN = FaRecord(
+    fa_id="fa-8802", name="Advisor Brian", email="brian@example.com", daily_capacity=19
+)
 ROSTER = (ASHA, BRIAN)
 
 SIGNALS_DORMANT = {

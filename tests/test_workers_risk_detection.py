@@ -257,7 +257,7 @@ def seeded_roster(monkeypatch):
     """
     monkeypatch.setenv(
         "ACE_FA_ROSTER",
-        "71:FA Seventy One:fa71@example.com:19,72:FA Seventy Two:fa72@example.com:19",
+        "fa-71:FA Seventy One:fa71@example.com:19,fa-72:FA Seventy Two:fa72@example.com:19",
     )
     get_settings.cache_clear()
     yield
@@ -290,7 +290,7 @@ def test_run_with_a_roster_groups_the_digest_by_a_real_advisor(
         )
 
     assert set(assignments) == {CALL_CLIENT_ID, TINY_CLIENT_ID}
-    assert all(fa_id in {71, 72} for fa_id in assignments.values())
+    assert all(fa_id in {"fa-71", "fa-72"} for fa_id in assignments.values())
     assert group_keys == {f"fa:{assignments[CALL_CLIENT_ID]}"}
 
     second_run = uuid4().hex
@@ -331,7 +331,7 @@ def test_a_run_with_a_roster_mails_each_advisor_once(
             select(DigestEmailSend).where(DigestEmailSend.digest_run_id == digest_run_id)
         ).all()
 
-    assert {marker.fa_id for marker in markers} == {71, 72}
+    assert {marker.fa_id for marker in markers} == {"fa-71", "fa-72"}
     assert {message.to for message in mailer.sent_messages} == {
         "fa71@example.com",
         "fa72@example.com",
@@ -348,7 +348,7 @@ def tight_roster(monkeypatch):
     """
     monkeypatch.setenv(
         "ACE_FA_ROSTER",
-        "81:FA Eighty One:fa81@example.com:1,82:FA Eighty Two:fa82@example.com:1",
+        "fa-81:FA Eighty One:fa81@example.com:1,fa-82:FA Eighty Two:fa82@example.com:1",
     )
     get_settings.cache_clear()
     yield
@@ -413,4 +413,4 @@ def test_overflow_past_every_advisors_capacity_is_demoted_to_the_watchlist(
     assert snapshots[CAP_CLIENT_IDS[2]].route == "fa_watchlist"
     assert snapshots[CAP_CLIENT_IDS[2]].queue_rank is None
     # Demotion never touches ownership -- the client keeps a real advisor.
-    assert owners[CAP_CLIENT_IDS[2]] in {81, 82}
+    assert owners[CAP_CLIENT_IDS[2]] in {"fa-81", "fa-82"}
