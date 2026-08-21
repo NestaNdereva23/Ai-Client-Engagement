@@ -37,7 +37,7 @@ class FaAssignmentRecord(BaseModel):
 
     client_id: int
     unit_fund_id: int
-    fa_id: int | None = None
+    fa_id: str | None = None
     fa_name: str | None = None
     source: str  # "stub" today; a real source name once one exists
 

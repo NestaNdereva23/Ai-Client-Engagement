@@ -5,11 +5,11 @@ Re-attaches a real name (see briefing/render.py and services/briefing.py),
 same as GET /clients/{id}/name, but deliberately isn't behind the
 reviewer-key gate that endpoint uses: an FA re-entering a credential for
 every row of a morning brief was worse friction than the gate was worth for
-a read that's still fully attributed and audited, just by fa_id rather than
-a reviewer key. fa_id is a required query param precisely so every read
-still names who looked, even with no key involved. The name-reveal endpoint
-keeps the X-Reviewer-Key gate -- this is the one deliberate exception, not
-a precedent for loosening it elsewhere.
+a read that's still fully attributed and audited, just by username rather
+than a reviewer key. username is a required query param precisely so every
+read still names who looked, even with no key involved. The name-reveal
+endpoint keeps the X-Reviewer-Key gate -- this is the one deliberate
+exception, not a precedent for loosening it elsewhere.
 """
 
 from __future__ import annotations
@@ -45,7 +45,9 @@ def _narrative_disabled() -> ApiError:
 def get_client_briefing(
     client_id: int,
     unit_fund_id: int,
-    fa_id: str = Query(..., description="The viewing FA's identifier, recorded on the audit row."),
+    username: str = Query(
+        ..., description="The viewing user's identifier, recorded on the audit row."
+    ),
     session: Session = Depends(get_session),
 ) -> BriefingOut:
     """The plain-text briefing page for one client-fund relationship.
@@ -55,7 +57,7 @@ def get_client_briefing(
     anything.
     """
     try:
-        view = get_briefing(session, client_id, unit_fund_id, viewing_fa_id=fa_id)
+        view = get_briefing(session, client_id, unit_fund_id, viewing_fa_id=username)
     except BriefingNotFound:
         raise HTTPException(
             status_code=404, detail="no briefing available for this client"
@@ -67,7 +69,9 @@ def get_client_briefing(
 def get_client_briefing_narrative(
     client_id: int,
     unit_fund_id: int,
-    fa_id: str = Query(..., description="The viewing FA's identifier, recorded on the audit row."),
+    username: str = Query(
+        ..., description="The viewing user's identifier, recorded on the audit row."
+    ),
     session: Session = Depends(get_session),
 ) -> BriefingOut:
     """The optional, model-narrated version of the same briefing page.
@@ -92,7 +96,7 @@ def get_client_briefing_narrative(
             session,
             client_id,
             unit_fund_id,
-            viewing_fa_id=fa_id,
+            viewing_fa_id=username,
             llm_client=get_briefing_llm_client(settings),
         )
     except NarrativeDisabled:

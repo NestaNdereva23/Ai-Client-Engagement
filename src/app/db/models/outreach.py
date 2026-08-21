@@ -58,19 +58,6 @@ class Campaign(Base):
 
 
 class ReviewCohort(Base):
-    """One campaign x one client tier's worth of single-generated messages,
-    sampled together for review.
-
-    A share of the cohort's outreach_message rows (sample_rate, resolved
-    from the tier's cohort_sample_rate at creation time, never more than
-    sample_cap of them) are marked is_sample and surfaced in the default
-    review queue; the rest are created normally but stay out of that
-    default view. status moves
-    sampling -> ready_to_approve_rest once every sample has an approve or
-    edit_approve decision, then -> completed once the remainder has been
-    approved through approve_cohort_remainder. Never mutated back.
-    """
-
     __tablename__ = "review_cohort"
     __table_args__ = (
         CheckConstraint(

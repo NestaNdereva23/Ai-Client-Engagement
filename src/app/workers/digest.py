@@ -21,7 +21,7 @@ def build_and_persist_digest(
     *,
     fa_assignment_source: FaAssignmentSource,
     cap_per_group: int,
-    covering: dict[int, int] | None = None,
+    covering: dict[int, str] | None = None,
 ) -> DigestRun:
     """Build the digest for one completed risk run and write it to
     digest_run/digest_line. Returns the new DigestRun row.

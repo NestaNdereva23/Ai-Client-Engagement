@@ -68,6 +68,23 @@ def clamp_limit(limit: int) -> int:
     return max(1, min(limit, MAX_LIMIT))
 
 
+def encode_ranked_cursor(rank: int, created_at: datetime, row_id: str) -> str:
+    """For a list ordered by a computed rank first, then (created_at, id) to
+    break ties within the same rank -- e.g. the reviewer queue's tier order.
+    """
+    payload = json.dumps([rank, created_at.isoformat(), row_id])
+    return base64.urlsafe_b64encode(payload.encode()).decode()
+
+
+def decode_ranked_cursor(cursor: str) -> tuple[int, datetime, str]:
+    try:
+        decoded = base64.urlsafe_b64decode(cursor.encode()).decode()
+        rank, created_at_raw, row_id = json.loads(decoded)
+        return rank, datetime.fromisoformat(created_at_raw), row_id
+    except Exception as exc:
+        raise InvalidCursor(cursor) from exc
+
+
 def encode_pair_cursor(a: int, b: int) -> str:
     """For a list ordered by two integer columns (a composite key, no
     timestamp to pair them with), such as (client_id, unit_fund_id).

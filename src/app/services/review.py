@@ -25,7 +25,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 import structlog
-from sqlalchemy import func, or_, select, tuple_
+from sqlalchemy import case, func, or_, select, tuple_
 from sqlalchemy.orm import Session
 
 from app.agents.email_agent import render_call_brief
@@ -39,16 +39,35 @@ from app.agents.guardrails import (
 from app.audit.log import record_audit
 from app.campaigns.cohorts import CohortSlot, resolve_cohort_slot
 from app.config import get_settings
-from app.db.models.llmops import GenerationRun, PromptVersion
+from app.db.models.llmops import Evaluation, GenerationRun, PromptVersion
 from app.db.models.message_template import MessageTemplate
 from app.db.models.models import Clients, Funds, PiiVault
 from app.db.models.outreach import REVIEW_OUTCOMES, OutreachMessage, ReviewAction, ReviewCohort
-from app.db.models.rules import TierContract
+from app.db.models.rules import MessageAngleCatalog, TierContract
 from app.db.models.views import llm_client_context
 from app.db.session import restricted_session
-from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_cursor, encode_cursor
+from app.pagination import (
+    DEFAULT_LIMIT,
+    clamp_limit,
+    decode_cursor,
+    decode_ranked_cursor,
+    encode_cursor,
+    encode_ranked_cursor,
+)
+from app.privacy.fact_block import round_sig_figs
 from app.rules.catalog import load_angle
 from app.rules.tier_contract import instance_needs_review, load_tier
+
+# Display order for the reviewer queue: T1 is the highest-value, always-
+# reviewed tier, so it goes first. Not the same thing as app.rules.store's
+# PRIORITY_TIERS, which is just the set of valid tiers with no order.
+_QUEUE_TIER_ORDER = ("T1", "T2", "T3", "T4")
+
+
+def _tier_rank(tier: str | None) -> int:
+    """T1 -> 0 ... T4 -> 3; anything else (no run, unknown tier) sorts last."""
+    return _QUEUE_TIER_ORDER.index(tier) if tier in _QUEUE_TIER_ORDER else len(_QUEUE_TIER_ORDER)
+
 
 # Outcomes never allowed on a message that belongs to a sampling cohort --
 # a cohort message only ever gets approved (as-is or edited), the same
@@ -338,6 +357,32 @@ def _placeholder_facts_for_client(
     return raw, formatted
 
 
+# The only two raw facts ModelFactBlock rounds (app.privacy.fact_block);
+# every other fact block field is already a band or a coarsened date, with
+# nothing exact behind it worth showing a reviewer twice.
+_ROUNDED_FACT_FIELDS = ("typical_contribution_kes", "largest_contribution_kes")
+
+
+def client_fact_pairs(session: Session, client_id: int) -> dict[str, tuple[Any, Any]]:
+    """This client's exact figure next to the rounded one the model actually
+    saw, for each amount ModelFactBlock rounds -- so a reviewer can catch a
+    rounding that reads wrong for this client. Recomputes the rounding
+    fresh from today's llm_client_numeric_facts row rather than reading
+    back what a past run saw, so it can drift from the run's own figure if
+    the client's numbers have moved on since (the same gap V5 logged and
+    left as a follow-up, not solved here).
+
+    Keyed by field name, each value (exact, rounded). A client with no
+    numeric row yet, or a field that was never on file, is left out.
+    """
+    raw, _formatted = _placeholder_facts_for_client(session, client_id)
+    return {
+        field_name: (raw[field_name], round_sig_figs(raw[field_name]))
+        for field_name in _ROUNDED_FACT_FIELDS
+        if raw.get(field_name) is not None
+    }
+
+
 def _load_template_tier(session: Session, template: MessageTemplate) -> TierContract | None:
     priority_tier = (template.profile_key or {}).get("priority_tier")
     return load_tier(session, priority_tier, date.today()) if priority_tier else None
@@ -506,6 +551,59 @@ def list_pending_messages(
     return rows, next_cursor
 
 
+def list_pending_messages_for_queue(
+    session: Session,
+    *,
+    campaign_id: int | None = None,
+    only_sampled: bool = True,
+    cursor: str | None = None,
+    limit: int = DEFAULT_LIMIT,
+) -> tuple[list[tuple[OutreachMessage, str | None]], str | None]:
+    """One page of the pending queue, T1 first through T4, oldest first
+    within a tier -- the order the reviewer console shows it in, since T1
+    is mandatory review and the highest value. A message whose run carries
+    no recognised tier sorts last, after every named one.
+
+    Same filters as list_pending_messages; the ordering (and so the cursor
+    shape) differs to make room for tier ahead of created_at, and each row
+    carries its tier alongside the message, both read off the same join,
+    so the queue can label a row without a second query per message.
+    """
+    limit = clamp_limit(limit)
+    filters = _pending_messages_filters(
+        status="pending_review", campaign_id=campaign_id, only_sampled=only_sampled
+    )
+    tier_rank = case(
+        {tier: rank for rank, tier in enumerate(_QUEUE_TIER_ORDER)},
+        value=GenerationRun.priority_tier,
+        else_=len(_QUEUE_TIER_ORDER),
+    )
+    query = (
+        select(OutreachMessage, GenerationRun.priority_tier)
+        .join(GenerationRun, OutreachMessage.generation_run_id == GenerationRun.run_id)
+        .where(*filters)
+    )
+    if cursor is not None:
+        after_rank, after_created_at, after_id = decode_ranked_cursor(cursor)
+        query = query.where(
+            tuple_(tier_rank, OutreachMessage.created_at, OutreachMessage.message_id)
+            > (after_rank, after_created_at, after_id)
+        )
+    query = query.order_by(tier_rank, OutreachMessage.created_at, OutreachMessage.message_id).limit(
+        limit + 1
+    )
+    rows = [tuple(row) for row in session.execute(query).all()]
+
+    next_cursor = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last_message, last_tier = rows[-1]
+        next_cursor = encode_ranked_cursor(
+            _tier_rank(last_tier), last_message.created_at, last_message.message_id
+        )
+    return rows, next_cursor
+
+
 def count_pending_messages(
     session: Session,
     *,
@@ -549,6 +647,53 @@ def _label_for_message(session: Session, message: OutreachMessage) -> tuple[str 
     prompt_version = session.get(PromptVersion, run.prompt_version_id)
     angle = prompt_version.angle if prompt_version else None
     return angle, run.priority_tier
+
+
+@dataclass(frozen=True)
+class MessageReviewContext:
+    """Everything the reviewer console shows beside a message's own draft:
+    the angle brief and tier contract active when it was generated (not
+    whatever is active today), the client's exact-vs-rounded figures, and
+    what the generation run and its judge evaluation (if any) say about
+    the draft that resulted -- attempts, a failed guardrail's name, and
+    the four rubric scores, so a reviewer isn't judging blind on whether
+    this draft already needed a retry or already scored badly.
+    """
+
+    angle: str | None
+    priority_tier: str | None
+    angle_spec: MessageAngleCatalog | None
+    tier_contract: TierContract | None
+    fact_pairs: dict[str, tuple[Any, Any]]
+    attempts: int | None
+    failed_guardrail: str | None
+    evaluation: Evaluation | None
+
+
+def _latest_evaluation(session: Session, run_id: str) -> Evaluation | None:
+    return session.scalar(
+        select(Evaluation).where(Evaluation.run_id == run_id).order_by(Evaluation.created_at.desc())
+    )
+
+
+def build_review_context(session: Session, message: OutreachMessage) -> MessageReviewContext:
+    """Resolve the angle brief and tier contract as of this message's own
+    generation run, so the reviewer judges the draft against the brief
+    that actually produced it, not a catalogue that has since moved on.
+    """
+    angle, priority_tier = _label_for_message(session, message)
+    run = session.get(GenerationRun, message.generation_run_id)
+    at = run.data_date if run and run.data_date else date.today()
+    return MessageReviewContext(
+        angle=angle,
+        priority_tier=priority_tier,
+        angle_spec=load_angle(session, angle, at) if angle else None,
+        tier_contract=load_tier(session, priority_tier, at) if priority_tier else None,
+        fact_pairs=client_fact_pairs(session, message.client_id),
+        attempts=run.attempts if run else None,
+        failed_guardrail=run.failed_guardrail if run else None,
+        evaluation=_latest_evaluation(session, run.run_id) if run else None,
+    )
 
 
 def _diff_lines(before: str, after: str) -> list[str]:

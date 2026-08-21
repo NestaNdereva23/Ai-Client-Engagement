@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}Reviewer console{% endblock %} - ACE</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; color: #1b1e23; background: #f6f7f9; }
+    header { background: #1b1e23; color: #fff; padding: 0.75rem 1.5rem; display: flex; justify-content: space-between; align-items: center; }
+    header a { color: #fff; text-decoration: none; font-weight: 600; }
+    header form { display: inline; }
+    header button { background: none; border: 1px solid #666; color: #ddd; border-radius: 4px; padding: 0.25rem 0.75rem; cursor: pointer; }
+    main { max-width: 960px; margin: 1.5rem auto; padding: 0 1.5rem; }
+    .card { background: #fff; border: 1px solid #dfe3e8; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+    .tier-T1 { border-left: 4px solid #c0392b; }
+    .tier-T2 { border-left: 4px solid #d68910; }
+    .tier-T3 { border-left: 4px solid #2471a3; }
+    .tier-T4 { border-left: 4px solid #7f8c8d; }
+    .tier-badge { display: inline-block; font-size: 0.75rem; font-weight: 700; padding: 0.1rem 0.5rem; border-radius: 3px; background: #eee; }
+    .queue-row { display: flex; justify-content: space-between; align-items: center; }
+    .queue-row a { text-decoration: none; color: #1b1e23; font-weight: 600; }
+    .muted { color: #6b7280; font-size: 0.875rem; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .fact-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    .fact-table td, .fact-table th { border-bottom: 1px solid #eee; padding: 0.35rem 0.5rem; text-align: left; }
+    .error { color: #c0392b; margin-bottom: 0.75rem; }
+    .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem; }
+    .actions button { padding: 0.5rem 1rem; border-radius: 4px; border: 1px solid #ccc; cursor: pointer; background: #fff; }
+    .actions button.approve { background: #1e8449; color: #fff; border-color: #1e8449; }
+    .actions button.reject { background: #c0392b; color: #fff; border-color: #c0392b; }
+    textarea { width: 100%; min-height: 6rem; font-family: inherit; }
+    label { display: block; margin: 0.5rem 0 0.2rem; font-size: 0.85rem; color: #444; }
+    input[type="text"], input[type="password"] { width: 100%; padding: 0.4rem; box-sizing: border-box; }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/reviewer/queue">ACE reviewer console</a>
+    {% if current_user %}
+      <span>
+        {{ current_user.display_name }} ({{ current_user.role }})
+        <form method="post" action="/reviewer/logout">
+          <button type="submit">Log out</button>
+        </form>
+      </span>
+    {% endif %}
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

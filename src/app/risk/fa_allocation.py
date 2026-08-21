@@ -59,11 +59,11 @@ class AdvisorAllocation:
     the night. Ownership is unchanged for them too.
     """
 
-    owner: dict[int, int] = field(default_factory=dict)
-    covering: dict[int, int] = field(default_factory=dict)
+    owner: dict[int, str] = field(default_factory=dict)
+    covering: dict[int, str] = field(default_factory=dict)
     demoted: set[int] = field(default_factory=set)
 
-    def advisor_for(self, client_id: int) -> int | None:
+    def advisor_for(self, client_id: int) -> str | None:
         """Who is calling this client tonight: the stand-in if there is one,
         otherwise the owner.
         """
@@ -74,7 +74,7 @@ class AdvisorAllocation:
 def allocate_advisors(
     roster: Sequence[FaRecord],
     clients: Sequence[ClientLoad],
-    current_owners: dict[int, int],
+    current_owners: dict[int, str],
 ) -> AdvisorAllocation:
     """Assign every client an owner and lend out tonight's overflow.
 
@@ -86,7 +86,7 @@ def allocate_advisors(
     if not rostered or not clients:
         return AdvisorAllocation()
 
-    owner: dict[int, int] = {}
+    owner: dict[int, str] = {}
     unassigned: list[ClientLoad] = []
     for client in clients:
         existing = current_owners.get(client.client_id)
@@ -116,10 +116,10 @@ def allocate_advisors(
 
 
 def _lend_overflow(
-    rostered: dict[int, FaRecord],
+    rostered: dict[str, FaRecord],
     clients: Sequence[ClientLoad],
-    owner: dict[int, int],
-) -> tuple[dict[int, int], set[int]]:
+    owner: dict[int, str],
+) -> tuple[dict[int, str], set[int]]:
     """Move tonight's call-queue overflow to advisors with room.
 
     Each over-capacity advisor keeps their biggest clients and lends the
@@ -132,7 +132,7 @@ def _lend_overflow(
     watchlist route for the night rather than let the list grow without a
     limit.
     """
-    queue_by_fa: dict[int, list[ClientLoad]] = defaultdict(list)
+    queue_by_fa: dict[str, list[ClientLoad]] = defaultdict(list)
     for client in clients:
         if client.in_call_queue:
             queue_by_fa[owner[client.client_id]].append(client)
@@ -146,7 +146,7 @@ def _lend_overflow(
         rows.sort(key=lambda c: (c.fund_at_risk, c.client_id))
         overflow.extend(rows[: len(rows) - capacity])
 
-    covering: dict[int, int] = {}
+    covering: dict[int, str] = {}
     demoted: set[int] = set()
     for client in sorted(overflow, key=lambda c: (-c.fund_at_risk, c.client_id)):
         home = owner[client.client_id]

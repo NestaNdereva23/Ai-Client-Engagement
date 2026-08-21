@@ -54,7 +54,15 @@ def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(StarletteHTTPException)
     async def handle_http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         code = getattr(exc, "code", None) or _CODES_BY_STATUS.get(exc.status_code, "http_error")
-        return JSONResponse(status_code=exc.status_code, content=_envelope(code, str(exc.detail)))
+        # Headers an endpoint set on the exception itself (e.g. the reviewer
+        # console's login redirect, a Location on a 303) still need to reach
+        # the response; the envelope body is irrelevant to a browser
+        # following a redirect, which only looks at status and Location.
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=_envelope(code, str(exc.detail)),
+            headers=exc.headers,
+        )
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(

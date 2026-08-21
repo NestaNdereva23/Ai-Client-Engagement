@@ -114,7 +114,7 @@ class DigestLine(Base):
     # full and someone else is calling them tonight. group_key already names
     # whoever is making the call, so this is the other half of it: who they
     # are covering for. Null on an ordinary line.
-    covering_for_fa_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    covering_for_fa_id: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -145,7 +145,7 @@ class DigestEmailSend(Base):
     digest_run_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("digest_run.digest_run_id"), nullable=False, index=True
     )
-    fa_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    fa_id: Mapped[str] = mapped_column(Text, nullable=False)
     # "sent" when it went out over SMTP, "recorded" when no mail server was
     # configured and the null mailer took it instead.
     status: Mapped[str] = mapped_column(Text, nullable=False)

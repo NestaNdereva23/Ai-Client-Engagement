@@ -42,7 +42,7 @@ from app.risk.signals import fired_signal_tags
 DIGEST_ROUTES = ("fa_call_priority", "fa_watchlist")
 
 
-def group_key_for(fa_id: int | None, unit_fund_id: int) -> str:
+def group_key_for(fa_id: str | None, unit_fund_id: int) -> str:
     """ "fa:<fa_id>", or "fund:<unit_fund_id>" when there is no FA to group by."""
     return f"fa:{fa_id}" if fa_id is not None else f"fund:{unit_fund_id}"
 
@@ -74,7 +74,7 @@ class DigestLineData:
     deprioritized: bool
     # The advisor who owns this client, set only when someone else is
     # calling them tonight. None on an ordinary line.
-    covering_for_fa_id: int | None = None
+    covering_for_fa_id: str | None = None
 
 
 @dataclass
@@ -169,7 +169,7 @@ def build_digest(
     *,
     fa_assignment_source: FaAssignmentSource,
     cap_per_group: int,
-    covering: dict[int, int] | None = None,
+    covering: dict[int, str] | None = None,
 ) -> DigestBuildResult:
     """Everyone routed to a call-queue or watch line in this run, grouped by
     FA (falling back to fund), tiered untouched-or-escalated before touched
@@ -210,7 +210,7 @@ def build_digest(
     )
 
     by_group: dict[str, list[RiskSnapshot]] = defaultdict(list)
-    covering_for: dict[tuple[int, int], int] = {}
+    covering_for: dict[tuple[int, int], str] = {}
     for row in snapshots:
         owner_fa_id = assignments.get((row.client_id, row.unit_fund_id))
         stand_in = covering.get(row.client_id) if owner_fa_id is not None else None

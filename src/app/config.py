@@ -14,12 +14,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class FaRecord:
     """One account manager on the seeded roster.
 
+    fa_id is that person's login username on the console calling this API
+    (Ticketing), not an arbitrary roster number -- a digest/assignment
+    lookup keys straight off it, with no separate mapping to maintain.
     daily_capacity is how many clients this person can realistically call in
     a morning. name and email are staff details, never client data, so they
     are safe to keep in the environment.
     """
 
-    fa_id: int
+    fa_id: str
     name: str
     email: str
     daily_capacity: int
@@ -42,6 +45,22 @@ class Settings(BaseSettings):
     app_env: Literal["development", "staging", "production"] = "development"
     app_name: str = "AI Client Engagement"
     log_level: str = "INFO"
+
+    # Browser origins allowed to call this API directly (the Ticketing
+    # console's fetch()es, not server-to-server calls, which never carry an
+    # Origin header and so are unaffected by CORS either way). Comma
+    # separated; the dev default covers Ticketing's local ports whichever of
+    # Herd's plain :80 or `php artisan serve`'s :8000 is actually serving it.
+    # Empty disables CORS handling entirely.
+    cors_allow_origins: str = Field(
+        default="http://localhost,http://localhost:8000,http://127.0.0.1:8000,http://127.0.0.1",
+        validation_alias=AliasChoices("CORS_ALLOW_ORIGINS"),
+    )
+
+    @property
+    def cors_allow_origins_list(self) -> list[str]:
+        """`cors_allow_origins`, split into the list CORSMiddleware wants."""
+        return [origin.strip() for origin in self.cors_allow_origins.split(",") if origin.strip()]
 
     # Database
     database_url: str = "postgresql+psycopg://ace:ace@localhost:5432/ace"
@@ -146,29 +165,29 @@ class Settings(BaseSettings):
     # The account managers who get a morning call list, seeded by hand
     # because the active-clients feed carries no relationship-manager field
     # to read one from. Format is "fa_id:name:email:daily_capacity", comma
-    # separated. Empty means no roster: assignment stays on the stub and the
-    # digest keeps grouping by fund, so an environment that has not set this
-    # behaves exactly as it did before.
+    # separated, where fa_id is that person's login username on the console
+    # calling this API. Empty means no roster: assignment stays on the stub
+    # and the digest keeps grouping by fund, so an environment that has not
+    # set this behaves exactly as it did before.
     fa_roster: str = Field(default="", validation_alias=AliasChoices("ACE_FA_ROSTER", "fa_roster"))
 
     @property
     def fa_records(self) -> tuple[FaRecord, ...]:
         """`fa_roster`, parsed into records in the order given. Malformed
-        entries (wrong field count, empty name or email, unparseable id or
+        entries (wrong field count, empty id, name, or email, unparseable
         capacity) and repeats of an id already seen are dropped rather than
         raising, so one typo does not take the whole roster down.
         """
         records: list[FaRecord] = []
-        seen: set[int] = set()
+        seen: set[str] = set()
         for entry in self.fa_roster.split(","):
             parts = [part.strip() for part in entry.split(":")]
             if len(parts) != 4:
                 continue
-            raw_id, name, email, raw_capacity = parts
-            if not name or not email:
+            fa_id, name, email, raw_capacity = parts
+            if not fa_id or not name or not email:
                 continue
             try:
-                fa_id = int(raw_id)
                 capacity = int(raw_capacity)
             except ValueError:
                 continue
@@ -185,28 +204,14 @@ class Settings(BaseSettings):
         default="", validation_alias=AliasChoices("INTEGRATION_API_KEY")
     )
 
-    # Reviewer identities allowed to call the endpoints that re-attach a
-    # client's real name, view a briefing, or record a review decision --
-    # a stopgap ahead of real session/role auth. Format is
-    # "reviewer_id:key,reviewer_id:key", one static key per reviewer, not a
-    # login. Empty means those endpoints refuse every request rather than
-    # run unprotected. Do not set this in any environment holding real
-    # client data until real session/role auth exists -- this list alone is
-    # not that decision, only the minimum gate in front of it.
-    reviewers: str = Field(default="", validation_alias=AliasChoices("REVIEWERS"))
-
-    @property
-    def reviewer_keys(self) -> dict[str, str]:
-        """`reviewers`, parsed into key -> reviewer_id. Blank or malformed
-        entries (no ":", empty id, empty key) are dropped rather than
-        raising -- a typo'd entry should not take every reviewer down.
-        """
-        result: dict[str, str] = {}
-        for entry in self.reviewers.split(","):
-            reviewer_id, _, key = entry.strip().partition(":")
-            if reviewer_id and key:
-                result[key] = reviewer_id
-        return result
+    # Verifies the bearer token Ticketing attaches to every call: a JWT it
+    # issues per logged-in user, signed with this same secret on their side
+    # (Laravel's AI_OUTREACH_JWT_SECRET). Gates the endpoints that re-attach
+    # a client's real name or record a review decision. Empty means those
+    # endpoints refuse every request rather than run unprotected.
+    ai_outreach_jwt_secret: str = Field(
+        default="", validation_alias=AliasChoices("AI_OUTREACH_JWT_SECRET")
+    )
 
     # Minimum days between two touches to the same client, across every
     # campaign, checked by the eligibility gate before each send.
@@ -259,6 +264,16 @@ class Settings(BaseSettings):
     admin_password: str = Field(default="", validation_alias=AliasChoices("ADMIN_PASSWORD"))
     admin_secret_key: str = Field(
         default="dev-only-admin-secret", validation_alias=AliasChoices("ADMIN_SECRET_KEY")
+    )
+
+    # Signs the reviewer console's login session cookie (app.auth.session).
+    # Separate from admin_secret_key: sqladmin runs its own isolated
+    # sub-app with its own session, so the two were never shared, and this
+    # keeps it that way on purpose. A blank one is fine in dev, same as
+    # admin_secret_key above.
+    console_session_secret_key: str = Field(
+        default="dev-only-console-secret",
+        validation_alias=AliasChoices("CONSOLE_SESSION_SECRET_KEY"),
     )
 
     @property

@@ -12,6 +12,7 @@ from app.db.models.active_clients import (
 )
 from app.db.models.api import IdempotencyKey
 from app.db.models.audit import AuditLog
+from app.db.models.auth import REVIEWER_ROLES, ReviewerUser
 from app.db.models.briefing import BriefingNarrative
 from app.db.models.campaigns import (
     CONTACT_EVENT_TYPES,
@@ -91,6 +92,7 @@ __all__ = [
     "INTERACTION_TYPES",
     "MESSAGE_STATUSES",
     "MESSAGE_TEMPLATE_STATUSES",
+    "REVIEWER_ROLES",
     "REVIEW_OUTCOMES",
     "TEMPLATE_REVIEW_OUTCOMES",
     "ActiveClientFund",
@@ -134,6 +136,7 @@ __all__ = [
     "RawStaging",
     "ReviewAction",
     "ReviewCohort",
+    "ReviewerUser",
     "RiskConfigVersion",
     "RiskRun",
     "RiskSnapshot",

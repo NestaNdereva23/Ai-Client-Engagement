@@ -92,7 +92,7 @@ def compact_money(value: float) -> str:
     return f"KES {amount:,}"
 
 
-def _digest_link(console_base_url: str, fa_id: int) -> str | None:
+def _digest_link(console_base_url: str, fa_id: str) -> str | None:
     if not console_base_url:
         return None
     return f"{console_base_url.rstrip('/')}/digest/fa:{fa_id}"
@@ -111,7 +111,7 @@ def render_subject(summary: DigestEmailSummary) -> str:
     )
 
 
-def _summary_block(summary: DigestEmailSummary, fa_id: int, console_base_url: str) -> list[str]:
+def _summary_block(summary: DigestEmailSummary, fa_id: str, console_base_url: str) -> list[str]:
     lines = [
         f"Clients to call today: {summary.clients_to_call}",
         f"Money at risk: {format_money(summary.total_at_risk)}",
@@ -143,7 +143,7 @@ def _summary_block(summary: DigestEmailSummary, fa_id: int, console_base_url: st
 
 def render_digest_email(
     *,
-    fa_id: int,
+    fa_id: str,
     advisor_name: str,
     summary: DigestEmailSummary,
     console_base_url: str = "",

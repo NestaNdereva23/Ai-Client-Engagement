@@ -6,7 +6,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sqladmin import Admin
+from starlette.middleware.sessions import SessionMiddleware
 
 from app.admin.auth import AdminAuth
 from app.admin.views import ADMIN_VIEWS
@@ -14,7 +16,7 @@ from app.api import v1
 from app.api.errors import register_error_handlers
 from app.api.idempotency import IdempotencyMiddleware
 from app.api.middleware import CorrelationIdMiddleware
-from app.api.routers import health
+from app.api.routers import health, reviewer_ui
 from app.config import Settings, get_settings
 from app.db.session import engine
 from app.llmops.tracing import shutdown_shared_tracer
@@ -51,12 +53,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
 
     register_error_handlers(app)
+    # Added first, which Starlette wraps outermost -- so CORS headers still
+    # land on a response either of the next two middlewares errors out on.
+    # allow_origins from settings, not "*": IdempotencyMiddleware replays a
+    # stored response by Idempotency-Key, and a wildcard origin can't be
+    # combined with allow_credentials if that's ever turned on later.
+    if settings.cors_allow_origins_list:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_allow_origins_list,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
     app.add_middleware(IdempotencyMiddleware)
     app.add_middleware(CorrelationIdMiddleware)
+    # Backs the reviewer console's login (app.auth.session). Isolated from
+    # sqladmin's own session below: sqladmin mounts a separate Starlette
+    # sub-app with its own middleware stack, so the two never share state.
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.console_session_secret_key,
+        session_cookie="ace_session",
+        same_site="lax",
+        https_only=settings.is_production,
+    )
 
     # Routers
     app.include_router(health.router)
     app.include_router(v1.router)
+    app.include_router(reviewer_ui.router)
 
     admin = Admin(
         app, engine, authentication_backend=AdminAuth(secret_key=settings.admin_secret_key)

@@ -462,7 +462,7 @@ class RiskDetectionWorker:
         except Exception:
             logger.exception("risk_detection.narrative_warm_failed", digest_run_id=digest_run_id)
 
-    def _send_digest_emails(self, digest_run_id: int, covering: dict[int, int]) -> None:
+    def _send_digest_emails(self, digest_run_id: int, covering: dict[int, str]) -> None:
         """Mail each rostered advisor their morning summary for this digest.
 
         Runs right after the risk run commits, ahead of the narration

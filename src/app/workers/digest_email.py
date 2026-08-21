@@ -70,13 +70,13 @@ class DigestEmailRunResult:
 class AdvisorEmail:
     """One advisor's rendered email, before anything is sent."""
 
-    fa_id: int
+    fa_id: str
     advisor: FaRecord
     summary: DigestEmailSummary
     rendered: RenderedEmail
 
 
-def _covering_from_digest(session: Session, digest_run_id: int) -> dict[int, int]:
+def _covering_from_digest(session: Session, digest_run_id: int) -> dict[int, str]:
     """Tonight's loans, read back off the digest.
 
     The nightly run already has the map in memory and passes it in. The
@@ -90,17 +90,17 @@ def _covering_from_digest(session: Session, digest_run_id: int) -> dict[int, int
             DigestLine.covering_for_fa_id.is_not(None),
         )
     ).all()
-    covering: dict[int, int] = {}
+    covering: dict[int, str] = {}
     for row in rows:
         prefix, _, value = row.group_key.partition(":")
-        if prefix == "fa" and value.isdigit():
-            covering[row.client_id] = int(value)
+        if prefix == "fa" and value:
+            covering[row.client_id] = value
     return covering
 
 
 def _advisor_of(
-    snapshot: RiskSnapshot, owners: dict[tuple[int, int], int], covering: dict[int, int]
-) -> int | None:
+    snapshot: RiskSnapshot, owners: dict[tuple[int, int], str], covering: dict[int, str]
+) -> str | None:
     """Who is handling this client-fund tonight: the stand-in if their owner
     lent them out, otherwise the owner. The same choice the digest build
     made when it grouped the lines, so the email and the console never
@@ -113,8 +113,8 @@ def _advisor_of(
 
 
 def _summaries(
-    session: Session, risk_run_id: str, covering: dict[int, int]
-) -> dict[int, DigestEmailSummary]:
+    session: Session, risk_run_id: str, covering: dict[int, str]
+) -> dict[str, DigestEmailSummary]:
     """One summary per advisor, counted over the run's whole snapshot
     population rather than the digest lines the per-group cap kept.
     """
@@ -141,8 +141,8 @@ def _summaries(
         session, risk_run_id, [(row.client_id, row.unit_fund_id) for row in snapshots]
     )
 
-    calls: dict[int, list[RiskSnapshot]] = {}
-    watch: dict[int, list[RiskSnapshot]] = {}
+    calls: dict[str, list[RiskSnapshot]] = {}
+    watch: dict[str, list[RiskSnapshot]] = {}
     for row in snapshots:
         fa_id = _advisor_of(row, owners, covering)
         if fa_id is None:
@@ -150,7 +150,7 @@ def _summaries(
         bucket = calls if row.route == CALL_ROUTE else watch
         bucket.setdefault(fa_id, []).append(row)
 
-    summaries: dict[int, DigestEmailSummary] = {}
+    summaries: dict[str, DigestEmailSummary] = {}
     for fa_id in sorted(set(calls) | set(watch)):
         call_rows = calls.get(fa_id, [])
         watch_rows = watch.get(fa_id, [])
@@ -188,8 +188,8 @@ def build_advisor_emails(
     digest_run_id: int,
     *,
     roster: Sequence[FaRecord],
-    covering: dict[int, int] | None = None,
-    only_fa_id: int | None = None,
+    covering: dict[int, str] | None = None,
+    only_fa_id: str | None = None,
     console_base_url: str = "",
 ) -> list[AdvisorEmail]:
     """Render every rostered advisor's email for this digest run.
@@ -228,7 +228,7 @@ def build_advisor_emails(
     return emails
 
 
-def _already_sent(session: Session, digest_run_id: int, fa_ids: Sequence[int]) -> set[int]:
+def _already_sent(session: Session, digest_run_id: int, fa_ids: Sequence[str]) -> set[str]:
     if not fa_ids:
         return set()
     return set(
@@ -247,8 +247,8 @@ def send_digest_emails(
     *,
     roster: Sequence[FaRecord] | None = None,
     mailer: Mailer | None = None,
-    covering: dict[int, int] | None = None,
-    only_fa_id: int | None = None,
+    covering: dict[int, str] | None = None,
+    only_fa_id: str | None = None,
     settings: Settings | None = None,
 ) -> DigestEmailRunResult:
     """Send one email per rostered advisor for this digest run.

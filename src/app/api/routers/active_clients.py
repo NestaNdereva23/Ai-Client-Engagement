@@ -13,8 +13,8 @@ stopgap resolving the caller to a reviewer_id server-side); as of
 2026-08-18 it no longer requires that header -- an FA re-entering a
 credential to log a call, snooze, or dismiss was worse friction than the
 gate was worth for a write that carries no PII and stays fully audited,
-just attributed by the caller's fa_id (a required query param) instead of
-a resolved reviewer_id. This is the same deliberate exception
+just attributed by the caller's username (a required query param) instead
+of a resolved reviewer_id. This is the same deliberate exception
 GET /briefing/... already made (see that router's docstring) applied to a
 write instead of a read; review/template decide keep the real gate, since
 those really do need a server-resolved identity, not a self-reported one.
@@ -174,13 +174,15 @@ def post_interaction(
     client_id: int,
     unit_fund_id: int,
     body: InteractionCreate,
-    fa_id: str = Query(..., description="The logging FA's identifier, recorded on the log entry."),
+    username: str = Query(
+        ..., description="The logging user's identifier, recorded on the log entry."
+    ),
     session: Session = Depends(get_session),
 ) -> InteractionOut:
     """Log a call, a snooze, or a dismiss against one digest line.
 
     No X-Reviewer-Key required (see this module's docstring for why); the
-    log entry is recorded under the caller-supplied fa_id instead. 404s
+    log entry is recorded under the caller-supplied username instead. 404s
     when the client-fund isn't in the active book at all.
     """
     try:
@@ -190,7 +192,7 @@ def post_interaction(
             unit_fund_id,
             type=body.type,
             note=body.note,
-            reviewer_id=fa_id,
+            reviewer_id=username,
         )
     except ActiveClientNotFound:
         raise HTTPException(status_code=404, detail="active client-fund not found") from None
