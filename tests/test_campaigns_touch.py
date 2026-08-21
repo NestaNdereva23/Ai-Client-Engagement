@@ -411,6 +411,73 @@ def test_run_due_enrollments_reports_a_rejected_generation_with_no_message(
         assert touch.message_id is None
 
 
+def test_run_due_enrollments_reports_an_unexpected_error_without_a_message(
+    campaign_with_steps: int, client_row: int
+) -> None:
+    def exploding_generate(session, enrollment, step_no):
+        raise RuntimeError("provider timed out")
+
+    with SessionLocal() as session:
+        enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=client_row
+        )
+        outcomes = run_due_enrollments(
+            session, campaign_id=campaign_with_steps, generate=exploding_generate
+        )
+        session.commit()
+        enrollment_id = enrollment.enrollment_id
+
+    assert len(outcomes) == 1
+    assert outcomes[0].generated is False
+    assert outcomes[0].reason == "generation_error"
+
+    with SessionLocal() as session:
+        # The touch_log insert that ran before generate() raised is rolled
+        # back along with everything else that step attempted, so this
+        # enrollment is still due rather than stuck on a message-less row.
+        touch = session.scalar(
+            select(TouchLog).where(TouchLog.enrollment_id == enrollment_id, TouchLog.step_no == 1)
+        )
+        assert touch is None
+
+
+def test_an_error_on_one_enrollment_does_not_lose_another_already_generated(
+    campaign_with_steps: int, client_row: int, second_client_row: int
+) -> None:
+    """The whole point of committing per enrollment: one bad generation must
+    not roll back a message a run already produced for someone else."""
+
+    def flaky_generate(session, enrollment, step_no):
+        if enrollment.client_id == second_client_row:
+            raise RuntimeError("provider timed out")
+        return _make_message(
+            session, campaign_id=campaign_with_steps, client_id=enrollment.client_id
+        )
+
+    with SessionLocal() as session:
+        good = _make_enrollment(session, campaign_id=campaign_with_steps, client_id=client_row)
+        bad = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=second_client_row
+        )
+        outcomes = run_due_enrollments(
+            session, campaign_id=campaign_with_steps, generate=flaky_generate
+        )
+        session.commit()
+        good_id, bad_id = good.enrollment_id, bad.enrollment_id
+
+    by_id = {o.enrollment_id: o for o in outcomes}
+    assert by_id[good_id].generated is True
+    assert by_id[bad_id].generated is False
+    assert by_id[bad_id].reason == "generation_error"
+
+    with SessionLocal() as session:
+        touch = session.scalar(
+            select(TouchLog).where(TouchLog.enrollment_id == good_id, TouchLog.step_no == 1)
+        )
+        assert touch is not None
+        assert touch.message_id is not None
+
+
 def test_a_second_batch_run_after_a_rejection_does_not_re_attempt_the_same_step(
     campaign_with_steps: int, client_row: int
 ) -> None:

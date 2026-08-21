@@ -21,7 +21,10 @@ from sqlalchemy.orm import Session
 from app.db.models.rules import MessageAngleCatalog
 
 # Every field carries meaning a message depends on, so none may be blank.
-_REQUIRED_FIELDS = ("angle", "headline", "who", "claim", "ask", "never")
+# use joined the brief after version 1 shipped; the column stays nullable so
+# that version keeps loading, but every version saved from here on must
+# carry it, so it is required here like the rest.
+_REQUIRED_FIELDS = ("angle", "headline", "who", "claim", "ask", "never", "use")
 
 
 class CatalogValidationError(ValueError):
@@ -42,6 +45,7 @@ class AngleSpec:
     claim: str
     ask: str
     never: str
+    use: str
     held: bool = False
 
 
@@ -88,6 +92,7 @@ def save_catalog_version(
             claim=spec.claim,
             ask=spec.ask,
             never=spec.never,
+            use=spec.use,
             held=spec.held,
             valid_from=valid_from,
             valid_to=valid_to,

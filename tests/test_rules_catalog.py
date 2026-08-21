@@ -38,6 +38,11 @@ SEEDED_ANGLES = (
 SEEDED_VERSION = 1
 IN_FORCE = date(2026, 8, 2)
 
+# version 2 superseded version 1 on 2026-08-21 and, unlike the fixtures the
+# tests below add and remove, has no valid_to: it is the baseline for any
+# date from then on that a test does not give a more specific override.
+ACTIVE_VERSION = 2
+
 
 def _spec(angle: str = "trial_angle", **overrides: str) -> AngleSpec:
     fields = {
@@ -47,6 +52,7 @@ def _spec(angle: str = "trial_angle", **overrides: str) -> AngleSpec:
         "claim": "What may be claimed",
         "ask": "What it asks for",
         "never": "What it must never say",
+        "use": "How RAG facts may be used",
     }
     fields.update(overrides)
     return AngleSpec(**fields)
@@ -79,7 +85,7 @@ def test_angle_identifiers_must_be_unique() -> None:
         validate_angles([_spec("same"), _spec("same")])
 
 
-@pytest.mark.parametrize("field", ["angle", "headline", "who", "claim", "ask", "never"])
+@pytest.mark.parametrize("field", ["angle", "headline", "who", "claim", "ask", "never", "use"])
 def test_every_field_must_carry_something(field: str) -> None:
     with pytest.raises(CatalogValidationError, match=f"empty '{field}'"):
         validate_angles([_spec(**{field: "   "})])
@@ -120,9 +126,20 @@ def test_every_seeded_angle_carries_a_full_brief(db: None) -> None:
 def test_the_seeded_catalogue_would_pass_its_own_validation(db: None) -> None:
     with SessionLocal() as session:
         angles = load_active_angles(session, IN_FORCE)
+    # Version 1 predates use, so it is backfilled here rather than read off
+    # the row: this checks the shape of the rest of the brief round-trips,
+    # not that a pre-use version somehow already had one.
     validate_angles(
         [
-            AngleSpec(row.angle, row.headline, row.who, row.claim, row.ask, row.never)
+            AngleSpec(
+                row.angle,
+                row.headline,
+                row.who,
+                row.claim,
+                row.ask,
+                row.never,
+                use=row.use or "not recorded for this version",
+            )
             for row in angles.values()
         ]
     )
@@ -183,7 +200,7 @@ def test_a_version_that_has_ended_is_not_active(db: None, catalog_versions) -> N
 
     with SessionLocal() as session:
         assert active_catalog_version(session, date(2026, 9, 5)) == 98
-        assert active_catalog_version(session, date(2026, 9, 20)) == SEEDED_VERSION
+        assert active_catalog_version(session, date(2026, 9, 20)) == ACTIVE_VERSION
 
 
 def test_an_invalid_catalogue_is_not_written(db: None, catalog_versions) -> None:
@@ -194,7 +211,7 @@ def test_an_invalid_catalogue_is_not_written(db: None, catalog_versions) -> None
         session.rollback()
 
     with SessionLocal() as session:
-        assert active_catalog_version(session, date(2026, 9, 1)) == SEEDED_VERSION
+        assert active_catalog_version(session, date(2026, 9, 1)) == ACTIVE_VERSION
 
 
 def test_an_unknown_angle_resolves_to_nothing(db: None) -> None:

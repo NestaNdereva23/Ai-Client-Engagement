@@ -423,9 +423,17 @@ def test_instantiate_template_creates_a_message_for_a_matching_due_client(
     assert messages[0].template_id == template.template_id
 
     with SessionLocal() as session:
-        touch = session.scalars(
-            select(TouchLog).where(TouchLog.enrollment_id.in_(select(Enrollment.enrollment_id)))
-        ).first()
+        # Scoped to this test's own enrollment: querying "any touch for any
+        # enrollment" can match a different test's leftover row in a shared,
+        # uncleaned test database.
+        enrollment_id = session.scalar(
+            select(Enrollment.enrollment_id).where(
+                Enrollment.campaign_id == campaign, Enrollment.client_id == client
+            )
+        )
+        touch = session.scalar(
+            select(TouchLog).where(TouchLog.enrollment_id == enrollment_id, TouchLog.step_no == 1)
+        )
         assert touch is not None
         assert touch.message_id == messages[0].message_id
 
@@ -478,3 +486,53 @@ def test_instantiate_template_does_not_double_instantiate_on_a_second_call(
 
     assert len(first) == 1
     assert second == []
+
+
+def test_an_unexpected_error_on_one_member_is_caught_and_leaves_no_stray_touch(
+    campaign: int, run: str, client: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """instantiate_template commits per member and catches an unexpected
+    error rather than letting it propagate, the same reasoning as
+    run_due_enrollments and draft_templates_for_campaign: a bad client
+    partway through a large matching set must not roll back every message
+    already instantiated ahead of it. With only one matching client here,
+    this proves the narrower half directly -- the error is caught, and the
+    rolled-back touch_log insert leaves the client due, not stuck.
+    """
+    import app.campaigns.instantiation as instantiation_module
+
+    def exploding_instantiate_message(session, template, client_id, *, campaign_id):
+        raise RuntimeError("pii vault lookup failed")
+
+    monkeypatch.setattr(instantiation_module, "instantiate_message", exploding_instantiate_message)
+
+    with SessionLocal() as session:
+        enroll_cohort(session, campaign_id=campaign, client_ids=[client])
+        session.commit()
+        template = make_template(campaign, run)
+        session.add(template)
+        session.commit()
+
+        messages = instantiate_template(
+            session,
+            template,
+            campaign_id=campaign,
+            context_loader=make_matching_context_loader(),
+        )
+        session.commit()
+
+    assert messages == []
+
+    with SessionLocal() as session:
+        # Scoped to this test's own enrollment, not "any touch for any
+        # enrollment": that broader query is what makes the sibling
+        # instantiate test flaky under a shared, uncleaned test database.
+        enrollment_id = session.scalar(
+            select(Enrollment.enrollment_id).where(
+                Enrollment.campaign_id == campaign, Enrollment.client_id == client
+            )
+        )
+        touch = session.scalar(
+            select(TouchLog).where(TouchLog.enrollment_id == enrollment_id, TouchLog.step_no == 1)
+        )
+        assert touch is None

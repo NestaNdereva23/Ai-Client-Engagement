@@ -140,6 +140,14 @@ def run_due_enrollments(
     a pending_review message and an unadvanced current_step, exactly where
     the review queue picks it up. Sending and advancing happen in
     send_touch, once a human approves.
+
+    Each enrollment commits on its own as soon as it is decided, and an
+    unexpected error from one (a provider timeout, a network blip) is
+    caught and recorded rather than left to propagate: without this, one
+    bad enrollment partway through a large batch would roll back every
+    message already generated ahead of it, not just its own. A caught
+    enrollment stays due and is picked up by the next call, the same as
+    an ineligible one.
     """
     due = select_due_enrollments(session, campaign_id=campaign_id, limit=limit)
     stale = count_stale_contacts(session, due)
@@ -153,10 +161,26 @@ def run_due_enrollments(
             outcomes.append(
                 TouchRunOutcome(enrollment.enrollment_id, generated=False, reason=result.reason)
             )
+            session.commit()
             continue
 
         step_no = enrollment.current_step + 1
-        touch = generate_touch(session, enrollment, step_no, generate=generate)
+        try:
+            touch = generate_touch(session, enrollment, step_no, generate=generate)
+        except Exception:
+            session.rollback()
+            logger.exception(
+                "run_due_enrollments.generation_failed",
+                enrollment_id=enrollment.enrollment_id,
+                step_no=step_no,
+            )
+            outcomes.append(
+                TouchRunOutcome(
+                    enrollment.enrollment_id, generated=False, reason="generation_error"
+                )
+            )
+            continue
+
         if touch.message_id is not None:
             outcomes.append(
                 TouchRunOutcome(enrollment.enrollment_id, generated=True, touch_id=touch.touch_id)
@@ -174,6 +198,7 @@ def run_due_enrollments(
                     touch_id=touch.touch_id,
                 )
             )
+        session.commit()
     return outcomes
 
 

@@ -35,6 +35,7 @@ class FakeBrief:
     claim: str = "A genuine, measurable savings rhythm that stopped"
     ask: str = "Resume the exact cadence they already had"
     never: str = "Never state an exact purchase count"
+    use: str = "Reference the cadence placeholder if given; support with product info"
 
 
 @dataclass(frozen=True)
@@ -150,14 +151,17 @@ def test_a_real_cadence_adds_no_such_prohibition() -> None:
     assert not any("no measurable cadence" in line for line in lines)
 
 
-def test_stale_contact_asks_the_message_to_confirm_the_person() -> None:
+def test_stale_contact_adds_no_client_facing_instruction() -> None:
+    """Stale contact is internal targeting context; the global rule against
+    contact-verification openers covers the client-facing side instead."""
     lines = conditional_prohibitions({**FACTS, "stale_contact": True})
-    assert any("right person" in line for line in lines)
+    assert not any("confirm" in line.lower() for line in lines)
 
 
 def test_an_exit_that_was_not_a_choice_forbids_calling_it_one() -> None:
     lines = conditional_prohibitions({**FACTS, "exit_reason": "charge_settled"})
     assert any("decision to leave" in line for line in lines)
+    assert any("settling to zero" in line for line in lines)
 
 
 def test_a_client_who_chose_to_leave_adds_no_such_prohibition() -> None:
@@ -170,10 +174,10 @@ def test_conditional_prohibitions_reach_the_assembled_prompt() -> None:
         angle="a",
         prompt_variant=None,
         brief=FakeBrief(),
-        facts={"cadence_band": "None", "stale_contact": True},
+        facts={"cadence_band": "None", "exit_reason": "charge_settled"},
     )
     assert "no measurable cadence" in prompt
-    assert "right person" in prompt
+    assert "settling to zero" in prompt
 
 
 # --- placeholders ---

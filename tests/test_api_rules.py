@@ -103,6 +103,7 @@ def _angle_spec(angle: str, *, held: bool) -> AngleSpec:
         claim="test claim",
         ask="test ask",
         never="test never",
+        use="test use",
         held=held,
     )
 

@@ -340,7 +340,17 @@ def test_regenerate_message_repoints_the_touch_that_produced_it(campaign: int, c
         session.commit()
         run_campaign_generation(session, campaign, agent=agent, settings=settings)
         session.commit()
-        touch = session.scalars(select(TouchLog)).one()
+        # Scoped to this test's own enrollment: "the one touch_log row in
+        # the whole database" is not a safe assumption in a shared,
+        # uncleaned test database running alongside every other test.
+        enrollment_id = session.scalar(
+            select(Enrollment.enrollment_id).where(
+                Enrollment.campaign_id == campaign, Enrollment.client_id == client
+            )
+        )
+        touch = session.scalars(
+            select(TouchLog).where(TouchLog.enrollment_id == enrollment_id)
+        ).one()
         original_id = touch.message_id
         touch_id = touch.touch_id
 

@@ -56,6 +56,7 @@ class AngleBrief(Protocol):
     claim: str
     ask: str
     never: str
+    use: str | None
 
 
 @runtime_checkable
@@ -78,6 +79,14 @@ CAMPAIGN_PROHIBITIONS = (
     "Never state a number that is not in the facts you were given. Do not "
     "calculate, round, or combine them into a new one.",
     "Never promise a return, a rate, or a guarantee.",
+    "Never open the email by asking the client to confirm their contact details, "
+    "identity, or preferred email address. Do not use contact verification as a "
+    "generic opener, a personalization technique, or a safety habit, only when the "
+    "selected angle's ask itself is to verify contact details.",
+    "Never ask the client to explain, justify, or confirm a historical transaction "
+    "or account event, unless the selected angle's ask is itself that diagnostic "
+    "question. Facts about how or why an account event happened are for choosing "
+    "the angle, not for putting in front of the client.",
 )
 
 _BASE_INSTRUCTIONS = (
@@ -141,11 +150,60 @@ _BASE_INSTRUCTIONS = (
     "Personalize only from the facts provided. "
     "The email should feel relevant but must remain factually grounded. "
     "Do not manufacture personalization. "
+    "WHY THE CLIENT WAS SELECTED IS NOT WHAT THEY ARE TOLD: "
+    "You are usually given more about this client than belongs in the email. Some facts "
+    "exist only to explain why this client qualified for this angle: how their previous "
+    "activity ended, behavioral or trend classifications, purchase cadence, transaction "
+    "patterns, and similar internal signals. Treat all of these as internal targeting "
+    "context unless the angle's claim or ask explicitly requires disclosing them. Before "
+    "using any client specific fact, check that it directly supports the angle's claim or "
+    "ask, that it is appropriate to tell the client, and that it is necessary rather than "
+    "merely available. If it fails that check, leave it out. In particular, do not tell the "
+    "client their account settled to zero, the reason a transaction happened, how they were "
+    "segmented, why the campaign selected them, or a behavioral pattern the angle does not "
+    "explicitly permit you to mention. "
+    "CURRENT PROPOSITIONS OVER STALE HISTORY: "
+    "A relevant current product or market fact is usually a better reason to reconnect than "
+    "an explanation of past account activity. When the retrieved facts contain a proposition "
+    "that fits the angle, prefer leading the email with that over recapping what happened "
+    "historically. The client does not need to understand the segmentation logic to receive "
+    "a relevant offer. "
+    "HOW TO USE RETRIEVED FACTS: "
+    "Retrieved facts are supporting evidence, not content that must automatically appear. "
+    "Use only what is genuinely useful for the selected angle. Each angle's brief says how "
+    "retrieved facts should be used for that angle, ranging from leading with a current "
+    "proposition to not using one at all; follow that instruction rather than defaulting to "
+    "including everything retrieved. Never mention a retrieved fact simply because it was "
+    "retrieved. Choose the smallest amount of retrieved information that supports the angle: "
+    "a short, specific proposition beats a block of market commentary. "
+    "DO NOT MANUFACTURE AN INVESTIGATION: "
+    "Do not ask the client to explain, confirm, or justify historical activity, such as "
+    "asking what happened, why they withdrew, or whether a transaction was intentional, "
+    "unless the selected angle's ask is itself a diagnostic question. If the angle's ask is "
+    "to win the client back with a current proposition, do not manufacture a question about "
+    "their history simply because that history is available to you. "
+    "CALL TO ACTION: "
+    "The selected angle's ask is the one call to action for this email. Do not append a "
+    "generic closing question such as asking if they would be open to a quick chat unless "
+    "that is a natural expression of the angle's own ask. Do not add a second, different call "
+    "to action alongside it. "
     "TONE AND PURPOSE: "
-    "Keep the email short, warm, professional, and low pressure. "
+    "Keep the email short, warm, professional, and low pressure. It should read like it was "
+    "written by a relationship manager who understands the client's context, not like a "
+    "system reporting database events. "
     "The goal is to encourage the client to consider investing again or "
     "exploring their options, without making guarantees or unsupported claims. "
     "Do not pressure the client. "
+    "Avoid phrasing such as: 'I noticed your account...', 'I am reaching out to confirm...', "
+    "'Please confirm your details...', 'We noticed you have been away...', 'Your account "
+    "settled to zero...', 'Can you confirm what happened?', 'I wanted to understand why "
+    "you...', or 'According to our records...'. These read as a database notification or an "
+    "account investigation, not a relationship manager, unless the selected angle's ask "
+    "explicitly calls for that kind of question. "
+    "SIGN OFF: "
+    "Never invent a relationship manager's name. Sign off with the sign off given to you if "
+    "one is given; otherwise use a neutral professional sign off such as 'Best regards, "
+    "Relationship Manager'. Never write a placeholder such as '[Relationship Manager Name]'. "
     "EMAIL FORMAT: "
     "Do not include emdashes or hyphens in the email subject or body and the text should not "
     "sound robotic. "
@@ -234,15 +292,12 @@ def conditional_prohibitions(facts: Mapping[str, Any] | None) -> list[str]:
             "This client has no measurable cadence. Never reference a rhythm, "
             "a schedule, or a pattern of investing."
         )
-    if facts.get("stale_contact"):
-        lines.append(
-            "Contact details for this client are over three years old. Open by "
-            "confirming you have reached the right person."
-        )
     if facts.get("exit_reason") == "charge_settled":
         lines.append(
             "This client's balance settled to zero through a charge, not a "
-            "withdrawal they asked for. Never refer to a decision to leave."
+            "withdrawal they asked for. This is internal targeting context only: "
+            "never refer to a decision to leave, and never mention the balance, "
+            "the charge, or the account settling to zero to the client."
         )
     return lines
 
@@ -256,11 +311,14 @@ def _prohibitions_block(brief: AngleBrief | None, facts: Mapping[str, Any] | Non
 
 
 def _brief_block(brief: AngleBrief) -> str:
-    return (
+    lines = [
         f"Angle: {brief.headline}\n"
         f"What is true about this client: {brief.claim}\n"
         f"What to ask them for: {brief.ask}"
-    )
+    ]
+    if brief.use:
+        lines.append(f"How retrieved facts may be used for this angle: {brief.use}")
+    return "\n".join(lines)
 
 
 def _contract_block(contract: FormatContract) -> str:
