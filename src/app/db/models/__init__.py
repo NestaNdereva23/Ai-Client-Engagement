@@ -12,6 +12,8 @@ from app.db.models.active_clients import (
 )
 from app.db.models.api import IdempotencyKey
 from app.db.models.audit import AuditLog
+from app.db.models.auth import REVIEWER_ROLES, ReviewerUser
+from app.db.models.briefing import BriefingNarrative
 from app.db.models.campaigns import (
     CONTACT_EVENT_TYPES,
     ENROLLMENT_STATUSES,
@@ -26,7 +28,7 @@ from app.db.models.complaints import (
     COMPLAINT_STATUSES,
     ClientComplaint,
 )
-from app.db.models.digest import DigestLine, DigestRun
+from app.db.models.digest import DigestEmailSend, DigestLine, DigestRun
 from app.db.models.fa_assignment import FaAssignment
 from app.db.models.generation_batch import (
     GENERATION_BATCH_ITEM_STATUSES,
@@ -34,6 +36,7 @@ from app.db.models.generation_batch import (
     GenerationBatch,
     GenerationBatchItem,
 )
+from app.db.models.generation_cost import GenerationCostConfigVersion
 from app.db.models.llmops import GenerationRun, ModelVersion, PromptVersion
 from app.db.models.message_template import (
     MESSAGE_TEMPLATE_STATUSES,
@@ -55,11 +58,13 @@ from app.db.models.models import (
 )
 from app.db.models.outreach import (
     CAMPAIGN_STATUSES,
+    COHORT_STATUSES,
     MESSAGE_STATUSES,
     REVIEW_OUTCOMES,
     Campaign,
     OutreachMessage,
     ReviewAction,
+    ReviewCohort,
 )
 from app.db.models.rag import RagChunk, RagDocument, RagDocumentVersion
 from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion, RiskRun, RiskSnapshot
@@ -75,6 +80,7 @@ from app.db.models.template_policy import CampaignTemplatePolicy, TemplatePolicy
 
 __all__ = [
     "CAMPAIGN_STATUSES",
+    "COHORT_STATUSES",
     "COMPLAINT_CATEGORIES",
     "COMPLAINT_CHANNELS",
     "COMPLAINT_STATUSES",
@@ -86,12 +92,14 @@ __all__ = [
     "INTERACTION_TYPES",
     "MESSAGE_STATUSES",
     "MESSAGE_TEMPLATE_STATUSES",
+    "REVIEWER_ROLES",
     "REVIEW_OUTCOMES",
     "TEMPLATE_REVIEW_OUTCOMES",
     "ActiveClientFund",
     "ActiveClientInteraction",
     "ActiveTransaction",
     "AuditLog",
+    "BriefingNarrative",
     "BusinessRule",
     "Campaign",
     "CampaignStep",
@@ -103,6 +111,7 @@ __all__ = [
     "ClientRiskFeatures",
     "Clients",
     "ContactEvent",
+    "DigestEmailSend",
     "DigestLine",
     "DigestRun",
     "Enrollment",
@@ -110,6 +119,7 @@ __all__ = [
     "Funds",
     "GenerationBatch",
     "GenerationBatchItem",
+    "GenerationCostConfigVersion",
     "GenerationRun",
     "IdempotencyKey",
     "IngestionReject",
@@ -125,6 +135,8 @@ __all__ = [
     "RagDocumentVersion",
     "RawStaging",
     "ReviewAction",
+    "ReviewCohort",
+    "ReviewerUser",
     "RiskConfigVersion",
     "RiskRun",
     "RiskSnapshot",

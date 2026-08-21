@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.orchestrator import ChannelAgent
 from app.audit.log import record_audit
+from app.campaigns.cohorts import CohortSlot
 from app.config import Settings
 from app.db.models.campaigns import Enrollment, TouchLog
 from app.db.models.models import ClientFeatures
@@ -86,6 +87,7 @@ def _generate_and_persist(
     agent: ChannelAgent,
     settings: Settings,
     tracer: Tracer | None,
+    cohort_slot: CohortSlot | None = None,
 ) -> OutreachMessage | None:
     """Run the graph for one client and persist the result.
 
@@ -93,6 +95,10 @@ def _generate_and_persist(
     every retry was rejected. The run itself is always persisted and
     stamped either way, so a rejection still shows up in guardrail metrics
     even though there is nothing yet to review.
+
+    cohort_slot is passed straight through to create_outreach_message; see
+    its docstring. regenerate_message uses this to keep a replacement
+    message in the same cohort slot as the one it's replacing.
     """
     product = resolve_product(session, client_id)
     state = agent.generate(client_id=client_id, product=product)
@@ -104,7 +110,11 @@ def _generate_and_persist(
     if state.get("status") != "accepted":
         return None
     return create_outreach_message(
-        session, run, campaign_id=campaign_id, call_brief=state.get("call_brief")
+        session,
+        run,
+        campaign_id=campaign_id,
+        call_brief=state.get("call_brief"),
+        cohort_slot=cohort_slot,
     )
 
 
@@ -169,6 +179,7 @@ def regenerate_message(
         agent=agent,
         settings=settings,
         tracer=tracer,
+        cohort_slot=CohortSlot(cohort_id=message.cohort_id, is_sample=message.is_sample),
     )
     if fresh is None:
         raise RegenerationRejected(message_id)

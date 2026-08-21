@@ -60,6 +60,11 @@ class OutreachMessageSummary(BaseModel):
     # message_template rather than being drafted individually; lets the
     # review UI show it was already reviewed once at the template level.
     template_id: str | None = None
+    # Set for a single-generated message that belongs to a review sampling
+    # cohort (campaign x tier). is_sample marks whether it's one of the
+    # cohort's samples -- the default queue only lists those.
+    cohort_id: str | None = None
+    is_sample: bool = False
 
 
 class ReviewActionOut(BaseModel):
@@ -76,6 +81,28 @@ class ReviewActionOut(BaseModel):
     edit_diff: dict | None
     reason: str | None
     created_at: datetime
+
+
+class CohortReadyOut(BaseModel):
+    """Returned from POST .../decide when the message just decided was its
+    cohort's last pending sample: every sample is now approved, and
+    remaining_count messages in the same cohort are waiting on the bulk
+    approval POST /reviews/cohorts/{cohort_id}/approve-remaining unlocks.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    cohort_id: str
+    remaining_count: int
+
+
+class DecideResultOut(BaseModel):
+    """One decide() outcome, plus whether it just made a cohort ready to
+    bulk-approve the rest.
+    """
+
+    action: ReviewActionOut
+    cohort_ready: CohortReadyOut | None = None
 
 
 class DecideBatchFailureOut(BaseModel):

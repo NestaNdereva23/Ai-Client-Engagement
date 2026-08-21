@@ -1,0 +1,29 @@
+{% extends "_layout.html" %}
+{% block title %}Review queue{% endblock %}
+{% block content %}
+<h1 style="font-size:1.2rem;">Pending review ({{ total_count }})</h1>
+<p class="muted">Ordered by tier, T1 first, then oldest first within a tier.</p>
+
+{% if not items %}
+  <div class="card">Nothing waiting on review right now.</div>
+{% endif %}
+
+{% for message, tier in items %}
+  <div class="card tier-{{ tier or 'T4' }}">
+    <div class="queue-row">
+      <a href="/reviewer/messages/{{ message.message_id }}">
+        Client {{ message.client_id }} &middot; {{ message.channel }}
+      </a>
+      <span class="tier-badge">{{ tier or "no tier" }}</span>
+    </div>
+    <p class="muted">
+      Created {{ message.created_at.strftime("%Y-%m-%d %H:%M") }}
+      {% if message.cohort_id %}&middot; sample from cohort {{ message.cohort_id }}{% endif %}
+    </p>
+  </div>
+{% endfor %}
+
+{% if next_cursor %}
+  <a href="/reviewer/queue?cursor={{ next_cursor }}">Next page</a>
+{% endif %}
+{% endblock %}

@@ -93,7 +93,13 @@ class AnthropicLLMClient:
 
 
 class OllamaLLMClient:
-    """Local Ollama implementation of LLMClient, for testing against an open model."""
+    """Local Ollama implementation of LLMClient, for testing against an open model.
+
+    json_output forces the model to emit a JSON object, which is what the
+    email draft and the judge both parse. A caller that wants prose must
+    turn it off: with it on, a small local model returns a JSON object even
+    when the prompt asks for sentences, and invents field names to fill it.
+    """
 
     def __init__(
         self,
@@ -103,11 +109,13 @@ class OllamaLLMClient:
         temperature: float | None = None,
         base_url: str = "http://localhost:11434",
         timeout: float = 120.0,
+        json_output: bool = True,
         client: httpx.Client | None = None,
     ) -> None:
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.json_output = json_output
         self.last_usage: LLMUsage | None = None
         self._client = client or httpx.Client(base_url=base_url, timeout=timeout)
 
@@ -117,33 +125,33 @@ class OllamaLLMClient:
         if self.temperature is not None:
             options["temperature"] = self.temperature
 
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "stream": False,
+            "think": False,
+            "options": options,
+        }
+        if self.json_output:
+            body["format"] = "json"
+
         try:
-            response = self._client.post(
-                "/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    "format": "json",
-                    "stream": False,
-                    "think": False,
-                    "options": options,
-                },
-            )
+            response = self._client.post("/api/chat", json=body)
             response.raise_for_status()
         except httpx.HTTPError as exc:
             logger.warning("llm_client.request_failed", model=self.model, error=str(exc))
             raise LLMClientError(f"model request failed: {exc}") from exc
 
-        body = response.json()
-        logger.info("ollama_response_body", model=self.model, body=body)
+        reply = response.json()
+        logger.info("ollama_response_body", model=self.model, body=reply)
         self.last_usage = LLMUsage(
-            input_tokens=body.get("prompt_eval_count", 0),
-            output_tokens=body.get("eval_count", 0),
+            input_tokens=reply.get("prompt_eval_count", 0),
+            output_tokens=reply.get("eval_count", 0),
         )
-        return body["message"]["content"]
+        return reply["message"]["content"]
 
 
 def _build_llm_client(
@@ -155,6 +163,7 @@ def _build_llm_client(
     anthropic_api_key: str,
     ollama_base_url: str,
     ollama_timeout: float,
+    json_output: bool = True,
 ) -> LLMClient:
     if provider == "anthropic":
         return AnthropicLLMClient(
@@ -167,6 +176,7 @@ def _build_llm_client(
             temperature=temperature,
             base_url=ollama_base_url,
             timeout=ollama_timeout,
+            json_output=json_output,
         )
     raise ValueError(f"unknown LLM provider: {provider!r}")
 
@@ -217,6 +227,46 @@ def get_judge_llm_client(settings: Settings | None = None) -> LLMClient:
         anthropic_api_key=settings.anthropic_api_key,
         ollama_base_url=settings.ollama_base_url,
         ollama_timeout=settings.ollama_timeout_seconds,
+    )
+
+
+def resolve_briefing_model_config(
+    settings: Settings | None = None,
+) -> tuple[str, str, float | None, int]:
+    """The (provider, model, temperature, max_tokens) the briefing narrator runs with.
+
+    briefing_llm_provider/briefing_llm_model fall back to llm_provider/llm_model
+    when unset, the same fallback resolve_judge_model_config uses, so the
+    narrator works with no extra config and can still be pointed at a
+    different model independently of generation or judging.
+    """
+    settings = settings or get_settings()
+    provider = settings.briefing_llm_provider or settings.llm_provider
+    model = settings.briefing_llm_model or settings.llm_model
+    return provider, model, settings.briefing_llm_temperature, settings.briefing_llm_max_tokens
+
+
+def get_briefing_llm_client(settings: Settings | None = None) -> LLMClient:
+    """Build the LLM client briefing.narrative drafts a narrated briefing with.
+
+    Independent of get_llm_client and get_judge_llm_client: briefing_llm_provider/
+    briefing_llm_model let the narrator run a different model than either,
+    falling back to the generation model when not configured.
+
+    The only caller that asks for prose rather than a JSON object, so it is
+    also the only one that turns json_output off.
+    """
+    settings = settings or get_settings()
+    provider, model, temperature, max_tokens = resolve_briefing_model_config(settings)
+    return _build_llm_client(
+        provider=provider,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        anthropic_api_key=settings.anthropic_api_key,
+        ollama_base_url=settings.ollama_base_url,
+        ollama_timeout=settings.ollama_timeout_seconds,
+        json_output=False,
     )
 
 

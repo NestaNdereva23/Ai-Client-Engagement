@@ -21,12 +21,17 @@ def build_and_persist_digest(
     *,
     fa_assignment_source: FaAssignmentSource,
     cap_per_group: int,
+    covering: dict[int, str] | None = None,
 ) -> DigestRun:
     """Build the digest for one completed risk run and write it to
     digest_run/digest_line. Returns the new DigestRun row.
     """
     result = build_digest(
-        session, risk_run_id, fa_assignment_source=fa_assignment_source, cap_per_group=cap_per_group
+        session,
+        risk_run_id,
+        fa_assignment_source=fa_assignment_source,
+        cap_per_group=cap_per_group,
+        covering=covering,
     )
 
     digest_run = DigestRun(risk_run_id=risk_run_id)
@@ -40,6 +45,7 @@ def build_and_persist_digest(
             group_total=result.groups[line.group_key].total_eligible,
             group_fund_value_total=result.groups[line.group_key].total_fund_at_risk,
             rank=line.rank,
+            batch=line.batch,
             client_id=line.client_id,
             unit_fund_id=line.unit_fund_id,
             risk_score=line.risk_score,
@@ -51,6 +57,8 @@ def build_and_persist_digest(
             route=line.route,
             in_call_queue=line.in_call_queue,
             complaint_caveat=line.complaint_caveat,
+            deprioritized=line.deprioritized,
+            covering_for_fa_id=line.covering_for_fa_id,
         )
         for line in result.lines
     )
@@ -65,6 +73,7 @@ def build_and_persist_digest(
         detail={
             "groups": len(result.groups),
             "lines": len(result.lines),
+            "covered_lines": sum(1 for line in result.lines if line.covering_for_fa_id is not None),
         },
     )
     return digest_run

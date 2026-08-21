@@ -210,7 +210,7 @@ def test_decide_approve_returns_the_action_and_updates_status(
         headers=reviewer_1_headers,
     )
     assert response.status_code == 200
-    body = response.json()
+    body = response.json()["action"]
     assert body["outcome"] == "approve"
     assert body["reviewer_id"] == "fa-1"
 
@@ -243,7 +243,7 @@ def test_decide_edit_approve_stores_the_edit(
         headers=reviewer_1_headers,
     )
     assert response.status_code == 200
-    assert response.json()["edited_content"] == edited
+    assert response.json()["action"]["edited_content"] == edited
 
 
 def test_decide_twice_is_a_conflict(
@@ -375,3 +375,12 @@ def test_list_reviews_pages_through_the_query_params(two_messages) -> None:
     body_two = page_two.json()
     assert [row["message_id"] for row in body_two["items"]] == [message_ids[1]]
     assert body_two["next_cursor"] is None
+
+
+def test_list_reviews_total_count_covers_every_page_not_just_this_one(two_messages) -> None:
+    message_ids, campaign_id = two_messages
+    response = client.get(REVIEWS, params={"campaign_id": campaign_id, "limit": 1})
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["items"]) == 1
+    assert body["total_count"] == len(message_ids)

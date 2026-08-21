@@ -22,6 +22,7 @@ dependencies = [
     "fastapi-admin>=1.0.4",
     "sqladmin>=0.31.0",
     "itsdangerous>=2.2.0",
+    "pyjwt>=2.13.0",
 ]
 
 # This is an application, not a distributable library: uv manages the

@@ -1,0 +1,113 @@
+{% extends "_layout.html" %}
+{% block title %}Message {{ message.message_id }}{% endblock %}
+{% block content %}
+<p><a href="/reviewer/queue">&larr; back to queue</a></p>
+
+<div class="card tier-{{ context.priority_tier or 'T4' }}">
+  <span class="tier-badge">{{ context.priority_tier or "no tier" }}</span>
+  <span class="muted">angle: {{ context.angle or "unknown" }} &middot; status: {{ message.status }}</span>
+  {% if message.cohort_id %}
+    <p class="muted">Sample for cohort {{ message.cohort_id }}{% if not message.is_sample %} (rides on the sample's outcome){% endif %}.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2 style="font-size:1rem;">Generation signals</h2>
+  <p class="muted">
+    Attempts: {{ context.attempts if context.attempts is not none else "unknown" }}
+    {% if context.failed_guardrail %} &middot; a prior attempt failed guardrail: {{ context.failed_guardrail }}{% endif %}
+  </p>
+  {% if context.evaluation %}
+    <p class="muted">
+      Judge scores &mdash; tone: {{ context.evaluation.tone }},
+      compliance: {{ context.evaluation.compliance }},
+      grounding: {{ context.evaluation.grounding }},
+      personalization: {{ context.evaluation.personalization }}
+    </p>
+    {% if context.evaluation.notes %}<p class="muted">{{ context.evaluation.notes }}</p>{% endif %}
+  {% else %}
+    <p class="muted">No judge evaluation recorded yet for this draft.</p>
+  {% endif %}
+</div>
+
+{% if context.angle_spec %}
+<div class="card">
+  <h2 style="font-size:1rem;">Angle brief: {{ context.angle_spec.headline }}</h2>
+  <p><strong>Who:</strong> {{ context.angle_spec.who }}</p>
+  <p><strong>May claim:</strong> {{ context.angle_spec.claim }}</p>
+  <p><strong>Asks for:</strong> {{ context.angle_spec.ask }}</p>
+  <p><strong>Must never say:</strong> {{ context.angle_spec.never }}</p>
+</div>
+{% endif %}
+
+{% if context.fact_pairs %}
+<div class="card">
+  <h2 style="font-size:1rem;">Client figures (exact vs. what the model was shown)</h2>
+  <table class="fact-table">
+    <tr><th>Field</th><th>Exact (KES)</th><th>Rounded for the model</th></tr>
+    {% for field, pair in context.fact_pairs.items() %}
+    <tr><td>{{ field }}</td><td>{{ "{:,}".format(pair[0]) }}</td><td>{{ "{:,}".format(pair[1]) }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
+<div class="card two-col">
+  <div>
+    <h2 style="font-size:1rem;">AI draft (what the model wrote)</h2>
+    <p><strong>Subject:</strong> {{ message.ai_draft_content.subject }}</p>
+    <p style="white-space: pre-wrap;">{{ message.ai_draft_content.body }}</p>
+  </div>
+  <div>
+    <h2 style="font-size:1rem;">Personalized (what would send)</h2>
+    <p><strong>Subject:</strong> {{ message.personalized_content.subject if message.personalized_content else "-" }}</p>
+    <p style="white-space: pre-wrap;">{{ message.personalized_content.body if message.personalized_content else "-" }}</p>
+  </div>
+</div>
+
+{% if message.call_brief %}
+<div class="card">
+  <h2 style="font-size:1rem;">Call brief (T1 secondary channel)</h2>
+  <p style="white-space: pre-wrap;">{{ message.call_brief }}</p>
+</div>
+{% endif %}
+
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+{% if message.status == "pending_review" %}
+<div class="card">
+  <h2 style="font-size:1rem;">Decide</h2>
+  <form method="post" action="/reviewer/messages/{{ message.message_id }}/decide">
+    <label for="reason">Reason (optional)</label>
+    <input type="text" id="reason" name="reason">
+
+    <label for="edited_subject">Edited subject (only used by "Edit &amp; approve")</label>
+    <input type="text" id="edited_subject" name="edited_subject"
+           value="{{ message.personalized_content.subject if message.personalized_content else '' }}">
+    <label for="edited_body">Edited body</label>
+    <textarea id="edited_body" name="edited_body">{{ message.personalized_content.body if message.personalized_content else '' }}</textarea>
+
+    <div class="actions">
+      <button type="submit" name="outcome" value="approve" class="approve">Approve</button>
+      <button type="submit" name="outcome" value="edit_approve">Edit &amp; approve</button>
+      {% if can_hold_or_reject %}
+        <button type="submit" name="outcome" value="reject" class="reject">Reject</button>
+        <button type="submit" name="outcome" value="escalate">Escalate</button>
+        <button type="submit" name="outcome" value="hold">Hold</button>
+      {% endif %}
+    </div>
+  </form>
+  {% if not can_hold_or_reject %}
+    <p class="muted">This message belongs to a review sampling cohort: only approve or edit &amp; approve are offered here.</p>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="card">
+  <h2 style="font-size:1rem;">History</h2>
+  {% if not history %}<p class="muted">No decisions yet.</p>{% endif %}
+  {% for action in history %}
+    <p class="muted">{{ action.created_at.strftime("%Y-%m-%d %H:%M") }} &middot; {{ action.reviewer_id }} &middot; {{ action.outcome }}{% if action.reason %} &middot; {{ action.reason }}{% endif %}</p>
+  {% endfor %}
+</div>
+{% endblock %}

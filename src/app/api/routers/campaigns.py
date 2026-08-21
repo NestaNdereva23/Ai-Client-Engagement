@@ -11,6 +11,12 @@ from app.agents.email_channel import build_default_agent
 from app.campaigns.batch_generation import BatchNotFound
 from app.campaigns.estimation import DEFAULT_ESTIMATE_LIMIT, MAX_ESTIMATE_LIMIT
 from app.campaigns.generation import model_boundary_audit_sink
+from app.campaigns.generation_cost import (
+    DEFAULT_MODEL,
+    MODEL_LABELS,
+    GenerationCostConfigMissing,
+    UnknownGenerationModel,
+)
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT, MAX_BATCH_LIMIT
 from app.campaigns.template_policy import EffectivePolicy, TemplatePolicyValidationError
 from app.config import get_settings
@@ -32,6 +38,9 @@ from app.schemas.campaigns import (
     CampaignValueOut,
     EnrollmentOut,
     GenerationBatchOut,
+    GenerationCostModelOut,
+    GenerationCostOut,
+    GenerationCostScenarioOut,
     OutreachAnalyticsOut,
     OutreachBucketOut,
     OutreachTrendOut,
@@ -60,6 +69,7 @@ from app.services.campaigns import (
     campaign_value,
     create_campaign,
     draft_campaign_templates,
+    estimate_campaign_generation_cost,
     estimate_campaign_templates,
     get_campaign,
     get_campaign_batch,
@@ -69,6 +79,7 @@ from app.services.campaigns import (
     list_campaign_enrollments,
     list_campaign_steps,
     list_campaigns,
+    list_generation_cost_models,
     outreach_analytics,
     outreach_trend,
     run_campaign_generation,
@@ -192,6 +203,27 @@ def get_campaigns_analytics_trend(
     )
 
 
+@router.get("/generation-cost/models", response_model=list[GenerationCostModelOut])
+def get_generation_cost_models(
+    session: Session = Depends(get_session),
+) -> list[GenerationCostModelOut]:
+    """Every model a campaign's generation cost can be priced against, each
+    with its own current rate -- what GET .../generation-cost?model= picks
+    from. A model with no active rate yet is left out.
+    """
+    configs = list_generation_cost_models(session)
+    return [
+        GenerationCostModelOut(
+            model=c.model,
+            label=MODEL_LABELS[c.model],
+            config_version=c.version,
+            rate_per_generation_usd=c.cost_per_generation_usd,
+            rate_per_generation_kes=c.cost_per_generation_kes,
+        )
+        for c in configs
+    ]
+
+
 @router.get("/{campaign_id}", response_model=CampaignDetailOut)
 def get_campaign_detail(
     campaign_id: int, session: Session = Depends(get_session)
@@ -240,6 +272,57 @@ def get_campaign_value(
     except CampaignNotFound:
         raise HTTPException(status_code=404, detail="campaign not found") from None
     return CampaignValueOut(campaign_id=campaign_id, **value)
+
+
+@router.get("/{campaign_id}/generation-cost", response_model=GenerationCostOut)
+def get_campaign_generation_cost(
+    campaign_id: int,
+    model: str = Query(default=DEFAULT_MODEL),
+    limit: int = Query(default=DEFAULT_ESTIMATE_LIMIT, ge=1, le=MAX_ESTIMATE_LIMIT),
+    session: Session = Depends(get_session),
+) -> GenerationCostOut:
+    """What drafting this campaign would cost right now, single-generation
+    and subgroup-template side by side, at `model`'s active RAG-enabled
+    rate. Read-only and changes nothing -- safe to call any time. See GET
+    .../generation-cost/models for which model ids are valid.
+    """
+    try:
+        estimate = estimate_campaign_generation_cost(session, campaign_id, model=model, limit=limit)
+    except CampaignNotFound:
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    except UnknownGenerationModel:
+        raise HTTPException(
+            status_code=400, detail=f"unknown model; choose one of {sorted(MODEL_LABELS)}"
+        ) from None
+    except GenerationCostConfigMissing:
+        raise HTTPException(
+            status_code=503, detail="no generation cost rate is configured for this model"
+        ) from None
+    return GenerationCostOut(
+        campaign_id=estimate.campaign_id,
+        model=estimate.model,
+        config_version=estimate.config_version,
+        rate_per_generation_usd=estimate.rate_per_generation_usd,
+        rate_per_generation_kes=estimate.rate_per_generation_kes,
+        step_count=estimate.step_count,
+        enrolled_clients=estimate.enrolled_clients,
+        estimated_templates=estimate.estimated_templates,
+        single_generation=GenerationCostScenarioOut(
+            count_per_step=estimate.single_generation.count_per_step,
+            cost_per_step_usd=estimate.single_generation.cost_per_step_usd,
+            cost_per_step_kes=estimate.single_generation.cost_per_step_kes,
+            total_cost_usd=estimate.single_generation.total_cost_usd,
+            total_cost_kes=estimate.single_generation.total_cost_kes,
+        ),
+        templates=GenerationCostScenarioOut(
+            count_per_step=estimate.templates.count_per_step,
+            cost_per_step_usd=estimate.templates.cost_per_step_usd,
+            cost_per_step_kes=estimate.templates.cost_per_step_kes,
+            total_cost_usd=estimate.templates.total_cost_usd,
+            total_cost_kes=estimate.templates.total_cost_kes,
+        ),
+        as_of=estimate.as_of,
+    )
 
 
 @router.get("/{campaign_id}/readiness", response_model=CampaignReadinessOut)
@@ -415,10 +498,12 @@ def post_campaign_send(
 ) -> list[TouchSendOutcomeOut]:
     """Send every approved, not-yet-sent touch in this campaign right now.
 
-    Uses the stub sender until a real provider is wired in, so nothing is
-    actually delivered yet, but the send gate, the audit trail, and each
-    enrollment's advance to its next step all run for real. Flips the
-    campaign to running the first time anything in this call sends.
+    Sends through whatever app.delivery.mailer.get_mailer() resolves to for
+    the running environment: Mailpit in development, a recording no-op
+    wherever SMTP is not configured, and a real provider once one is. The
+    send-time recheck, the audit trail, and each enrollment's advance to
+    its next step all run for real regardless. Flips the campaign to
+    running the first time anything in this call sends.
     """
     try:
         outcomes = send_campaign(session, campaign_id)

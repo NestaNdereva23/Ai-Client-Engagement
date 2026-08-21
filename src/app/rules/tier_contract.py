@@ -35,6 +35,10 @@ class TierSpec:
     sign_off: str
     human_approval: bool
     review_sample_rate: float
+    # The share of a campaign x tier cohort's single-generated messages to
+    # sample. None means every message in one of this tier's cohorts must
+    # be reviewed -- see cohort_sample_rate_for.
+    cohort_sample_rate: float | None = None
     secondary_channel: str | None = None
 
 
@@ -62,6 +66,8 @@ def validate_tiers(tiers: Sequence[TierSpec]) -> None:
             raise TierContractValidationError(f"tier '{spec.tier}' has a non-positive word cap")
         if not 0.0 <= spec.review_sample_rate <= 1.0:
             raise TierContractValidationError(f"tier '{spec.tier}' review_sample_rate out of range")
+        if spec.cohort_sample_rate is not None and not 0.0 <= spec.cohort_sample_rate <= 1.0:
+            raise TierContractValidationError(f"tier '{spec.tier}' cohort_sample_rate out of range")
 
 
 def save_tier_contract_version(
@@ -89,6 +95,7 @@ def save_tier_contract_version(
             sign_off=spec.sign_off,
             human_approval=spec.human_approval,
             review_sample_rate=spec.review_sample_rate,
+            cohort_sample_rate=spec.cohort_sample_rate,
             valid_from=valid_from,
             valid_to=valid_to,
         )
@@ -148,3 +155,16 @@ def instance_needs_review(tier: TierContract | None, *, sampling_enabled: bool) 
     if tier is None or mandatory_review(tier, sampling_enabled=sampling_enabled):
         return True
     return random.random() < tier.review_sample_rate
+
+
+def cohort_sample_rate_for(tier: TierContract | None, *, sampling_enabled: bool) -> float | None:
+    """The share of one of this tier's campaign cohorts to sample, or None
+    when every message in it must be reviewed.
+
+    With sampling off, or no tier row, or the tier's own cohort_sample_rate
+    unset, every message is mandatory -- same fallback direction as
+    mandatory_review, just returning a rate instead of a bool.
+    """
+    if tier is None or not sampling_enabled:
+        return None
+    return tier.cohort_sample_rate

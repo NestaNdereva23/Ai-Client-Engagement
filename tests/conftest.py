@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import re
 
+import jwt
 import pytest
 from sqlalchemy import text
 
@@ -70,29 +71,35 @@ def _ensure_tables() -> None:
         Base.metadata.create_all(engine)
 
 
-# A small fixed reviewer roster shared by every test that needs the
-# X-Reviewer-Key gate (app.api.reviewer_auth). Two reviewers, so tests that
-# check "this action recorded which reviewer did it" have two real
-# identities to tell apart.
+# A small fixed pair of reviewer identities shared by every test that needs
+# the Authorization: Bearer gate (app.api.reviewer_auth). Two reviewers, so
+# tests that check "this action recorded which reviewer did it" have two
+# real identities to tell apart. Tokens are signed with a fixed test
+# secret, standing in for Ticketing's real, per-user issued JWT.
+_TEST_JWT_SECRET = "test-jwt-secret"
 REVIEWER_1_ID = "fa-1"
-REVIEWER_1_KEY = "test-reviewer-key-1"
 REVIEWER_2_ID = "fa-2"
-REVIEWER_2_KEY = "test-reviewer-key-2"
-REVIEWER_1_HEADERS = {"X-Reviewer-Key": REVIEWER_1_KEY}
-REVIEWER_2_HEADERS = {"X-Reviewer-Key": REVIEWER_2_KEY}
+
+
+def _make_token(email: str) -> str:
+    return jwt.encode({"email": email}, _TEST_JWT_SECRET, algorithm="HS256")
+
+
+REVIEWER_1_HEADERS = {"Authorization": f"Bearer {_make_token(REVIEWER_1_ID)}"}
+REVIEWER_2_HEADERS = {"Authorization": f"Bearer {_make_token(REVIEWER_2_ID)}"}
 
 
 class _ConfiguredReviewersSettings:
-    reviewer_keys = {REVIEWER_1_KEY: REVIEWER_1_ID, REVIEWER_2_KEY: REVIEWER_2_ID}
+    ai_outreach_jwt_secret = _TEST_JWT_SECRET
 
 
 class _UnconfiguredReviewersSettings:
-    reviewer_keys: dict[str, str] = {}
+    ai_outreach_jwt_secret = ""
 
 
 @pytest.fixture
 def reviewer_1_headers() -> dict[str, str]:
-    """X-Reviewer-Key header for the first fixed test reviewer.
+    """Authorization: Bearer header for the first fixed test reviewer.
 
     A fixture, not a plain import, so test modules never need
     `from conftest import ...` -- that bare module name collides with the
@@ -103,13 +110,13 @@ def reviewer_1_headers() -> dict[str, str]:
 
 @pytest.fixture
 def reviewer_2_headers() -> dict[str, str]:
-    """X-Reviewer-Key header for the second fixed test reviewer."""
+    """Authorization: Bearer header for the second fixed test reviewer."""
     return REVIEWER_2_HEADERS
 
 
 @pytest.fixture
 def configured_reviewers(monkeypatch):
-    """Point app.api.reviewer_auth at the fixed test roster above."""
+    """Point app.api.reviewer_auth at the fixed test JWT secret above."""
     from app.api import reviewer_auth
 
     monkeypatch.setattr(reviewer_auth, "get_settings", lambda: _ConfiguredReviewersSettings())
@@ -117,7 +124,7 @@ def configured_reviewers(monkeypatch):
 
 @pytest.fixture
 def unconfigured_reviewers(monkeypatch):
-    """Point app.api.reviewer_auth at an empty roster, for the 503 case."""
+    """Point app.api.reviewer_auth at no secret at all, for the 503 case."""
     from app.api import reviewer_auth
 
     monkeypatch.setattr(reviewer_auth, "get_settings", lambda: _UnconfiguredReviewersSettings())

@@ -2,11 +2,30 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Literal
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+@dataclass(frozen=True)
+class FaRecord:
+    """One account manager on the seeded roster.
+
+    fa_id is that person's login username on the console calling this API
+    (Ticketing), not an arbitrary roster number -- a digest/assignment
+    lookup keys straight off it, with no separate mapping to maintain.
+    daily_capacity is how many clients this person can realistically call in
+    a morning. name and email are staff details, never client data, so they
+    are safe to keep in the environment.
+    """
+
+    fa_id: str
+    name: str
+    email: str
+    daily_capacity: int
 
 
 class Settings(BaseSettings):
@@ -26,6 +45,22 @@ class Settings(BaseSettings):
     app_env: Literal["development", "staging", "production"] = "development"
     app_name: str = "AI Client Engagement"
     log_level: str = "INFO"
+
+    # Browser origins allowed to call this API directly (the Ticketing
+    # console's fetch()es, not server-to-server calls, which never carry an
+    # Origin header and so are unaffected by CORS either way). Comma
+    # separated; the dev default covers Ticketing's local ports whichever of
+    # Herd's plain :80 or `php artisan serve`'s :8000 is actually serving it.
+    # Empty disables CORS handling entirely.
+    cors_allow_origins: str = Field(
+        default="http://localhost,http://localhost:8000,http://127.0.0.1:8000,http://127.0.0.1",
+        validation_alias=AliasChoices("CORS_ALLOW_ORIGINS"),
+    )
+
+    @property
+    def cors_allow_origins_list(self) -> list[str]:
+        """`cors_allow_origins`, split into the list CORSMiddleware wants."""
+        return [origin.strip() for origin in self.cors_allow_origins.split(",") if origin.strip()]
 
     # Database
     database_url: str = "postgresql+psycopg://ace:ace@localhost:5432/ace"
@@ -86,6 +121,31 @@ class Settings(BaseSettings):
     judge_llm_temperature: float | None = None
     judge_llm_max_tokens: int = 1024
 
+    # Off (the default): GET /briefing/{id}/{fund}/narrative doesn't exist --
+    # the deterministic briefing (AM11) remains the only briefing there is,
+    # because it's already sufficient on its own. On lets an FA additionally
+    # request a model-narrated version, generated through the same privacy
+    # boundary as every other model call, with the deterministic text as its
+    # fallback on any doubt.
+    ai_briefing_enabled: bool = False
+
+    # LLM for the narrated briefing (briefing.narrative). Empty provider/model
+    # falls back to llm_provider/llm_model, same pattern as judge_llm_* above,
+    # so the narrator can run its own model independently of generation or
+    # judging.
+    briefing_llm_provider: str = ""
+    briefing_llm_model: str = ""
+    briefing_llm_temperature: float | None = None
+    briefing_llm_max_tokens: int = 1024
+
+    # How many of a digest's clients the nightly run pre-drafts a narration
+    # for, best-ranked first. These are the clients an FA opens in the
+    # morning, so drafting theirs overnight takes the wait off the click;
+    # everyone else is still narrated on request. 0 turns the warm-up off
+    # and leaves every narration on demand. Ignored entirely when
+    # ai_briefing_enabled is off.
+    briefing_prewarm_limit: int = 200
+
     langfuse_base_url: str = ""
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
@@ -96,10 +156,46 @@ class Settings(BaseSettings):
     complaints_source: str = "stub"
 
     # Which FaAssignmentSource implementation app.ingestion.fa_assignment_source
-    # builds. "stub" is the only real option today, since the active-clients
-    # feed carries no FA field; a later source registers here under its own
-    # name.
-    fa_assignment_source: str = "stub"
+    # builds: "stub" for no assignment at all, "db" to read the assignments
+    # the nightly allocation writes. Empty (the default) picks "db" when
+    # fa_roster is set and "stub" when it is not, so seeding a roster is the
+    # only switch anyone has to throw.
+    fa_assignment_source: str = ""
+
+    # The account managers who get a morning call list, seeded by hand
+    # because the active-clients feed carries no relationship-manager field
+    # to read one from. Format is "fa_id:name:email:daily_capacity", comma
+    # separated, where fa_id is that person's login username on the console
+    # calling this API. Empty means no roster: assignment stays on the stub
+    # and the digest keeps grouping by fund, so an environment that has not
+    # set this behaves exactly as it did before.
+    fa_roster: str = Field(default="", validation_alias=AliasChoices("ACE_FA_ROSTER", "fa_roster"))
+
+    @property
+    def fa_records(self) -> tuple[FaRecord, ...]:
+        """`fa_roster`, parsed into records in the order given. Malformed
+        entries (wrong field count, empty id, name, or email, unparseable
+        capacity) and repeats of an id already seen are dropped rather than
+        raising, so one typo does not take the whole roster down.
+        """
+        records: list[FaRecord] = []
+        seen: set[str] = set()
+        for entry in self.fa_roster.split(","):
+            parts = [part.strip() for part in entry.split(":")]
+            if len(parts) != 4:
+                continue
+            fa_id, name, email, raw_capacity = parts
+            if not fa_id or not name or not email:
+                continue
+            try:
+                capacity = int(raw_capacity)
+            except ValueError:
+                continue
+            if capacity <= 0 or fa_id in seen:
+                continue
+            seen.add(fa_id)
+            records.append(FaRecord(fa_id=fa_id, name=name, email=email, daily_capacity=capacity))
+        return tuple(records)
 
     # Shared secret for the integration plane, a stopgap ahead of M8A.7's
     # scoped API keys / OAuth client-credentials. Empty means integration
@@ -108,28 +204,14 @@ class Settings(BaseSettings):
         default="", validation_alias=AliasChoices("INTEGRATION_API_KEY")
     )
 
-    # Reviewer identities allowed to call the endpoints that re-attach a
-    # client's real name, view a briefing, or record a review decision --
-    # a stopgap ahead of real session/role auth. Format is
-    # "reviewer_id:key,reviewer_id:key", one static key per reviewer, not a
-    # login. Empty means those endpoints refuse every request rather than
-    # run unprotected. Do not set this in any environment holding real
-    # client data until real session/role auth exists -- this list alone is
-    # not that decision, only the minimum gate in front of it.
-    reviewers: str = Field(default="", validation_alias=AliasChoices("REVIEWERS"))
-
-    @property
-    def reviewer_keys(self) -> dict[str, str]:
-        """`reviewers`, parsed into key -> reviewer_id. Blank or malformed
-        entries (no ":", empty id, empty key) are dropped rather than
-        raising -- a typo'd entry should not take every reviewer down.
-        """
-        result: dict[str, str] = {}
-        for entry in self.reviewers.split(","):
-            reviewer_id, _, key = entry.strip().partition(":")
-            if reviewer_id and key:
-                result[key] = reviewer_id
-        return result
+    # Verifies the bearer token Ticketing attaches to every call: a JWT it
+    # issues per logged-in user, signed with this same secret on their side
+    # (Laravel's AI_OUTREACH_JWT_SECRET). Gates the endpoints that re-attach
+    # a client's real name or record a review decision. Empty means those
+    # endpoints refuse every request rather than run unprotected.
+    ai_outreach_jwt_secret: str = Field(
+        default="", validation_alias=AliasChoices("AI_OUTREACH_JWT_SECRET")
+    )
 
     # Minimum days between two touches to the same client, across every
     # campaign, checked by the eligibility gate before each send.
@@ -137,7 +219,12 @@ class Settings(BaseSettings):
 
     # Off means every message needs review, regardless of tier. On means a
     # tier's own human_approval / review_sample_rate is honoured instead.
-    tier_sampling_enabled: bool = False
+    tier_sampling_enabled: bool = True
+
+    # The most messages one campaign x tier cohort can put in the review
+    # queue, however large the cohort grows. Without it a 5 percent rate on
+    # 1,700 enrollments would be 85 items for one reviewer to work through.
+    cohort_sample_cap: int = 25
 
     # On (the only safe setting once real contact data exists) means the
     # eligibility gate refuses to generate or send for a client with no
@@ -146,7 +233,27 @@ class Settings(BaseSettings):
     # ever been called for a test client -- the parent system that will push
     # real contact data isn't live yet, so nothing can satisfy this gate in
     # dev without it.
-    require_deliverable_contact: bool = True
+    require_deliverable_contact: bool = False
+
+    # Outgoing mail (delivery.mailer). Mailpit in development needs only a
+    # host and port with no credentials and no TLS; a real server is the same
+    # fields, filled in. An empty smtp_host, or an empty email_sender, selects
+    # NullMailer, which records what it was asked to send and sends nothing.
+    smtp_host: str = ""
+    smtp_port: int = 1025
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_starttls: bool = False
+    smtp_timeout_seconds: float = 30.0
+    # The From address on everything the system sends.
+    email_sender: str = ""
+
+    # Where the FA console is reachable, used to build the links in the
+    # morning digest email. Empty renders the email with no links rather
+    # than links that go nowhere.
+    console_base_url: str = Field(
+        default="", validation_alias=AliasChoices("CONSOLE_BASE_URL", "console_base_url")
+    )
 
     # Read-only operational admin (SQLAdmin), gated behind a single shared
     # basic-auth account. Empty username or password means the admin refuses
@@ -157,6 +264,16 @@ class Settings(BaseSettings):
     admin_password: str = Field(default="", validation_alias=AliasChoices("ADMIN_PASSWORD"))
     admin_secret_key: str = Field(
         default="dev-only-admin-secret", validation_alias=AliasChoices("ADMIN_SECRET_KEY")
+    )
+
+    # Signs the reviewer console's login session cookie (app.auth.session).
+    # Separate from admin_secret_key: sqladmin runs its own isolated
+    # sub-app with its own session, so the two were never shared, and this
+    # keeps it that way on purpose. A blank one is fine in dev, same as
+    # admin_secret_key above.
+    console_session_secret_key: str = Field(
+        default="dev-only-console-secret",
+        validation_alias=AliasChoices("CONSOLE_SESSION_SECRET_KEY"),
     )
 
     @property

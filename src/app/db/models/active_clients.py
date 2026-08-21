@@ -33,7 +33,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
-INTERACTION_TYPES = ("call_logged", "snoozed", "dismissed")
+INTERACTION_TYPES = ("call_logged", "snoozed", "dismissed", "email_sent")
 
 
 class ActiveClientFund(Base):
@@ -85,16 +85,17 @@ class ActiveClientFund(Base):
 
 class ActiveClientInteraction(Base):
     """One FA action logged against an active-client digest line: a call,
-    a snooze, or a dismiss (see the reference reviewer console). Manual
-    bookkeeping only -- the active-client population has no campaign or
-    enrollment path in this codebase yet, so nothing here triggers a send
-    or a routing change; it only records that a human already acted.
+    a snooze, a dismiss, or an email sent (see the reference reviewer
+    console). Manual bookkeeping only -- the active-client population has
+    no campaign or enrollment path in this codebase yet, so nothing here
+    triggers a send or a routing change; it only records that a human
+    already acted.
     """
 
     __tablename__ = "active_client_interaction"
     __table_args__ = (
         CheckConstraint(
-            "type IN ('call_logged', 'snoozed', 'dismissed')",
+            "type IN ('call_logged', 'snoozed', 'dismissed', 'email_sent')",
             name="ck_active_client_interaction_type",
         ),
         Index(
@@ -110,6 +111,12 @@ class ActiveClientInteraction(Base):
     # The reviewer X-Reviewer-Key resolved to (app.api.reviewer_auth), never
     # a self-reported field on the request body.
     reviewer_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # client_risk_features.risk_band for this client-fund at the moment this
+    # row was written, or null if it had never been scored yet. Lets the
+    # digest build tell whether a client got worse after an FA manager acted
+    # on them, without a second nearest-snapshot lookup -- see
+    # digest/build.py::is_deprioritized.
+    risk_band_at_interaction: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

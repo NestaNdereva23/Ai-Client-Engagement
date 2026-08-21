@@ -1,6 +1,6 @@
 """Tests for digest/build.py: grouping (with the FA-to-fund fallback), sort
-order, the per-group cap, the complaint caveat, and that a rebuild from the
-same risk_run_id gives back the same lines.
+order, the per-group cap's batch boundaries, the complaint caveat, and that
+a rebuild from the same risk_run_id gives back the same lines.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete
 
+from app.db.models.active_clients import ActiveClientInteraction
 from app.db.models.complaints import ClientComplaint
 from app.db.models.risk import RiskRun, RiskSnapshot
 from app.db.session import SessionLocal
@@ -69,6 +70,11 @@ def cleanup():
         if client_ids:
             session.execute(
                 delete(ClientComplaint).where(ClientComplaint.client_id.in_(client_ids))
+            )
+            session.execute(
+                delete(ActiveClientInteraction).where(
+                    ActiveClientInteraction.client_id.in_(client_ids)
+                )
             )
         session.commit()
 
@@ -143,12 +149,12 @@ def test_groups_by_fa_id_when_one_is_assigned(db, cleanup) -> None:
         result = build_digest(
             session,
             run_id,
-            fa_assignment_source=FakeFaAssignmentSource({(client_a, FUND_ID): 7}),
+            fa_assignment_source=FakeFaAssignmentSource({(client_a, FUND_ID): "fa-7"}),
             cap_per_group=12,
         )
 
-    assert set(result.groups) == {"fa:7", f"fund:{FUND_ID}"}
-    assert [line.client_id for line in result.groups["fa:7"].lines] == [client_a]
+    assert set(result.groups) == {"fa:fa-7", f"fund:{FUND_ID}"}
+    assert [line.client_id for line in result.groups["fa:fa-7"].lines] == [client_a]
     assert [line.client_id for line in result.groups[f"fund:{FUND_ID}"].lines] == [client_b]
 
 
@@ -179,7 +185,7 @@ def test_sort_order_is_fund_at_risk_not_score(db, cleanup) -> None:
     assert [line.rank for line in lines] == [1, 2]
 
 
-def test_cap_leaves_the_rest_countable_as_overflow(db, cleanup) -> None:
+def test_cap_size_sets_batch_boundaries_but_keeps_everyone(db, cleanup) -> None:
     run_ids, client_ids = cleanup
     ids = [93007, 93008, 93009]
     client_ids.extend(ids)
@@ -199,9 +205,12 @@ def test_cap_leaves_the_rest_countable_as_overflow(db, cleanup) -> None:
         )
 
     group = result.groups[f"fund:{FUND_ID}"]
+    # cap_per_group=2 with 3 eligible rows makes two batches (2, then 1),
+    # but build_digest never drops anyone -- reveal-the-next-batch is a
+    # read-time decision (app/services/digest.py), not a build-time one.
     assert group.total_eligible == 3
-    assert len(group.lines) == 2
-    assert group.total_eligible - len(group.lines) == 1  # "and 1 more"
+    assert len(group.lines) == 3
+    assert [line.batch for line in group.lines] == [0, 0, 1]
 
 
 def test_open_complaint_sets_the_caveat(db, cleanup) -> None:
@@ -265,3 +274,136 @@ def test_rebuilding_from_the_same_run_gives_the_same_lines(db, cleanup) -> None:
     for key in first.groups:
         assert first.groups[key].lines == second.groups[key].lines
         assert first.groups[key].total_eligible == second.groups[key].total_eligible
+
+
+def _log_interaction(
+    session, client_id: int, *, type: str = "call_logged", risk_band_at_interaction: str | None
+) -> None:
+    session.add(
+        ActiveClientInteraction(
+            client_id=client_id,
+            unit_fund_id=FUND_ID,
+            type=type,
+            reviewer_id="fa-1",
+            risk_band_at_interaction=risk_band_at_interaction,
+        )
+    )
+
+
+def test_untouched_client_outranks_a_touched_one_despite_lower_fund_at_risk(db, cleanup) -> None:
+    run_ids, client_ids = cleanup
+    untouched, touched = 93013, 93014
+    client_ids.extend([untouched, touched])
+
+    with SessionLocal() as session:
+        run_id = _run(session)
+        run_ids.append(run_id)
+        _seed(session, run_id, untouched, 40, 5_000.0, "fa_watchlist")
+        _seed(session, run_id, touched, 40, 50_000.0, "fa_watchlist")
+        # Same band now ("Watch", _score's hardcoded band) as when the call
+        # was logged -- nothing got worse, so this stays deprioritized.
+        _log_interaction(session, touched, risk_band_at_interaction="Watch")
+        session.commit()
+
+        result = build_digest(
+            session,
+            run_id,
+            fa_assignment_source=FakeFaAssignmentSource({}),
+            cap_per_group=12,
+        )
+
+    lines = {line.client_id: line for line in result.groups[f"fund:{FUND_ID}"].lines}
+    ordered = [line.client_id for line in result.groups[f"fund:{FUND_ID}"].lines]
+    assert ordered == [untouched, touched]
+    assert lines[untouched].deprioritized is False
+    assert lines[touched].deprioritized is True
+
+
+def test_escalated_band_since_interaction_ranks_with_the_untouched_tier(db, cleanup) -> None:
+    run_ids, client_ids = cleanup
+    untouched, escalated, deprioritized = 93015, 93016, 93017
+    client_ids.extend([untouched, escalated, deprioritized])
+
+    with SessionLocal() as session:
+        run_id = _run(session)
+        run_ids.append(run_id)
+        _seed(session, run_id, untouched, 40, 10_000.0, "fa_watchlist")
+        _seed(session, run_id, escalated, 40, 5_000.0, "fa_watchlist")
+        _seed(session, run_id, deprioritized, 40, 50_000.0, "fa_watchlist")
+        # escalated's band was "Low" when dismissed; today's run scores them
+        # "Watch" (_score's hardcoded band) -- risen, so the escape hatch
+        # applies even though their fund_at_risk is the lowest of the three.
+        _log_interaction(session, escalated, type="dismissed", risk_band_at_interaction="Low")
+        _log_interaction(session, deprioritized, risk_band_at_interaction="Watch")
+        session.commit()
+
+        result = build_digest(
+            session,
+            run_id,
+            fa_assignment_source=FakeFaAssignmentSource({}),
+            cap_per_group=12,
+        )
+
+    lines = {line.client_id: line for line in result.groups[f"fund:{FUND_ID}"].lines}
+    ordered = [line.client_id for line in result.groups[f"fund:{FUND_ID}"].lines]
+    # Both tiers still rank by fund_at_risk within themselves: untouched
+    # (10,000) beats escalated (5,000) in tier 0, then deprioritized
+    # (50,000) trails last despite the largest fund_at_risk of the three.
+    assert ordered == [untouched, escalated, deprioritized]
+    assert lines[untouched].deprioritized is False
+    assert lines[escalated].deprioritized is False
+    assert lines[deprioritized].deprioritized is True
+
+
+def test_interaction_with_no_band_on_file_stays_deprioritized(db, cleanup) -> None:
+    run_ids, client_ids = cleanup
+    client_id = 93018
+    client_ids.append(client_id)
+
+    with SessionLocal() as session:
+        run_id = _run(session)
+        run_ids.append(run_id)
+        _seed(session, run_id, client_id, 40, 10_000.0, "fa_watchlist")
+        # Logged before the client was ever scored -- nothing to compare
+        # today's band against, so it can't earn the escalation escape hatch.
+        _log_interaction(session, client_id, risk_band_at_interaction=None)
+        session.commit()
+
+        result = build_digest(
+            session,
+            run_id,
+            fa_assignment_source=FakeFaAssignmentSource({}),
+            cap_per_group=12,
+        )
+
+    line = result.groups[f"fund:{FUND_ID}"].lines[0]
+    assert line.deprioritized is True
+
+
+def test_a_lent_client_groups_under_the_stand_in(db, cleanup) -> None:
+    run_ids, client_ids = cleanup
+    owned, lent = 93041, 93042
+    client_ids.extend([owned, lent])
+
+    with SessionLocal() as session:
+        run_id = _run(session)
+        run_ids.append(run_id)
+        _seed(session, run_id, owned, 40, 10_000.0, "fa_call_priority", queue_rank=1)
+        _seed(session, run_id, lent, 40, 9_000.0, "fa_call_priority", queue_rank=2)
+        session.commit()
+
+        result = build_digest(
+            session,
+            run_id,
+            fa_assignment_source=FakeFaAssignmentSource(
+                {(owned, FUND_ID): "fa-7", (lent, FUND_ID): "fa-7"}
+            ),
+            cap_per_group=12,
+            covering={lent: "fa-8"},
+        )
+
+    assert [line.client_id for line in result.groups["fa:fa-7"].lines] == [owned]
+    lent_line = result.groups["fa:fa-8"].lines[0]
+    assert lent_line.client_id == lent
+    assert lent_line.covering_for_fa_id == "fa-7"
+    assert result.groups["fa:fa-7"].lines[0].covering_for_fa_id is None

@@ -23,8 +23,10 @@ from app.privacy.llm_client import (
     as_model_call,
     build_batch_request,
     get_anthropic_batch_client,
+    get_briefing_llm_client,
     get_judge_llm_client,
     get_llm_client,
+    resolve_briefing_model_config,
     resolve_judge_model_config,
 )
 
@@ -85,6 +87,12 @@ def make_settings(**overrides) -> Settings:
         "judge_llm_model": "",
         "judge_llm_temperature": None,
         "judge_llm_max_tokens": 512,
+        # Pinned, not left to the schema default: a local .env that sets any
+        # BRIEFING_LLM_* value would otherwise leak into these assertions.
+        "briefing_llm_provider": "",
+        "briefing_llm_model": "",
+        "briefing_llm_temperature": None,
+        "briefing_llm_max_tokens": 1024,
         "ollama_timeout_seconds": 120.0,
     }
     defaults.update(overrides)
@@ -225,6 +233,51 @@ def test_get_judge_llm_client_uses_a_distinct_judge_model_when_configured() -> N
     assert judge_client.model == "qwen3.5"
 
 
+def test_resolve_briefing_model_config_falls_back_to_generation_when_unset() -> None:
+    settings = make_settings(llm_provider="ollama", llm_model="phi4-mini")
+    provider, model, temperature, max_tokens = resolve_briefing_model_config(settings)
+    assert (provider, model) == ("ollama", "phi4-mini")
+    assert max_tokens == 1024
+
+
+def test_resolve_briefing_model_config_uses_the_configured_briefing_model() -> None:
+    settings = make_settings(
+        llm_provider="ollama",
+        llm_model="phi4-mini",
+        briefing_llm_provider="ollama",
+        briefing_llm_model="qwen3.5",
+        briefing_llm_temperature=0.1,
+        briefing_llm_max_tokens=256,
+    )
+    provider, model, temperature, max_tokens = resolve_briefing_model_config(settings)
+    assert (provider, model, temperature, max_tokens) == ("ollama", "qwen3.5", 0.1, 256)
+
+
+def test_get_briefing_llm_client_falls_back_to_the_generation_client_when_unset() -> None:
+    settings = make_settings(llm_provider="ollama", llm_model="phi4-mini")
+    client = get_briefing_llm_client(settings)
+    assert isinstance(client, OllamaLLMClient)
+    assert client.model == "phi4-mini"
+    # The narrator is the one caller that wants prose back, not a JSON object.
+    assert client.json_output is False
+    assert get_llm_client(settings).json_output is True
+    assert get_judge_llm_client(settings).json_output is True
+
+
+def test_get_briefing_llm_client_uses_a_distinct_briefing_model_when_configured() -> None:
+    settings = make_settings(
+        llm_provider="ollama",
+        llm_model="phi4-mini",
+        briefing_llm_model="qwen3.5",
+    )
+    generation_client = get_llm_client(settings)
+    judge_client = get_judge_llm_client(settings)
+    briefing_client = get_briefing_llm_client(settings)
+    assert generation_client.model == "phi4-mini"
+    assert judge_client.model == "phi4-mini"
+    assert briefing_client.model == "qwen3.5"
+
+
 def _ollama_client(handler, **overrides) -> OllamaLLMClient:
     transport = httpx.MockTransport(handler)
     defaults = {
@@ -256,6 +309,24 @@ def test_ollama_generate_posts_the_configured_model_and_messages() -> None:
     ]
     assert seen["body"]["options"]["num_predict"] == 256
     assert "temperature" not in seen["body"]["options"]
+
+
+def test_ollama_generate_asks_for_json_by_default_and_can_turn_it_off() -> None:
+    """The email draft and the judge both parse a JSON object, so json_output
+    stays on for them. The briefing narrator wants sentences: with the flag
+    left on, Ollama returns a JSON object whatever the prompt says.
+    """
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"message": {"content": "text"}})
+
+    _ollama_client(handler).generate(system="s", user="u")
+    assert seen["body"]["format"] == "json"
+
+    _ollama_client(handler, json_output=False).generate(system="s", user="u")
+    assert "format" not in seen["body"]
 
 
 def test_ollama_generate_sets_last_usage_from_the_response() -> None:

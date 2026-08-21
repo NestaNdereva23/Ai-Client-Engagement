@@ -21,10 +21,17 @@ T = TypeVar("T")
 
 
 class Page(BaseModel, Generic[T]):
-    """One page of a list endpoint's results."""
+    """One page of a list endpoint's results.
+
+    total_count is the count across every page under the same filters, not
+    just this one -- optional because it costs an extra query, so a caller
+    only pays for it where a total is actually shown (e.g. a queue badge).
+    Left unset, it stays None rather than being silently wrong.
+    """
 
     items: list[T]
     next_cursor: str | None = None
+    total_count: int | None = None
 
 
 class InvalidCursor(Exception):
@@ -59,6 +66,23 @@ def decode_id_cursor(cursor: str) -> int:
 
 def clamp_limit(limit: int) -> int:
     return max(1, min(limit, MAX_LIMIT))
+
+
+def encode_ranked_cursor(rank: int, created_at: datetime, row_id: str) -> str:
+    """For a list ordered by a computed rank first, then (created_at, id) to
+    break ties within the same rank -- e.g. the reviewer queue's tier order.
+    """
+    payload = json.dumps([rank, created_at.isoformat(), row_id])
+    return base64.urlsafe_b64encode(payload.encode()).decode()
+
+
+def decode_ranked_cursor(cursor: str) -> tuple[int, datetime, str]:
+    try:
+        decoded = base64.urlsafe_b64decode(cursor.encode()).decode()
+        rank, created_at_raw, row_id = json.loads(decoded)
+        return rank, datetime.fromisoformat(created_at_raw), row_id
+    except Exception as exc:
+        raise InvalidCursor(cursor) from exc
 
 
 def encode_pair_cursor(a: int, b: int) -> str:

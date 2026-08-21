@@ -109,6 +109,11 @@ class TierContract(Base):
     sign_off: Mapped[str] = mapped_column(Text, nullable=False)
     human_approval: Mapped[bool] = mapped_column(Boolean, nullable=False)
     review_sample_rate: Mapped[float] = mapped_column(Float, nullable=False)
+    # The share of a campaign x tier cohort's single-generated messages to
+    # sample, before the rest ride on those samples' approval. Null means
+    # every message in this tier's cohorts must be reviewed -- see
+    # app.rules.tier_contract.cohort_sample_rate_for.
+    cohort_sample_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
     valid_from: Mapped[date] = mapped_column(Date, nullable=False)
     valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

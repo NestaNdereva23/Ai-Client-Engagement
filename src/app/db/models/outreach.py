@@ -10,7 +10,18 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import BigInteger, CheckConstraint, Date, DateTime, ForeignKey, Text, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -19,6 +30,7 @@ from app.db.base import Base
 CAMPAIGN_STATUSES = ("draft", "running", "paused", "completed")
 MESSAGE_STATUSES = ("pending_review", "approved", "rejected", "escalated", "held")
 REVIEW_OUTCOMES = ("approve", "edit_approve", "reject", "escalate", "hold")
+COHORT_STATUSES = ("sampling", "ready_to_approve_rest", "completed")
 
 
 class Campaign(Base):
@@ -45,6 +57,39 @@ class Campaign(Base):
     )
 
 
+class ReviewCohort(Base):
+    __tablename__ = "review_cohort"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('sampling', 'ready_to_approve_rest', 'completed')",
+            name="ck_review_cohort_status",
+        ),
+    )
+
+    cohort_id: Mapped[str] = mapped_column(Text, primary_key=True, autoincrement=False)
+    # Cascades on campaign delete: nothing in the app ever deletes a
+    # campaign (there is no delete endpoint), so this only ever fires in
+    # tests tearing down a fixture campaign, sparing every test that
+    # creates a single-generated message from also having to clean up the
+    # cohort it implicitly created.
+    campaign_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("campaign.campaign_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    priority_tier: Mapped[str] = mapped_column(Text, nullable=False)
+    # Null rate means no sampling at all: every message is reviewed.
+    sample_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sample_cap: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    assigned_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="sampling")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class OutreachMessage(Base):
     __tablename__ = "outreach_message"
     __table_args__ = (
@@ -66,6 +111,15 @@ class OutreachMessage(Base):
     template_id: Mapped[str | None] = mapped_column(
         Text, ForeignKey("message_template.template_id"), nullable=True, index=True
     )
+    # Set only for a single-generated message that belongs to a sampling
+    # cohort (campaign x tier). Null for template-instantiated messages
+    # and any single-generated message drafted before this existed.
+    cohort_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("review_cohort.cohort_id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # True for a message chosen as one of its cohort's samples -- the ones
+    # the default review queue shows. Always false outside a cohort.
+    is_sample: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     client_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("clients.client_id"), nullable=False, index=True
     )

@@ -1,5 +1,5 @@
-"""Tests for GET /digest/{fa_or_fund_key}: today's persisted lines, the
-empty-list-vs-404 distinction, and the overflow count.
+"""Tests for GET /digest/{fa_or_fund_key}: today's unlocked lines, the
+empty-list-vs-404 distinction, the overflow count, and the batch unlock.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 
-from app.db.models.active_clients import ActiveClientFund
+from app.db.models.active_clients import ActiveClientFund, ActiveClientInteraction
 from app.db.models.digest import DigestLine, DigestRun
 from app.db.models.risk import ClientRiskFeatures, RiskRun, RiskSnapshot
 from app.db.session import SessionLocal
@@ -241,6 +241,145 @@ def test_total_fund_at_risk_includes_clients_left_off_by_the_cap(db, cleanup) ->
     assert body["overflow_count"] == 1
     assert len(body["lines"]) == 1
     assert body["total_fund_at_risk"] == 25_000.0
+
+
+def test_next_batch_unlocks_once_the_current_batch_is_touched(db, cleanup) -> None:
+    run_id = uuid4().hex
+    cleanup.append(run_id)
+    first_client, second_client = 93208, 93209
+
+    with SessionLocal() as session:
+        session.add(RiskRun(run_id=run_id, state="completed", config_version=1))
+        session.flush()
+        # Higher fund_at_risk ranks first, so first_client lands in batch 0
+        # and second_client in batch 1 once cap_per_group=1 splits them.
+        write_snapshot(
+            session,
+            run_id,
+            first_client,
+            FUND_ID,
+            _score_with_signals(45, 20_000.0, SIGNALS),
+            RouteResult(route="fa_watchlist", queue_rank=None, complaint_caveat=False),
+            config_version=1,
+            pattern_is_reliable=True,
+            overdue_multiple=1.0,
+        )
+        write_snapshot(
+            session,
+            run_id,
+            second_client,
+            FUND_ID,
+            _score_with_signals(45, 5_000.0, SIGNALS),
+            RouteResult(route="fa_watchlist", queue_rank=None, complaint_caveat=False),
+            config_version=1,
+            pattern_is_reliable=True,
+            overdue_multiple=1.0,
+        )
+        session.commit()
+        build_and_persist_digest(
+            session, run_id, fa_assignment_source=StubFaAssignmentSource(), cap_per_group=1
+        )
+        session.commit()
+
+    try:
+        before = client.get(f"/api/v1/digest/fund:{FUND_ID}").json()
+        assert [line["client_id"] for line in before["lines"]] == [first_client]
+        assert before["overflow_count"] == 1
+
+        with SessionLocal() as session:
+            session.add(
+                ActiveClientInteraction(
+                    client_id=first_client,
+                    unit_fund_id=FUND_ID,
+                    type="call_logged",
+                    reviewer_id="fa-1",
+                    # Same band ("Watch") as when this run scored them --
+                    # nothing got worse, so this clears batch 0.
+                    risk_band_at_interaction="Watch",
+                )
+            )
+            session.commit()
+
+        after = client.get(f"/api/v1/digest/fund:{FUND_ID}").json()
+        assert {line["client_id"] for line in after["lines"]} == {first_client, second_client}
+        assert after["overflow_count"] == 0
+        by_client = {line["client_id"]: line for line in after["lines"]}
+        assert by_client[first_client]["deprioritized"] is True
+        assert by_client[second_client]["deprioritized"] is False
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(ActiveClientInteraction).where(
+                    ActiveClientInteraction.client_id.in_([first_client, second_client])
+                )
+            )
+            session.commit()
+
+
+def test_an_escalated_touch_keeps_the_next_batch_locked(db, cleanup) -> None:
+    run_id = uuid4().hex
+    cleanup.append(run_id)
+    first_client, second_client = 93210, 93211
+
+    with SessionLocal() as session:
+        session.add(RiskRun(run_id=run_id, state="completed", config_version=1))
+        session.flush()
+        write_snapshot(
+            session,
+            run_id,
+            first_client,
+            FUND_ID,
+            _score_with_signals(45, 20_000.0, SIGNALS),
+            RouteResult(route="fa_watchlist", queue_rank=None, complaint_caveat=False),
+            config_version=1,
+            pattern_is_reliable=True,
+            overdue_multiple=1.0,
+        )
+        write_snapshot(
+            session,
+            run_id,
+            second_client,
+            FUND_ID,
+            _score_with_signals(45, 5_000.0, SIGNALS),
+            RouteResult(route="fa_watchlist", queue_rank=None, complaint_caveat=False),
+            config_version=1,
+            pattern_is_reliable=True,
+            overdue_multiple=1.0,
+        )
+        session.commit()
+        build_and_persist_digest(
+            session, run_id, fa_assignment_source=StubFaAssignmentSource(), cap_per_group=1
+        )
+        session.commit()
+
+    try:
+        with SessionLocal() as session:
+            session.add(
+                ActiveClientInteraction(
+                    client_id=first_client,
+                    unit_fund_id=FUND_ID,
+                    type="dismissed",
+                    reviewer_id="fa-1",
+                    # Was "Low" when dismissed; this run scores "Watch" --
+                    # risen, so first_client stays on the active tier and
+                    # batch 0 never clears.
+                    risk_band_at_interaction="Low",
+                )
+            )
+            session.commit()
+
+        after = client.get(f"/api/v1/digest/fund:{FUND_ID}").json()
+        assert [line["client_id"] for line in after["lines"]] == [first_client]
+        assert after["overflow_count"] == 1
+        assert after["lines"][0]["deprioritized"] is False
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(ActiveClientInteraction).where(
+                    ActiveClientInteraction.client_id.in_([first_client, second_client])
+                )
+            )
+            session.commit()
 
 
 def test_briefing_available_reflects_current_risk_and_active_data(db, cleanup) -> None:

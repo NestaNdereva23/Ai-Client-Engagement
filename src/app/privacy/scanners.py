@@ -11,11 +11,19 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 import structlog
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
-from app.privacy.fact_block import ModelFactBlock
+from app.privacy.fact_block import ModelFactBlock, RiskFactBlock
 
 logger = structlog.get_logger(__name__)
+
+# Closed schemas a payload outside the legacy bucket set may validate
+# against, tried in order. Each guarantees no key outside its own declared
+# fields and no band value outside its own vocabulary, so validating
+# against either is an equally strong inbound guarantee -- this is not
+# "prefer ModelFactBlock", just the set of shapes scan_inbound currently
+# knows about. Add a new FactBlock schema here, not a parallel code path.
+_FACT_BLOCK_SCHEMAS: tuple[type[BaseModel], ...] = (ModelFactBlock, RiskFactBlock)
 
 # The bucket allow-list: every non-numeric column llm_client_context exposes,
 # minus client_id. A payload shaped exactly like this is checked the same way
@@ -85,6 +93,23 @@ def _pattern_reasons(text: str, categories: Iterable[str]) -> list[str]:
     return [name for name in categories if _PATTERNS[name].search(text)]
 
 
+def _validate_against_known_schema(payload: Mapping[str, Any]) -> BaseModel:
+    """The first schema in _FACT_BLOCK_SCHEMAS this payload validates against.
+
+    A payload that matches none of them raises the last schema's own
+    ValidationError, since that is the only diagnostic available -- there is
+    no single "correct" schema to blame when a payload matches neither.
+    """
+    last_exc: ValidationError | None = None
+    for schema in _FACT_BLOCK_SCHEMAS:
+        try:
+            return schema(**payload)
+        except ValidationError as exc:
+            last_exc = exc
+    assert last_exc is not None
+    raise last_exc
+
+
 def _literal_reasons(text: str, identifiers: Iterable[str]) -> list[str]:
     lowered = text.lower()
     return [
@@ -99,8 +124,9 @@ def scan_inbound(payload: Mapping[str, Any], identifiers: Iterable[str] = ()) ->
 
     A payload keyed exactly to the legacy bucket set is checked the way it
     always was: a pattern sweep across its values. Any other shape validates
-    against ModelFactBlock, whose declared, typed fields make that sweep
-    unnecessary for it. Either way, a literal identifier still fails closed.
+    against the first schema in _FACT_BLOCK_SCHEMAS it matches, whose
+    declared, typed fields make that sweep unnecessary for it. Either way, a
+    literal identifier still fails closed.
     """
     text = " ".join(str(value) for value in payload.values())
 
@@ -111,21 +137,23 @@ def scan_inbound(payload: Mapping[str, Any], identifiers: Iterable[str] = ()) ->
             raise InboundLeak(f"payload matched {reasons}")
     else:
         try:
-            block = ModelFactBlock(**payload)
+            block = _validate_against_known_schema(payload)
         except ValidationError as exc:
             reason = f"payload failed fact-block validation: {exc}"
             logger.warning("inbound_blocked", reason=reason)
             raise InboundLeak(reason) from exc
 
-        # A caller that built the payload by hand rather than through
-        # ModelFactBlock could still hand scan_inbound a value the schema
-        # would have corrected: an exact figure, or a cadence fact for a
-        # client the schema itself says has none. Only a payload that already
-        # matches its own validated form may pass, so neither shortcut leaks.
+        # A caller that built the payload by hand rather than through the
+        # matched schema could still hand scan_inbound a value that schema's
+        # own validator would have corrected: an exact figure, or a cadence
+        # fact for a client the schema itself says has none. Only a payload
+        # that already matches its own validated form may pass, so neither
+        # shortcut leaks. Harmless no-op for a schema with nothing to
+        # correct (RiskFactBlock carries none of these fields at all).
         uncorrected = [
             field
             for field in _VALIDATOR_CORRECTED_FIELDS
-            if payload.get(field) is not None and payload[field] != getattr(block, field)
+            if payload.get(field) is not None and payload[field] != getattr(block, field, None)
         ]
         if uncorrected:
             reason = f"payload carried a value the schema would have corrected: {uncorrected}"

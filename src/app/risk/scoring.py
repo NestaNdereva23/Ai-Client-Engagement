@@ -20,6 +20,21 @@ from app.transform.active_features import value_tier as _value_tier
 
 RISK_BANDS = frozenset({"None", "Low", "Watch", "High", "Critical"})
 
+# Worst to least-worse, matching the cutoffs _band walks. Lets a caller ask
+# "did this get worse" without hand-coding the band scale a second time --
+# see digest/build.py, which compares a client's current band against the
+# band they were on when an FA manager last acted on them.
+RISK_BAND_ORDER = ("None", "Low", "Watch", "High", "Critical")
+
+
+def band_rank(band: str) -> int:
+    """band's position in RISK_BAND_ORDER, worst-first-comparable (higher
+    is worse). Raises ValueError on anything outside RISK_BANDS -- a band
+    string never comes from anywhere but _band, so this is a bug guard, not
+    a real input-validation path.
+    """
+    return RISK_BAND_ORDER.index(band)
+
 
 @dataclass
 class ScoreResult:

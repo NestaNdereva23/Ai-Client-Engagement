@@ -10,12 +10,15 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, func, select, text
 
+from app.config import get_settings
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.audit import AuditLog
-from app.db.models.digest import DigestLine, DigestRun
+from app.db.models.digest import DigestEmailSend, DigestLine, DigestRun
+from app.db.models.fa_assignment import FaAssignment
 from app.db.models.models import PiiVault
 from app.db.models.risk import ClientRiskFeatures, RiskRun, RiskSnapshot
 from app.db.session import SessionLocal
+from app.delivery.mailer import NullMailer
 from app.workers.risk_detection import RiskDetectionWorker
 
 FUND_ID = 920
@@ -76,6 +79,33 @@ def _worker() -> RiskDetectionWorker:
     return RiskDetectionWorker(FakeClient(), page_fetcher=_single_page(_payload()))
 
 
+def _delete_run_rows(session, run_id: str) -> None:
+    """Everything a risk run writes, keyed by its own run_id."""
+    digest_run_ids = session.scalars(
+        select(DigestRun.digest_run_id).where(DigestRun.risk_run_id == run_id)
+    ).all()
+    if digest_run_ids:
+        session.execute(
+            delete(DigestEmailSend).where(DigestEmailSend.digest_run_id.in_(digest_run_ids))
+        )
+        session.execute(delete(DigestLine).where(DigestLine.digest_run_id.in_(digest_run_ids)))
+        session.execute(delete(DigestRun).where(DigestRun.digest_run_id.in_(digest_run_ids)))
+    session.execute(delete(RiskSnapshot).where(RiskSnapshot.run_id == run_id))
+    session.execute(delete(RiskRun).where(RiskRun.run_id == run_id))
+    session.execute(text("DELETE FROM ingestion_rejects WHERE run_id = :r"), {"r": run_id})
+    session.execute(text("DELETE FROM raw_staging WHERE run_id = :r"), {"r": run_id})
+    session.execute(text("DELETE FROM ingestion_status WHERE run_id = :r"), {"r": run_id})
+    session.execute(delete(AuditLog).where(AuditLog.run_id == run_id))
+
+
+def _delete_client_rows(session, client_ids: list[int]) -> None:
+    """Everything the fixture writes for a batch of client ids."""
+    session.execute(delete(ClientRiskFeatures).where(ClientRiskFeatures.client_id.in_(client_ids)))
+    session.execute(delete(ActiveClientFund).where(ActiveClientFund.client_id.in_(client_ids)))
+    session.execute(delete(PiiVault).where(PiiVault.client_id.in_(client_ids)))
+    session.execute(delete(FaAssignment).where(FaAssignment.client_id.in_(client_ids)))
+
+
 @pytest.fixture
 def cleanup_risk_runs():
     """Collect risk run ids (and their paired ingestion run ids, the same
@@ -85,28 +115,8 @@ def cleanup_risk_runs():
     yield run_ids
     with SessionLocal() as session:
         for run_id in run_ids:
-            digest_run_ids = session.scalars(
-                select(DigestRun.digest_run_id).where(DigestRun.risk_run_id == run_id)
-            ).all()
-            if digest_run_ids:
-                session.execute(
-                    delete(DigestLine).where(DigestLine.digest_run_id.in_(digest_run_ids))
-                )
-                session.execute(
-                    delete(DigestRun).where(DigestRun.digest_run_id.in_(digest_run_ids))
-                )
-            session.execute(delete(RiskSnapshot).where(RiskSnapshot.run_id == run_id))
-            session.execute(delete(RiskRun).where(RiskRun.run_id == run_id))
-            session.execute(text("DELETE FROM ingestion_rejects WHERE run_id = :r"), {"r": run_id})
-            session.execute(text("DELETE FROM raw_staging WHERE run_id = :r"), {"r": run_id})
-            session.execute(text("DELETE FROM ingestion_status WHERE run_id = :r"), {"r": run_id})
-            session.execute(delete(AuditLog).where(AuditLog.run_id == run_id))
-        client_ids = [CALL_CLIENT_ID, TINY_CLIENT_ID]
-        session.execute(
-            delete(ClientRiskFeatures).where(ClientRiskFeatures.client_id.in_(client_ids))
-        )
-        session.execute(delete(ActiveClientFund).where(ActiveClientFund.client_id.in_(client_ids)))
-        session.execute(delete(PiiVault).where(PiiVault.client_id.in_(client_ids)))
+            _delete_run_rows(session, run_id)
+        _delete_client_rows(session, [CALL_CLIENT_ID, TINY_CLIENT_ID])
         session.commit()
 
 
@@ -238,3 +248,169 @@ def test_mid_run_failure_leaves_prior_snapshot_untouched_and_resume_does_not_dup
             .where(RiskSnapshot.run_id == failing_run_id)
         )
         assert resumed_count == 2
+
+
+@pytest.fixture
+def seeded_roster(monkeypatch):
+    """Two account managers in the environment, cleared again afterwards so
+    no other test sees a roster.
+    """
+    monkeypatch.setenv(
+        "ACE_FA_ROSTER",
+        "fa-71:FA Seventy One:fa71@example.com:19,fa-72:FA Seventy Two:fa72@example.com:19",
+    )
+    get_settings.cache_clear()
+    yield
+    monkeypatch.delenv("ACE_FA_ROSTER", raising=False)
+    get_settings.cache_clear()
+
+
+def test_run_with_a_roster_groups_the_digest_by_a_real_advisor(
+    db, cleanup_risk_runs, seeded_roster
+) -> None:
+    first_run = uuid4().hex
+    cleanup_risk_runs.append(first_run)
+    _worker().run(run_id=first_run)
+
+    with SessionLocal() as session:
+        assignments = {
+            row.client_id: row.fa_id
+            for row in session.scalars(
+                select(FaAssignment).where(
+                    FaAssignment.client_id.in_([CALL_CLIENT_ID, TINY_CLIENT_ID])
+                )
+            )
+        }
+        group_keys = set(
+            session.scalars(
+                select(DigestLine.group_key)
+                .join(DigestRun, DigestRun.digest_run_id == DigestLine.digest_run_id)
+                .where(DigestRun.risk_run_id == first_run)
+            )
+        )
+
+    assert set(assignments) == {CALL_CLIENT_ID, TINY_CLIENT_ID}
+    assert all(fa_id in {"fa-71", "fa-72"} for fa_id in assignments.values())
+    assert group_keys == {f"fa:{assignments[CALL_CLIENT_ID]}"}
+
+    second_run = uuid4().hex
+    cleanup_risk_runs.append(second_run)
+    _worker().run(run_id=second_run)
+
+    with SessionLocal() as session:
+        again = {
+            row.client_id: row.fa_id
+            for row in session.scalars(
+                select(FaAssignment).where(
+                    FaAssignment.client_id.in_([CALL_CLIENT_ID, TINY_CLIENT_ID])
+                )
+            )
+        }
+
+    assert again == assignments
+
+
+def test_a_run_with_a_roster_mails_each_advisor_once(
+    db, cleanup_risk_runs, seeded_roster, monkeypatch
+) -> None:
+    """The nightly run ends by mailing the roster, and mails each advisor
+    exactly once for the digest it just built.
+    """
+    mailer = NullMailer()
+    monkeypatch.setattr("app.workers.digest_email.get_mailer", lambda settings=None: mailer)
+
+    run_id = uuid4().hex
+    cleanup_risk_runs.append(run_id)
+    _worker().run(run_id=run_id)
+
+    with SessionLocal() as session:
+        digest_run_id = session.scalar(
+            select(DigestRun.digest_run_id).where(DigestRun.risk_run_id == run_id)
+        )
+        markers = session.scalars(
+            select(DigestEmailSend).where(DigestEmailSend.digest_run_id == digest_run_id)
+        ).all()
+
+    assert {marker.fa_id for marker in markers} == {"fa-71", "fa-72"}
+    assert {message.to for message in mailer.sent_messages} == {
+        "fa71@example.com",
+        "fa72@example.com",
+    }
+
+
+CAP_CLIENT_IDS = [92011, 92012, 92013]  # three call-eligible clients, biggest balance first
+
+
+@pytest.fixture
+def tight_roster(monkeypatch):
+    """Two account managers with room for one call each, so the smallest of
+    three call-queue clients has nowhere to be lent.
+    """
+    monkeypatch.setenv(
+        "ACE_FA_ROSTER",
+        "fa-81:FA Eighty One:fa81@example.com:1,fa-82:FA Eighty Two:fa82@example.com:1",
+    )
+    get_settings.cache_clear()
+    yield
+    monkeypatch.delenv("ACE_FA_ROSTER", raising=False)
+    get_settings.cache_clear()
+
+
+@pytest.fixture
+def cleanup_capacity_run():
+    run_ids: list[str] = []
+    yield run_ids
+    with SessionLocal() as session:
+        for run_id in run_ids:
+            _delete_run_rows(session, run_id)
+        _delete_client_rows(session, CAP_CLIENT_IDS)
+        session.commit()
+
+
+def test_overflow_past_every_advisors_capacity_is_demoted_to_the_watchlist(
+    db, cleanup_capacity_run, tight_roster
+) -> None:
+    """Two advisors with capacity for one call each cannot cover a third
+    call-queue client between them, so that client's line moves to the
+    watchlist route instead of piling onto its own advisor's list.
+    """
+    run_id = uuid4().hex
+    cleanup_capacity_run.append(run_id)
+    payload = {
+        "data": [
+            {
+                "unit_fund_id": FUND_ID,
+                "unit_fund_name": "Fund",
+                "client_count": len(CAP_CLIENT_IDS),
+                "clients": [
+                    _client_row(CAP_CLIENT_IDS[0], balance=30_000.0),
+                    _client_row(CAP_CLIENT_IDS[1], balance=20_000.0),
+                    _client_row(CAP_CLIENT_IDS[2], balance=10_000.0),
+                ],
+            }
+        ]
+    }
+    worker = RiskDetectionWorker(FakeClient(), page_fetcher=_single_page(payload))
+
+    result = worker.run(run_id=run_id)
+
+    assert result.route_distribution == {"fa_call_priority": 2, "fa_watchlist": 1}
+
+    with SessionLocal() as session:
+        snapshots = {
+            row.client_id: row
+            for row in session.scalars(select(RiskSnapshot).where(RiskSnapshot.run_id == run_id))
+        }
+        owners = {
+            row.client_id: row.fa_id
+            for row in session.scalars(
+                select(FaAssignment).where(FaAssignment.client_id.in_(CAP_CLIENT_IDS))
+            )
+        }
+
+    assert snapshots[CAP_CLIENT_IDS[0]].route == "fa_call_priority"
+    assert snapshots[CAP_CLIENT_IDS[1]].route == "fa_call_priority"
+    assert snapshots[CAP_CLIENT_IDS[2]].route == "fa_watchlist"
+    assert snapshots[CAP_CLIENT_IDS[2]].queue_rank is None
+    # Demotion never touches ownership -- the client keeps a real advisor.
+    assert owners[CAP_CLIENT_IDS[2]] in {"fa-81", "fa-82"}

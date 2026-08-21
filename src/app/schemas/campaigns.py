@@ -85,6 +85,59 @@ class CampaignValueOut(BaseModel):
     estimated_value: float
 
 
+class GenerationCostScenarioOut(BaseModel):
+    """One drafting mode's per-step and full-sequence cost, at the active rate.
+
+    count_per_step is generation calls, not clients or messages: one call
+    per client for single_generation, one call per profile bucket for
+    templates.
+    """
+
+    count_per_step: int
+    cost_per_step_usd: float
+    cost_per_step_kes: float
+    total_cost_usd: float
+    total_cost_kes: float
+
+
+class GenerationCostOut(BaseModel):
+    """What drafting this campaign would cost, single-generation and
+    templates side by side, at the given model's active rate.
+
+    single_generation assumes every enrolled client reaches every step;
+    templates assumes each future step's bucket count looks like the
+    current due batch's. Neither is a promise -- the same upper-bound
+    caveat GET .../value already carries for cohort value, applied here to
+    cost instead of revenue. A campaign with no steps yet prices at zero.
+    """
+
+    campaign_id: int
+    model: str
+    config_version: int
+    rate_per_generation_usd: float
+    rate_per_generation_kes: float
+    step_count: int
+    enrolled_clients: int
+    estimated_templates: int
+    single_generation: GenerationCostScenarioOut
+    templates: GenerationCostScenarioOut
+    as_of: datetime
+
+
+class GenerationCostModelOut(BaseModel):
+    """One model's current per-generation rate, for the model picker.
+
+    label is a display name (e.g. "Claude Opus 5"); model is the id an
+    estimate request's ?model= would use to select it.
+    """
+
+    model: str
+    label: str
+    config_version: int
+    rate_per_generation_usd: float
+    rate_per_generation_kes: float
+
+
 class CampaignReadinessOut(BaseModel):
     """Per-status counts for one campaign's templates and messages, so
     "is this campaign fully drafted and approved" is one read instead of
