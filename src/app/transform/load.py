@@ -1,11 +1,3 @@
-"""Persist flattened output into the normalized funds, clients, transactions.
-
-Flatten produces one row per client and fund. Those land in client_fund, and
-each client is then projected to a single clients row taken from their largest
-relationship, because a person receives one message however many funds they
-held. Which relationship that is gets recorded rather than left to chance.
-"""
-
 from __future__ import annotations
 
 from collections import Counter
@@ -94,9 +86,6 @@ _TXN_UPDATE = [
     "fees_incurred",
     "sale_type",
 ]
-# The vault retransform updates only the name and its source. Contact channels
-# and opt-out arrive from a separate source
-_VAULT_UPDATE = ["client_name", "source"]
 _FEATURE_UPDATE = [
     "own_rhythm_days",
     "observed_volume",
@@ -208,12 +197,6 @@ def _txn_dict(t: TxnRow) -> dict[str, Any]:
 
 
 def _log_reconciliation(result: FlattenResult, by_client: dict[int, list[ClientRow]]) -> None:
-    """Report how the rows we kept compare with what the source described.
-
-    Neither gap is an error. Repeated pages are expected on a resumed pull, and
-    a fund can report a client count it does not return rows for; both are worth
-    counting so the shortfall is visible rather than inferred.
-    """
     kept = sum(len(rows) for rows in by_client.values())
     repeated = len(result.clients) - kept
     if repeated:
@@ -232,11 +215,11 @@ def _log_reconciliation(result: FlattenResult, by_client: dict[int, list[ClientR
 
 
 def _vault_dict(c: ClientRow, source: str | None) -> dict[str, Any]:
-    # Only the name (and its source) is written here; contact channels stay null
-    # until a contact source exists.
     return {
         "client_id": c.client_id,
         "client_name": c.client_name,
+        "contact_email": c.client_email,
+        "contact_whatsapp": c.client_phone,
         "source": source,
     }
 
@@ -267,10 +250,7 @@ def _feature_dict(f: FeatureRow) -> dict[str, Any]:
     }
 
 
-# Postgres rejects a query with more than 65535 bind parameters. A single
-# multi-row INSERT ... VALUES (...), (...) binds row_count * column_count of
-# them, so a wide table (Clients, 15 columns) hits the cap at a few thousand
-# rows -- well within one ingestion run's size. Batch to stay under it.
+# Postgres rejects a query with more than 65535 bind parameters.
 _MAX_BIND_PARAMS = 65535
 
 
@@ -304,16 +284,42 @@ def upsert(
     return len(rows)
 
 
+def upsert_vault(session: Session, rows: list[dict[str, Any]]) -> int:
+    """Upsert client_name, contact_email, contact_whatsapp, and source into
+    pii_vault.
+
+    client_name and source are always overwritten with what this run saw.
+    contact_email and contact_whatsapp use COALESCE instead: a client whose
+    page in this run carried no email or phone keeps whatever was already on
+    file, rather than a retransform blanking out a contact set by hand
+    through /integration/contacts. Shared by both the dormant and active
+    loaders, since they write the same vault the same way.
+    """
+    if not rows:
+        return 0
+    batch_size = max(1, _MAX_BIND_PARAMS // len(rows[0]))
+    for start in range(0, len(rows), batch_size):
+        batch = rows[start : start + batch_size]
+        stmt = pg_insert(PiiVault).values(batch)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["client_id"],
+            set_={
+                "client_name": stmt.excluded.client_name,
+                "contact_email": func.coalesce(stmt.excluded.contact_email, PiiVault.contact_email),
+                "contact_whatsapp": func.coalesce(
+                    stmt.excluded.contact_whatsapp, PiiVault.contact_whatsapp
+                ),
+                "source": stmt.excluded.source,
+                "updated_at": func.now(),
+            },
+        )
+        session.execute(stmt)
+    return len(rows)
+
+
 def persist_result(
     session: Session, result: FlattenResult, source: str | None = None
 ) -> PersistCounts:
-    """Upsert a flattened result into funds, clients, transactions, vault, features.
-
-    Clients land before their relationships, transactions and features so the
-    foreign keys hold within one transaction. client_name is written only to the
-    vault, never to clients. Rows are keyed into dicts first so a repeated
-    natural key becomes a single upsert.
-    """
     by_client = relationships_by_client(result)
     measures = derive_relationship_measures(result)
     _log_reconciliation(result, by_client)
@@ -356,14 +362,7 @@ def persist_result(
         extra_set={"updated_at": func.now()},
     )
     counts.transactions = upsert(session, Transactions, list(txns.values()), "txn_id", _TXN_UPDATE)
-    counts.vault = upsert(
-        session,
-        PiiVault,
-        vault,
-        "client_id",
-        _VAULT_UPDATE,
-        extra_set={"updated_at": func.now()},
-    )
+    counts.vault = upsert_vault(session, vault)
     counts.features = upsert(
         session,
         ClientFeatures,
@@ -372,8 +371,6 @@ def persist_result(
         _FEATURE_UPDATE,
         extra_set={"updated_at": func.now()},
     )
-    # The value cutoffs are frozen rather than recomputed, so recording them per
-    # run is what lets a band be explained back to a client months later.
     logger.info(
         "transform_features_derived",
         clients=counts.clients,

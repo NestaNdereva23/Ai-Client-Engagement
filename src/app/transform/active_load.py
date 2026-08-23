@@ -1,17 +1,11 @@
-"""Persist flattened active-clients output into active_client_fund and
+"""Persist flattened active clients output into active_client_fund and
 active_transaction.
 
-Same idempotent-upsert pattern as transform/load.py: insert, updating the
-named columns when the composite key already exists. client_name goes only
-to pii_vault, the same as the dormant feed.
+Same idempotent upsert pattern as transform/load.py: insert, updating the
+named columns when the composite key already exists. client_name,
+client_email, and client_phone go only to pii_vault, the same as the dormant
+feed, through the same transform.load.upsert_vault.
 
-Per-transaction rows land in active_transaction, upserted on txn_id --
-a separate table from the dormant feed's own transactions, since that one's
-foreign key to clients only ever accepts the dormant population.
-active_client_fund's own columns still only carry aggregates (counts, last
-dates); the individual rows accumulate in active_transaction instead, across
-every nightly run, so one that ages out of the feed's own "last 5 purchases"
-/ "last 2 sales" window on a later pull stays visible rather than lost.
 """
 
 from __future__ import annotations
@@ -25,7 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.models.active_clients import ActiveClientFund, ActiveTransaction
-from app.db.models.models import IngestionStatus, PiiVault
+from app.db.models.models import IngestionStatus
 from app.transform.active_features import ActiveFeatureMeasures, derive_active_measures
 from app.transform.active_flatten import (
     ActiveClientRow,
@@ -33,7 +27,7 @@ from app.transform.active_flatten import (
     ActiveTxnRow,
     flatten_active_run,
 )
-from app.transform.load import upsert
+from app.transform.load import upsert, upsert_vault
 
 logger = structlog.get_logger(__name__)
 
@@ -67,7 +61,6 @@ _ACTIVE_TXN_UPDATE = [
     "fees_incurred",
     "sale_type",
 ]
-_VAULT_UPDATE = ["client_name", "source"]
 
 
 @dataclass
@@ -104,7 +97,13 @@ def _active_client_fund_dict(c: ActiveClientRow, measures: ActiveFeatureMeasures
 
 
 def _vault_dict(c: ActiveClientRow, source: str | None) -> dict[str, Any]:
-    return {"client_id": c.client_id, "client_name": c.client_name, "source": source}
+    return {
+        "client_id": c.client_id,
+        "client_name": c.client_name,
+        "contact_email": c.client_email,
+        "contact_whatsapp": c.client_phone,
+        "source": source,
+    }
 
 
 def _active_txn_dict(t: ActiveTxnRow) -> dict[str, Any]:
@@ -123,12 +122,6 @@ def _active_txn_dict(t: ActiveTxnRow) -> dict[str, Any]:
 
 
 def _log_reconciliation(result: ActiveFlattenResult) -> None:
-    """Report per-fund headcount so a shortfall is visible, not inferred.
-
-    The header client_count check itself runs during ingestion (workers/
-    ingestion.py); this logs the same idea from the transform side, counting
-    unique clients kept per fund after de-duplication across pages.
-    """
     clients_by_fund = Counter(row.unit_fund_id for row in result.clients)
     if clients_by_fund:
         logger.info("active_transform_clients_by_fund", funds=dict(clients_by_fund))
@@ -150,8 +143,6 @@ def persist_active_result(
         for c in result.clients
     }
     vault = {c.client_id: _vault_dict(c, source) for c in result.clients}
-    # Keyed into a dict first, same as client_funds/vault above, so a
-    # transaction repeated across pages in this run becomes one upsert.
     transactions = {
         t.txn_id: _active_txn_dict(t) for t in result.transactions if t.txn_id is not None
     }
@@ -168,14 +159,7 @@ def persist_active_result(
     counts.transactions = upsert(
         session, ActiveTransaction, list(transactions.values()), "txn_id", _ACTIVE_TXN_UPDATE
     )
-    counts.vault = upsert(
-        session,
-        PiiVault,
-        list(vault.values()),
-        "client_id",
-        _VAULT_UPDATE,
-        extra_set={"updated_at": func.now()},
-    )
+    counts.vault = upsert_vault(session, list(vault.values()))
     session.commit()
     return counts
 

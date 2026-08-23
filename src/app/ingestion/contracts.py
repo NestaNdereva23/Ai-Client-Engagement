@@ -1,14 +1,4 @@
-"""Models for the inactive clients response.
-
-They follow the response shape and its quirks: amounts come as strings, dates as
-mixed ISO8601 strings, client_code as an int or a string, and the history is
-capped. Amounts and dates are kept as they are here; typed parsing happens in
-the transform stage. A record without its required identifier is not allowed
-through.
-
-Each record is checked on its own, so one bad client can be rejected without
-dropping the whole fund or page.
-"""
+"""Models for the inactive clients response."""
 
 from __future__ import annotations
 
@@ -16,10 +6,6 @@ from typing import Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
-# Keys we expect at each level. schema_drift uses these to spot new or renamed keys.
-# The fund record's headcount field was renamed from inactive_client_count to
-# client_count at source; both names stay expected so raw_staging pages pulled
-# before and after the rename both read as clean.
 EXPECTED_ENVELOPE_KEYS = {"data"}
 EXPECTED_FUND_KEYS = {
     "unit_fund_id",
@@ -32,6 +18,8 @@ EXPECTED_CLIENT_KEYS = {
     "client_id",
     "client_code",
     "client_name",
+    "client_email",
+    "client_phone",
     "balance",
     "computed_at",
     "last_5_purchases",
@@ -78,15 +66,13 @@ class TransactionRecord(BaseModel):
 
 
 class ClientRecord(BaseModel):
-    """A dormant client. client_id is required; client_name is the only real
-    personal data and stays only so the transform can move it to the restricted
-    store."""
-
     model_config = ConfigDict(extra="ignore")
 
     client_id: int
     client_code: int | str | None = None
     client_name: str | None = None
+    client_email: str | None = None
+    client_phone: str | None = None
     balance: float | None = 0
     computed_at: str | None = None
     last_5_purchases: list[TransactionRecord] = Field(default_factory=list)
@@ -94,14 +80,6 @@ class ClientRecord(BaseModel):
 
 
 class FundRecord(BaseModel):
-    """A unit fund and its dormant clients.
-
-    The headcount field is read under either name the source has used: the
-    original inactive_client_count, or client_count after the source renamed
-    it. It is a per-page count, not a fund total; summing it across pages is
-    the transform stage's job, not this contract's.
-    """
-
     model_config = ConfigDict(extra="ignore")
 
     unit_fund_id: int
@@ -115,11 +93,6 @@ class FundRecord(BaseModel):
 
 
 def schema_drift(payload: dict[str, Any]) -> set[str]:
-    """Return any unexpected keys found anywhere in the payload.
-
-    An empty set means the payload matches what we expect. A non empty set means
-    the shape changed, a new or renamed key, and should be looked at.
-    """
     unexpected: set[str] = set(payload.keys()) - EXPECTED_ENVELOPE_KEYS
     for fund in payload.get("data", []) or []:
         if not isinstance(fund, dict):

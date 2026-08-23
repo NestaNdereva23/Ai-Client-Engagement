@@ -12,16 +12,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 @dataclass(frozen=True)
 class FaRecord:
-    """One account manager on the seeded roster.
-
-    fa_id is that person's login username on the console calling this API
-    (Ticketing), not an arbitrary roster number -- a digest/assignment
-    lookup keys straight off it, with no separate mapping to maintain.
-    daily_capacity is how many clients this person can realistically call in
-    a morning. name and email are staff details, never client data, so they
-    are safe to keep in the environment.
-    """
-
     fa_id: str
     name: str
     email: str
@@ -46,12 +36,6 @@ class Settings(BaseSettings):
     app_name: str = "AI Client Engagement"
     log_level: str = "INFO"
 
-    # Browser origins allowed to call this API directly (the Ticketing
-    # console's fetch()es, not server-to-server calls, which never carry an
-    # Origin header and so are unaffected by CORS either way). Comma
-    # separated; the dev default covers Ticketing's local ports whichever of
-    # Herd's plain :80 or `php artisan serve`'s :8000 is actually serving it.
-    # Empty disables CORS handling entirely.
     cors_allow_origins: str = Field(
         default="http://localhost,http://localhost:8000,http://127.0.0.1:8000,http://127.0.0.1",
         validation_alias=AliasChoices("CORS_ALLOW_ORIGINS"),
@@ -64,31 +48,18 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "postgresql+psycopg://ace:ace@localhost:5432/ace"
-    # Time zone for database timestamps. Nairobi (EAT) is UTC+3, no daylight saving.
     db_timezone: str = "Africa/Nairobi"
     # Role the model-facing path switches into; it has no grant on pii_vault.
     db_safe_role: str = "ace_safe"
-    # Role server-side re-attachment switches into; the only one with a grant
-    # on pii_vault.
     db_restricted_role: str = "ace_restricted"
 
-    # Embeddings for RAG. The same model must index and query, or similarity is
-    # meaningless. The dev default is deterministic and needs no external service.
+    # embeddings
     embedding_provider: str = "hashing"
     embedding_model: str = "dev-hashing"
     embedding_batch_size: int = 64
-
-    # How many report passages a draft is grounded on. Kept small on purpose:
-    # every passage handed to the model is a passage it may quote a figure
-    # from, so a long tail of weakly related market commentary is a licence to
-    # cite something the email was never about.
     rag_retrieval_k: int = 3
-    # Similarity below which a passage is dropped even if it is in the top k.
-    # A section filter always returns its best few candidates, however unrelated
-    # they are to the query, so rank alone is not evidence of relevance.
     rag_min_score: float = 0.1
 
-    # Cy client data API. Reads CY_API_BASE_URL / CY_API_KEY
     cytonn_api_base_url: str = Field(
         default="",
         validation_alias=AliasChoices("CY_API_BASE_URL", "CYTONN_API_BASE_URL"),
@@ -97,8 +68,6 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("CY_API_KEY", "CYTONN_API_KEY"),
     )
-    # The active-clients feed lives at a different path than the dormant one
-    # above; CytonnClient itself is unchanged, only the URL it is pointed at.
     cytonn_active_clients_url: str = Field(
         default="",
         validation_alias=AliasChoices("CY_ACTIVE_CLIENTS_URL", "CYTONN_API_ACTIVE_URL"),
@@ -114,61 +83,27 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_timeout_seconds: float = 300.0
 
-    # LLM-as-judge model (llmops.judge). Empty provider/model falls back to
-    # llm_provider/llm_model, so judging works with no extra config.
+    # LLM-as-judge model (llmops.judge).
     judge_llm_provider: str = ""
     judge_llm_model: str = ""
     judge_llm_temperature: float | None = None
     judge_llm_max_tokens: int = 1024
 
-    # Off (the default): GET /briefing/{id}/{fund}/narrative doesn't exist --
-    # the deterministic briefing (AM11) remains the only briefing there is,
-    # because it's already sufficient on its own. On lets an FA additionally
-    # request a model-narrated version, generated through the same privacy
-    # boundary as every other model call, with the deterministic text as its
-    # fallback on any doubt.
+    # Active client AI Briefing
     ai_briefing_enabled: bool = False
-
-    # LLM for the narrated briefing (briefing.narrative). Empty provider/model
-    # falls back to llm_provider/llm_model, same pattern as judge_llm_* above,
-    # so the narrator can run its own model independently of generation or
-    # judging.
     briefing_llm_provider: str = ""
     briefing_llm_model: str = ""
     briefing_llm_temperature: float | None = None
     briefing_llm_max_tokens: int = 1024
-
-    # How many of a digest's clients the nightly run pre-drafts a narration
-    # for, best-ranked first. These are the clients an FA opens in the
-    # morning, so drafting theirs overnight takes the wait off the click;
-    # everyone else is still narrated on request. 0 turns the warm-up off
-    # and leaves every narration on demand. Ignored entirely when
-    # ai_briefing_enabled is off.
     briefing_prewarm_limit: int = 200
 
+    # Langfuse
     langfuse_base_url: str = ""
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
 
-    # Which ComplaintsSource implementation app.ingestion.complaints_source
-    # builds. "stub" is the only real option today, since Cytonn has no
-    # complaints endpoint; a later source registers here under its own name.
     complaints_source: str = "stub"
-
-    # Which FaAssignmentSource implementation app.ingestion.fa_assignment_source
-    # builds: "stub" for no assignment at all, "db" to read the assignments
-    # the nightly allocation writes. Empty (the default) picks "db" when
-    # fa_roster is set and "stub" when it is not, so seeding a roster is the
-    # only switch anyone has to throw.
     fa_assignment_source: str = ""
-
-    # The account managers who get a morning call list, seeded by hand
-    # because the active-clients feed carries no relationship-manager field
-    # to read one from. Format is "fa_id:name:email:daily_capacity", comma
-    # separated, where fa_id is that person's login username on the console
-    # calling this API. Empty means no roster: assignment stays on the stub
-    # and the digest keeps grouping by fund, so an environment that has not
-    # set this behaves exactly as it did before.
     fa_roster: str = Field(default="", validation_alias=AliasChoices("ACE_FA_ROSTER", "fa_roster"))
 
     @property
@@ -197,24 +132,17 @@ class Settings(BaseSettings):
             records.append(FaRecord(fa_id=fa_id, name=name, email=email, daily_capacity=capacity))
         return tuple(records)
 
-    # Shared secret for the integration plane, a stopgap ahead of M8A.7's
-    # scoped API keys / OAuth client-credentials. Empty means integration
-    # endpoints refuse every request rather than run unprotected.
+    # no longer needed
     integration_api_key: str = Field(
         default="", validation_alias=AliasChoices("INTEGRATION_API_KEY")
     )
 
-    # Verifies the bearer token Ticketing attaches to every call: a JWT it
-    # issues per logged-in user, signed with this same secret on their side
-    # (Laravel's AI_OUTREACH_JWT_SECRET). Gates the endpoints that re-attach
-    # a client's real name or record a review decision. Empty means those
-    # endpoints refuse every request rather than run unprotected.
+    # Verifies the bearer token Ticketing attaches to every call
     ai_outreach_jwt_secret: str = Field(
         default="", validation_alias=AliasChoices("AI_OUTREACH_JWT_SECRET")
     )
 
-    # Minimum days between two touches to the same client, across every
-    # campaign, checked by the eligibility gate before each send.
+    # Minimum days between two touches to the same client
     campaign_cooldown_days: int = 7
 
     # Off means every message needs review, regardless of tier. On means a
@@ -222,23 +150,12 @@ class Settings(BaseSettings):
     tier_sampling_enabled: bool = True
 
     # The most messages one campaign x tier cohort can put in the review
-    # queue, however large the cohort grows. Without it a 5 percent rate on
-    # 1,700 enrollments would be 85 items for one reviewer to work through.
+    # queue, however large the cohort grows.
     cohort_sample_cap: int = 25
 
-    # On (the only safe setting once real contact data exists) means the
-    # eligibility gate refuses to generate or send for a client with no
-    # contact_email/contact_whatsapp on file. Off is a local-development-only
-    # escape hatch, for exercising generation before /integration/contacts has
-    # ever been called for a test client -- the parent system that will push
-    # real contact data isn't live yet, so nothing can satisfy this gate in
-    # dev without it.
     require_deliverable_contact: bool = False
 
-    # Outgoing mail (delivery.mailer). Mailpit in development needs only a
-    # host and port with no credentials and no TLS; a real server is the same
-    # fields, filled in. An empty smtp_host, or an empty email_sender, selects
-    # NullMailer, which records what it was asked to send and sends nothing.
+    # Email
     smtp_host: str = ""
     smtp_port: int = 1025
     smtp_username: str = ""
@@ -248,29 +165,17 @@ class Settings(BaseSettings):
     # The From address on everything the system sends.
     email_sender: str = ""
 
-    # Where the FA console is reachable, used to build the links in the
-    # morning digest email. Empty renders the email with no links rather
-    # than links that go nowhere.
     console_base_url: str = Field(
         default="", validation_alias=AliasChoices("CONSOLE_BASE_URL", "console_base_url")
     )
 
-    # Read-only operational admin (SQLAdmin), gated behind a single shared
-    # basic-auth account. Empty username or password means the admin refuses
-    # every login rather than run open. secret_key signs the login session
-    # cookie; a blank one is fine in dev, where the process restarting just
-    # signs everyone back out.
     admin_username: str = Field(default="", validation_alias=AliasChoices("ADMIN_USERNAME"))
     admin_password: str = Field(default="", validation_alias=AliasChoices("ADMIN_PASSWORD"))
     admin_secret_key: str = Field(
         default="dev-only-admin-secret", validation_alias=AliasChoices("ADMIN_SECRET_KEY")
     )
 
-    # Signs the reviewer console's login session cookie (app.auth.session).
-    # Separate from admin_secret_key: sqladmin runs its own isolated
-    # sub-app with its own session, so the two were never shared, and this
-    # keeps it that way on purpose. A blank one is fine in dev, same as
-    # admin_secret_key above.
+    # Signs the reviewer console's login session cookie
     console_session_secret_key: str = Field(
         default="dev-only-console-secret",
         validation_alias=AliasChoices("CONSOLE_SESSION_SECRET_KEY"),

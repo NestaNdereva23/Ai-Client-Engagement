@@ -1,18 +1,3 @@
-"""M2.7 invariants for the transform and PII split.
-
-Three things must hold across the whole flatten to features pipeline:
-
-- the same raw payload and reference timestamp always derive the same funds,
-  clients, transactions, and features (a pure, deterministic pipeline);
-- no client_name or raw contact channel appears anywhere outside pii_vault,
-  neither in a normalized or feature column nor in a persisted row;
-- the censoring flags set while flattening survive through to the features.
-
-The determinism check is property style: it builds many varied payloads from
-seeded randomness and asserts each one derives identically on a rerun, rather
-than pinning one hand-written case.
-"""
-
 from __future__ import annotations
 
 import dataclasses
@@ -290,4 +275,110 @@ def test_client_name_appears_in_no_persisted_row_outside_the_vault(
             session.execute(PiiVault.__table__.delete().where(PiiVault.client_id == 91001))
             session.execute(Clients.__table__.delete().where(Clients.client_id == 91001))
             session.execute(Funds.__table__.delete().where(Funds.unit_fund_id == 910))
+            session.commit()
+
+
+def _client_payload(fund_id: int, client_id: int, **overrides: Any) -> dict[str, Any]:
+    client = {
+        "client_id": client_id,
+        "client_code": f"C-{client_id}",
+        "client_name": "Test Client",
+        "balance": 0,
+        "computed_at": "2026-07-20T08:00:00",
+        "last_5_purchases": [
+            {
+                "id": client_id * 10 + 1,
+                "date": "2024-07-01T00:00:00",
+                "number": "5000",
+                "unit_fund_id": fund_id,
+            }
+        ],
+        "last_2_sales": [],
+    }
+    client.update(overrides)
+    return {
+        "data": [
+            {
+                "unit_fund_id": fund_id,
+                "unit_fund_name": "Money Market Fund",
+                "inactive_client_count": 1,
+                "clients": [client],
+            }
+        ]
+    }
+
+
+def test_client_email_and_phone_land_in_pii_vault(db: None, cleanup_runs: list[str]) -> None:
+    from app.transform.load import transform_run
+
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    fund_id, client_id = 920, 92001
+    payload = _client_payload(
+        fund_id, client_id, client_email="wangari@example.com", client_phone="+254700000001"
+    )
+
+    try:
+        with SessionLocal() as session:
+            _seed_run(session, run_id, payload)
+            transform_run(session, run_id)
+
+        with SessionLocal() as session:
+            vault = session.get(PiiVault, client_id)
+            assert vault.contact_email == "wangari@example.com"
+            assert vault.contact_whatsapp == "+254700000001"
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                Transactions.__table__.delete().where(Transactions.client_id == client_id)
+            )
+            session.execute(
+                ClientFeatures.__table__.delete().where(ClientFeatures.client_id == client_id)
+            )
+            session.execute(ClientFund.__table__.delete().where(ClientFund.client_id == client_id))
+            session.execute(PiiVault.__table__.delete().where(PiiVault.client_id == client_id))
+            session.execute(Clients.__table__.delete().where(Clients.client_id == client_id))
+            session.execute(Funds.__table__.delete().where(Funds.unit_fund_id == fund_id))
+            session.commit()
+
+
+def test_retransform_with_no_contact_keeps_previously_known_contact(
+    db: None, cleanup_runs: list[str]
+) -> None:
+    """A rerun whose page carries no email or phone for a client must not blank
+    out a contact already on file, whether that contact came from an earlier
+    ingestion run or from a manual /integration/contacts push."""
+    from app.transform.load import transform_run
+
+    run_id_1, run_id_2 = uuid4().hex, uuid4().hex
+    cleanup_runs.extend([run_id_1, run_id_2])
+    fund_id, client_id = 920, 92002
+    first_payload = _client_payload(
+        fund_id, client_id, client_email="first@example.com", client_phone="+254700000002"
+    )
+    second_payload = _client_payload(fund_id, client_id, client_email=None, client_phone=None)
+
+    try:
+        with SessionLocal() as session:
+            _seed_run(session, run_id_1, first_payload)
+            transform_run(session, run_id_1)
+            _seed_run(session, run_id_2, second_payload)
+            transform_run(session, run_id_2)
+
+        with SessionLocal() as session:
+            vault = session.get(PiiVault, client_id)
+            assert vault.contact_email == "first@example.com"
+            assert vault.contact_whatsapp == "+254700000002"
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                Transactions.__table__.delete().where(Transactions.client_id == client_id)
+            )
+            session.execute(
+                ClientFeatures.__table__.delete().where(ClientFeatures.client_id == client_id)
+            )
+            session.execute(ClientFund.__table__.delete().where(ClientFund.client_id == client_id))
+            session.execute(PiiVault.__table__.delete().where(PiiVault.client_id == client_id))
+            session.execute(Clients.__table__.delete().where(Clients.client_id == client_id))
+            session.execute(Funds.__table__.delete().where(Funds.unit_fund_id == fund_id))
             session.commit()

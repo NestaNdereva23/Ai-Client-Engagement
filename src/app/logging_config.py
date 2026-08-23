@@ -1,10 +1,3 @@
-"""Structured logging setup based on structlog.
-
-Routes both structlog and standard-library logging through one formatter so
-every line is structured and carries any context bound for the current request
-(such as the correlation id).
-"""
-
 from __future__ import annotations
 
 import logging
