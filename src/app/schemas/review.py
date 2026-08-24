@@ -11,6 +11,7 @@ ReviewOutcome = Literal["approve", "edit_approve", "reject", "escalate", "hold"]
 # edit_approve needs its own edited_content, which a batch decision has no
 # room for -- one outcome and reason are shared across every id in the batch.
 BatchReviewOutcome = Literal["approve", "reject", "escalate", "hold"]
+ReviewOrder = Literal["oldest_first", "newest_first"]
 
 
 class DecideRequest(BaseModel):

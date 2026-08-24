@@ -27,6 +27,7 @@ from app.schemas.review import (
     OutreachMessageDetail,
     OutreachMessageSummary,
     ReviewActionOut,
+    ReviewOrder,
 )
 from app.services.review import (
     CohortNotFound,
@@ -53,11 +54,16 @@ def list_reviews(
     status: str = "pending_review",
     campaign_id: int | None = None,
     only_sampled: bool = True,
+    order: ReviewOrder = "oldest_first",
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
 ) -> Page[OutreachMessageSummary]:
-    """The reviewer's queue: one page of messages in the given status, oldest first.
+    """The reviewer's queue: one page of messages in the given status.
+
+    order picks the sort direction: "oldest_first" (default, matches prior
+    behavior) or "newest_first". A cursor from one order is only valid for
+    a further page in that same order.
 
     only_sampled (default True) hides a cohort's non-sample messages, the
     ones riding on their cohort's sample outcome; pass false to see them
@@ -72,6 +78,7 @@ def list_reviews(
             status=status,
             campaign_id=campaign_id,
             only_sampled=only_sampled,
+            order=order,
             cursor=cursor,
             limit=limit,
         )

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 
 class OutreachBucketOut(BaseModel):
@@ -241,6 +241,39 @@ class CohortFilter(BaseModel):
         return self
 
 
+class CohortPreviewOut(BaseModel):
+    matched_count: int
+    primary_count: int
+    suppressed_count: int
+    valued_count: int
+    estimated_value: float
+
+
+class CohortPreviewNarrowOut(BaseModel):
+    matched_count: int
+    estimated_value: float
+
+
+class CohortPreviewAngleOut(BaseModel):
+    message_angle: str
+    matched_count: int
+    estimated_value: float
+
+
+class CohortPreviewBatchOut(BaseModel):
+    narrow: CohortPreviewNarrowOut
+    angles: list[CohortPreviewAngleOut]
+
+
+class CohortPreviewBatchRequest(BaseModel):
+    fund_id: int | None = None
+    value_band: str | None = None
+    recency_band: str | None = None
+    purchase_depth: str | None = None
+    newly_dormant: bool | None = None
+    angles: list[str] = []
+
+
 class CampaignCreateRequest(BaseModel):
     name: str
     campaign_type: str = "dormant_reengagement"
@@ -261,6 +294,33 @@ class CampaignCreateOut(BaseModel):
     end_date: date | None
     created_at: datetime
     enrolled_count: int
+
+
+class SharedCohortFilter(BaseModel):
+    fund_id: int | None = None
+    value_band: str | None = None
+    recency_band: str | None = None
+    purchase_depth: str | None = None
+    newly_dormant: bool | None = None
+
+
+class CampaignBatchCreateRequest(BaseModel):
+    name: str
+    campaign_type: str = "dormant_reengagement"
+    cohort: SharedCohortFilter
+    angles: list[str] = Field(min_length=1)
+    start_date: date | None = None
+    end_date: date | None = None
+
+
+class CampaignBatchFailureOut(BaseModel):
+    angle: str
+    error: str
+
+
+class CampaignBatchCreateOut(BaseModel):
+    created: list[CampaignCreateOut]
+    failed: list[CampaignBatchFailureOut]
 
 
 class CampaignStepCreateRequest(BaseModel):

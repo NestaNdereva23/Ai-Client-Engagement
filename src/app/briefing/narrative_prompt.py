@@ -145,7 +145,7 @@ _BASE_INSTRUCTIONS = (
     "a warning sign into a claim about the client's intentions, feelings, "
     "financial situation, or future behaviour.\n\n"
     "NUMBERS:\n"
-    "Do not write digits, percentages, monetary amounts, or dates. Use the "
+    " Use the suppplied digits, percentages, monetary amounts, or dates."
     "plain wording supplied for each band or category instead. Never turn "
     "a band into an estimated number or a more precise description.\n\n"
     "IDENTITY:\n"
@@ -179,6 +179,13 @@ _BASE_INSTRUCTIONS = (
     "The example only demonstrates the writing style. Its facts are "
     "illustrative and must never be copied unless the same facts are "
     "explicitly present in the supplied facts for this client."
+    "Balance tier	Balance"
+    "Tiny	KSh 100 or under"
+    "Micro	KSh 100 to KSh 1,000"
+    "Small	KSh 1,000 to KSh 10,000"
+    "Core	KSh 10,000 to KSh 100,000"
+    "Premium	KSh 100,000 to KSh 1,000,000"
+    "Institutional	Over KSh 1,000,000"
 )
 
 

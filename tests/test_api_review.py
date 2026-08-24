@@ -384,3 +384,50 @@ def test_list_reviews_total_count_covers_every_page_not_just_this_one(two_messag
     body = response.json()
     assert len(body["items"]) == 1
     assert body["total_count"] == len(message_ids)
+
+
+def test_list_reviews_defaults_to_oldest_first(two_messages) -> None:
+    message_ids, campaign_id = two_messages
+    response = client.get(REVIEWS, params={"campaign_id": campaign_id})
+    assert response.status_code == 200
+    ids = [row["message_id"] for row in response.json()["items"]]
+    assert ids == message_ids
+
+
+def test_list_reviews_newest_first_reverses_the_order(two_messages) -> None:
+    message_ids, campaign_id = two_messages
+    response = client.get(REVIEWS, params={"campaign_id": campaign_id, "order": "newest_first"})
+    assert response.status_code == 200
+    ids = [row["message_id"] for row in response.json()["items"]]
+    assert ids == list(reversed(message_ids))
+
+
+def test_list_reviews_newest_first_pages_through_the_query_params(two_messages) -> None:
+    message_ids, campaign_id = two_messages
+    page_one = client.get(
+        REVIEWS, params={"campaign_id": campaign_id, "order": "newest_first", "limit": 1}
+    )
+    assert page_one.status_code == 200
+    body_one = page_one.json()
+    assert [row["message_id"] for row in body_one["items"]] == [message_ids[1]]
+    assert body_one["next_cursor"] is not None
+
+    page_two = client.get(
+        REVIEWS,
+        params={
+            "campaign_id": campaign_id,
+            "order": "newest_first",
+            "limit": 1,
+            "cursor": body_one["next_cursor"],
+        },
+    )
+    assert page_two.status_code == 200
+    body_two = page_two.json()
+    assert [row["message_id"] for row in body_two["items"]] == [message_ids[0]]
+    assert body_two["next_cursor"] is None
+
+
+def test_list_reviews_rejects_an_unknown_order(two_messages) -> None:
+    _message_ids, campaign_id = two_messages
+    response = client.get(REVIEWS, params={"campaign_id": campaign_id, "order": "sideways"})
+    assert response.status_code == 422

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import functools
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -27,6 +28,9 @@ from app.campaigns.generation_cost import (
     list_generation_cost_models as _list_generation_cost_models,
 )
 from app.campaigns.instantiation import instantiate_template as instantiate_template_run
+from app.campaigns.preview import BatchCohortPreview, CohortPreview
+from app.campaigns.preview import preview_cohort as preview_cohort_run
+from app.campaigns.preview import preview_cohort_batch as preview_cohort_batch_run
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT
 from app.campaigns.template_generation import TemplateDraftOutcome, draft_templates_for_campaign
 from app.campaigns.template_policy import (
@@ -74,7 +78,7 @@ class NonIncreasingStepOffset(Exception):
     """A new step's offset_days does not come after the previous step's.
 
     The scheduler measures the wait before a step from the gap between its
-    offset and the one before it (see advance_enrollment). An offset that
+    offset and the one before it. An offset that
     does not increase collapses that gap to zero or less, so the new step
     goes out the moment the previous one does instead of waiting.
     """
@@ -216,10 +220,7 @@ def campaign_value(session: Session, campaign_id: int) -> dict[str, float | int]
 def campaign_readiness(session: Session, campaign_id: int) -> dict[str, dict[str, int]]:
     """Per-status counts for one campaign's templates and messages.
 
-    Answers "is this campaign fully drafted and approved" in one read,
-    instead of paging GET /reviews and GET /templates across every status
-    and tallying client-side. A status with no rows is left out of its
-    dict rather than reported as zero.
+    Answers "is this campaign fully drafted and approved" in one read.
     """
     if session.get(Campaign, campaign_id) is None:
         raise CampaignNotFound(campaign_id)
@@ -241,12 +242,24 @@ def campaign_readiness(session: Session, campaign_id: int) -> dict[str, dict[str
     }
 
 
+def _cohort_definition_text(value: int | str | bool) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
 def list_campaigns(
     session: Session,
     *,
     status: str | None = None,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
+    fund_id: int | None = None,
+    value_band: str | None = None,
+    recency_band: str | None = None,
+    purchase_depth: str | None = None,
+    newly_dormant: bool | None = None,
+    message_angle: str | None = None,
 ) -> tuple[list[Row], str | None]:
     """Campaigns oldest-first, each carrying its own enrollment counts.
 
@@ -274,6 +287,19 @@ def list_campaigns(
     )
     if status is not None:
         query = query.where(Campaign.status == status)
+    cohort_filters = {
+        "fund_id": fund_id,
+        "value_band": value_band,
+        "recency_band": recency_band,
+        "purchase_depth": purchase_depth,
+        "newly_dormant": newly_dormant,
+        "message_angle": message_angle,
+    }
+    for key, value in cohort_filters.items():
+        if value is not None:
+            query = query.where(
+                Campaign.cohort_definition[key].astext == _cohort_definition_text(value)
+            )
     if cursor is not None:
         after_id = decode_id_cursor(cursor)
         query = query.where(Campaign.campaign_id > after_id)
@@ -302,8 +328,7 @@ def create_campaign(
     feature values the cohort was selected on, so membership can be
     re-derived later; it is also used once, right here, to resolve the
     client_ids enroll_cohort actually enrolls. Returns the new campaign and
-    how many client_ids matched (not how many are primary — see
-    campaign_summary for the primary/suppressed split).
+    how many client_ids matched
     """
     campaign = Campaign(
         name=name,
@@ -327,6 +352,49 @@ def create_campaign(
     )
     session.flush()
     return campaign, len(client_ids)
+
+
+@dataclass(frozen=True)
+class CampaignBatchFailure:
+    angle: str
+    error: str
+
+
+@dataclass(frozen=True)
+class CampaignBatchResult:
+    created: list[tuple[Campaign, int]]
+    failed: list[CampaignBatchFailure]
+
+
+def create_campaign_batch(
+    session: Session,
+    *,
+    name: str,
+    campaign_type: str,
+    shared_cohort_filters: dict,
+    angles: Sequence[str],
+    start_date=None,
+    end_date=None,
+) -> CampaignBatchResult:
+    created: list[tuple[Campaign, int]] = []
+    failed: list[CampaignBatchFailure] = []
+    for angle in angles:
+        cohort_filters = {**shared_cohort_filters, "message_angle": angle}
+        try:
+            with session.begin_nested():
+                campaign, enrolled_count = create_campaign(
+                    session,
+                    name=f"{name}: {angle}",
+                    campaign_type=campaign_type,
+                    cohort_filters=cohort_filters,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+        except Exception as exc:
+            failed.append(CampaignBatchFailure(angle=angle, error=str(exc)))
+            continue
+        created.append((campaign, enrolled_count))
+    return CampaignBatchResult(created=created, failed=failed)
 
 
 def add_campaign_step(
@@ -584,6 +652,16 @@ def estimate_campaign_generation_cost(
     if session.get(Campaign, campaign_id) is None:
         raise CampaignNotFound(campaign_id)
     return _estimate_generation_cost(session, campaign_id, model=model, limit=limit)
+
+
+def preview_cohort(session: Session, cohort_filters: dict) -> CohortPreview:
+    return preview_cohort_run(session, cohort_filters)
+
+
+def preview_cohort_batch(
+    session: Session, narrow_filters: dict, angles: list[str]
+) -> BatchCohortPreview:
+    return preview_cohort_batch_run(session, narrow_filters, angles)
 
 
 def list_generation_cost_models(session: Session) -> list[GenerationCostConfigVersion]:

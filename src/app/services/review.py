@@ -57,6 +57,7 @@ from app.pagination import (
 from app.privacy.fact_block import round_sig_figs
 from app.rules.catalog import load_angle
 from app.rules.tier_contract import instance_needs_review, load_tier
+from app.schemas.review import ReviewOrder
 
 # Display order for the reviewer queue: T1 is the highest-value, always-
 # reviewed tier, so it goes first. Not the same thing as app.rules.store's
@@ -513,14 +514,18 @@ def list_pending_messages(
     status: str = "pending_review",
     campaign_id: int | None = None,
     only_sampled: bool = True,
+    order: ReviewOrder = "oldest_first",
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> tuple[list[OutreachMessage], str | None]:
-    """One page of messages in the given status, oldest first: the reviewer's queue.
+    """One page of messages in the given status, oldest first by default:
+    the reviewer's queue.
 
     Ordered by (created_at, message_id) rather than created_at alone, so two
     messages created in the same instant still sort deterministically and a
-    cursor built from one of them is unambiguous.
+    cursor built from one of them is unambiguous. order="newest_first"
+    reverses both the row order and the direction the cursor walks, so
+    paging still moves monotonically through the chosen order.
 
     only_sampled (default True) hides a cohort's non-sample messages -- the
     ones riding on their cohort's sample outcome rather than being
@@ -534,13 +539,18 @@ def list_pending_messages(
         status=status, campaign_id=campaign_id, only_sampled=only_sampled
     )
     query = select(OutreachMessage).where(*filters)
-    if cursor is not None:
-        after_created_at, after_id = decode_cursor(cursor)
-        query = query.where(
-            tuple_(OutreachMessage.created_at, OutreachMessage.message_id)
-            > (after_created_at, after_id)
-        )
-    query = query.order_by(OutreachMessage.created_at, OutreachMessage.message_id).limit(limit + 1)
+    key = tuple_(OutreachMessage.created_at, OutreachMessage.message_id)
+    if order == "newest_first":
+        if cursor is not None:
+            after_created_at, after_id = decode_cursor(cursor)
+            query = query.where(key < (after_created_at, after_id))
+        query = query.order_by(OutreachMessage.created_at.desc(), OutreachMessage.message_id.desc())
+    else:
+        if cursor is not None:
+            after_created_at, after_id = decode_cursor(cursor)
+            query = query.where(key > (after_created_at, after_id))
+        query = query.order_by(OutreachMessage.created_at, OutreachMessage.message_id)
+    query = query.limit(limit + 1)
     rows = list(session.scalars(query).all())
 
     next_cursor = None
