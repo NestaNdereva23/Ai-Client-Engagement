@@ -39,11 +39,7 @@ def instantiate_template(
 
     Committed per member rather than once at the end, and an unexpected
     error from one member (a bad PII vault row, a DB blip) is caught and
-    logged rather than left to propagate: without this, one bad client
-    partway through a large matching set would roll back every message
-    already instantiated ahead of it, not just its own. A caught member is
-    simply not instantiated this call; it stays due and is picked up the
-    next time this is called.
+    logged rather than left to propagate.
     """
     if template.status != "approved":
         raise TemplateNotApproved(template.template_id)

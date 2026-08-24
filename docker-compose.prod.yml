@@ -1,5 +1,19 @@
+
 services:
+  ace-migrate:
+    image: ace-app:latest
+    build:
+      context: .
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    env_file: .env.prod
+    depends_on:
+      ace-db:
+        condition: service_healthy
+    networks: [backend]
+
   ace:
+    image: ace-app:latest
     build:
       context: .
     restart: unless-stopped
@@ -7,15 +21,17 @@ services:
     depends_on:
       ace-db:
         condition: service_healthy
+      ace-migrate:
+        condition: service_completed_successfully
     networks: [backend]
 
   ace-db:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env.prod}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env.prod}
     volumes:
       - ace_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -39,9 +55,6 @@ services:
       - ace
     networks: [backend]
 
-  # Renews the certificate twice a day; a no-op every time except the ~2
-  # days a year it's actually due. Issuing the first certificate is a
-  # manual one-off command -- see deploy/nginx/README.md.
   certbot:
     image: certbot/certbot:latest
     restart: unless-stopped
