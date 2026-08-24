@@ -34,9 +34,6 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.11"
-      # --frozen fails on a lockfile that no longer matches pyproject.toml,
-      # which is what the image build uses. Without it CI can pass on a
-      # dependency set the Dockerfile would refuse to install.
       - name: Install dependencies
         run: uv sync --frozen
       - name: Lint
@@ -45,9 +42,6 @@ jobs:
         run: uv run ruff format --check .
       - name: Apply migrations
         run: uv run alembic upgrade head
-      # Every migration ships with a working downgrade. Nothing exercised that
-      # until here: walking the whole chain down and back up is what proves it.
-      - name: Round trip migrations
         run: |
           uv run alembic downgrade base
           uv run alembic upgrade head
