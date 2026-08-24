@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
 
+# A push to a branch with an open PR would otherwise run this twice.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -30,13 +35,16 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --frozen
       - name: Lint
         run: uv run ruff check .
       - name: Format check
         run: uv run ruff format --check .
       - name: Apply migrations
         run: uv run alembic upgrade head
+        run: |
+          uv run alembic downgrade base
+          uv run alembic upgrade head
       - name: Create test database
         run: |
           uv run python -c "
@@ -51,3 +59,16 @@ jobs:
           DATABASE_URL: postgresql+psycopg://ace:ace@localhost:5432/ace_test
       - name: Test
         run: uv run pytest
+
+  # The tests above run against the host's Python, so they say nothing about
+  # whether the image the droplet actually runs still builds. This job does.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the runtime image
+        run: docker build -t ace:ci .
+      - name: Check the production compose file parses
+        run: |
+          cp .env.prod.example .env.prod
+          docker compose -f docker-compose.prod.yml --env-file .env.prod config --quiet

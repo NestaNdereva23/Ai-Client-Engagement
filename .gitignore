@@ -13,6 +13,7 @@ dist/
 .env
 .env.*
 !.env.example
+!.env.prod.example
 
 # Test / lint caches
 .pytest_cache/

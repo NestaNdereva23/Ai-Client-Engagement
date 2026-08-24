@@ -1,15 +1,3 @@
-"""Derive per-client features from the flattened normalized rows.
-
-Everything model facing here is a bucket or a label, never an exact amount or
-date, so the projection can allow-list these columns directly. Derivation is a
-pure function of the flattened result, so the same input and reference timestamp
-always give the same features.
-
-Measures are computed per client and fund, since the same person uses a cash
-fund and a long-horizon fund differently. The bands describe the relationship
-they are contacted on, which is their largest.
-"""
-
 from __future__ import annotations
 
 import math
@@ -21,14 +9,6 @@ from statistics import median
 
 from app.transform.flatten import PURCHASE_CAP, ClientRow, FlattenResult
 
-# --- thresholds behind the behavioural bands. Retune here, nowhere else. ---
-
-# Months in which exits cluster far above the usual rate: at least twice the
-# centred 13-month rolling median for that month. Frozen from the 2026-08-11
-# pull (run f120c64629334ece938e080f4d476c0a, 57,336 client-fund relationships,
-# the whole dormant book), the same discipline as VALUE_BAND_CUTOFFS below.
-# Recomputing this per run would let an old exit silently drift in or out of
-# the wave as later months change the rolling baseline around it.
 WAVE_MONTHS = frozenset(
     {
         (2020, 1),
@@ -67,16 +47,7 @@ STALE_CONTACT_DAYS = 1095
 # reminding who Cytonn is.
 NEWLY_DORMANT_DAYS = 90
 
-# Quartile boundaries of the average contribution across the population, taken
-# once and frozen. Recomputing them per run would move a client between bands
-# without their behaviour changing. Boundaries are right-closed: a value sitting
-# exactly on one belongs to the band below.
-#
-# KES-native, no conversion: taken straight off the raw purchase amounts across
-# all 57,336 client-fund relationships in the 2026-08-11 pull (run
-# f120c64629334ece938e080f4d476c0a, the whole dormant book). The earlier
-# figures were quartiles of a 2,963-row sample that turned out to be an
-# unrepresentative high-value corner of the book, not a fair cross-section.
+# Quartile boundaries of the average contribution across the population,
 VALUE_BAND_CUTOFFS = (150.0, 1_000.0, 5_250.0)
 
 # A client's history counts as deep at three purchases, or at six months

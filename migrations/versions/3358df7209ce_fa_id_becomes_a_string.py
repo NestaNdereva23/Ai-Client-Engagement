@@ -58,7 +58,13 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
+    """Downgrade schema.
+
+    Postgres has no implicit text to bigint cast, so each column needs an
+    explicit USING clause or the ALTER is rejected outright, empty table or
+    not. The rows are cleared just above, so the cast never has a real value
+    to convert and cannot fail on one.
+    """
     op.execute(sa.text("DELETE FROM fa_assignment"))
     op.execute(sa.text("DELETE FROM digest_email_send"))
     op.execute(sa.text("UPDATE digest_line SET covering_for_fa_id = NULL"))
@@ -69,6 +75,7 @@ def downgrade() -> None:
         existing_type=sa.Text(),
         type_=sa.BigInteger(),
         nullable=True,
+        postgresql_using="fa_id::bigint",
     )
     op.alter_column(
         "digest_email_send",
@@ -76,6 +83,7 @@ def downgrade() -> None:
         existing_type=sa.Text(),
         type_=sa.BigInteger(),
         nullable=False,
+        postgresql_using="fa_id::bigint",
     )
     op.alter_column(
         "digest_line",
@@ -83,4 +91,5 @@ def downgrade() -> None:
         existing_type=sa.Text(),
         type_=sa.BigInteger(),
         nullable=True,
+        postgresql_using="covering_for_fa_id::bigint",
     )
