@@ -28,7 +28,6 @@ __version__ = "0.1.0"
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Release the shared tracer's background export thread on shutdown.
-
     Nothing to set up: the tracer is built on the first request that needs
     one, and a deployment with Langfuse unconfigured never builds one at all.
     """
@@ -53,11 +52,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
 
     register_error_handlers(app)
-    # Added first, which Starlette wraps outermost -- so CORS headers still
-    # land on a response either of the next two middlewares errors out on.
-    # allow_origins from settings, not "*": IdempotencyMiddleware replays a
-    # stored response by Idempotency-Key, and a wildcard origin can't be
-    # combined with allow_credentials if that's ever turned on later.
     if settings.cors_allow_origins_list:
         app.add_middleware(
             CORSMiddleware,
@@ -67,9 +61,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
     app.add_middleware(IdempotencyMiddleware)
     app.add_middleware(CorrelationIdMiddleware)
-    # Backs the reviewer console's login (app.auth.session). Isolated from
-    # sqladmin's own session below: sqladmin mounts a separate Starlette
-    # sub-app with its own middleware stack, so the two never share state.
     app.add_middleware(
         SessionMiddleware,
         secret_key=settings.console_session_secret_key,

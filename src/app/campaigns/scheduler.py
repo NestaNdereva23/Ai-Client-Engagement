@@ -4,10 +4,7 @@ A fresh enrollment with no next_due_at yet is due immediately, so its first
 touch does not wait on a scheduler cycle. After a touch, the gap to the next
 one is measured from the step offsets: each campaign_step's offset_days is
 the day count since the campaign started, so the wait before the next touch
-is the difference between the next step's offset and the one just sent, laid
-on top of when this touch actually went out rather than a fixed calendar
-date. That way a touch sent late does not make the next one land even
-later than it should relative to the sequence.
+is the difference between the next step's offset and the one just sent.
 """
 
 from __future__ import annotations
@@ -24,10 +21,6 @@ from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
 from app.db.models.models import ClientFeatures
 
 DEFAULT_BATCH_LIMIT = 500
-
-# A caller may ask for more than the default batch in one call (a large
-# campaign's first sweep, say); this is the ceiling on that ask, not the
-# ceiling on a single run's usual size.
 MAX_BATCH_LIMIT = 10000
 
 _SCHEDULABLE_STATUSES = ("enrolled", "in_progress")
@@ -36,27 +29,7 @@ _SCHEDULABLE_STATUSES = ("enrolled", "in_progress")
 def select_due_enrollments(
     session: Session, *, campaign_id: int | None = None, limit: int = DEFAULT_BATCH_LIMIT
 ) -> list[Enrollment]:
-    """Enrollments ready for their next touch, freshest contact first.
 
-    Due means next_due_at has passed, or has never been set (nothing has
-    been sent yet). A row that lost the primary-contact tiebreak at
-    enrollment is never due for anything: it stays enrolled for record
-    keeping, but generating or sending from it would give the person it
-    shares with the primary row a second touch. A client whose contact
-    details are over three years old sorts after everyone fresher,
-    oldest-enrolled first within each group, so a run ramps into the cold
-    end of the list rather than reaching it all in one batch; a client with
-    no feature row yet sorts as if fresh, so a client waiting on its first
-    transform is never held back by this. A bounded limit keeps one run to a
-    manageable batch; running again the same day just picks up whatever is
-    still due, since this only reads and never changes anything itself.
-
-    An enrollment whose next step already has a touch_log row is excluded
-    here, not just later at the eligibility gate: next_due_at only moves once
-    a touch is actually sent, so a generated-but-unsent step would otherwise
-    keep reappearing at the front of every future page (ordered by
-    enrollment_id) and permanently block anything after it in the batch.
-    """
     next_step_no = Enrollment.current_step + 1
     query = (
         select(Enrollment)
@@ -82,11 +55,6 @@ def select_due_enrollments(
 
 
 def count_stale_contacts(session: Session, enrollments: Sequence[Enrollment]) -> int:
-    """How many of these enrollments belong to a client with a stale contact.
-
-    A read for visibility, not a filter: nothing here changes what is due or
-    skips a send. Callers use this to watch the ramp, not to enforce it.
-    """
     client_ids = {e.client_id for e in enrollments}
     if not client_ids:
         return 0
@@ -103,13 +71,7 @@ def count_stale_contacts(session: Session, enrollments: Sequence[Enrollment]) ->
 def advance_enrollment(
     session: Session, enrollment: Enrollment, *, step_no: int, sent_at: datetime
 ) -> Enrollment:
-    """Move an enrollment forward after step_no went out at sent_at.
-
-    Safe to call again for a step already advanced past: it is then a
-    no-op rather than skipping ahead a second time, so a scheduler run
-    repeated for the same day cannot push an enrollment further than the
-    touches it actually sent.
-    """
+    """Move an enrollment forward after step_no went out at sent_at."""
     if enrollment.current_step >= step_no:
         return enrollment
 
@@ -124,14 +86,12 @@ def advance_enrollment(
 
     enrollment.current_step = step_no
     if next_step is not None:
+        print(f"Next step {next_step.step_no} is due in {next_step.offset_days} days")
         delta_days = next_step.offset_days - (current.offset_days if current else 0)
         enrollment.next_due_at = sent_at + timedelta(days=max(delta_days, 0))
         transition_enrollment(session, enrollment, to_status="in_progress", reason="touch_sent")
     else:
         enrollment.next_due_at = None
-        # A one-step campaign's only touch completes it on the enrollment's
-        # very first send: the state machine still requires the in_progress
-        # hop, since enrolled has no direct route to completed.
         if enrollment.status == "enrolled":
             transition_enrollment(session, enrollment, to_status="in_progress", reason="touch_sent")
         transition_enrollment(session, enrollment, to_status="completed", reason="all_touches_sent")

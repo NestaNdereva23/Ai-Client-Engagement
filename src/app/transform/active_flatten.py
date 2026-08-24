@@ -1,11 +1,4 @@
-"""Flatten the active-clients payload into funds, clients, and transactions.
-
-Same shape and quirks as transform/flatten.py, reusing its date and amount
-parsing so both feeds treat mixed ISO8601 dates and string amounts the same
-way. Two things differ: there is no "collapse to one primary contact" step,
-since active_client_fund keeps one row per client-fund relationship rather
-than one row per person, and sale rows carry sale_type.
-"""
+"""Flatten the active-clients payload into funds, clients, and transactions."""
 
 from __future__ import annotations
 
@@ -29,6 +22,8 @@ class ActiveClientRow:
     client_id: int
     client_code: int | str | None
     client_name: str | None
+    client_email: str | None
+    client_phone: str | None
     unit_fund_id: int
     balance: float | None
     n_deposits: int
@@ -86,12 +81,6 @@ def _active_txn_row(
 def flatten_active_payload(
     payload: dict[str, Any], reference_date: datetime
 ) -> ActiveFlattenResult:
-    """Flatten one active-clients raw payload into clients and transactions.
-
-    reference_date is accepted for symmetry with flatten_payload, though the
-    active-book row itself carries no days_since_* field yet; the active-book
-    feature derivation milestone is what needs the anchor.
-    """
     result = ActiveFlattenResult()
 
     env_data = payload.get("data", []) or []
@@ -133,6 +122,8 @@ def flatten_active_payload(
                     client_id=client.client_id,
                     client_code=client.client_code,
                     client_name=client.client_name,
+                    client_email=client.client_email,
+                    client_phone=client.client_phone,
                     unit_fund_id=fund.unit_fund_id,
                     balance=client.balance,
                     n_deposits=len(deposits),

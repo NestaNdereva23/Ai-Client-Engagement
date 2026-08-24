@@ -1,15 +1,3 @@
-"""Integration inbound: contact channels, suppressions, and the ingestion trigger.
-
-The parent system pushes data ACE cannot get from the Cytonn client-data pull
-itself: contact channels (unblocking R1, since that pull carries no email or
-phone), and compliance suppressions. Both are client_id-keyed and restricted
-(CLAUDE.md §7), so both write through restricted_session(), the same pattern
-services/review.py's vault read already uses, just for a write instead. Both
-are upserts, not appends: a resync overwrites only the fields it actually
-carries, so a consent-only update can never blank out a previously known
-email or phone.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -31,16 +19,6 @@ class ClientNotFound(Exception):
 
 @dataclass(frozen=True)
 class ContactRecord:
-    """A plain snapshot of the upserted vault row.
-
-    Never the ORM object itself: restricted_session()'s cleanup rolls back
-    on the way out to guarantee the role is reset even on an exception path,
-    and a rollback unconditionally expires every attribute on every object
-    still attached to that session, expire_on_commit or not. Returning the
-    live object would leave the caller holding one that raises
-    DetachedInstanceError on first read.
-    """
-
     client_id: int
     contact_email: str | None
     contact_whatsapp: str | None
@@ -50,8 +28,6 @@ class ContactRecord:
 
 @dataclass(frozen=True)
 class SuppressionRecord:
-    """A plain snapshot of the upserted suppression row; see ContactRecord for why."""
-
     client_id: int
     reason: str
     source: str | None

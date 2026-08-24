@@ -1,24 +1,3 @@
-"""Flatten the nested client payload into funds, clients, and transactions.
-
-The source nests clients under funds and transactions under clients, with the
-fund record repeated inside every transaction. This turns one payload into three
-flat lists and derives each client's activity fields (last dates, totals, days
-since last activity).
-
-One client row is produced per client and fund, since a client holding two funds
-appears once under each with a separate history. Collapsing them to one person
-happens later, when deciding who to contact.
-
-It reads from raw staging, never the source, so re-processing is free. Amounts
-arrive as strings and dates in mixed ISO formats; both are parsed leniently and
-anything unparseable is counted rather than raising.
-
-days_since_* is anchored to a reference timestamp, not the wall clock. flatten_run
-reads that timestamp back from the run's ingestion_status row, so re-running the
-same run gives identical derivations. The timestamp is stored and read over an
-EAT connection, so its calendar date is already East Africa Time.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -42,9 +21,6 @@ SALE_CAP = 2
 class FundRow:
     unit_fund_id: int
     unit_fund_name: str | None
-    # The source's own headcount field is a per-page count, not a fund total,
-    # so this is the sum of every page's count seen for this fund so far, not
-    # a single page's value. See _combine_fund.
     inactive_client_count: int | None
 
 
@@ -53,6 +29,8 @@ class ClientRow:
     client_id: int
     client_code: int | str | None
     client_name: str | None
+    client_email: str | None
+    client_phone: str | None
     unit_fund_id: int
     balance: float | None
     n_purchases_returned: int
@@ -135,13 +113,6 @@ def max_date(dates: list[date | None]) -> date | None:
 
 
 def _combine_fund(existing: FundRow | None, incoming: FundRow) -> FundRow:
-    """Merge two sightings of the same fund, summing the per-page headcount.
-
-    The source reports the headcount on every page a fund appears on, and it
-    is the count on that page, not the fund's total. Adding the pages together
-    is what turns it back into a fund total; taking either one alone would
-    just be a different wrong number.
-    """
     if existing is None:
         return incoming
     seen = (existing.inactive_client_count, incoming.inactive_client_count)
@@ -157,8 +128,6 @@ def _txn_row(
     txn_type: str,
     counters: FlattenCounters,
 ) -> TxnRow:
-    # The embedded unit_fund object is duplicated fund metadata; keep only the
-    # short name and drop the rest.
     embedded = txn.get("unit_fund") or txn.get("fund") or {}
     return TxnRow(
         txn_id=txn.get("id"),
@@ -176,13 +145,7 @@ def _txn_row(
 
 
 def flatten_payload(payload: dict[str, Any], reference_date: datetime) -> FlattenResult:
-    """Flatten one raw payload into funds, clients, and transactions.
-
-    reference_date anchors days since last activity. It is required, with no
-    wall-clock fallback, so the same payload and anchor always flatten the same
-    way. Its calendar date is used, taken in whatever zone the datetime carries;
-    flatten_run supplies the run's persisted EAT timestamp.
-    """
+    """Flatten one raw payload into funds, clients, and transactions."""
     ref = reference_date.date()
     result = FlattenResult()
     funds_by_id: dict[int, FundRow] = {}
@@ -222,9 +185,6 @@ def flatten_payload(payload: dict[str, Any], reference_date: datetime) -> Flatte
             last_activity = max_date([last_purchase, last_sale])
             total_purchase = sum(r.amount for r in purchase_rows)
             total_sale = sum(r.amount for r in sale_rows)
-
-            # A full purchase window hides older purchases. A full window of
-            # either kind means the client's real history is truncated.
             purchases_censored = len(purchases) >= PURCHASE_CAP
             history_censored = purchases_censored or len(sales) >= SALE_CAP
 
@@ -233,6 +193,8 @@ def flatten_payload(payload: dict[str, Any], reference_date: datetime) -> Flatte
                     client_id=client.client_id,
                     client_code=client.client_code,
                     client_name=client.client_name,
+                    client_email=client.client_email,
+                    client_phone=client.client_phone,
                     unit_fund_id=fund.unit_fund_id,
                     balance=client.balance,
                     n_purchases_returned=len(purchases),
@@ -286,14 +248,6 @@ def latest_reference_date(session: Session) -> date | None:
 def flatten_run(
     session: Session, run_id: str, reference_date: datetime | None = None
 ) -> FlattenResult:
-    """Read a run's raw staging pages and flatten them into one result.
-
-    Funds are combined across pages, summing the per-page headcount rather than
-    keeping one page's value (see _combine_fund). The anchor for days_since_* is
-    the run's persisted reference_ts, read back here, so re-running the same run
-    reproduces identical derivations. Pass reference_date only to override that
-    anchor.
-    """
     ref = reference_date if reference_date is not None else _load_reference_ts(session, run_id)
     payloads = (
         session.execute(

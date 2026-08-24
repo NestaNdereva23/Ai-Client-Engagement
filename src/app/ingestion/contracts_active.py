@@ -1,13 +1,4 @@
-"""Models for the active clients response.
-
-Same contract discipline as contracts.py: amounts stay as strings, dates as
-mixed ISO8601 strings, client_code as an int or a string, and each record is
-checked on its own so one bad client does not drop the whole fund or page.
-
-Two things differ from the dormant feed's contract: balance here is a real,
-non-zero figure rather than the dormant feed's always-zero one, and a sale
-carries a sale_type field the dormant feed's contract does not model.
-"""
+"""Models for the active clients response."""
 
 from __future__ import annotations
 
@@ -15,8 +6,6 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-# Keys we expect at each level. schema_drift_active uses these to spot new or
-# renamed keys.
 EXPECTED_ACTIVE_FUND_KEYS = {
     "unit_fund_id",
     "unit_fund_name",
@@ -27,6 +16,8 @@ EXPECTED_ACTIVE_CLIENT_KEYS = {
     "client_id",
     "client_code",
     "client_name",
+    "client_email",
+    "client_phone",
     "balance",
     "computed_at",
     "last_5_purchases",
@@ -73,17 +64,13 @@ class ActiveTransactionRecord(BaseModel):
 
 
 class ActiveClientRecord(BaseModel):
-    """An active client. client_id is required; client_name is the only real
-    personal data and stays only so the transform can move it to the
-    restricted store. balance has no zero default, unlike the dormant
-    contract, since an active client is expected to carry a real balance.
-    """
-
     model_config = ConfigDict(extra="ignore")
 
     client_id: int
     client_code: int | str | None = None
     client_name: str | None = None
+    client_email: str | None = None
+    client_phone: str | None = None
     balance: float | None = None
     computed_at: str | None = None
     last_5_purchases: list[ActiveTransactionRecord] = Field(default_factory=list)
@@ -105,7 +92,7 @@ class ActiveFundRecord(BaseModel):
 def schema_drift_active(payload: dict[str, Any]) -> set[str]:
     """Return any unexpected keys found anywhere in the active-clients payload.
 
-    An empty set means the payload matches what we expect. A non empty set
+    An empty set means the payload matches what is expected. A non empty set
     means the shape changed, a new or renamed key, and should be looked at.
     """
     unexpected: set[str] = set(payload.keys()) - EXPECTED_ENVELOPE_KEYS
