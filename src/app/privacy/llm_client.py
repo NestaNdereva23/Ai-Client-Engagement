@@ -41,12 +41,6 @@ class LLMClient(Protocol):
 
 
 class AnthropicLLMClient:
-    """Claude implementation of LLMClient.
-
-    Pass in an anthropic.Anthropic instance to make tests fast and offline;
-    by default it builds one from the configured API key.
-    """
-
     def __init__(
         self,
         *,
@@ -93,14 +87,6 @@ class AnthropicLLMClient:
 
 
 class OllamaLLMClient:
-    """Local Ollama implementation of LLMClient, for testing against an open model.
-
-    json_output forces the model to emit a JSON object, which is what the
-    email draft and the judge both parse. A caller that wants prose must
-    turn it off: with it on, a small local model returns a JSON object even
-    when the prompt asks for sentences, and invents field names to fill it.
-    """
-
     def __init__(
         self,
         *,
@@ -198,12 +184,6 @@ def get_llm_client(settings: Settings | None = None) -> LLMClient:
 def resolve_judge_model_config(
     settings: Settings | None = None,
 ) -> tuple[str, str, float | None, int]:
-    """The (provider, model, temperature, max_tokens) judge_draft actually runs with.
-
-    judge_llm_provider/judge_llm_model fall back to llm_provider/llm_model when
-    unset, so a caller (llmops.versions.persist_evaluation) can stamp the exact
-    judge model without re-deriving the same fallback separately.
-    """
     settings = settings or get_settings()
     provider = settings.judge_llm_provider or settings.llm_provider
     model = settings.judge_llm_model or settings.llm_model
@@ -211,12 +191,6 @@ def resolve_judge_model_config(
 
 
 def get_judge_llm_client(settings: Settings | None = None) -> LLMClient:
-    """Build the LLM client llmops.judge scores drafts with.
-
-    Independent of get_llm_client: judge_llm_provider/judge_llm_model let the
-    judge run a different model than generation (e.g. a second local Ollama
-    model), falling back to the generation model when not configured.
-    """
     settings = settings or get_settings()
     provider, model, temperature, max_tokens = resolve_judge_model_config(settings)
     return _build_llm_client(
@@ -233,13 +207,6 @@ def get_judge_llm_client(settings: Settings | None = None) -> LLMClient:
 def resolve_briefing_model_config(
     settings: Settings | None = None,
 ) -> tuple[str, str, float | None, int]:
-    """The (provider, model, temperature, max_tokens) the briefing narrator runs with.
-
-    briefing_llm_provider/briefing_llm_model fall back to llm_provider/llm_model
-    when unset, the same fallback resolve_judge_model_config uses, so the
-    narrator works with no extra config and can still be pointed at a
-    different model independently of generation or judging.
-    """
     settings = settings or get_settings()
     provider = settings.briefing_llm_provider or settings.llm_provider
     model = settings.briefing_llm_model or settings.llm_model
@@ -247,15 +214,6 @@ def resolve_briefing_model_config(
 
 
 def get_briefing_llm_client(settings: Settings | None = None) -> LLMClient:
-    """Build the LLM client briefing.narrative drafts a narrated briefing with.
-
-    Independent of get_llm_client and get_judge_llm_client: briefing_llm_provider/
-    briefing_llm_model let the narrator run a different model than either,
-    falling back to the generation model when not configured.
-
-    The only caller that asks for prose rather than a JSON object, so it is
-    also the only one that turns json_output off.
-    """
     settings = settings or get_settings()
     provider, model, temperature, max_tokens = resolve_briefing_model_config(settings)
     return _build_llm_client(
@@ -271,23 +229,10 @@ def get_briefing_llm_client(settings: Settings | None = None) -> LLMClient:
 
 
 def render_model_context(payload: dict[str, Any]) -> str:
-    """The user-turn text for one allow-listed, already-scanned payload.
-
-    The one place this rendering happens, so the synchronous path (through
-    as_model_call) and the batch path (through campaigns.batch_generation)
-    send the model byte-for-byte the same framing for the same facts.
-    """
     return "\n".join(f"{key}: {value}" for key, value in sorted(payload.items()))
 
 
 def as_model_call(client: LLMClient, *, system: str) -> ModelCall:
-    """Adapt an LLMClient into the ModelCall run_model_boundary expects.
-
-    The payload is already allow listed and bucketed by the time it reaches
-    here (run_model_boundary scans it first), so it is safe to serialize
-    as is into the user turn.
-    """
-
     def call(payload: dict[str, Any]) -> str:
         return client.generate(system=system, user=render_model_context(payload))
 
@@ -295,13 +240,7 @@ def as_model_call(client: LLMClient, *, system: str) -> ModelCall:
 
 
 def get_anthropic_batch_client(settings: Settings | None = None) -> anthropic.Anthropic:
-    """The raw Anthropic client, for the batch endpoints the LLMClient
-    protocol has no concept of (no other provider here has a batch API).
-
-    Only the client construction is shared with get_llm_client; the
-    resulting object is used solely by campaigns.batch_generation to call
-    client.messages.batches.*, never to draft outside the model boundary.
-    """
+    """The raw Anthropic client, for the batch endpoints the LLMClient"""
     settings = settings or get_settings()
     if settings.llm_provider != "anthropic":
         raise ValueError(
@@ -320,21 +259,10 @@ def build_batch_request(
 ) -> BatchRequest:
     """One client's entry for client.messages.batches.create(requests=[...]).
 
-    The one place a batch request is shaped, so campaigns.batch_generation
-    (and anything else that submits a batch) never imports the provider SDK
-    directly -- the same rule the rest of this module already enforces for
-    a single synchronous call.
-
     system_cached carries the ephemeral cache_control breakpoint, so every
     request in a batch that shares the same angle, tier, and product (the
-    only things system_cached depends on) can hit the same cache entry --
-    the Message Batches API caches per request, best-effort, only when the
-    marked block is byte-for-byte identical across requests. It is always
-    the first system block, since caching covers everything up to and
-    including the marked block: put system_dynamic (this one client's own
-    facts) after it, never before, or nothing before it would be cached
-    either. system_dynamic is omitted entirely when empty, rather than
-    sent as an empty text block.
+    only things system_cached depends on) can hit the same cache entry
+    the Message Batches API caches per request, best-effort
     """
     settings = settings or get_settings()
     system_blocks: list[dict[str, Any]] = [

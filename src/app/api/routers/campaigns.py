@@ -27,6 +27,9 @@ from app.privacy.llm_client import get_llm_client
 from app.schemas.campaigns import (
     BatchIngestOutcomeOut,
     BatchIngestResultOut,
+    CampaignBatchCreateOut,
+    CampaignBatchCreateRequest,
+    CampaignBatchFailureOut,
     CampaignCreateOut,
     CampaignCreateRequest,
     CampaignDetailOut,
@@ -36,6 +39,12 @@ from app.schemas.campaigns import (
     CampaignStepOut,
     CampaignSummaryOut,
     CampaignValueOut,
+    CohortFilter,
+    CohortPreviewAngleOut,
+    CohortPreviewBatchOut,
+    CohortPreviewBatchRequest,
+    CohortPreviewNarrowOut,
+    CohortPreviewOut,
     EnrollmentOut,
     GenerationBatchOut,
     GenerationCostModelOut,
@@ -68,6 +77,7 @@ from app.services.campaigns import (
     campaign_summary,
     campaign_value,
     create_campaign,
+    create_campaign_batch,
     draft_campaign_templates,
     estimate_campaign_generation_cost,
     estimate_campaign_templates,
@@ -82,6 +92,8 @@ from app.services.campaigns import (
     list_generation_cost_models,
     outreach_analytics,
     outreach_trend,
+    preview_cohort,
+    preview_cohort_batch,
     run_campaign_generation,
     send_campaign,
     set_campaign_template_policy,
@@ -98,11 +110,28 @@ def get_campaigns(
     status: str | None = None,
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    fund_id: int | None = None,
+    value_band: str | None = None,
+    recency_band: str | None = None,
+    purchase_depth: str | None = None,
+    newly_dormant: bool | None = None,
+    message_angle: str | None = None,
     session: Session = Depends(get_session),
 ) -> Page[CampaignListItemOut]:
     """Campaigns oldest-first, each carrying its own enrollment counts."""
     try:
-        rows, next_cursor = list_campaigns(session, status=status, cursor=cursor, limit=limit)
+        rows, next_cursor = list_campaigns(
+            session,
+            status=status,
+            cursor=cursor,
+            limit=limit,
+            fund_id=fund_id,
+            value_band=value_band,
+            recency_band=recency_band,
+            purchase_depth=purchase_depth,
+            newly_dormant=newly_dormant,
+            message_angle=message_angle,
+        )
     except InvalidCursor:
         raise HTTPException(status_code=400, detail="invalid cursor") from None
     items = [
@@ -148,6 +177,84 @@ def post_campaign(
         end_date=campaign.end_date,
         created_at=campaign.created_at,
         enrolled_count=enrolled_count,
+    )
+
+
+@router.post("/batch", response_model=CampaignBatchCreateOut, status_code=201)
+def post_campaign_batch_create(
+    body: CampaignBatchCreateRequest, session: Session = Depends(get_session)
+) -> CampaignBatchCreateOut:
+    result = create_campaign_batch(
+        session,
+        name=body.name,
+        campaign_type=body.campaign_type,
+        shared_cohort_filters=body.cohort.model_dump(),
+        angles=body.angles,
+        start_date=body.start_date,
+        end_date=body.end_date,
+    )
+    session.commit()
+    return CampaignBatchCreateOut(
+        created=[
+            CampaignCreateOut(
+                campaign_id=campaign.campaign_id,
+                name=campaign.name,
+                campaign_type=campaign.campaign_type,
+                status=campaign.status,
+                cohort_definition=campaign.cohort_definition,
+                start_date=campaign.start_date,
+                end_date=campaign.end_date,
+                created_at=campaign.created_at,
+                enrolled_count=enrolled_count,
+            )
+            for campaign, enrolled_count in result.created
+        ],
+        failed=[
+            CampaignBatchFailureOut(angle=failure.angle, error=failure.error)
+            for failure in result.failed
+        ],
+    )
+
+
+@router.post("/preview", response_model=CohortPreviewOut)
+def post_campaign_preview(
+    body: CohortFilter, session: Session = Depends(get_session)
+) -> CohortPreviewOut:
+    preview = preview_cohort(session, body.model_dump())
+    return CohortPreviewOut(
+        matched_count=preview.matched_count,
+        primary_count=preview.primary_count,
+        suppressed_count=preview.suppressed_count,
+        valued_count=preview.valued_count,
+        estimated_value=preview.estimated_value,
+    )
+
+
+@router.post("/preview/batch", response_model=CohortPreviewBatchOut)
+def post_campaign_preview_batch(
+    body: CohortPreviewBatchRequest, session: Session = Depends(get_session)
+) -> CohortPreviewBatchOut:
+    narrow_filters = {
+        "fund_id": body.fund_id,
+        "value_band": body.value_band,
+        "recency_band": body.recency_band,
+        "purchase_depth": body.purchase_depth,
+        "newly_dormant": body.newly_dormant,
+    }
+    result = preview_cohort_batch(session, narrow_filters, body.angles)
+    return CohortPreviewBatchOut(
+        narrow=CohortPreviewNarrowOut(
+            matched_count=result.narrow.matched_count,
+            estimated_value=result.narrow.estimated_value,
+        ),
+        angles=[
+            CohortPreviewAngleOut(
+                message_angle=a.message_angle,
+                matched_count=a.matched_count,
+                estimated_value=a.estimated_value,
+            )
+            for a in result.angles
+        ],
     )
 
 

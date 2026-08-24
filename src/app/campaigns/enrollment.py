@@ -61,20 +61,33 @@ def _relationship_values(session: Session, client_ids: Sequence[int]) -> dict[in
     return {row.client_id: row.total_purchase_amount or 0.0 for row in rows}
 
 
+def _resolve_primary_flags_for_pool(
+    session: Session, client_ids: Sequence[int], *, already_claimed_names: set[str]
+) -> dict[int, bool]:
+    if not client_ids:
+        return {}
+
+    names = _fetch_client_names(client_ids)
+    values = _relationship_values(session, client_ids)
+
+    flags: dict[int, bool] = {}
+    claimed = set(already_claimed_names)
+    ordered = sorted(client_ids, key=lambda cid: (-values.get(cid, 0.0), cid))
+    for client_id in ordered:
+        name = names.get(client_id)
+        if not name:
+            flags[client_id] = True
+        elif name in claimed:
+            flags[client_id] = False
+        else:
+            flags[client_id] = True
+            claimed.add(name)
+    return flags
+
+
 def _resolve_primary_flags(
     session: Session, *, campaign_id: int, new_client_ids: Sequence[int]
 ) -> dict[int, bool]:
-    """Decide which of new_client_ids should be the primary row for its person.
-
-    A shared vault name usually means one real person registered more than
-    once (Cytonn's client_id is not stable across every registration), not a
-    coincidence, so this still dedupes by name. A person who already has a
-    primary row in this campaign keeps it. Among new client_ids that share an
-    unclaimed name, the one with the larger relationship wins, the same
-    largest-relationship-wins principle client_fund applies within one
-    client_id; a tied or missing value falls back to the lower client_id so
-    the outcome stays deterministic.
-    """
     if not new_client_ids:
         return {}
 
@@ -86,24 +99,17 @@ def _resolve_primary_flags(
             )
         ).scalars()
     )
+    already_names = _fetch_client_names(already_primary_ids)
+    claimed_names = {name for name in already_names.values() if name}
+    return _resolve_primary_flags_for_pool(
+        session, new_client_ids, already_claimed_names=claimed_names
+    )
 
-    names = _fetch_client_names([*already_primary_ids, *new_client_ids])
-    claimed_names = {names[cid] for cid in already_primary_ids if names.get(cid)}
-    values = _relationship_values(session, new_client_ids)
 
-    flags: dict[int, bool] = {}
-    claimed_this_call: set[str] = set()
-    ordered = sorted(new_client_ids, key=lambda cid: (-values.get(cid, 0.0), cid))
-    for client_id in ordered:
-        name = names.get(client_id)
-        if not name:
-            flags[client_id] = True
-        elif name in claimed_names or name in claimed_this_call:
-            flags[client_id] = False
-        else:
-            flags[client_id] = True
-            claimed_this_call.add(name)
-    return flags
+def resolve_primary_client_ids(session: Session, client_ids: Sequence[int]) -> set[int]:
+    unique_ids = list(dict.fromkeys(client_ids))
+    flags = _resolve_primary_flags_for_pool(session, unique_ids, already_claimed_names=set())
+    return {client_id for client_id, is_primary in flags.items() if is_primary}
 
 
 def enroll_cohort(
