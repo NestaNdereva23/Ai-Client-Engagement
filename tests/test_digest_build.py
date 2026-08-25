@@ -1,6 +1,7 @@
-"""Tests for digest/build.py: grouping (with the FA-to-fund fallback), sort
-order, the per-group cap's batch boundaries, the complaint caveat, and that
-a rebuild from the same risk_run_id gives back the same lines.
+"""Tests for digest/build.py: grouping (an advisor's own queue, and the
+fund wide group beside it), sort order, the per-group cap's batch
+boundaries, the complaint caveat, and that a rebuild from the same
+risk_run_id gives back the same lines.
 """
 
 from __future__ import annotations
@@ -108,7 +109,7 @@ def _seed(
     )
 
 
-def test_falls_back_to_fund_when_fa_id_is_null(db, cleanup) -> None:
+def test_unassigned_clients_land_in_the_fund_group(db, cleanup) -> None:
     run_ids, client_ids = cleanup
     client_a, client_b = 93001, 93002
     client_ids.extend([client_a, client_b])
@@ -155,7 +156,11 @@ def test_groups_by_fa_id_when_one_is_assigned(db, cleanup) -> None:
 
     assert set(result.groups) == {"fa:fa-7", f"fund:{FUND_ID}"}
     assert [line.client_id for line in result.groups["fa:fa-7"].lines] == [client_a]
-    assert [line.client_id for line in result.groups[f"fund:{FUND_ID}"].lines] == [client_b]
+    # The fund group is the whole fund, so it holds the assigned client too,
+    # not only the one nobody owns.
+    fund_group = result.groups[f"fund:{FUND_ID}"]
+    assert {line.client_id for line in fund_group.lines} == {client_a, client_b}
+    assert fund_group.total_eligible == 2
 
 
 def test_sort_order_is_fund_at_risk_not_score(db, cleanup) -> None:
@@ -407,3 +412,62 @@ def test_a_lent_client_groups_under_the_stand_in(db, cleanup) -> None:
     assert lent_line.client_id == lent
     assert lent_line.covering_for_fa_id == "fa-7"
     assert result.groups["fa:fa-7"].lines[0].covering_for_fa_id is None
+
+
+def test_fund_group_is_the_union_of_every_advisor_book(db, cleanup) -> None:
+    run_ids, client_ids = cleanup
+    of_fa_7, of_fa_8, unowned = 93043, 93044, 93045
+    client_ids.extend([of_fa_7, of_fa_8, unowned])
+
+    with SessionLocal() as session:
+        run_id = _run(session)
+        run_ids.append(run_id)
+        _seed(session, run_id, of_fa_7, 40, 30_000.0, "fa_watchlist")
+        _seed(session, run_id, of_fa_8, 40, 20_000.0, "fa_watchlist")
+        _seed(session, run_id, unowned, 40, 10_000.0, "fa_watchlist")
+        session.commit()
+
+        result = build_digest(
+            session,
+            run_id,
+            fa_assignment_source=FakeFaAssignmentSource(
+                {(of_fa_7, FUND_ID): "fa-7", (of_fa_8, FUND_ID): "fa-8"}
+            ),
+            cap_per_group=12,
+        )
+
+    fund_group = result.groups[f"fund:{FUND_ID}"]
+    assert [line.client_id for line in fund_group.lines] == [of_fa_7, of_fa_8, unowned]
+    assert fund_group.total_eligible == 3
+    assert fund_group.total_fund_at_risk == pytest.approx(60_000.0)
+    assert [line.rank for line in fund_group.lines] == [1, 2, 3]
+
+    # Each advisor still sees only their own, and every one of them also
+    # shows up in the fund group.
+    assert [line.client_id for line in result.groups["fa:fa-7"].lines] == [of_fa_7]
+    assert [line.client_id for line in result.groups["fa:fa-8"].lines] == [of_fa_8]
+
+
+def test_a_fund_line_never_records_who_is_covering(db, cleanup) -> None:
+    run_ids, client_ids = cleanup
+    lent = 93046
+    client_ids.append(lent)
+
+    with SessionLocal() as session:
+        run_id = _run(session)
+        run_ids.append(run_id)
+        _seed(session, run_id, lent, 40, 9_000.0, "fa_call_priority", queue_rank=1)
+        session.commit()
+
+        result = build_digest(
+            session,
+            run_id,
+            fa_assignment_source=FakeFaAssignmentSource({(lent, FUND_ID): "fa-7"}),
+            cap_per_group=12,
+            covering={lent: "fa-8"},
+        )
+
+    # The stand-in's queue says who they are calling for. The fund view is
+    # not a queue, so it says nothing about it.
+    assert result.groups["fa:fa-8"].lines[0].covering_for_fa_id == "fa-7"
+    assert result.groups[f"fund:{FUND_ID}"].lines[0].covering_for_fa_id is None

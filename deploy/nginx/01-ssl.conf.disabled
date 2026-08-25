@@ -1,7 +1,3 @@
-# Port 443. Inert until renamed to 01-ssl.conf: nginx only loads *.conf from
-# this directory. Do not enable it before the certificate exists, or nginx
-# fails to start on the missing certificate file.
-
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
@@ -18,9 +14,7 @@ server {
     add_header X-Frame-Options SAMEORIGIN always;
     add_header Referrer-Policy strict-origin-when-cross-origin always;
 
-    location / {
-        # Same per-request resolution as the port 80 block: nginx should stay
-        # up and return 502 when ace is down, not refuse to start.
+    location = /health {
         resolver 127.0.0.11 valid=10s;
         set $ace_upstream http://ace:8000;
 
@@ -28,5 +22,9 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location / {
+        deny all;
     }
 }

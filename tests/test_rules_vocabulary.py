@@ -16,7 +16,7 @@ from app.rules.catalog import load_active_angles
 from app.rules.store import MESSAGE_ANGLES, PRIORITY_TIERS, RULE_FIELD_DOMAINS
 from app.transform import features as feat
 
-IN_FORCE = date(2026, 8, 2)
+IN_FORCE = date(2026, 8, 24)
 
 # Each band, its declared vocabulary, and the function that produces it.
 _BANDS = [

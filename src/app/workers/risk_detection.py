@@ -44,6 +44,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.audit.log import record_audit
+from app.campaigns.nurture_bridge import enroll_auto_checkin_clients
 from app.config import get_settings
 from app.db.models.digest import DigestRun
 from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion, RiskRun, RiskSnapshot
@@ -416,6 +417,7 @@ class RiskDetectionWorker:
             )
             session.commit()
 
+            self._enroll_auto_checkin(changes)
             self._send_digest_emails(digest_run.digest_run_id, allocation.covering)
             self._warm_narratives(digest_run.digest_run_id)
 
@@ -436,6 +438,18 @@ class RiskDetectionWorker:
             raise
         finally:
             session.close()
+
+    def _enroll_auto_checkin(self, changes: list[dict[str, Any]]) -> None:
+        client_ids = sorted({c["client_id"] for c in changes if c["route"] == "auto_checkin"})
+        if not client_ids:
+            return
+        try:
+            with self._session_factory() as session:
+                enrolled = enroll_auto_checkin_clients(session, client_ids)
+                session.commit()
+                logger.info("risk_detection.auto_checkin_enrolled", enrolled=len(enrolled))
+        except Exception:
+            logger.exception("risk_detection.auto_checkin_enroll_failed", client_ids=client_ids)
 
     def _warm_narratives(self, digest_run_id: int) -> None:
         """Pre-draft narrations for the clients this digest surfaces.
