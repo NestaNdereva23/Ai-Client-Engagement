@@ -1,10 +1,9 @@
-"""Risk endpoints: read-only queue views over the current risk state."""
-
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.api.reviewer_auth import get_current_reviewer_id
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.risk import (
@@ -22,23 +21,16 @@ from app.services.risk import (
     risk_trend,
 )
 
-router = APIRouter(prefix="/risk", tags=["risk"])
+router = APIRouter(prefix="/risk", tags=["risk"], dependencies=[Depends(get_current_reviewer_id)])
 
 
 @router.get("/coverage", response_model=RiskCoverageOut)
 def get_risk_coverage(session: Session = Depends(get_session)) -> RiskCoverageOut:
-    """The active book's size vs. how many of them the last completed
-    nightly run actually scored, an ops-facing read only.
-    """
     return RiskCoverageOut.model_validate(book_coverage(session))
 
 
 @router.get("/analytics", response_model=RiskAnalyticsOut)
 def get_risk_analytics(session: Session = Depends(get_session)) -> RiskAnalyticsOut:
-    """Coverage plus risk-band distribution, route distribution, and
-    signal-fire frequency across the whole active book, an ops-facing read
-    only.
-    """
     analytics = risk_analytics(session)
     return RiskAnalyticsOut(
         book_size=analytics.book_size,
@@ -62,11 +54,6 @@ def get_risk_trend(
     runs: int = Query(default=30, ge=1, le=90),
     session: Session = Depends(get_session),
 ) -> RiskTrendOut:
-    """The last `runs` completed nightly runs' book-wide numbers, oldest
-    first: band composition, total fund at risk, and average score. An
-    ops-facing read only, the trend counterpart to the point-in-time
-    /analytics snapshot above.
-    """
     points = risk_trend(session, runs=runs)
     return RiskTrendOut(
         points=[
@@ -88,12 +75,6 @@ def get_small_balance_review_queue(
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
 ) -> Page[SmallBalanceReviewLineOut]:
-    """The current small_balance_review population, an ops-facing read only.
-
-    No send capability sits anywhere near this route: nothing in campaigns/
-    ever reads it, and this endpoint itself has no write action attached to
-    it either.
-    """
     try:
         rows, next_cursor = list_small_balance_review_queue(session, cursor=cursor, limit=limit)
     except InvalidCursor:

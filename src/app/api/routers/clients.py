@@ -1,27 +1,3 @@
-"""Client segment console: browse buckets and see the distribution across them.
-
-GET /clients and GET /clients/{id} never return a name or any other PII;
-that stays behind pii_vault and the restricted role. The one exception is
-call_brief, on the single-client detail read and the fuller profile read: it
-carries no name and no PII to begin with, so this is not name re-attachment.
-
-GET /clients/{id}/profile is the fuller read: identity, behavioural bands,
-flags, activity, routing, and every campaign/engagement record this codebase
-holds for one client. Still no name, and still nothing an outreach_message's
-own drafted or personalized content would carry -- only its status history.
-It is a separate, explicitly named endpoint rather than a widened
-GET /clients/{id}, so an existing caller's response shape never changes
-under it.
-
-GET /clients/{id}/name is the one place in this router that re-attaches a
-real name. Real session/role auth does not exist yet, so it sits behind the
-reviewer key stopgap (app.api.reviewer_auth) instead -- fails closed with no
-reviewer configured, and every successful read is audited under the
-reviewer_id that key resolved to. It is deliberately its own endpoint, not a
-field on the profile read above: the profile stays safe to call with no
-gate at all, and only this one, obviously sensitive endpoint needs one.
-"""
-
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -66,7 +42,7 @@ from app.services.clients import (
     suppression_summary,
 )
 
-router = APIRouter(tags=["clients"])
+router = APIRouter(tags=["clients"], dependencies=[Depends(get_current_reviewer_id)])
 
 
 def _to_summary(row, *, call_brief: str | None = None) -> ClientSummaryOut:
@@ -98,7 +74,6 @@ def get_clients(
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
 ) -> Page[ClientSummaryOut]:
-    """Clients matching the given bucket filters. Buckets only, never a name."""
     try:
         rows, next_cursor = list_clients(
             session,
@@ -120,9 +95,6 @@ def get_clients(
 
 @router.get("/clients/summary", response_model=ClientBookSummaryOut)
 def get_clients_summary(session: Session = Depends(get_session)) -> ClientBookSummaryOut:
-    """Book-wide client and fund counts. Registered ahead of
-    GET /clients/{client_id} so this static path is never shadowed by it.
-    """
     summary = client_book_summary(session)
     return ClientBookSummaryOut(total_clients=summary.total_clients, fund_count=summary.fund_count)
 
@@ -131,11 +103,6 @@ def get_clients_summary(session: Session = Depends(get_session)) -> ClientBookSu
 def get_clients_enrollment_summary(
     session: Session = Depends(get_session),
 ) -> EnrollmentSummaryOut:
-    """Distinct clients currently enrolled vs. excluded, book-wide -- summing
-    each campaign's own count would double-count a client enrolled in more
-    than one. Registered ahead of GET /clients/{client_id}, same reason as
-    GET /clients/summary above.
-    """
     summary = enrollment_summary(session)
     return EnrollmentSummaryOut(
         enrolled_count=summary.enrolled_count, excluded_count=summary.excluded_count
@@ -146,10 +113,6 @@ def get_clients_enrollment_summary(
 def get_clients_suppression_summary(
     session: Session = Depends(get_session),
 ) -> SuppressionSummaryOut:
-    """Book-wide suppression count, with a reason breakdown. Registered
-    ahead of GET /clients/{client_id}, same reason as GET /clients/summary
-    above.
-    """
     summary = suppression_summary(session)
     return SuppressionSummaryOut(
         suppressed_count=summary.suppressed_count,
@@ -162,8 +125,6 @@ def get_clients_suppression_summary(
 
 @router.get("/clients/{client_id}", response_model=ClientSummaryOut)
 def get_client_detail(client_id: int, session: Session = Depends(get_session)) -> ClientSummaryOut:
-    """One client's buckets, plus their latest approved call_brief if one
-    exists (see module docstring for why that is not PII re-attachment)."""
     try:
         row = get_client(session, client_id)
     except ClientNotFound:
@@ -275,10 +236,6 @@ def _to_profile_out(profile: ClientProfile) -> ClientProfileOut:
 def get_client_profile_detail(
     client_id: int, session: Session = Depends(get_session)
 ) -> ClientProfileOut:
-    """The fuller, non-PII client profile (see module docstring). Safe to
-    call with no auth: every field here is confirmed non-PII, unlike a
-    client's name, which this endpoint does not carry.
-    """
     try:
         profile = get_client_profile(session, client_id)
     except ClientNotFound:
@@ -292,12 +249,6 @@ def get_client_name_detail(
     reviewer_id: str = Depends(get_current_reviewer_id),
     session: Session = Depends(get_session),
 ) -> ClientNameOut:
-    """The one PII field the rest of this console withholds (see module
-    docstring). Requires the X-Reviewer-Key header; every successful read
-    is audited as a pii_vault access under the reviewer_id that key
-    resolved to. 503s if no reviewers are configured at all, 401 for a
-    missing or wrong key, 404 for an unknown client.
-    """
     try:
         name = get_client_name(session, client_id, reviewer_id=reviewer_id)
     except ClientNotFound:
@@ -307,11 +258,6 @@ def get_client_name_detail(
 
 @router.get("/segments", response_model=SegmentDistributionOut)
 def get_segments(session: Session = Depends(get_session)) -> SegmentDistributionOut:
-    """Client counts grouped by purchase depth, value band, cadence band,
-    message angle, and a value-band x recency-band cross-tab, plus the
-    population-wide data-quality flag counts a reader needs before treating
-    any bucket count as a complete one.
-    """
     distribution = segment_distribution(session)
     return SegmentDistributionOut(
         by_purchase_depth=[

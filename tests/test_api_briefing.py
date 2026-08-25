@@ -1,7 +1,6 @@
 """Tests for GET /briefing/{client_id}/{unit_fund_id}: that it re-attaches
-a real name with no X-Reviewer-Key required (unlike GET /clients/{id}/name),
-the 404-vs-data-missing distinction, and that both audit rows land on every
-call, attributed to username rather than a reviewer key.
+a real name, the 404-vs-data-missing distinction, and that both audit rows
+land on every call, attributed to username rather than a reviewer key.
 """
 
 from __future__ import annotations
@@ -24,6 +23,14 @@ from app.db.session import SessionLocal
 from app.main import app
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _authed(configured_reviewers, reviewer_1_headers):
+    client.headers.update(reviewer_1_headers)
+    yield
+    client.headers.pop("Authorization", None)
+
 
 FUND_ID = 940
 CLIENT_ID = 94001
@@ -145,15 +152,14 @@ def _narrative_url(client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID) -> s
     return f"/api/v1/briefing/{client_id}/{unit_fund_id}/narrative?username=fa-77"
 
 
-def test_no_reviewer_key_needed_even_when_none_are_configured(
-    unconfigured_reviewers, seeded_client
-) -> None:
-    """The one deliberate exception to the reviewer-key stopgap: unlike
-    GET /clients/{id}/name, this succeeds with no X-Reviewer-Key header at
-    all, even with an empty reviewer roster.
-    """
-    response = client.get(_url())
-    assert response.status_code == 200
+def test_missing_token_is_401(configured_reviewers) -> None:
+    response = TestClient(app).get(_url())
+    assert response.status_code == 401
+
+
+def test_no_reviewer_configured_is_503(unconfigured_reviewers, reviewer_1_headers) -> None:
+    response = TestClient(app).get(_url(), headers=reviewer_1_headers)
+    assert response.status_code == 503
 
 
 def test_unknown_client_fund_is_404(db) -> None:

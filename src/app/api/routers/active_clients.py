@@ -1,27 +1,3 @@
-"""Active-client console endpoints: the digest/risk population's own
-counterpart to app.api.routers.clients, keyed by (client_id, unit_fund_id)
-rather than by client_id alone.
-
-A distinct route prefix and a distinct profile endpoint from the dormant
-clients.py router, on purpose: that router reads client_fund, this one
-reads active_client_fund, and the two populations must never share a route
-that could return the wrong record for a coincidentally matching id.
-
-POST .../interactions is the one write path here. It used to be gated the
-same way the review/template decide endpoints are (the X-Reviewer-Key
-stopgap resolving the caller to a reviewer_id server-side); as of
-2026-08-18 it no longer requires that header -- an FA re-entering a
-credential to log a call, snooze, or dismiss was worse friction than the
-gate was worth for a write that carries no PII and stays fully audited,
-just attributed by the caller's username (a required query param) instead
-of a resolved reviewer_id. This is the same deliberate exception
-GET /briefing/... already made (see that router's docstring) applied to a
-write instead of a read; review/template decide keep the real gate, since
-those really do need a server-resolved identity, not a self-reported one.
-Every GET read here carries no PII and stays ungated, the same as
-GET /clients/{id}/profile.
-"""
-
 from __future__ import annotations
 
 from datetime import datetime
@@ -29,6 +5,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from app.api.reviewer_auth import get_current_reviewer_id
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.risk.signals import fired_signal_tags
@@ -64,7 +41,11 @@ from app.services.active_clients import (
     transaction_analytics,
 )
 
-router = APIRouter(prefix="/active-clients", tags=["active-clients"])
+router = APIRouter(
+    prefix="/active-clients",
+    tags=["active-clients"],
+    dependencies=[Depends(get_current_reviewer_id)],
+)
 
 
 @router.get("", response_model=Page[ActiveClientRosterLineOut])
@@ -76,11 +57,6 @@ def get_roster(
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
 ) -> Page[ActiveClientRosterLineOut]:
-    """The paginated active-book roster: every active_client_fund row, with
-    its current risk bands where a nightly run has scored it. Carries no
-    PII, so it is not gated behind the reviewer key. client_id is an exact
-    match, the same "Find by ID" box GET /clients already exposes.
-    """
     try:
         rows, next_cursor = list_active_roster(
             session,
@@ -103,11 +79,6 @@ def get_route_change_history(
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
 ) -> Page[RouteChangeRunOut]:
-    """Route-churn across nightly risk runs, newest first: how many
-    client-funds moved to a different route each run, alongside that run's
-    coverage and route mix. Carries no PII, so it is not gated behind the
-    reviewer key.
-    """
     try:
         rows, next_cursor = list_route_change_history(session, cursor=cursor, limit=limit)
     except InvalidCursor:
@@ -122,11 +93,6 @@ def get_route_change_details(
     limit: int = Query(default=10, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
 ) -> RouteChangeDetailsOut:
-    """The client-level route moves behind one nightly run's routes_changed
-    count -- the latest run with any changes by default, or a specific
-    run_id. Capped at `limit` (10 by default), paginated via next_cursor.
-    Carries no PII, so it is not gated behind the reviewer key.
-    """
     try:
         found_run_id, as_of, rows, next_cursor = route_change_details(
             session, run_id=run_id, cursor=cursor, limit=limit
@@ -146,10 +112,6 @@ def get_transaction_analytics(
     months: int = Query(default=12, ge=1, le=36),
     session: Session = Depends(get_session),
 ) -> TransactionAnalyticsOut:
-    """Book-wide deposit/withdrawal volume by month over the trailing
-    `months` months, plus a sale_type breakdown among withdrawals. Carries
-    no PII, so it is not gated behind the reviewer key.
-    """
     analytics = transaction_analytics(session, months=months)
     return TransactionAnalyticsOut(
         by_month=[
@@ -179,12 +141,6 @@ def post_interaction(
     ),
     session: Session = Depends(get_session),
 ) -> InteractionOut:
-    """Log a call, a snooze, or a dismiss against one digest line.
-
-    No X-Reviewer-Key required (see this module's docstring for why); the
-    log entry is recorded under the caller-supplied username instead. 404s
-    when the client-fund isn't in the active book at all.
-    """
     try:
         row = record_interaction(
             session,
@@ -208,10 +164,6 @@ def get_interactions(
     ),
     session: Session = Depends(get_session),
 ) -> list[InteractionOut]:
-    """This client-fund's logged interactions, most recent first. Carries
-    no PII -- only what an FA already did and when -- so it is not gated
-    behind the reviewer key.
-    """
     rows = list_interactions(session, client_id, unit_fund_id, since=since)
     return [InteractionOut.model_validate(r) for r in rows]
 
@@ -223,12 +175,6 @@ def get_transactions(
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
 ) -> list[ActiveTransactionOut]:
-    """This client-fund's observed deposits and withdrawals, most recent
-    first. Carries no PII, so it is not gated behind the reviewer key. Not
-    a claim of full lifetime history -- see
-    ActiveClientProfileOut.identity.deposit_count_capped /
-    withdrawal_history_hidden.
-    """
     rows = list_transactions(session, client_id, unit_fund_id, limit=limit)
     return [ActiveTransactionOut.model_validate(r) for r in rows]
 
@@ -240,11 +186,6 @@ def get_transactions(
 def get_deposit_percentile(
     client_id: int, unit_fund_id: int, session: Session = Depends(get_session)
 ) -> DepositPercentileOut:
-    """Where this client-fund's observed lifetime deposit total ranks
-    against the whole active book. Carries no PII, so it is not gated
-    behind the reviewer key. 404s when the client-fund isn't in the active
-    book at all.
-    """
     try:
         result = deposit_percentile(session, client_id, unit_fund_id)
     except ActiveClientNotFound:
@@ -316,11 +257,6 @@ def _to_profile_out(profile: ActiveClientProfile) -> ActiveClientProfileOut:
 def get_profile(
     client_id: int, unit_fund_id: int, session: Session = Depends(get_session)
 ) -> ActiveClientProfileOut:
-    """Identity, current bands, risk-signal history, and complaint/
-    interaction/transaction history for one active-client-fund
-    relationship. No name, the same boundary app.api.routers.clients draws
-    for the dormant population -- safe to call with no gate at all.
-    """
     try:
         profile = get_active_client_profile(session, client_id, unit_fund_id)
     except ActiveClientNotFound:

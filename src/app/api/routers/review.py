@@ -1,5 +1,3 @@
-"""Review queue: list pending messages, open one, decide, or regenerate."""
-
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -46,7 +44,9 @@ from app.services.review import approve_cohort_remainder as approve_cohort_remai
 from app.services.review import decide as decide_message
 from app.services.review import decide_batch as decide_message_batch
 
-router = APIRouter(prefix="/reviews", tags=["review"])
+router = APIRouter(
+    prefix="/reviews", tags=["review"], dependencies=[Depends(get_current_reviewer_id)]
+)
 
 
 @router.get("", response_model=Page[OutreachMessageSummary])
@@ -59,19 +59,6 @@ def list_reviews(
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
 ) -> Page[OutreachMessageSummary]:
-    """The reviewer's queue: one page of messages in the given status.
-
-    order picks the sort direction: "oldest_first" (default, matches prior
-    behavior) or "newest_first". A cursor from one order is only valid for
-    a further page in that same order.
-
-    only_sampled (default True) hides a cohort's non-sample messages, the
-    ones riding on their cohort's sample outcome; pass false to see them
-    too, e.g. before deciding whether to wait for the bulk approval.
-
-    total_count is the count across every page under these same filters --
-    what a "N pending" badge shows, not just how many are in this page.
-    """
     try:
         messages, next_cursor = list_pending_messages(
             session,
@@ -96,7 +83,6 @@ def list_reviews(
 
 @router.get("/{message_id}", response_model=OutreachMessageDetail)
 def get_review(message_id: str, session: Session = Depends(get_session)) -> OutreachMessageDetail:
-    """One message: both content versions and its full decision history."""
     try:
         message = get_message(session, message_id)
     except MessageNotFound:
@@ -127,16 +113,6 @@ def decide_review(
     reviewer_id: str = Depends(get_current_reviewer_id),
     session: Session = Depends(get_session),
 ) -> DecideResultOut:
-    """Approve, edit-approve, reject, escalate, or hold one message.
-
-    Requires the X-Reviewer-Key header; the decision is recorded under the
-    reviewer_id that key resolved to, not a self-reported one. reject,
-    escalate, and hold are refused (422) on a message that belongs to a
-    review sampling cohort -- approve or edit_approve only. cohort_ready is
-    set when this decision was that cohort's last pending sample: pass its
-    cohort_id to POST .../cohorts/{cohort_id}/approve-remaining to approve
-    everything else in it.
-    """
     try:
         message = get_message(session, message_id)
         action = decide_message(
@@ -171,12 +147,6 @@ def approve_cohort_remaining(
     reviewer_id: str = Depends(get_current_reviewer_id),
     session: Session = Depends(get_session),
 ) -> DecideBatchResultOut:
-    """Approve every message riding on a cohort's now-decided sample.
-
-    Only valid once every sample has been approved (POST .../decide's
-    cohort_ready tells the caller when that just happened); called before
-    then, this is refused with 409.
-    """
     try:
         result = approve_cohort_remainder_service(session, cohort_id, reviewer_id=reviewer_id)
         session.commit()
@@ -201,16 +171,6 @@ def decide_reviews_batch(
     reviewer_id: str = Depends(get_current_reviewer_id),
     session: Session = Depends(get_session),
 ) -> DecideBatchResultOut:
-    """Approve, reject, escalate, or hold a list of messages in one call.
-
-    Applies the same decide() logic as POST .../decide to each id in
-    turn, writing one review_action and audit row per message -- the same
-    trail as calling it once per message, just one request instead of N.
-    A message that can't be decided (not found, already decided) is
-    reported in the response's failed list rather than failing the whole
-    batch. Requires the X-Reviewer-Key header; every decision is recorded
-    under the reviewer_id that key resolved to.
-    """
     try:
         result = decide_message_batch(
             session,
@@ -234,13 +194,6 @@ def decide_reviews_batch(
 def regenerate_review(
     message_id: str, session: Session = Depends(get_session)
 ) -> OutreachMessageDetail:
-    """Replace a still-pending message's draft with a freshly generated one.
-
-    Only pending_review may be regenerated; a message already decided
-    keeps the draft its review_action history actually refers to. The
-    message_id changes (the old row is replaced, not edited in place), so
-    the response is the new message to switch the reviewer's view to.
-    """
     tracer = get_shared_tracer()
     agent = build_default_agent(session, audit=model_boundary_audit_sink(session), tracer=tracer)
     try:

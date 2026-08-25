@@ -1,13 +1,10 @@
-"""Campaign console: list, create, enrollment summary, sequence steps, and
-triggering generation for whatever is due.
-"""
-
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.agents.email_channel import build_default_agent
+from app.api.reviewer_auth import get_current_reviewer_id
 from app.campaigns.batch_generation import BatchNotFound
 from app.campaigns.estimation import DEFAULT_ESTIMATE_LIMIT, MAX_ESTIMATE_LIMIT
 from app.campaigns.generation import model_boundary_audit_sink
@@ -102,7 +99,9 @@ from app.services.campaigns import (
 from app.services.review import TemplateNotApproved
 from app.services.template_review import TemplateNotFound
 
-router = APIRouter(prefix="/campaigns", tags=["campaigns"])
+router = APIRouter(
+    prefix="/campaigns", tags=["campaigns"], dependencies=[Depends(get_current_reviewer_id)]
+)
 
 
 @router.get("", response_model=Page[CampaignListItemOut])
@@ -118,7 +117,6 @@ def get_campaigns(
     message_angle: str | None = None,
     session: Session = Depends(get_session),
 ) -> Page[CampaignListItemOut]:
-    """Campaigns oldest-first, each carrying its own enrollment counts."""
     try:
         rows, next_cursor = list_campaigns(
             session,
@@ -157,7 +155,6 @@ def get_campaigns(
 def post_campaign(
     body: CampaignCreateRequest, session: Session = Depends(get_session)
 ) -> CampaignCreateOut:
-    """Create a campaign and enroll every client currently matching its cohort filter."""
     campaign, enrolled_count = create_campaign(
         session,
         name=body.name,
@@ -260,11 +257,6 @@ def post_campaign_preview_batch(
 
 @router.get("/analytics", response_model=OutreachAnalyticsOut)
 def get_campaigns_analytics(session: Session = Depends(get_session)) -> OutreachAnalyticsOut:
-    """Book-wide outreach analytics across every campaign: the enrollment
-    funnel, cohort composition, drafting/review throughput, and how contact
-    ends -- the dormant-outreach counterpart to GET /risk/analytics, an
-    ops-facing read only.
-    """
     analytics = outreach_analytics(session)
     return OutreachAnalyticsOut(
         total_enrolled=analytics.total_enrolled,
@@ -295,10 +287,6 @@ def get_campaigns_analytics_trend(
     days: int = Query(default=30, ge=1, le=90),
     session: Session = Depends(get_session),
 ) -> OutreachTrendOut:
-    """The last `days` calendar days' book-wide send and response activity,
-    oldest first: the trend counterpart to the point-in-time /analytics
-    snapshot above. An ops-facing read only.
-    """
     points = outreach_trend(session, days=days)
     return OutreachTrendOut(
         points=[
@@ -314,10 +302,6 @@ def get_campaigns_analytics_trend(
 def get_generation_cost_models(
     session: Session = Depends(get_session),
 ) -> list[GenerationCostModelOut]:
-    """Every model a campaign's generation cost can be priced against, each
-    with its own current rate -- what GET .../generation-cost?model= picks
-    from. A model with no active rate yet is left out.
-    """
     configs = list_generation_cost_models(session)
     return [
         GenerationCostModelOut(
@@ -335,12 +319,6 @@ def get_generation_cost_models(
 def get_campaign_detail(
     campaign_id: int, session: Session = Depends(get_session)
 ) -> CampaignDetailOut:
-    """One campaign's own fields, with no enrollment counts attached.
-
-    Separate from GET /campaigns/{campaign_id}/summary, which is counts
-    only, and from the list row, which a page landed on directly (a link,
-    a reload) has no earlier fetch to scavenge fields from.
-    """
     try:
         campaign = get_campaign(session, campaign_id)
     except CampaignNotFound:
@@ -361,7 +339,6 @@ def get_campaign_detail(
 def get_campaign_summary(
     campaign_id: int, session: Session = Depends(get_session)
 ) -> CampaignSummaryOut:
-    """Enrollment counts for one campaign, including rows suppressed as a duplicate person."""
     try:
         summary = campaign_summary(session, campaign_id)
     except CampaignNotFound:
@@ -373,7 +350,6 @@ def get_campaign_summary(
 def get_campaign_value(
     campaign_id: int, session: Session = Depends(get_session)
 ) -> CampaignValueOut:
-    """What this campaign's enrolled cohort was worth, for ROI reporting."""
     try:
         value = campaign_value(session, campaign_id)
     except CampaignNotFound:
@@ -388,11 +364,6 @@ def get_campaign_generation_cost(
     limit: int = Query(default=DEFAULT_ESTIMATE_LIMIT, ge=1, le=MAX_ESTIMATE_LIMIT),
     session: Session = Depends(get_session),
 ) -> GenerationCostOut:
-    """What drafting this campaign would cost right now, single-generation
-    and subgroup-template side by side, at `model`'s active RAG-enabled
-    rate. Read-only and changes nothing -- safe to call any time. See GET
-    .../generation-cost/models for which model ids are valid.
-    """
     try:
         estimate = estimate_campaign_generation_cost(session, campaign_id, model=model, limit=limit)
     except CampaignNotFound:
@@ -436,12 +407,6 @@ def get_campaign_generation_cost(
 def get_campaign_readiness(
     campaign_id: int, session: Session = Depends(get_session)
 ) -> CampaignReadinessOut:
-    """Per-status counts for this campaign's templates and messages.
-
-    Answers "is this campaign fully drafted and approved" in one read,
-    instead of paging GET /reviews?campaign_id= and GET
-    /templates?campaign_id= across every status and tallying client-side.
-    """
     try:
         counts = campaign_readiness(session, campaign_id)
     except CampaignNotFound:
@@ -456,13 +421,6 @@ def get_campaign_enrollments(
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
 ) -> Page[EnrollmentOut]:
-    """One campaign's enrollment roster, oldest enrollment first.
-
-    Distinct from GET /reviews?campaign_id=, which is message-level and
-    only surfaces clients that already have a generated touch -- an
-    enrolled client who hasn't been drafted for yet is invisible there but
-    shows up here.
-    """
     try:
         rows, next_cursor = list_campaign_enrollments(
             session, campaign_id, cursor=cursor, limit=limit
@@ -493,12 +451,6 @@ def get_campaign_enrollments(
 def get_campaign_steps(
     campaign_id: int, session: Session = Depends(get_session)
 ) -> list[CampaignStepOut]:
-    """A campaign's full send sequence, oldest step first.
-
-    Without this, a caller has no way to see steps a previous session
-    already persisted -- POST /{campaign_id}/steps only returns the one
-    step it just appended.
-    """
     try:
         steps = list_campaign_steps(session, campaign_id)
     except CampaignNotFound:
@@ -522,17 +474,6 @@ def post_campaign_step(
     body: CampaignStepCreateRequest,
     session: Session = Depends(get_session),
 ) -> CampaignStepOut:
-    """Append the next step in a campaign's send sequence.
-
-    A campaign with no steps is enrolled but permanently idle: the
-    eligibility gate refuses to generate a step that has no CampaignStep
-    row, so this is required before /generate can do anything.
-
-    offset_days must be strictly greater than the previous step's: the
-    scheduler waits out the gap between two steps' offsets before the
-    later one is due, so an equal or smaller offset makes it due
-    immediately, the moment the step before it goes out.
-    """
     try:
         step = add_campaign_step(
             session,
@@ -564,15 +505,6 @@ def post_campaign_generate(
     limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
     session: Session = Depends(get_session),
 ) -> list[TouchOutcomeOut]:
-    """Generate a touch for every one of this campaign's due, eligible
-    enrollments. Nothing sends: an eligible enrollment ends this call as a
-    pending_review message, exactly where the review queue picks it up.
-
-    Every enrollment in the batch is a full model run, so a large cohort
-    holds the request open for as long as that takes. limit caps how many
-    are attempted in one call; whatever is left stays due and is picked up
-    by the next one, so a cohort can be worked through a batch at a time.
-    """
     tracer = get_shared_tracer()
     agent = build_default_agent(session, audit=model_boundary_audit_sink(session), tracer=tracer)
     try:
@@ -603,15 +535,6 @@ def post_campaign_generate(
 def post_campaign_send(
     campaign_id: int, session: Session = Depends(get_session)
 ) -> list[TouchSendOutcomeOut]:
-    """Send every approved, not-yet-sent touch in this campaign right now.
-
-    Sends through whatever app.delivery.mailer.get_mailer() resolves to for
-    the running environment: Mailpit in development, a recording no-op
-    wherever SMTP is not configured, and a real provider once one is. The
-    send-time recheck, the audit trail, and each enrollment's advance to
-    its next step all run for real regardless. Flips the campaign to
-    running the first time anything in this call sends.
-    """
     try:
         outcomes = send_campaign(session, campaign_id)
         session.commit()
@@ -654,16 +577,6 @@ def post_campaign_generate_batch(
     limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
     session: Session = Depends(get_session),
 ) -> GenerationBatchOut:
-    """Submit this campaign's due, eligible enrollments to the model
-    provider's batch endpoint in one call, instead of drafting each one
-    synchronously. Nothing is reviewable yet: the provider drafts the whole
-    cohort off the request path, and POST .../batches/{id}/ingest turns the
-    results into pending-review messages once it reports the batch ended.
-
-    limit caps how many enrollments this one submission can include, the
-    same knob /generate already exposes; whatever is left over stays due
-    for the next call, either to /generate or to this endpoint again.
-    """
     try:
         batch = submit_campaign_batch(
             session,
@@ -683,9 +596,6 @@ def post_campaign_generate_batch(
 def get_campaign_batch_status(
     campaign_id: int, generation_batch_id: str, session: Session = Depends(get_session)
 ) -> GenerationBatchOut:
-    """One batch submission's current state: still with the provider, ended
-    and waiting to be ingested, or already turned into review-queue messages.
-    """
     try:
         batch = get_campaign_batch(session, campaign_id, generation_batch_id)
     except BatchNotFound:
@@ -699,13 +609,6 @@ def get_campaign_batch_status(
 def post_campaign_batch_ingest(
     campaign_id: int, generation_batch_id: str, session: Session = Depends(get_session)
 ) -> BatchIngestResultOut:
-    """Check the provider for this batch's results and, once it reports the
-    batch ended, turn each result into the same pending-review message the
-    synchronous /generate path produces. Safe to call before the provider
-    is done -- it just returns the batch's current status with no outcomes
-    -- and safe to call again after ingestion, which is a no-op the second
-    time.
-    """
     tracer = get_shared_tracer()
     try:
         result = ingest_campaign_batch(
@@ -740,11 +643,6 @@ def get_campaign_templates_estimate(
     limit: int = Query(default=DEFAULT_ESTIMATE_LIMIT, ge=1, le=MAX_ESTIMATE_LIMIT),
     session: Session = Depends(get_session),
 ) -> TemplateEstimateOut:
-    """How many distinct templates this campaign's current configuration
-    would produce. Deterministic given the same due cohort, never
-    constructs an LLMClient, and changes nothing -- safe to call any time,
-    including before /templates/draft to see what a limit would bite into.
-    """
     try:
         estimate = estimate_campaign_templates(session, campaign_id, limit=limit)
     except CampaignNotFound:
@@ -767,9 +665,6 @@ def get_campaign_templates_estimate(
 def get_campaign_templates_policy(
     campaign_id: int, session: Session = Depends(get_session)
 ) -> TemplatePolicyOut:
-    """The limit in force for this campaign right now: its own override if
-    it has set one, otherwise the active system default.
-    """
     try:
         policy = get_campaign_template_policy(session, campaign_id)
     except CampaignNotFound:
@@ -781,12 +676,6 @@ def get_campaign_templates_policy(
 def put_campaign_templates_policy(
     campaign_id: int, body: TemplatePolicyRequest, session: Session = Depends(get_session)
 ) -> TemplatePolicyOut:
-    """Set this campaign's own template generation limit.
-
-    A limit is a throttle, not a decision about the campaign: raising it
-    and calling /templates/draft again tops up rather than redrafting, and
-    lowering it deletes nothing already drafted.
-    """
     try:
         policy = set_campaign_template_policy(
             session,
@@ -811,13 +700,6 @@ def post_campaign_templates_draft(
     limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
     session: Session = Depends(get_session),
 ) -> DraftTemplatesResult:
-    """Group this campaign's due, eligible enrollments into buckets and draft
-    one template per not-yet-templated bucket, up to the campaign's
-    effective limit -- a third path alongside /generate and /generate/batch.
-    Calling this again after raising the limit tops up rather than
-    redrafting. Nothing is instantiated yet: each template needs its own
-    review at GET/POST /templates first.
-    """
     try:
         outcome = draft_campaign_templates(
             session,
@@ -853,12 +735,6 @@ def post_campaign_template_instantiate(
     limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
     session: Session = Depends(get_session),
 ) -> InstantiateTemplateResult:
-    """Fill in every due, eligible client currently matching an approved
-    template's profile, each as its own outreach_message (pending_review or
-    auto-approved, per this tier's sampling policy). Safe to call again
-    later: an already-instantiated client is skipped, and one who becomes
-    due afterwards is picked up then.
-    """
     try:
         messages = instantiate_campaign_template(session, campaign_id, template_id, limit=limit)
         session.commit()

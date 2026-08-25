@@ -1,9 +1,3 @@
-"""Template review queue: list pending templates, open one, decide.
-
-Drafting and instantiation live on the campaign console instead
-(api.routers.campaigns), since both are scoped to one campaign.
-"""
-
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -33,7 +27,9 @@ from app.services.template_review import (
 from app.services.template_review import TemplateNotFound as TemplateNotFoundError
 from app.services.template_review import decide_template as decide_template_action
 
-router = APIRouter(prefix="/templates", tags=["templates"])
+router = APIRouter(
+    prefix="/templates", tags=["templates"], dependencies=[Depends(get_current_reviewer_id)]
+)
 
 
 @router.get("", response_model=Page[MessageTemplateSummary])
@@ -44,7 +40,6 @@ def list_templates(
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
 ) -> Page[MessageTemplateSummary]:
-    """The reviewer's template queue: one page in the given status, oldest first."""
     try:
         templates, next_cursor = list_pending_templates(
             session, status=status, campaign_id=campaign_id, cursor=cursor, limit=limit
@@ -61,7 +56,6 @@ def list_templates(
 def get_template_detail(
     template_id: str, session: Session = Depends(get_session)
 ) -> MessageTemplateDetail:
-    """One template: its placeholder-only draft and its full decision history."""
     try:
         template = get_template(session, template_id)
     except TemplateNotFoundError:
@@ -88,14 +82,6 @@ def decide_review(
     reviewer_id: str = Depends(get_current_reviewer_id),
     session: Session = Depends(get_session),
 ) -> TemplateReviewActionOut:
-    """Approve, edit-approve, reject, escalate, or hold one template.
-
-    Mandatory for every tier, never gated by review_sample_rate or
-    tier_sampling_enabled, and the only gate that must pass before
-    POST .../instantiate may run against this template. Requires the
-    X-Reviewer-Key header; the decision is recorded under the reviewer_id
-    that key resolved to, not a self-reported one.
-    """
     try:
         action = decide_template_action(
             session,
@@ -125,16 +111,6 @@ def decide_templates_batch(
     reviewer_id: str = Depends(get_current_reviewer_id),
     session: Session = Depends(get_session),
 ) -> DecideBatchTemplateResultOut:
-    """Approve, reject, escalate, or hold a list of templates in one call.
-
-    Applies the same decide_template() logic as POST .../decide to each
-    id in turn, writing one template_review_action and audit row per
-    template -- the same trail as calling it once per template, just one
-    request instead of N. A template that can't be decided (not found,
-    already decided) is reported in the response's failed list rather
-    than failing the whole batch. Requires the X-Reviewer-Key header;
-    every decision is recorded under the reviewer_id that key resolved to.
-    """
     try:
         result = decide_template_batch(
             session,

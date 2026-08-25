@@ -30,6 +30,23 @@ CLIENTS = "/api/v1/clients"
 SEGMENTS = "/api/v1/segments"
 
 
+@pytest.fixture(autouse=True)
+def _authed(configured_reviewers, reviewer_1_headers):
+    client.headers.update(reviewer_1_headers)
+    yield
+    client.headers.pop("Authorization", None)
+
+
+def test_missing_token_is_401(configured_reviewers) -> None:
+    response = TestClient(app).get(CLIENTS)
+    assert response.status_code == 401
+
+
+def test_no_reviewer_configured_is_503(unconfigured_reviewers, reviewer_1_headers) -> None:
+    response = TestClient(app).get(CLIENTS, headers=reviewer_1_headers)
+    assert response.status_code == 503
+
+
 @pytest.fixture
 def roles(db: None):
     with SessionLocal() as session:
@@ -575,13 +592,15 @@ def test_suppression_summary_counts_and_breaks_down_by_reason(two_clients) -> No
 
 def test_client_name_missing_header_is_401(configured_reviewers, two_clients) -> None:
     first_id, _second_id, _fund_id = two_clients
-    response = client.get(f"{CLIENTS}/{first_id}/name")
+    response = TestClient(app).get(f"{CLIENTS}/{first_id}/name")
     assert response.status_code == 401
 
 
 def test_client_name_wrong_key_is_401(configured_reviewers, two_clients) -> None:
     first_id, _second_id, _fund_id = two_clients
-    response = client.get(f"{CLIENTS}/{first_id}/name", headers={"X-Reviewer-Key": "wrong"})
+    response = TestClient(app).get(
+        f"{CLIENTS}/{first_id}/name", headers={"X-Reviewer-Key": "wrong"}
+    )
     assert response.status_code == 401
 
 

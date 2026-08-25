@@ -1,17 +1,16 @@
-"""RAG admin console: upload the weekly report, manage versions, debug retrieval."""
-
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
+from app.api.reviewer_auth import get_current_reviewer_id
 from app.db.session import get_session
 from app.schemas.rag import RagIngestOut, RagVersionOut, RetrievedChunkOut
 from app.services.rag import VersionNotFound, activate_version, ingest_uploaded_report
 from app.services.rag import list_versions as list_rag_versions
 from app.services.rag import search as search_rag
 
-router = APIRouter(prefix="/rag", tags=["rag"])
+router = APIRouter(prefix="/rag", tags=["rag"], dependencies=[Depends(get_current_reviewer_id)])
 
 
 @router.post("/reports", response_model=RagIngestOut, status_code=201)
@@ -21,11 +20,6 @@ async def upload_report(
     document_source: str | None = Form(None),
     session: Session = Depends(get_session),
 ) -> RagIngestOut:
-    """Upload the weekly report PDF; it becomes the new active version.
-
-    document_title and document_source default to the one ongoing weekly
-    series; override them only to start a separate report series.
-    """
     content = await file.read()
     try:
         result = ingest_uploaded_report(
@@ -44,7 +38,6 @@ async def upload_report(
 
 @router.get("/versions", response_model=list[RagVersionOut])
 def get_rag_versions(session: Session = Depends(get_session)) -> list[RagVersionOut]:
-    """Version history across every ingested document, newest first."""
     rows = list_rag_versions(session)
     return [
         RagVersionOut(
@@ -63,7 +56,6 @@ def get_rag_versions(session: Session = Depends(get_session)) -> list[RagVersion
 
 @router.post("/versions/{version_id}/activate", response_model=RagVersionOut)
 def activate_rag_version(version_id: int, session: Session = Depends(get_session)) -> RagVersionOut:
-    """Make one version active again, for rolling back a bad ingest."""
     try:
         version, document_title = activate_version(session, version_id)
     except VersionNotFound:
@@ -88,9 +80,6 @@ def search_rag_corpus(
     q: str | None = None,
     session: Session = Depends(get_session),
 ) -> list[RetrievedChunkOut]:
-    """Debug retrieval: what facts a draft would see for this product and angle,
-    or whatever q matches when given.
-    """
     try:
         results = search_rag(session, product=product, angle=angle, q=q)
     except ValueError as exc:

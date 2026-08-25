@@ -18,6 +18,14 @@ from app.main import app
 
 client = TestClient(app)
 
+
+@pytest.fixture(autouse=True)
+def _authed(configured_reviewers, reviewer_1_headers):
+    client.headers.update(reviewer_1_headers)
+    yield
+    client.headers.pop("Authorization", None)
+
+
 URL = "/api/v1/active-clients/analytics/route-changes/details"
 FUND_ID = 947
 

@@ -23,6 +23,14 @@ from app.workers.digest import build_and_persist_digest
 
 client = TestClient(app)
 
+
+@pytest.fixture(autouse=True)
+def _authed(configured_reviewers, reviewer_1_headers):
+    client.headers.update(reviewer_1_headers)
+    yield
+    client.headers.pop("Authorization", None)
+
+
 FUND_ID = 932
 
 SIGNALS = {

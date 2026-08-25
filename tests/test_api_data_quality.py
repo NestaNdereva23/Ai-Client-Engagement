@@ -16,6 +16,23 @@ client = TestClient(app)
 QUALITY = "/api/v1/data/quality"
 
 
+@pytest.fixture(autouse=True)
+def _authed(configured_reviewers, reviewer_1_headers):
+    client.headers.update(reviewer_1_headers)
+    yield
+    client.headers.pop("Authorization", None)
+
+
+def test_missing_token_is_401(configured_reviewers) -> None:
+    response = TestClient(app).get(QUALITY)
+    assert response.status_code == 401
+
+
+def test_no_reviewer_configured_is_503(unconfigured_reviewers, reviewer_1_headers) -> None:
+    response = TestClient(app).get(QUALITY, headers=reviewer_1_headers)
+    assert response.status_code == 503
+
+
 @pytest.fixture
 def a_run_with_rejects(db: None):
     run_id = uuid4().hex
