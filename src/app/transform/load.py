@@ -252,6 +252,7 @@ def _feature_dict(f: FeatureRow) -> dict[str, Any]:
 
 # Postgres rejects a query with more than 65535 bind parameters.
 _MAX_BIND_PARAMS = 65535
+_MAX_BATCH_ROWS = 1000
 
 
 def upsert(
@@ -266,8 +267,10 @@ def upsert(
         return 0
 
     index_elements = [key] if isinstance(key, str) else list(key)
-    batch_size = max(1, _MAX_BIND_PARAMS // len(rows[0]))
-    for start in range(0, len(rows), batch_size):
+    batch_size = min(_MAX_BATCH_ROWS, max(1, _MAX_BIND_PARAMS // len(rows[0])))
+    table = getattr(model, "__tablename__", model.__name__)
+    total_batches = (len(rows) + batch_size - 1) // batch_size
+    for batch_num, start in enumerate(range(0, len(rows), batch_size), start=1):
         batch = rows[start : start + batch_size]
         stmt = pg_insert(model).values(batch)
         set_ = {col: getattr(stmt.excluded, col) for col in update_columns}
@@ -275,14 +278,17 @@ def upsert(
             set_.update(extra_set)
         stmt = stmt.on_conflict_do_update(index_elements=index_elements, set_=set_)
         session.execute(stmt)
+        session.commit()
+        logger.info("upsert.batch", table=table, batch=batch_num, of=total_batches, rows=len(batch))
     return len(rows)
 
 
 def upsert_vault(session: Session, rows: list[dict[str, Any]]) -> int:
     if not rows:
         return 0
-    batch_size = max(1, _MAX_BIND_PARAMS // len(rows[0]))
-    for start in range(0, len(rows), batch_size):
+    batch_size = min(_MAX_BATCH_ROWS, max(1, _MAX_BIND_PARAMS // len(rows[0])))
+    total_batches = (len(rows) + batch_size - 1) // batch_size
+    for batch_num, start in enumerate(range(0, len(rows), batch_size), start=1):
         batch = rows[start : start + batch_size]
         stmt = pg_insert(PiiVault).values(batch)
         stmt = stmt.on_conflict_do_update(
@@ -298,6 +304,10 @@ def upsert_vault(session: Session, rows: list[dict[str, Any]]) -> int:
             },
         )
         session.execute(stmt)
+        session.commit()
+        logger.info(
+            "upsert.batch", table="pii_vault", batch=batch_num, of=total_batches, rows=len(batch)
+        )
     return len(rows)
 
 
