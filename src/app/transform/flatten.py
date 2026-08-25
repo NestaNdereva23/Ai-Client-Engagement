@@ -4,12 +4,17 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
+import structlog
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models.models import IngestionStatus, RawStaging
 from app.ingestion.contracts import ClientRecord, FundRecord, RawEnvelope
+
+logger = structlog.get_logger(__name__)
+
+_PROGRESS_EVERY = 25
 
 # The source returns at most this many purchases and sales per client. Hitting a
 # cap means real history is hidden behind it.
@@ -249,19 +254,19 @@ def flatten_run(
     session: Session, run_id: str, reference_date: datetime | None = None
 ) -> FlattenResult:
     ref = reference_date if reference_date is not None else _load_reference_ts(session, run_id)
-    payloads = (
-        session.execute(
-            select(RawStaging.payload)
-            .where(RawStaging.run_id == run_id)
-            .order_by(RawStaging.natural_key)
-        )
-        .scalars()
-        .all()
+    result = session.execute(
+        select(RawStaging.payload)
+        .where(RawStaging.run_id == run_id)
+        .order_by(RawStaging.natural_key),
+        execution_options={"stream_results": True},
     )
+
+    logger.info("flatten_run.started", run_id=run_id)
 
     combined = FlattenResult()
     funds_by_id: dict[int, FundRow] = {}
-    for payload in payloads:
+    pages = 0
+    for (payload,) in result.yield_per(20):
         page = flatten_payload(payload, reference_date=ref)
         for fund in page.funds:
             funds_by_id[fund.unit_fund_id] = _combine_fund(funds_by_id.get(fund.unit_fund_id), fund)
@@ -269,5 +274,23 @@ def flatten_run(
         combined.transactions.extend(page.transactions)
         combined.counters.merge(page.counters)
 
+        pages += 1
+        if pages % _PROGRESS_EVERY == 0:
+            logger.info(
+                "flatten_run.progress",
+                run_id=run_id,
+                pages=pages,
+                clients=len(combined.clients),
+                transactions=len(combined.transactions),
+            )
+
     combined.funds = list(funds_by_id.values())
+    logger.info(
+        "flatten_run.finished",
+        run_id=run_id,
+        pages=pages,
+        funds=len(combined.funds),
+        clients=len(combined.clients),
+        transactions=len(combined.transactions),
+    )
     return combined

@@ -262,12 +262,6 @@ def upsert(
     update_columns: list[str],
     extra_set: dict[str, Any] | None = None,
 ) -> int:
-    """Insert rows, updating the named columns when the key already exists.
-
-    key is one column name or several for a composite key. Batched so a large
-    run never builds a single INSERT past Postgres's bind-parameter limit,
-    however many columns the row carries.
-    """
     if not rows:
         return 0
 
@@ -285,16 +279,6 @@ def upsert(
 
 
 def upsert_vault(session: Session, rows: list[dict[str, Any]]) -> int:
-    """Upsert client_name, contact_email, contact_whatsapp, and source into
-    pii_vault.
-
-    client_name and source are always overwritten with what this run saw.
-    contact_email and contact_whatsapp use COALESCE instead: a client whose
-    page in this run carried no email or phone keeps whatever was already on
-    file, rather than a retransform blanking out a contact set by hand
-    through /integration/contacts. Shared by both the dormant and active
-    loaders, since they write the same vault the same way.
-    """
     if not rows:
         return 0
     batch_size = max(1, _MAX_BIND_PARAMS // len(rows[0]))
@@ -343,7 +327,17 @@ def persist_result(
     txns = {t.txn_id: _txn_dict(t) for t in result.transactions if t.txn_id is not None}
     features = {f.client_id: _feature_dict(f) for f in derive_features(result, measures)}
 
+    logger.info(
+        "persist_result.started",
+        funds=len(funds),
+        clients=len(clients),
+        client_funds=len(client_funds),
+        transactions=len(txns),
+        features=len(features),
+    )
+
     counts = PersistCounts()
+    logger.info("persist_result.upserting", table="funds", rows=len(funds))
     counts.funds = upsert(
         session,
         Funds,
@@ -352,7 +346,9 @@ def persist_result(
         _FUND_UPDATE,
         extra_set={"updated_at": func.now()},
     )
+    logger.info("persist_result.upserting", table="clients", rows=len(clients))
     counts.clients = upsert(session, Clients, clients, "client_id", _CLIENT_UPDATE)
+    logger.info("persist_result.upserting", table="client_fund", rows=len(client_funds))
     counts.client_funds = upsert(
         session,
         ClientFund,
@@ -361,8 +357,11 @@ def persist_result(
         _CLIENT_FUND_UPDATE,
         extra_set={"updated_at": func.now()},
     )
+    logger.info("persist_result.upserting", table="transactions", rows=len(txns))
     counts.transactions = upsert(session, Transactions, list(txns.values()), "txn_id", _TXN_UPDATE)
+    logger.info("persist_result.upserting", table="pii_vault", rows=len(vault))
     counts.vault = upsert_vault(session, vault)
+    logger.info("persist_result.upserting", table="client_features", rows=len(features))
     counts.features = upsert(
         session,
         ClientFeatures,
@@ -378,6 +377,7 @@ def persist_result(
         value_band_cutoffs=list(VALUE_BAND_CUTOFFS),
     )
     session.commit()
+    logger.info("persist_result.committed")
     return counts
 
 
