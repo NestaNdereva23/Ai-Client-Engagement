@@ -1,5 +1,3 @@
-"""Business rules console: browse versions, and dry-run a feature tuple."""
-
 from __future__ import annotations
 
 from datetime import date
@@ -7,12 +5,13 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.api.reviewer_auth import get_current_reviewer_id
 from app.db.session import get_session
 from app.rules.engine import NoRuleMatched
 from app.schemas.rules import AngleStatusOut, RulePreviewOut, RulePreviewRequest, RuleVersionOut
 from app.services.rules import list_angle_status, list_rule_versions, preview
 
-router = APIRouter(prefix="/rules", tags=["rules"])
+router = APIRouter(prefix="/rules", tags=["rules"], dependencies=[Depends(get_current_reviewer_id)])
 
 
 @router.get("", response_model=list[RuleVersionOut])
@@ -21,7 +20,6 @@ def get_rule_versions(
     active_on: date | None = None,
     session: Session = Depends(get_session),
 ) -> list[RuleVersionOut]:
-    """One row per rule-set version: its validity window and rule count."""
     today = date.today()
     rows = list_rule_versions(session, version=version, active_on=active_on)
     return [
@@ -40,10 +38,6 @@ def get_rule_versions(
 def get_angle_status(
     active_on: date | None = None, session: Session = Depends(get_session)
 ) -> list[AngleStatusOut]:
-    """Every message angle's current hold state. Defaults to today, so the
-    console can ask "what's held right now" without a client-side date
-    computation; held is mutable independent of any rule-version deploy.
-    """
     resolved_on = active_on or date.today()
     rows = list_angle_status(session, active_on=resolved_on)
     return [
@@ -56,7 +50,6 @@ def get_angle_status(
 def preview_rules(
     body: RulePreviewRequest, session: Session = Depends(get_session)
 ) -> RulePreviewOut:
-    """Dry-run a feature tuple: which angle, variant, and tier it resolves to."""
     features = body.model_dump(exclude={"at"}, exclude_none=True)
     at = body.at or date.today()
     try:

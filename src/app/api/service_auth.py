@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from fastapi import Header
+from fastapi import Depends
+from fastapi.security import HTTPAuthorizationCredentials
 
-from app.api.reviewer_auth import decode_bearer_token
+from app.api.reviewer_auth import bearer_scheme, decode_bearer_token
 
 
-def require_service_token(authorization: str | None = Header(default=None)) -> None:
-    decode_bearer_token(authorization)
+def require_service_token(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> None:
+    decode_bearer_token(credentials)

@@ -6,6 +6,7 @@ on its own, an unknown route, a bad cursor, and a genuinely uncaught 500.
 
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -13,6 +14,13 @@ from app.api.errors import register_error_handlers
 from app.main import app as real_app
 
 client = TestClient(real_app)
+
+
+@pytest.fixture(autouse=True)
+def _authed(configured_reviewers, reviewer_1_headers):
+    client.headers.update(reviewer_1_headers)
+    yield
+    client.headers.pop("Authorization", None)
 
 
 def test_health_stays_unversioned() -> None:

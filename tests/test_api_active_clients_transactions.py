@@ -22,6 +22,14 @@ from app.main import app
 
 client = TestClient(app)
 
+
+@pytest.fixture(autouse=True)
+def _authed(configured_reviewers, reviewer_1_headers):
+    client.headers.update(reviewer_1_headers)
+    yield
+    client.headers.pop("Authorization", None)
+
+
 CLIENT_ID = 94620
 FUND_ID = 946
 

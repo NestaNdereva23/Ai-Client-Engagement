@@ -20,6 +20,25 @@ from app.main import app
 client = TestClient(app)
 
 RAG = "/api/v1/rag"
+
+
+@pytest.fixture(autouse=True)
+def _authed(configured_reviewers, reviewer_1_headers):
+    client.headers.update(reviewer_1_headers)
+    yield
+    client.headers.pop("Authorization", None)
+
+
+def test_missing_token_is_401(configured_reviewers) -> None:
+    response = TestClient(app).get(f"{RAG}/versions")
+    assert response.status_code == 401
+
+
+def test_no_reviewer_configured_is_503(unconfigured_reviewers, reviewer_1_headers) -> None:
+    response = TestClient(app).get(f"{RAG}/versions", headers=reviewer_1_headers)
+    assert response.status_code == 503
+
+
 _SOURCE = "api-test-weekly"
 
 

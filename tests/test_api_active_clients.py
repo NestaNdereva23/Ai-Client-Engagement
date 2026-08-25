@@ -1,7 +1,6 @@
 """Tests for the active-client console endpoints: logging an interaction
-(username attribution with no reviewer-key gate, the audit row, the 404 for
-an unknown client-fund), reading the interaction history back, and the
-profile read.
+(username attribution, the audit row, the 404 for an unknown client-fund),
+reading the interaction history back, and the profile read.
 """
 
 from __future__ import annotations
@@ -27,6 +26,14 @@ from app.risk.routing import RouteResult
 from app.risk.scoring import ScoreResult
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _authed(configured_reviewers, reviewer_1_headers):
+    client.headers.update(reviewer_1_headers)
+    yield
+    client.headers.pop("Authorization", None)
+
 
 FUND_ID = 943
 CLIENT_ID = 94301
@@ -97,15 +104,9 @@ def _transactions_url(client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID) -
     return f"/api/v1/active-clients/{client_id}/{unit_fund_id}/transactions"
 
 
-def test_post_interaction_needs_no_reviewer_key_even_when_none_are_configured(
-    unconfigured_reviewers, seeded_active_client
-) -> None:
-    """Same deliberate exception GET /briefing/... makes: this write
-    succeeds with no X-Reviewer-Key header at all, even with an empty
-    reviewer roster, because it's attributed by username instead.
-    """
-    response = client.post(_post_interactions_url(), json={"type": "call_logged"})
-    assert response.status_code == 201
+def test_post_interaction_missing_token_is_401(configured_reviewers) -> None:
+    response = TestClient(app).post(_post_interactions_url(), json={"type": "call_logged"})
+    assert response.status_code == 401
 
 
 def test_post_interaction_missing_username_is_422(seeded_active_client) -> None:
@@ -217,9 +218,9 @@ def test_get_interactions_since_filter_excludes_older_rows(seeded_active_client)
     assert response.json() == []
 
 
-def test_get_interactions_is_not_gated_by_the_reviewer_key(seeded_active_client) -> None:
-    response = client.get(_interactions_url())
-    assert response.status_code == 200
+def test_get_interactions_missing_token_is_401(configured_reviewers) -> None:
+    response = TestClient(app).get(_interactions_url())
+    assert response.status_code == 401
 
 
 def test_get_profile_unknown_client_fund_is_404() -> None:
@@ -451,11 +452,11 @@ def test_get_transactions_unknown_client_fund_is_empty_not_404() -> None:
     assert response.json() == []
 
 
-def test_get_transactions_is_not_gated_by_the_reviewer_key(
-    configured_reviewers, seeded_active_client
+def test_get_transactions_no_reviewer_configured_is_503(
+    unconfigured_reviewers, reviewer_1_headers
 ) -> None:
-    response = client.get(_transactions_url())
-    assert response.status_code == 200
+    response = TestClient(app).get(_transactions_url(), headers=reviewer_1_headers)
+    assert response.status_code == 503
 
 
 # --- GET .../deposit-percentile ---------------------------------------------

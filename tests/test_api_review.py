@@ -29,6 +29,13 @@ client = TestClient(app)
 REVIEWS = "/api/v1/reviews"
 
 
+@pytest.fixture(autouse=True)
+def _authed(configured_reviewers, reviewer_1_headers):
+    client.headers.update(reviewer_1_headers)
+    yield
+    client.headers.pop("Authorization", None)
+
+
 def make_settings(**overrides) -> Settings:
     defaults = {
         "llm_provider": "anthropic",
@@ -186,7 +193,7 @@ def test_get_review_404s_when_not_found(db: None) -> None:
 
 def test_decide_with_no_reviewer_key_is_401(configured_reviewers, message) -> None:
     message_id, _campaign_id = message
-    response = client.post(f"{REVIEWS}/{message_id}/decide", json={"outcome": "approve"})
+    response = TestClient(app).post(f"{REVIEWS}/{message_id}/decide", json={"outcome": "approve"})
     assert response.status_code == 401
 
 
@@ -354,7 +361,7 @@ def test_decide_batch_rejects_edit_approve(configured_reviewers, reviewer_1_head
 
 def test_decide_batch_with_no_reviewer_key_is_401(configured_reviewers, two_messages) -> None:
     message_ids, _campaign_id = two_messages
-    response = client.post(
+    response = TestClient(app).post(
         f"{REVIEWS}/decide-batch", json={"message_ids": message_ids, "outcome": "approve"}
     )
     assert response.status_code == 401

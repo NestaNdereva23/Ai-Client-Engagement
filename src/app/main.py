@@ -45,8 +45,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         version=__version__,
-        docs_url="/docs",
-        openapi_url="/openapi.json",
+        docs_url=None if settings.is_production else "/docs",
+        openapi_url=None if settings.is_production else "/openapi.json",
         lifespan=lifespan,
     )
     app.state.settings = settings

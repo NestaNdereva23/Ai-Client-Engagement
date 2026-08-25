@@ -22,6 +22,24 @@ client = TestClient(app)
 
 RULES = "/api/v1/rules"
 
+
+@pytest.fixture(autouse=True)
+def _authed(configured_reviewers, reviewer_1_headers):
+    client.headers.update(reviewer_1_headers)
+    yield
+    client.headers.pop("Authorization", None)
+
+
+def test_missing_token_is_401(configured_reviewers) -> None:
+    response = TestClient(app).get(RULES)
+    assert response.status_code == 401
+
+
+def test_no_reviewer_configured_is_503(unconfigured_reviewers, reviewer_1_headers) -> None:
+    response = TestClient(app).get(RULES, headers=reviewer_1_headers)
+    assert response.status_code == 503
+
+
 _TEST_VERSION = 91
 # Far enough out that no real seeded version can ever have a later valid_from
 # and win load_active_rules' tie-break instead of this one.

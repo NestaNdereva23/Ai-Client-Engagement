@@ -30,6 +30,15 @@ from app.llmops.versions import persist_generation_run
 from app.main import app
 
 api_client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _authed(configured_reviewers, reviewer_1_headers):
+    api_client.headers.update(reviewer_1_headers)
+    yield
+    api_client.headers.pop("Authorization", None)
+
+
 CAMPAIGNS = "/api/v1/campaigns"
 REVIEWS = "/api/v1/reviews"
 

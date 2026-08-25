@@ -28,6 +28,14 @@ CAMPAIGNS = "/api/v1/campaigns"
 
 client = TestClient(app)
 
+
+@pytest.fixture(autouse=True)
+def _authed(configured_reviewers, reviewer_1_headers):
+    client.headers.update(reviewer_1_headers)
+    yield
+    client.headers.pop("Authorization", None)
+
+
 FUND_ID = 9799
 BASELINE, STALE, NO_FUND_ROW, EXIT_REASON, CADENCE_NONE = 979901, 979902, 979903, 979904, 979905
 NO_HISTORY, OPTED_OUT, SUPPRESSED, NO_CONTACT = 979906, 979907, 979908, 979909

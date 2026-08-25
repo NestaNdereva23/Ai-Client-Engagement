@@ -1,16 +1,15 @@
-"""Audit trail and trace console: browse the append-only log, deep-link a trace."""
-
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.api.reviewer_auth import get_current_reviewer_id
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.audit import AuditLogEntryOut, TraceOut
 from app.services.audit import TraceNotFound, browse_audit_log, get_trace
 
-router = APIRouter(tags=["audit"])
+router = APIRouter(tags=["audit"], dependencies=[Depends(get_current_reviewer_id)])
 
 
 @router.get("/audit", response_model=Page[AuditLogEntryOut])
@@ -22,7 +21,6 @@ def list_audit_log(
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
 ) -> Page[AuditLogEntryOut]:
-    """The append-only trail, newest first, filterable by entity, run, or trace."""
     try:
         rows, next_cursor = browse_audit_log(
             session, entity_type=entity, run_id=run, trace_id=trace, cursor=cursor, limit=limit
@@ -34,7 +32,6 @@ def list_audit_log(
 
 @router.get("/traces/{trace_id}", response_model=TraceOut)
 def get_trace_ref(trace_id: str, session: Session = Depends(get_session)) -> TraceOut:
-    """Deep-link a trace id to its Langfuse URL."""
     try:
         trace = get_trace(session, trace_id)
     except TraceNotFound:

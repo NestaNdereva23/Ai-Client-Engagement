@@ -21,6 +21,14 @@ client = TestClient(app)
 
 TEMPLATES = "/api/v1/templates"
 
+
+@pytest.fixture(autouse=True)
+def _authed(configured_reviewers, reviewer_1_headers):
+    client.headers.update(reviewer_1_headers)
+    yield
+    client.headers.pop("Authorization", None)
+
+
 PROFILE_KEY = {
     "message_angle": "pick_up_again",
     "priority_tier": "T3",
@@ -217,7 +225,7 @@ def test_decide_batch_rejects_edit_approve(configured_reviewers, reviewer_1_head
 
 def test_decide_batch_with_no_reviewer_key_is_401(configured_reviewers, two_templates) -> None:
     template_ids, _campaign_id = two_templates
-    response = client.post(
+    response = TestClient(app).post(
         f"{TEMPLATES}/decide-batch", json={"template_ids": template_ids, "outcome": "approve"}
     )
     assert response.status_code == 401
@@ -257,7 +265,9 @@ def test_get_template_detail_404s_when_not_found(db: None) -> None:
 
 def test_decide_with_no_reviewer_key_is_401(configured_reviewers, template) -> None:
     template_id, _campaign_id = template
-    response = client.post(f"{TEMPLATES}/{template_id}/decide", json={"outcome": "approve"})
+    response = TestClient(app).post(
+        f"{TEMPLATES}/{template_id}/decide", json={"outcome": "approve"}
+    )
     assert response.status_code == 401
 
 
