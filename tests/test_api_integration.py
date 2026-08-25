@@ -4,7 +4,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, func, select, text
 
-from app.api import integration_auth
 from app.api.routers import ingestion as ingestion_router
 from app.db.models.models import Clients, Funds, PiiVault
 from app.db.models.suppression import Suppression
@@ -16,22 +15,6 @@ client = TestClient(app)
 CONTACTS = "/api/v1/integration/contacts"
 SUPPRESSIONS = "/api/v1/integration/suppressions"
 TRIGGER = "/api/v1/integration/ingestion/runs"
-
-_TEST_KEY = "test-integration-key"
-HEADERS = {"X-Integration-Key": _TEST_KEY}
-
-
-class _ConfiguredSettings:
-    integration_api_key = _TEST_KEY
-
-
-class _UnconfiguredSettings:
-    integration_api_key = ""
-
-
-@pytest.fixture
-def configured_key(monkeypatch):
-    monkeypatch.setattr(integration_auth, "get_settings", lambda: _ConfiguredSettings())
 
 
 def _role_present() -> bool:
@@ -45,26 +28,21 @@ def roles(db: None):
         pytest.skip("boundary roles not present; run alembic upgrade head")
 
 
-# --- Auth stopgap -----------------------------------------------------------
-
-
-def test_missing_header_is_401(configured_key) -> None:
+def test_missing_token_is_401(configured_reviewers) -> None:
     response = client.post(CONTACTS, json={"client_id": 1})
     assert response.status_code == 401
 
 
-def test_wrong_key_is_401(configured_key) -> None:
-    response = client.post(CONTACTS, json={"client_id": 1}, headers={"X-Integration-Key": "wrong"})
+def test_bad_token_is_401(configured_reviewers) -> None:
+    response = client.post(
+        CONTACTS, json={"client_id": 1}, headers={"Authorization": "Bearer not-a-jwt"}
+    )
     assert response.status_code == 401
 
 
-def test_no_key_configured_is_503(monkeypatch) -> None:
-    monkeypatch.setattr(integration_auth, "get_settings", lambda: _UnconfiguredSettings())
-    response = client.post(CONTACTS, json={"client_id": 1}, headers=HEADERS)
+def test_no_secret_configured_is_503(unconfigured_reviewers, reviewer_1_headers) -> None:
+    response = client.post(CONTACTS, json={"client_id": 1}, headers=reviewer_1_headers)
     assert response.status_code == 503
-
-
-# --- Contacts ----------------------------------------------------------------
 
 
 @pytest.fixture
@@ -94,7 +72,7 @@ def a_client(roles):
         session.commit()
 
 
-def test_upsert_contact_by_client_id(configured_key, a_client) -> None:
+def test_upsert_contact_by_client_id(configured_reviewers, reviewer_1_headers, a_client) -> None:
     response = client.post(
         CONTACTS,
         json={
@@ -102,7 +80,7 @@ def test_upsert_contact_by_client_id(configured_key, a_client) -> None:
             "contact_email": "jane@example.com",
             "consent": True,
         },
-        headers=HEADERS,
+        headers=reviewer_1_headers,
     )
     assert response.status_code == 200
     body = response.json()
@@ -111,45 +89,45 @@ def test_upsert_contact_by_client_id(configured_key, a_client) -> None:
     assert body["consent"] is True
 
 
-def test_upsert_contact_by_client_code(configured_key, a_client) -> None:
+def test_upsert_contact_by_client_code(configured_reviewers, reviewer_1_headers, a_client) -> None:
     response = client.post(
         CONTACTS,
         json={"client_code": "CODE-976", "contact_whatsapp": "+254700000000", "consent": True},
-        headers=HEADERS,
+        headers=reviewer_1_headers,
     )
     assert response.status_code == 200
     assert response.json()["client_id"] == a_client
 
 
-def test_upsert_contact_with_unknown_code_is_404(configured_key, roles) -> None:
+def test_upsert_contact_with_unknown_code_is_404(
+    configured_reviewers, reviewer_1_headers, roles
+) -> None:
     response = client.post(
-        CONTACTS, json={"client_code": "no-such-code", "consent": True}, headers=HEADERS
+        CONTACTS, json={"client_code": "no-such-code", "consent": True}, headers=reviewer_1_headers
     )
     assert response.status_code == 404
 
 
-def test_upsert_contact_requires_an_identifier(configured_key) -> None:
-    response = client.post(CONTACTS, json={"consent": True}, headers=HEADERS)
+def test_upsert_contact_requires_an_identifier(configured_reviewers, reviewer_1_headers) -> None:
+    response = client.post(CONTACTS, json={"consent": True}, headers=reviewer_1_headers)
     assert response.status_code == 422
 
 
-def test_a_second_upsert_does_not_blank_out_an_earlier_field(configured_key, a_client) -> None:
-    """A consent-only resync must not wipe a previously synced email."""
+def test_a_second_upsert_does_not_blank_out_an_earlier_field(
+    configured_reviewers, reviewer_1_headers, a_client
+) -> None:
     client.post(
         CONTACTS,
         json={"client_id": a_client, "contact_email": "jane@example.com", "consent": True},
-        headers=HEADERS,
+        headers=reviewer_1_headers,
     )
     response = client.post(
-        CONTACTS, json={"client_id": a_client, "consent": False}, headers=HEADERS
+        CONTACTS, json={"client_id": a_client, "consent": False}, headers=reviewer_1_headers
     )
     assert response.status_code == 200
     body = response.json()
     assert body["contact_email"] == "jane@example.com"
     assert body["consent"] is False
-
-
-# --- Suppressions --------------------------------------------------------------
 
 
 @pytest.fixture
@@ -161,12 +139,14 @@ def cleanup_suppression(roles):
         session.commit()
 
 
-def test_add_suppression_creates_a_row(configured_key, cleanup_suppression) -> None:
+def test_add_suppression_creates_a_row(
+    configured_reviewers, reviewer_1_headers, cleanup_suppression
+) -> None:
     cleanup_suppression.append(555555)
     response = client.post(
         SUPPRESSIONS,
         json={"client_id": 555555, "reason": "unsubscribe", "source": "cytonn-crm"},
-        headers=HEADERS,
+        headers=reviewer_1_headers,
     )
     assert response.status_code == 200
     body = response.json()
@@ -179,11 +159,17 @@ def test_add_suppression_creates_a_row(configured_key, cleanup_suppression) -> N
     assert row.source == "cytonn-crm"
 
 
-def test_resyncing_a_suppression_updates_the_reason(configured_key, cleanup_suppression) -> None:
+def test_resyncing_a_suppression_updates_the_reason(
+    configured_reviewers, reviewer_1_headers, cleanup_suppression
+) -> None:
     cleanup_suppression.append(555556)
-    client.post(SUPPRESSIONS, json={"client_id": 555556, "reason": "unsubscribe"}, headers=HEADERS)
+    client.post(
+        SUPPRESSIONS,
+        json={"client_id": 555556, "reason": "unsubscribe"},
+        headers=reviewer_1_headers,
+    )
     response = client.post(
-        SUPPRESSIONS, json={"client_id": 555556, "reason": "opt_out"}, headers=HEADERS
+        SUPPRESSIONS, json={"client_id": 555556, "reason": "opt_out"}, headers=reviewer_1_headers
     )
     assert response.status_code == 200
     assert response.json()["reason"] == "opt_out"
@@ -192,10 +178,7 @@ def test_resyncing_a_suppression_updates_the_reason(configured_key, cleanup_supp
         count = session.scalar(
             select(func.count()).select_from(Suppression).where(Suppression.client_id == 555556)
         )
-    assert count == 1  # PK upsert, not an append-only log
-
-
-# --- Ingestion trigger ---------------------------------------------------------
+    assert count == 1
 
 
 class FakeClient:
@@ -234,20 +217,20 @@ def cleanup_run():
 
 
 def test_trigger_via_integration_plane_completes(
-    db, configured_key, cleanup_run, fake_client
+    db, configured_reviewers, reviewer_1_headers, cleanup_run, fake_client
 ) -> None:
-    response = client.post(TRIGGER, json={}, headers=HEADERS)
+    response = client.post(TRIGGER, json={}, headers=reviewer_1_headers)
     assert response.status_code == 202
     run_id = response.json()["run_id"]
     cleanup_run.append(run_id)
     assert fake_client.closed is True
 
-    status = client.get(f"/api/v1/ingestion/runs/{run_id}")
+    status = client.get(f"/api/v1/ingestion/runs/{run_id}", headers=reviewer_1_headers)
     assert status.json()["state"] == "completed"
 
 
-def test_trigger_via_integration_plane_without_the_key_is_401(
-    db, configured_key, fake_client
+def test_trigger_via_integration_plane_without_a_token_is_401(
+    db, configured_reviewers, fake_client
 ) -> None:
     response = client.post(TRIGGER, json={})
     assert response.status_code == 401

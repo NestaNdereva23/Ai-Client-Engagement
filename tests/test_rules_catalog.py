@@ -38,10 +38,10 @@ SEEDED_ANGLES = (
 SEEDED_VERSION = 1
 IN_FORCE = date(2026, 8, 2)
 
-# version 2 superseded version 1 on 2026-08-21 and, unlike the fixtures the
+# version 3 superseded version 2 on 2026-08-24 and, unlike the fixtures the
 # tests below add and remove, has no valid_to: it is the baseline for any
 # date from then on that a test does not give a more specific override.
-ACTIVE_VERSION = 2
+ACTIVE_VERSION = 3
 
 
 def _spec(angle: str = "trial_angle", **overrides: str) -> AngleSpec:

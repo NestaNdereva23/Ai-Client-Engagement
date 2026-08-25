@@ -10,13 +10,17 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, func, select, text
 
+from app.campaigns.nurture_bridge import AUTO_CHECKIN_CAMPAIGN_TYPE
 from app.config import get_settings
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.audit import AuditLog
+from app.db.models.campaigns import Enrollment
 from app.db.models.digest import DigestEmailSend, DigestLine, DigestRun
 from app.db.models.fa_assignment import FaAssignment
-from app.db.models.models import PiiVault
+from app.db.models.models import ClientFeatures, Clients, PiiVault
+from app.db.models.outreach import Campaign
 from app.db.models.risk import ClientRiskFeatures, RiskRun, RiskSnapshot
+from app.db.models.rules import ClientMessageIndicators
 from app.db.session import SessionLocal
 from app.delivery.mailer import NullMailer
 from app.workers.risk_detection import RiskDetectionWorker
@@ -291,7 +295,9 @@ def test_run_with_a_roster_groups_the_digest_by_a_real_advisor(
 
     assert set(assignments) == {CALL_CLIENT_ID, TINY_CLIENT_ID}
     assert all(fa_id in {"fa-71", "fa-72"} for fa_id in assignments.values())
-    assert group_keys == {f"fa:{assignments[CALL_CLIENT_ID]}"}
+    # The advisor's own queue, plus the fund wide group every eligible row
+    # also joins.
+    assert group_keys == {f"fa:{assignments[CALL_CLIENT_ID]}", f"fund:{FUND_ID}"}
 
     second_run = uuid4().hex
     cleanup_risk_runs.append(second_run)
@@ -414,3 +420,129 @@ def test_overflow_past_every_advisors_capacity_is_demoted_to_the_watchlist(
     assert snapshots[CAP_CLIENT_IDS[2]].queue_rank is None
     # Demotion never touches ownership -- the client keeps a real advisor.
     assert owners[CAP_CLIENT_IDS[2]] in {"fa-81", "fa-82"}
+
+
+AUTO_CHECKIN_FUND_ID = 922
+AUTO_CHECKIN_CLIENT_ID = 92201
+
+
+def _auto_checkin_payload(balance: float) -> dict:
+    return {
+        "data": [
+            {
+                "unit_fund_id": AUTO_CHECKIN_FUND_ID,
+                "unit_fund_name": "Auto Checkin Fund",
+                "client_count": 1,
+                "clients": [_client_row(AUTO_CHECKIN_CLIENT_ID, balance=balance)],
+            }
+        ]
+    }
+
+
+@pytest.fixture
+def cleanup_auto_checkin_run():
+    run_ids: list[str] = []
+    yield run_ids
+    with SessionLocal() as session:
+        for run_id in run_ids:
+            _delete_run_rows(session, run_id)
+        session.execute(
+            delete(Enrollment).where(
+                Enrollment.client_id == AUTO_CHECKIN_CLIENT_ID,
+                Enrollment.campaign_id.in_(
+                    select(Campaign.campaign_id).where(
+                        Campaign.campaign_type == AUTO_CHECKIN_CAMPAIGN_TYPE
+                    )
+                ),
+            )
+        )
+        session.execute(
+            delete(AuditLog).where(
+                AuditLog.entity_type == "enrollment", AuditLog.action == "auto_checkin_sync"
+            )
+        )
+        session.execute(
+            delete(ClientMessageIndicators).where(
+                ClientMessageIndicators.client_id == AUTO_CHECKIN_CLIENT_ID
+            )
+        )
+        session.execute(
+            delete(ClientFeatures).where(ClientFeatures.client_id == AUTO_CHECKIN_CLIENT_ID)
+        )
+        session.execute(delete(Clients).where(Clients.client_id == AUTO_CHECKIN_CLIENT_ID))
+        _delete_client_rows(session, [AUTO_CHECKIN_CLIENT_ID])
+        session.commit()
+
+
+def test_client_newly_routed_to_auto_checkin_enrolls_once(db, cleanup_auto_checkin_run) -> None:
+    first_run = uuid4().hex
+    cleanup_auto_checkin_run.append(first_run)
+    worker = RiskDetectionWorker(
+        FakeClient(), page_fetcher=_single_page(_auto_checkin_payload(5_000.0))
+    )
+
+    result = worker.run(run_id=first_run)
+    assert result.route_distribution == {"auto_checkin": 1}
+
+    second_run = uuid4().hex
+    cleanup_auto_checkin_run.append(second_run)
+    worker_again = RiskDetectionWorker(
+        FakeClient(), page_fetcher=_single_page(_auto_checkin_payload(5_000.0))
+    )
+    worker_again.run(run_id=second_run)
+
+    with SessionLocal() as session:
+        campaign_id = session.scalar(
+            select(Campaign.campaign_id).where(Campaign.campaign_type == AUTO_CHECKIN_CAMPAIGN_TYPE)
+        )
+        enrollments = session.scalars(
+            select(Enrollment).where(
+                Enrollment.client_id == AUTO_CHECKIN_CLIENT_ID,
+                Enrollment.campaign_id == campaign_id,
+            )
+        ).all()
+        indicator = session.get(ClientMessageIndicators, AUTO_CHECKIN_CLIENT_ID)
+        features = session.get(ClientFeatures, AUTO_CHECKIN_CLIENT_ID)
+
+    assert len(enrollments) == 1
+    assert indicator is not None
+    assert indicator.message_angle == "sitting_still"
+    assert features is not None
+    assert features.active_book_auto_checkin is True
+
+
+def test_route_change_away_from_auto_checkin_does_not_unenroll(
+    db, cleanup_auto_checkin_run
+) -> None:
+    first_run = uuid4().hex
+    cleanup_auto_checkin_run.append(first_run)
+    worker = RiskDetectionWorker(
+        FakeClient(), page_fetcher=_single_page(_auto_checkin_payload(5_000.0))
+    )
+    worker.run(run_id=first_run)
+
+    with SessionLocal() as session:
+        campaign_id = session.scalar(
+            select(Campaign.campaign_id).where(Campaign.campaign_type == AUTO_CHECKIN_CAMPAIGN_TYPE)
+        )
+        enrollment = session.scalar(
+            select(Enrollment).where(
+                Enrollment.client_id == AUTO_CHECKIN_CLIENT_ID,
+                Enrollment.campaign_id == campaign_id,
+            )
+        )
+    assert enrollment is not None
+
+    second_run = uuid4().hex
+    cleanup_auto_checkin_run.append(second_run)
+    worker_again = RiskDetectionWorker(
+        FakeClient(), page_fetcher=_single_page(_auto_checkin_payload(200_000.0))
+    )
+    result = worker_again.run(run_id=second_run)
+    assert result.route_distribution == {"fa_call_priority": 1}
+
+    with SessionLocal() as session:
+        still_enrolled = session.get(Enrollment, enrollment.enrollment_id)
+
+    assert still_enrolled is not None
+    assert still_enrolled.status == "enrolled"

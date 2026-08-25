@@ -235,7 +235,7 @@ def test_every_catalogued_angle_assembles_a_prompt_carrying_its_own_prohibition(
 ) -> None:
     with SessionLocal() as session:
         angles = load_active_angles(session, IN_FORCE)
-    assert len(angles) == 12
+    assert len(angles) == 13
 
     for angle, row in angles.items():
         prompt = build_system_prompt(

@@ -1,16 +1,10 @@
-"""Integration inbound: the parent system pushes contact channels and
-suppressions, and can trigger a data refresh. Every route here sits behind
-require_integration_key, a stopgap ahead of M8A.7's real scoped API keys;
-this plane never reaches review, approve, or send (design ADR-06A).
-"""
-
 from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.integration_auth import require_integration_key
 from app.api.routers.ingestion import get_cytonn_client
+from app.api.service_auth import require_service_token
 from app.db.session import get_session
 from app.ingestion.api_client import CytonnClient
 from app.schemas.ingestion import IngestionRunAccepted, TriggerIngestionRequest
@@ -26,7 +20,7 @@ from app.services.integration import ClientNotFound, record_suppression, resolve
 from app.services.integration import upsert_contact as upsert_contact_service
 
 router = APIRouter(
-    prefix="/integration", tags=["integration"], dependencies=[Depends(require_integration_key)]
+    prefix="/integration", tags=["integration"], dependencies=[Depends(require_service_token)]
 )
 
 
@@ -34,7 +28,6 @@ router = APIRouter(
 def upsert_contact(
     body: ContactUpsertRequest, session: Session = Depends(get_session)
 ) -> ContactUpsertOut:
-    """Upsert contact channels and consent for a client_id or client_code."""
     try:
         client_id = resolve_client_id(
             session, client_id=body.client_id, client_code=body.client_code
@@ -60,7 +53,6 @@ def upsert_contact(
 
 @router.post("/suppressions", response_model=SuppressionOut)
 def add_suppression(body: SuppressionRequest) -> SuppressionOut:
-    """Sync one unsubscribe or opt-out from Cytonn's CRM."""
     record = record_suppression(client_id=body.client_id, reason=body.reason, source=body.source)
     return SuppressionOut(
         client_id=record.client_id,
@@ -77,7 +69,6 @@ def trigger_run(
     client: CytonnClient = Depends(get_cytonn_client),
     session: Session = Depends(get_session),
 ) -> IngestionRunAccepted:
-    """Let the parent system trigger a data refresh; runs in the background."""
     try:
         run_id = resolve_trigger_run_id(session, body.run_id)
     except RunNotFound:

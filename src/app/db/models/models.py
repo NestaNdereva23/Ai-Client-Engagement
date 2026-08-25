@@ -1,9 +1,6 @@
 """Tables for the ingestion stage.
 
-raw_staging keeps the exact response before any parsing, so we can re-process
-without calling the source again. ingestion_status tracks each run so it can
-resume where it stopped. ingestion_rejects stores records that failed validation
-along with the reason, so one bad record does not stop the run.
+raw_staging keeps the exact response before any parsing.
 """
 
 from __future__ import annotations
@@ -56,13 +53,6 @@ class RawStaging(Base):
 
 
 class IngestionStatus(Base):
-    """Progress and counters for one run, so it can resume after a failure.
-
-    fund_cursor and page_cursor hold the last fund and page that finished, so a
-    resumed run carries on after the last saved page instead of starting over.
-    The counters summarise what the run has seen and written.
-    """
-
     __tablename__ = "ingestion_status"
     __table_args__ = (
         CheckConstraint(
@@ -128,13 +118,6 @@ class Funds(Base):
 
 
 class Clients(Base):
-    """One row per client, holding the figures of their largest relationship.
-
-    A client who holds several funds still gets a single row here, because a
-    person receives one message however many funds they held. n_funds says how
-    many they have; the per-fund detail is in client_fund.
-    """
-
     __tablename__ = "clients"
 
     client_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
@@ -262,9 +245,6 @@ class ClientFeatures(Base):
         Boolean, nullable=False, server_default=text("false")
     )
 
-    # Behavioural bands describing the relationship this client is contacted on.
-    # Each carries an explicit unknown member rather than a null, so a rule that
-    # names a band never has to reason about a missing value.
     n_funds: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     recency_band: Mapped[str] = mapped_column(Text, nullable=False, server_default="Unknown")
     value_band: Mapped[str] = mapped_column(Text, nullable=False, server_default="Low")
@@ -288,6 +268,9 @@ class ClientFeatures(Base):
     )
     # Derived from value_band and recency_band, not set by a rule.
     priority_tier: Mapped[str] = mapped_column(Text, nullable=False, server_default="T4")
+    active_book_auto_checkin: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

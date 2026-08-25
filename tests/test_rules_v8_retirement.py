@@ -1,8 +1,9 @@
 """Retiring the v1 and v2 rule sets: their windows close where the next one
 began, each version is active for exactly the window it was given with no gap
-and no overlap (v3 handed over to v4 later, for the hold_band rename), and
-the v1 vocabulary itself is gone from the schema, the model boundary, the
-rule vocabulary, and the client console.
+and no overlap (v3 handed over to v4 later, for the hold_band rename, and v4
+handed over to v5, for sitting_still), and the v1 vocabulary itself is gone
+from the schema, the model boundary, the rule vocabulary, and the client
+console.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from app.rules.store import MESSAGE_ANGLES, PRIORITY_TIERS, RULE_FIELD_DOMAINS, 
 _V1_ENDS = date(2026, 8, 1)
 _V2_ENDS = date(2026, 8, 4)
 _V3_ENDS = date(2026, 8, 11)
+_V4_ENDS = date(2026, 8, 24)
 _DROPPED_CLIENT_FEATURES_COLUMNS = {"archetype", "recency_bucket", "value_tier", "rhythm_band"}
 _DROPPED_CLIENTS_COLUMNS = {"net_flow"}
 
@@ -49,13 +51,23 @@ def test_v3_is_the_active_version_between_v2_and_v4() -> None:
     assert {r.version for r in on_the_boundary} == {4}
 
 
-def test_v4_is_the_active_version_from_its_cutover_onward() -> None:
+def test_v4_is_the_active_version_between_v3_and_v5() -> None:
     """v4 exists to carry the hold_band rename forward without mutating v3."""
     with SessionLocal() as session:
         just_after = load_active_rules(session, at=date(2026, 8, 12))
-        well_after = load_active_rules(session, at=date(2027, 1, 1))
+        on_the_boundary = load_active_rules(session, at=_V4_ENDS)
     assert {r.version for r in just_after} == {4}
-    assert {r.version for r in well_after} == {4}
+    # valid_to is exclusive: the boundary date itself belongs to v5.
+    assert {r.version for r in on_the_boundary} == {5}
+
+
+def test_v5_is_the_active_version_from_its_cutover_onward() -> None:
+    """v5 exists to add sitting_still for auto_checkin-routed clients."""
+    with SessionLocal() as session:
+        just_after = load_active_rules(session, at=date(2026, 8, 25))
+        well_after = load_active_rules(session, at=date(2027, 1, 1))
+    assert {r.version for r in just_after} == {5}
+    assert {r.version for r in well_after} == {5}
 
 
 def test_the_four_windows_neither_gap_nor_overlap() -> None:

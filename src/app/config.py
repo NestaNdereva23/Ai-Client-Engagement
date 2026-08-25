@@ -132,12 +132,6 @@ class Settings(BaseSettings):
             records.append(FaRecord(fa_id=fa_id, name=name, email=email, daily_capacity=capacity))
         return tuple(records)
 
-    # no longer needed
-    integration_api_key: str = Field(
-        default="", validation_alias=AliasChoices("INTEGRATION_API_KEY")
-    )
-
-    # Verifies the bearer token Ticketing attaches to every call
     ai_outreach_jwt_secret: str = Field(
         default="", validation_alias=AliasChoices("AI_OUTREACH_JWT_SECRET")
     )
