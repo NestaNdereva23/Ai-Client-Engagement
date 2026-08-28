@@ -1,4 +1,4 @@
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 SHELL=/bin/bash
 
-0 3 * * 1-5 root /opt/ace-deploy/Ai-Client-Engagement/deploy/cron/risk-detect.sh >> /var/log/ace/risk-detect.log 2>&1
+0 3 * * 1-5 root /opt/Ai-Outreach/Ai-Client-Engagement/deploy/cron/risk-detect.sh >> /var/log/ace/risk-detect.log 2>&1
