@@ -664,7 +664,10 @@ def ingest_batch(
     provider_batch = client.messages.batches.retrieve(batch.provider_batch_id)
 
     if provider_batch.processing_status not in _PROVIDER_ENDED_STATUSES:
+        live_counts = provider_batch.request_counts
         batch.status = "in_progress"
+        batch.succeeded_count = live_counts.succeeded
+        batch.errored_count = live_counts.errored + live_counts.canceled + live_counts.expired
         session.flush()
         return BatchIngestResult(batch=batch, outcomes=[])
 

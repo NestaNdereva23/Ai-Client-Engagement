@@ -1,0 +1,4 @@
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+SHELL=/bin/bash
+
+30 4 * * * root /opt/Ai-Outreach/Ai-Client-Engagement/deploy/cron/batch-ingest.sh >> /var/log/ace/batch-ingest.log 2>&1

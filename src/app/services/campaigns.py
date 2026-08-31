@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from sqlalchemy import Row, func, select
+from sqlalchemy import Row, func, select, tuple_
 from sqlalchemy.orm import Session
 
 from app.agents.orchestrator import ChannelAgent
@@ -61,7 +61,14 @@ from app.db.models.outreach import Campaign, OutreachMessage, ReviewAction
 from app.db.models.rules import ClientMessageIndicators
 from app.delivery.sender import build_email_sender
 from app.llmops.tracing import Tracer
-from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_id_cursor, encode_id_cursor
+from app.pagination import (
+    DEFAULT_LIMIT,
+    clamp_limit,
+    decode_cursor,
+    decode_id_cursor,
+    encode_cursor,
+    encode_id_cursor,
+)
 from app.privacy.llm_client import LLMClient
 from app.services.clients import resolve_cohort_client_ids
 from app.services.template_review import TemplateNotFound
@@ -578,6 +585,41 @@ def get_campaign_batch(
     if batch is None or batch.campaign_id != campaign_id:
         raise BatchNotFound(generation_batch_id)
     return batch
+
+
+def list_campaign_batches(
+    session: Session,
+    campaign_id: int,
+    *,
+    cursor: str | None = None,
+    limit: int = DEFAULT_LIMIT,
+) -> tuple[list[GenerationBatch], str | None]:
+    """This campaign's batch submissions, newest first, one page at a time.
+
+    Raises CampaignNotFound the same way the other campaign-scoped calls do.
+    """
+    if session.get(Campaign, campaign_id) is None:
+        raise CampaignNotFound(campaign_id)
+
+    limit = clamp_limit(limit)
+    query = select(GenerationBatch).where(GenerationBatch.campaign_id == campaign_id)
+    if cursor is not None:
+        before_created_at, before_id = decode_cursor(cursor)
+        query = query.where(
+            tuple_(GenerationBatch.created_at, GenerationBatch.generation_batch_id)
+            < (before_created_at, before_id)
+        )
+    query = query.order_by(
+        GenerationBatch.created_at.desc(), GenerationBatch.generation_batch_id.desc()
+    ).limit(limit + 1)
+    rows = list(session.scalars(query).all())
+
+    next_cursor = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        next_cursor = encode_cursor(last.created_at, last.generation_batch_id)
+    return rows, next_cursor
 
 
 def draft_campaign_templates(
