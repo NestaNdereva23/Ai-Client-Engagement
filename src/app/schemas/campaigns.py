@@ -208,18 +208,10 @@ class EnrollmentOut(BaseModel):
 
 
 class CohortFilter(BaseModel):
-    """The same allow-listed bucket filters GET /clients accepts.
-
-    Stored as-is on the new campaign's cohort_definition, so membership can
-    be re-derived later, and used once, at creation time, to resolve the
-    client_ids actually enrolled.
-    """
-
     fund_id: int | None = None
     value_band: str | None = None
     recency_band: str | None = None
     purchase_depth: str | None = None
-    message_angle: str | None = None
     newly_dormant: bool | None = None
 
     @model_validator(mode="after")
@@ -229,11 +221,8 @@ class CohortFilter(BaseModel):
             self.value_band,
             self.recency_band,
             self.purchase_depth,
-            self.message_angle,
             self.newly_dormant,
         )
-        # is not None, not truthiness: newly_dormant=False is a real filter
-        # (exclude the newly dormant), not an absent one.
         if not any(f is not None for f in fields):
             raise ValueError(
                 "cohort must set at least one filter, or it would enroll the entire book"
@@ -274,10 +263,26 @@ class CohortPreviewBatchRequest(BaseModel):
     angles: list[str] = []
 
 
+class CampaignStepCreateRequest(BaseModel):
+    offset_days: int
+    message_angle: str | None = None
+    template_ref: str | None = None
+
+
+class CampaignStepOut(BaseModel):
+    step_id: int
+    campaign_id: int
+    step_no: int
+    offset_days: int
+    message_angle: str | None
+    template_ref: str | None
+
+
 class CampaignCreateRequest(BaseModel):
     name: str
     campaign_type: str = "dormant_reengagement"
     cohort: CohortFilter
+    steps: list[CampaignStepCreateRequest] = Field(default_factory=list)
     start_date: date | None = None
     end_date: date | None = None
 
@@ -294,55 +299,7 @@ class CampaignCreateOut(BaseModel):
     end_date: date | None
     created_at: datetime
     enrolled_count: int
-
-
-class SharedCohortFilter(BaseModel):
-    fund_id: int | None = None
-    value_band: str | None = None
-    recency_band: str | None = None
-    purchase_depth: str | None = None
-    newly_dormant: bool | None = None
-
-
-class CampaignBatchCreateRequest(BaseModel):
-    name: str
-    campaign_type: str = "dormant_reengagement"
-    cohort: SharedCohortFilter
-    angles: list[str] = Field(min_length=1)
-    start_date: date | None = None
-    end_date: date | None = None
-
-
-class CampaignBatchFailureOut(BaseModel):
-    angle: str
-    error: str
-
-
-class CampaignBatchCreateOut(BaseModel):
-    created: list[CampaignCreateOut]
-    failed: list[CampaignBatchFailureOut]
-
-
-class CampaignStepCreateRequest(BaseModel):
-    """One step to append to a campaign's send sequence.
-
-    step_no is assigned server-side (one past whatever already exists), so
-    building a sequence is calling this once per step in order rather than
-    naming a position.
-    """
-
-    offset_days: int
-    message_angle: str
-    template_ref: str | None = None
-
-
-class CampaignStepOut(BaseModel):
-    step_id: int
-    campaign_id: int
-    step_no: int
-    offset_days: int
-    message_angle: str
-    template_ref: str | None
+    steps: list[CampaignStepOut]
 
 
 class TouchOutcomeOut(BaseModel):

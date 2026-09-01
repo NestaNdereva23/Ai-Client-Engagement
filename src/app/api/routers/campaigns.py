@@ -17,6 +17,7 @@ from app.campaigns.generation_cost import (
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT, MAX_BATCH_LIMIT
 from app.campaigns.template_policy import EffectivePolicy, TemplatePolicyValidationError
 from app.config import get_settings
+from app.db.models.campaigns import CampaignStep
 from app.db.session import get_session
 from app.llmops.tracing import get_shared_tracer
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
@@ -24,9 +25,6 @@ from app.privacy.llm_client import get_llm_client
 from app.schemas.campaigns import (
     BatchIngestOutcomeOut,
     BatchIngestResultOut,
-    CampaignBatchCreateOut,
-    CampaignBatchCreateRequest,
-    CampaignBatchFailureOut,
     CampaignCreateOut,
     CampaignCreateRequest,
     CampaignDetailOut,
@@ -74,7 +72,6 @@ from app.services.campaigns import (
     campaign_summary,
     campaign_value,
     create_campaign,
-    create_campaign_batch,
     draft_campaign_templates,
     estimate_campaign_generation_cost,
     estimate_campaign_templates,
@@ -153,19 +150,35 @@ def get_campaigns(
     return Page(items=items, next_cursor=next_cursor)
 
 
+def _step_out(step: CampaignStep) -> CampaignStepOut:
+    return CampaignStepOut(
+        step_id=step.step_id,
+        campaign_id=step.campaign_id,
+        step_no=step.step_no,
+        offset_days=step.offset_days,
+        message_angle=step.message_angle,
+        template_ref=step.template_ref,
+    )
+
+
 @router.post("", response_model=CampaignCreateOut, status_code=201)
 def post_campaign(
     body: CampaignCreateRequest, session: Session = Depends(get_session)
 ) -> CampaignCreateOut:
-    campaign, enrolled_count = create_campaign(
-        session,
-        name=body.name,
-        campaign_type=body.campaign_type,
-        cohort_filters=body.cohort.model_dump(),
-        start_date=body.start_date,
-        end_date=body.end_date,
-    )
-    session.commit()
+    try:
+        campaign, enrolled_count, steps = create_campaign(
+            session,
+            name=body.name,
+            campaign_type=body.campaign_type,
+            cohort_filters=body.cohort.model_dump(),
+            steps=[step.model_dump() for step in body.steps],
+            start_date=body.start_date,
+            end_date=body.end_date,
+        )
+        session.commit()
+    except NonIncreasingStepOffset as exc:
+        session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     return CampaignCreateOut(
         campaign_id=campaign.campaign_id,
         name=campaign.name,
@@ -176,42 +189,7 @@ def post_campaign(
         end_date=campaign.end_date,
         created_at=campaign.created_at,
         enrolled_count=enrolled_count,
-    )
-
-
-@router.post("/batch", response_model=CampaignBatchCreateOut, status_code=201)
-def post_campaign_batch_create(
-    body: CampaignBatchCreateRequest, session: Session = Depends(get_session)
-) -> CampaignBatchCreateOut:
-    result = create_campaign_batch(
-        session,
-        name=body.name,
-        campaign_type=body.campaign_type,
-        shared_cohort_filters=body.cohort.model_dump(),
-        angles=body.angles,
-        start_date=body.start_date,
-        end_date=body.end_date,
-    )
-    session.commit()
-    return CampaignBatchCreateOut(
-        created=[
-            CampaignCreateOut(
-                campaign_id=campaign.campaign_id,
-                name=campaign.name,
-                campaign_type=campaign.campaign_type,
-                status=campaign.status,
-                cohort_definition=campaign.cohort_definition,
-                start_date=campaign.start_date,
-                end_date=campaign.end_date,
-                created_at=campaign.created_at,
-                enrolled_count=enrolled_count,
-            )
-            for campaign, enrolled_count in result.created
-        ],
-        failed=[
-            CampaignBatchFailureOut(angle=failure.angle, error=failure.error)
-            for failure in result.failed
-        ],
+        steps=[_step_out(step) for step in steps],
     )
 
 
@@ -457,17 +435,7 @@ def get_campaign_steps(
         steps = list_campaign_steps(session, campaign_id)
     except CampaignNotFound:
         raise HTTPException(status_code=404, detail="campaign not found") from None
-    return [
-        CampaignStepOut(
-            step_id=s.step_id,
-            campaign_id=s.campaign_id,
-            step_no=s.step_no,
-            offset_days=s.offset_days,
-            message_angle=s.message_angle,
-            template_ref=s.template_ref,
-        )
-        for s in steps
-    ]
+    return [_step_out(s) for s in steps]
 
 
 @router.post("/{campaign_id}/steps", response_model=CampaignStepOut, status_code=201)
@@ -491,14 +459,7 @@ def post_campaign_step(
     except NonIncreasingStepOffset as exc:
         session.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    return CampaignStepOut(
-        step_id=step.step_id,
-        campaign_id=step.campaign_id,
-        step_no=step.step_no,
-        offset_days=step.offset_days,
-        message_angle=step.message_angle,
-        template_ref=step.template_ref,
-    )
+    return _step_out(step)
 
 
 @router.post("/{campaign_id}/generate", response_model=list[TouchOutcomeOut])
@@ -721,7 +682,7 @@ def put_campaign_templates_policy(
 @router.post("/{campaign_id}/templates/draft", response_model=DraftTemplatesResult)
 def post_campaign_templates_draft(
     campaign_id: int,
-    limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
+    discovery_limit: int = Query(default=DEFAULT_ESTIMATE_LIMIT, ge=1, le=MAX_ESTIMATE_LIMIT),
     session: Session = Depends(get_session),
 ) -> DraftTemplatesResult:
     try:
@@ -730,7 +691,7 @@ def post_campaign_templates_draft(
             campaign_id,
             settings=get_settings(),
             llm_client=get_llm_client(get_settings()),
-            limit=limit,
+            discovery_limit=discovery_limit,
             tracer=get_shared_tracer(),
         )
         session.commit()

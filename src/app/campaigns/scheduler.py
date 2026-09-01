@@ -86,7 +86,6 @@ def advance_enrollment(
 
     enrollment.current_step = step_no
     if next_step is not None:
-        print(f"Next step {next_step.step_no} is due in {next_step.offset_days} days")
         delta_days = next_step.offset_days - (current.offset_days if current else 0)
         enrollment.next_due_at = sent_at + timedelta(days=max(delta_days, 0))
         transition_enrollment(session, enrollment, to_status="in_progress", reason="touch_sent")

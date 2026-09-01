@@ -33,6 +33,7 @@ from app.db.models.llmops import (
 from app.db.models.message_template import MessageTemplate
 from app.db.models.models import ClientFeatures, ClientFund, Clients, Funds, PiiVault
 from app.db.models.outreach import Campaign
+from app.db.models.rules import ClientMessageIndicators
 from app.db.models.template_generation_plan import TemplateGenerationPlan
 from app.db.models.template_policy import CampaignTemplatePolicy
 from app.db.session import SessionLocal
@@ -455,6 +456,17 @@ def _seed_multi_client(session, client_id: int, *, fund_type: str, observed_volu
     session.flush()
     session.add(ClientFeatures(client_id=client_id, fund_type=fund_type, purchase_depth="single"))
     session.add(
+        ClientMessageIndicators(
+            client_id=client_id,
+            message_angle="pick_up_again",
+            urgency="low",
+            priority_tier="T3",
+            prompt_variant="pick_up_again",
+            rule_name="template_generation_test",
+            rule_version=1,
+        )
+    )
+    session.add(
         PiiVault(
             client_id=client_id,
             client_name=f"Multi Bucket Test {client_id}",
@@ -476,6 +488,11 @@ def _seed_multi_client(session, client_id: int, *, fund_type: str, observed_volu
 
 def _purge_multi_rows(session) -> None:
     session.execute(delete(ClientFund).where(ClientFund.client_id.in_(ALL_MULTI_CLIENT_IDS)))
+    session.execute(
+        delete(ClientMessageIndicators).where(
+            ClientMessageIndicators.client_id.in_(ALL_MULTI_CLIENT_IDS)
+        )
+    )
     session.execute(delete(PiiVault).where(PiiVault.client_id.in_(ALL_MULTI_CLIENT_IDS)))
     session.execute(
         delete(ClientFeatures).where(ClientFeatures.client_id.in_(ALL_MULTI_CLIENT_IDS))
@@ -590,6 +607,76 @@ def test_deterministic_order_with_no_limit_drafts_every_bucket(multi_bucket_coho
         assert plan.effective_limit is None
         assert plan.drafted_count == 3
         assert plan.policy_source == "default"
+
+
+def test_a_narrow_discovery_window_hides_buckets_a_wide_one_finds(
+    multi_bucket_cohort: int,
+) -> None:
+    """discovery_limit decides which buckets are visible at all.
+
+    Scanning only the first three due enrollments finds the one bucket they
+    share and no others, however small the rest are. That is the failure a
+    campaign covering a whole audience runs into: its rarest buckets sit
+    outside a short window, so they are never drafted and their clients are
+    never written to. The default window is wide for exactly that reason.
+    """
+    llm = ScriptedLLMClient([draft_json(body="Dear {{first_name}}, come back to us.")])
+
+    with SessionLocal() as session:
+        narrow = draft_templates_for_campaign(
+            session,
+            multi_bucket_cohort,
+            settings=make_settings(),
+            llm_client=llm,
+            discovery_limit=len(BIG),
+            context_loader=_fixed_context_loader,
+        )
+        session.commit()
+
+    assert narrow.estimated_templates == 1
+    assert narrow.effective_limit is None
+    assert [t.profile_key["product"] for t in narrow.templates] == ["money market"]
+
+    llm = ScriptedLLMClient([draft_json(body="Dear {{first_name}}, come back to us.")] * 2)
+    with SessionLocal() as session:
+        wide = draft_templates_for_campaign(
+            session,
+            multi_bucket_cohort,
+            settings=make_settings(),
+            llm_client=llm,
+            context_loader=_fixed_context_loader,
+        )
+        session.commit()
+
+    assert wide.estimated_templates == 3
+    assert wide.skipped_existing == 1
+    assert [t.profile_key["product"] for t in wide.templates] == ["high yield", "fixed income"]
+
+
+def test_the_plan_records_the_window_the_estimate_came_from(multi_bucket_cohort: int) -> None:
+    """A later "why only one" is answerable: the plan says how far it looked."""
+    llm = ScriptedLLMClient([draft_json(body="Dear {{first_name}}, come back to us.")])
+
+    with SessionLocal() as session:
+        draft_templates_for_campaign(
+            session,
+            multi_bucket_cohort,
+            settings=make_settings(),
+            llm_client=llm,
+            discovery_limit=len(BIG),
+            context_loader=_fixed_context_loader,
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        plan = session.scalar(
+            select(TemplateGenerationPlan).where(
+                TemplateGenerationPlan.campaign_id == multi_bucket_cohort
+            )
+        )
+        assert plan is not None
+        assert plan.discovery_limit == len(BIG)
+        assert plan.estimated_templates == 1
 
 
 def test_effective_limit_caps_which_buckets_draft(multi_bucket_cohort: int) -> None:
@@ -759,11 +846,15 @@ def test_an_unexpected_error_on_one_bucket_does_not_lose_buckets_already_drafted
             context_loader=_fixed_context_loader,
         )
         session.commit()
+        # Read inside the session: the rollback the error triggers expires
+        # the template already drafted, so its columns are only readable
+        # while there is still a session to refresh them from.
+        drafted_products = [t.profile_key["product"] for t in outcome.templates]
 
     assert outcome.drafted_count == 2
     assert outcome.failed_errors == 1
     assert outcome.failed_guardrails == 0
-    assert [t.profile_key["product"] for t in outcome.templates] == ["money market", "fixed income"]
+    assert drafted_products == ["money market", "fixed income"]
 
     with SessionLocal() as session:
         plan = session.scalar(

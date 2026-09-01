@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import functools
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -20,7 +20,11 @@ from app.campaigns.batch_generation import BatchIngestResult, BatchNotFound
 from app.campaigns.batch_generation import ingest_batch as ingest_campaign_batch_run
 from app.campaigns.batch_generation import submit_batch as submit_campaign_batch_run
 from app.campaigns.enrollment import enroll_cohort
-from app.campaigns.estimation import TemplateEstimate, estimate_templates_sql
+from app.campaigns.estimation import (
+    DEFAULT_ESTIMATE_LIMIT,
+    TemplateEstimate,
+    estimate_templates_sql,
+)
 from app.campaigns.generation import generate_for_enrollment
 from app.campaigns.generation_cost import DEFAULT_MODEL, CampaignCostEstimate
 from app.campaigns.generation_cost import estimate_generation_cost as _estimate_generation_cost
@@ -82,14 +86,6 @@ class CampaignNotFound(Exception):
 
 
 class NonIncreasingStepOffset(Exception):
-    """A new step's offset_days does not come after the previous step's.
-
-    The scheduler measures the wait before a step from the gap between its
-    offset and the one before it. An offset that
-    does not increase collapses that gap to zero or less, so the new step
-    goes out the moment the previous one does instead of waiting.
-    """
-
     def __init__(self, offset_days: int, previous_offset_days: int) -> None:
         self.offset_days = offset_days
         self.previous_offset_days = previous_offset_days
@@ -116,13 +112,6 @@ def list_campaign_enrollments(
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> tuple[list[Row], str | None]:
-    """One campaign's enrollment roster, oldest enrollment first.
-
-    Distinct from the review queue: an enrolled client with no generated
-    touch yet still shows up here. priority_tier/message_angle/value_band/
-    recency_band are joined in from the same model-safe bucket tables the
-    client console reads, cheaply, so the roster isn't bare ids.
-    """
     if session.get(Campaign, campaign_id) is None:
         raise CampaignNotFound(campaign_id)
 
@@ -163,12 +152,6 @@ def list_campaign_enrollments(
 
 
 def campaign_summary(session: Session, campaign_id: int) -> dict[str, int]:
-    """Enrollment counts for one campaign: total, primary, and suppressed rows.
-
-    A suppressed row is enrolled but never sends: is_primary_contact_row is
-    false because another client_id for the same person already claimed it.
-    Raises CampaignNotFound when campaign_id names no campaign.
-    """
     if session.get(Campaign, campaign_id) is None:
         raise CampaignNotFound(campaign_id)
 
@@ -192,15 +175,6 @@ def campaign_summary(session: Session, campaign_id: int) -> dict[str, int]:
 
 
 def campaign_value(session: Session, campaign_id: int) -> dict[str, float | int]:
-    """What one campaign's cohort was worth, for ROI reporting.
-
-    Sums total_purchase_amount (KES, the client's own historical buying,
-    not their current balance) across primary enrollment rows only, the
-    same "one person counts once" scope campaign_summary's primary_count
-    and outreach_analytics use. A suppressed row is a duplicate person, not
-    a second member of the cohort, so summing it too would double-count
-    that person's value.
-    """
     if session.get(Campaign, campaign_id) is None:
         raise CampaignNotFound(campaign_id)
 
@@ -326,17 +300,10 @@ def create_campaign(
     name: str,
     campaign_type: str,
     cohort_filters: dict,
+    steps: Sequence[Mapping[str, object]] = (),
     start_date=None,
     end_date=None,
-) -> tuple[Campaign, int]:
-    """Create a campaign and enroll every client currently matching its cohort.
-
-    cohort_filters is stored as-is on cohort_definition, the allow-listed
-    feature values the cohort was selected on, so membership can be
-    re-derived later; it is also used once, right here, to resolve the
-    client_ids enroll_cohort actually enrolls. Returns the new campaign and
-    how many client_ids matched
-    """
+) -> tuple[Campaign, int, list[CampaignStep]]:
     campaign = Campaign(
         name=name,
         campaign_type=campaign_type,
@@ -350,58 +317,30 @@ def create_campaign(
     client_ids = resolve_cohort_client_ids(session, **cohort_filters)
     enroll_cohort(session, campaign_id=campaign.campaign_id, client_ids=client_ids)
 
+    created_steps = [
+        add_campaign_step(
+            session,
+            campaign.campaign_id,
+            offset_days=step["offset_days"],
+            message_angle=step.get("message_angle"),
+            template_ref=step.get("template_ref"),
+        )
+        for step in steps
+    ]
+
     record_audit(
         session,
         entity_type="campaign",
         action="create",
         entity_id=str(campaign.campaign_id),
-        detail={"cohort_filters": cohort_filters, "matched_count": len(client_ids)},
+        detail={
+            "cohort_filters": cohort_filters,
+            "matched_count": len(client_ids),
+            "step_count": len(created_steps),
+        },
     )
     session.flush()
-    return campaign, len(client_ids)
-
-
-@dataclass(frozen=True)
-class CampaignBatchFailure:
-    angle: str
-    error: str
-
-
-@dataclass(frozen=True)
-class CampaignBatchResult:
-    created: list[tuple[Campaign, int]]
-    failed: list[CampaignBatchFailure]
-
-
-def create_campaign_batch(
-    session: Session,
-    *,
-    name: str,
-    campaign_type: str,
-    shared_cohort_filters: dict,
-    angles: Sequence[str],
-    start_date=None,
-    end_date=None,
-) -> CampaignBatchResult:
-    created: list[tuple[Campaign, int]] = []
-    failed: list[CampaignBatchFailure] = []
-    for angle in angles:
-        cohort_filters = {**shared_cohort_filters, "message_angle": angle}
-        try:
-            with session.begin_nested():
-                campaign, enrolled_count = create_campaign(
-                    session,
-                    name=f"{name}: {angle}",
-                    campaign_type=campaign_type,
-                    cohort_filters=cohort_filters,
-                    start_date=start_date,
-                    end_date=end_date,
-                )
-        except Exception as exc:
-            failed.append(CampaignBatchFailure(angle=angle, error=str(exc)))
-            continue
-        created.append((campaign, enrolled_count))
-    return CampaignBatchResult(created=created, failed=failed)
+    return campaign, len(client_ids), created_steps
 
 
 def add_campaign_step(
@@ -409,20 +348,9 @@ def add_campaign_step(
     campaign_id: int,
     *,
     offset_days: int,
-    message_angle: str,
+    message_angle: str | None = None,
     template_ref: str | None = None,
 ) -> CampaignStep:
-    """Append the next step in a campaign's send sequence.
-
-    step_no is assigned as one past whatever already exists, so building a
-    sequence is just calling this once per step in order; the eligibility
-    gate refuses to generate a step for which no CampaignStep row exists
-    yet, so a campaign with none is enrolled but permanently idle.
-
-    offset_days must be strictly greater than the previous step's, so the
-    scheduler always has a positive gap to wait out before the new step is
-    due; see NonIncreasingStepOffset.
-    """
     if session.get(Campaign, campaign_id) is None:
         raise CampaignNotFound(campaign_id)
 
@@ -457,12 +385,6 @@ def add_campaign_step(
 
 
 def list_campaign_steps(session: Session, campaign_id: int) -> list[CampaignStep]:
-    """A campaign's full send sequence, oldest step first.
-
-    This is the read side of add_campaign_step: without it a caller has no
-    way to see steps a previous session already persisted, only whatever
-    it appends itself.
-    """
     if session.get(Campaign, campaign_id) is None:
         raise CampaignNotFound(campaign_id)
 
@@ -484,14 +406,6 @@ def run_campaign_generation(
     tracer: Tracer | None = None,
     limit: int = DEFAULT_BATCH_LIMIT,
 ) -> list[TouchRunOutcome]:
-    """Generate a touch for every one of this campaign's due, eligible
-    enrollments, using the given channel agent for the actual drafting.
-
-    A thin binding over run_due_enrollments: this module owns nothing about
-    generation itself, only wires generate_for_enrollment's extra
-    (agent, settings, tracer) arguments in as the GenerateFn campaigns.touch
-    expects.
-    """
     if session.get(Campaign, campaign_id) is None:
         raise CampaignNotFound(campaign_id)
 
@@ -544,12 +458,6 @@ def submit_campaign_batch(
     limit: int = DEFAULT_BATCH_LIMIT,
     tracer: Tracer | None = None,
 ) -> GenerationBatch:
-    """Submit this campaign's due, eligible enrollments to the model
-    provider's batch endpoint in one call, an alternative to
-    run_campaign_generation for a cohort too large to draft one request at
-    a time. Raises CampaignNotFound the same way run_campaign_generation
-    does; campaigns.batch_generation.submit_batch does the rest.
-    """
     if session.get(Campaign, campaign_id) is None:
         raise CampaignNotFound(campaign_id)
     return submit_campaign_batch_run(
@@ -628,18 +536,18 @@ def draft_campaign_templates(
     *,
     settings: Settings,
     llm_client: LLMClient,
-    limit: int = DEFAULT_BATCH_LIMIT,
+    discovery_limit: int = DEFAULT_ESTIMATE_LIMIT,
     tracer: Tracer | None = None,
 ) -> TemplateDraftOutcome:
-    """Derive this campaign's buckets and draft one template for each due,
-    not-yet-templated bucket, up to the campaign's effective limit -- a
-    third path alongside run_campaign_generation and submit_campaign_batch.
-    Raises CampaignNotFound the same way the other two do.
-    """
     if session.get(Campaign, campaign_id) is None:
         raise CampaignNotFound(campaign_id)
     return draft_templates_for_campaign(
-        session, campaign_id, settings=settings, llm_client=llm_client, limit=limit, tracer=tracer
+        session,
+        campaign_id,
+        settings=settings,
+        llm_client=llm_client,
+        discovery_limit=discovery_limit,
+        tracer=tracer,
     )
 
 
@@ -650,10 +558,6 @@ def instantiate_campaign_template(
     *,
     limit: int = DEFAULT_BATCH_LIMIT,
 ) -> list[OutreachMessage]:
-    """Instantiate every due, eligible client currently matching an
-    approved template's profile. Raises CampaignNotFound / TemplateNotFound
-    the same ownership-scoped way get_campaign_batch does for a batch.
-    """
     if session.get(Campaign, campaign_id) is None:
         raise CampaignNotFound(campaign_id)
     template = session.get(MessageTemplate, template_id)
@@ -663,15 +567,8 @@ def instantiate_campaign_template(
 
 
 def estimate_campaign_templates(
-    session: Session, campaign_id: int, *, limit: int = DEFAULT_BATCH_LIMIT
+    session: Session, campaign_id: int, *, limit: int = DEFAULT_ESTIMATE_LIMIT
 ) -> TemplateEstimate:
-    """How many templates drafting this campaign right now would produce.
-
-    Read-only and never constructs an LLMClient: estimate_templates_sql
-    resolves the due, eligible cohort from bulk column reads, not a
-    ClientContext per client. Raises CampaignNotFound the same way the
-    other campaign-scoped calls do.
-    """
     if session.get(Campaign, campaign_id) is None:
         raise CampaignNotFound(campaign_id)
     return estimate_templates_sql(session, campaign_id, limit=limit)
@@ -682,7 +579,7 @@ def estimate_campaign_generation_cost(
     campaign_id: int,
     *,
     model: str = DEFAULT_MODEL,
-    limit: int = DEFAULT_BATCH_LIMIT,
+    limit: int = DEFAULT_ESTIMATE_LIMIT,
 ) -> CampaignCostEstimate:
     """What drafting this campaign would cost, single-generation and
     templates side by side, at `model`'s active rate.
@@ -714,10 +611,6 @@ def list_generation_cost_models(session: Session) -> list[GenerationCostConfigVe
 
 
 def get_campaign_template_policy(session: Session, campaign_id: int) -> EffectivePolicy:
-    """The limit in force for this campaign: its own override if it has set
-    one, otherwise the active system default. Raises CampaignNotFound the
-    same way the other campaign-scoped calls do.
-    """
     if session.get(Campaign, campaign_id) is None:
         raise CampaignNotFound(campaign_id)
     return get_effective_policy(session, campaign_id)
@@ -731,10 +624,6 @@ def set_campaign_template_policy(
     max_templates_pct: int | None,
     updated_by: str,
 ) -> EffectivePolicy:
-    """Set this campaign's own template generation limit, overriding the
-    system default. Raises CampaignNotFound the same way the other
-    campaign-scoped calls do.
-    """
     if session.get(Campaign, campaign_id) is None:
         raise CampaignNotFound(campaign_id)
     policy = set_campaign_policy(
@@ -755,12 +644,6 @@ def set_campaign_template_policy(
 
 @dataclass(frozen=True)
 class OutreachAnalytics:
-    """Book-wide outreach analytics across every campaign: the enrollment
-    funnel, cohort composition, drafting/review throughput, and how contact
-    ends -- the candidate cuts a dormant-outreach analytics page needs, the
-    outreach counterpart of services/risk.py's own RiskAnalytics.
-    """
-
     total_enrolled: int
     primary_count: int
     suppressed_count: int
@@ -778,18 +661,6 @@ class OutreachAnalytics:
 
 
 def outreach_analytics(session: Session) -> OutreachAnalytics:
-    """Book-wide outreach analytics, read across every campaign at once.
-
-    Enrollment status, message status, and review outcome are counted over
-    every row that exists, the same "whole current population" scope
-    risk_analytics uses. The cohort cuts (value_band, recency_band,
-    priority_tier, message_angle) are scoped to primary enrollment rows
-    only, joined to the same model-safe bucket tables the enrollment
-    roster reads -- a suppressed row is a duplicate person, not a second
-    member of the cohort, so counting it too would double-count that
-    person's bucket.
-    """
-
     total_enrolled = session.scalar(select(func.count()).select_from(Enrollment)) or 0
     primary_count = (
         session.scalar(
@@ -937,12 +808,6 @@ class OutreachTrendPoint:
 
 
 def outreach_trend(session: Session, *, days: int = 30) -> list[OutreachTrendPoint]:
-    """The last `days` calendar days' book-wide send and response activity,
-    oldest first, for trend charts. Every day in the window is present, even
-    a day with no activity at all, unlike risk_trend which only has a point
-    per completed nightly run -- outreach has no equivalent run cadence, so
-    the day itself is the unit.
-    """
     days = max(1, min(days, 90))
     end = date.today()
     start = end - timedelta(days=days - 1)

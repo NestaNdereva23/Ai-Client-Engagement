@@ -1,24 +1,6 @@
-"""Template drafting: one draft per bucket, through the exact same graph a
-single client's draft runs through.
-
-Placeholder-filled facts never travel as state["facts"] (that payload is
-scanned, and a placeholder token fails validation as a number). They travel
-as synthetic chunks instead, rendered into the system prompt's "facts you
-may cite" section, which is never scanned. has_cadence gets its own
-prompt_builder since it drives a prohibition but can't live in facts either.
-
-Nothing here records a touch or creates an outreach_message -- that happens
-per client, at instantiation.
-
-draft_templates_for_campaign is limit-aware and top-up-safe: a bucket that
-already has a non-rejected template for this campaign is skipped rather
-than redrafted, and whatever is left is capped at the campaign's effective
-limit, in a fixed order, so raising the limit and calling again fills in
-the gap instead of duplicating work.
-"""
-
 from __future__ import annotations
 
+import functools
 import json
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -41,14 +23,22 @@ from app.agents.graph import (
     GenerationState,
     GuardrailCheck,
     build_generation_graph,
+    load_client_context,
     new_generation_state,
 )
 from app.agents.guardrails import DEFAULT_GUARDRAIL_CHECKS
 from app.audit.log import record_audit
-from app.campaigns.bucketing import Bucket, ProfileKey, derive_buckets, profile_key_sort_key
-from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT
+from app.campaigns.bucketing import (
+    Bucket,
+    BucketMember,
+    ProfileKey,
+    profile_key_sort_key,
+)
+from app.campaigns.estimation import DEFAULT_ESTIMATE_LIMIT, resolve_due_profile_keys
+from app.campaigns.generation import resolve_product
 from app.campaigns.template_policy import EffectivePolicy, effective_limit, get_effective_policy
 from app.config import Settings
+from app.db.models.campaigns import Enrollment
 from app.db.models.message_template import MessageTemplate
 from app.db.models.models import ClientFund
 from app.db.models.template_generation_plan import TemplateGenerationPlan
@@ -173,12 +163,6 @@ def draft_template(
     audit: AuditSink | None = None,
     tracer: Tracer | None = None,
 ) -> MessageTemplate | None:
-    """Draft one template for one bucket, and persist it if accepted.
-
-    Returns None when every guardrail retry rejected the draft; the run is
-    still persisted either way. The stamped client_id is one representative
-    member of the bucket, not a claim the draft is about them alone.
-    """
     context = bucket_context(bucket)
     representative_client_id = bucket.members[0].enrollment.client_id
     tracer = tracer or NullTracer()
@@ -266,14 +250,46 @@ def _existing_profile_key_fingerprints(session: Session, campaign_id: int) -> se
     return {_profile_key_fingerprint(row) for row in rows}
 
 
-def _bucket_observed_volumes(
-    session: Session, buckets: Sequence[Bucket]
+@dataclass(frozen=True)
+class _DueGroup:
+    profile_key: ProfileKey
+    client_ids: tuple[int, ...]
+    representative: Enrollment
+
+    @property
+    def size(self) -> int:
+        return len(self.client_ids)
+
+
+def _group_due_clients(pairs: Sequence[tuple[Enrollment, ProfileKey]]) -> list[_DueGroup]:
+    """Collect enrollment/profile pairs into one group per profile, keeping
+    the first enrollment seen as the group's representative.
+    """
+    order: list[ProfileKey] = []
+    members: dict[ProfileKey, list[Enrollment]] = {}
+    for enrollment, key in pairs:
+        if key not in members:
+            order.append(key)
+            members[key] = []
+        members[key].append(enrollment)
+    return [
+        _DueGroup(
+            profile_key=key,
+            client_ids=tuple(e.client_id for e in members[key]),
+            representative=members[key][0],
+        )
+        for key in order
+    ]
+
+
+def _group_observed_volumes(
+    session: Session, groups: Sequence[_DueGroup]
 ) -> dict[ProfileKey, float]:
     """Total client_fund.observed_volume (the primary relationship's KES
-    figure) across each bucket's members -- the tie-break when two buckets
+    figure) across each group's clients -- the tie-break when two groups
     are the same size, so the one worth more of the book drafts first.
     """
-    client_ids = {member.enrollment.client_id for bucket in buckets for member in bucket.members}
+    client_ids = {client_id for group in groups for client_id in group.client_ids}
     if not client_ids:
         return {}
     volume_by_client = dict(
@@ -285,27 +301,41 @@ def _bucket_observed_volumes(
         ).all()
     )
     return {
-        bucket.profile_key: sum(
-            volume_by_client.get(member.enrollment.client_id, 0.0) for member in bucket.members
+        group.profile_key: sum(
+            volume_by_client.get(client_id, 0.0) or 0.0 for client_id in group.client_ids
         )
-        for bucket in buckets
+        for group in groups
     }
 
 
 def _ordered_by_priority(
-    buckets: Sequence[Bucket], volumes: Mapping[ProfileKey, float]
-) -> list[Bucket]:
-    """Bucket size descending, then total observed volume descending, then
-    profile key sorted -- deterministic and stable across runs, so "the
-    first N of M" names the same buckets every time.
-    """
+    groups: Sequence[_DueGroup], volumes: Mapping[ProfileKey, float]
+) -> list[_DueGroup]:
     return sorted(
-        buckets,
-        key=lambda b: (
-            -b.size,
-            -volumes.get(b.profile_key, 0.0),
-            profile_key_sort_key(b.profile_key),
+        groups,
+        key=lambda g: (
+            -g.size,
+            -volumes.get(g.profile_key, 0.0),
+            profile_key_sort_key(g.profile_key),
         ),
+    )
+
+
+def _representative_bucket(
+    session: Session, group: _DueGroup, context_loader: ContextLoader
+) -> Bucket | None:
+    enrollment = group.representative
+    product = resolve_product(session, enrollment.client_id)
+    try:
+        context = context_loader(enrollment.client_id, product)
+    except ValueError:
+        return None
+    key = group.profile_key
+    if context.angle != key.message_angle or context.priority_tier != key.priority_tier:
+        return None
+    return Bucket(
+        profile_key=group.profile_key,
+        members=[BucketMember(enrollment=enrollment, context=context)],
     )
 
 
@@ -315,26 +345,17 @@ def draft_templates_for_campaign(
     *,
     settings: Settings,
     llm_client: LLMClient,
-    limit: int = DEFAULT_BATCH_LIMIT,
+    discovery_limit: int = DEFAULT_ESTIMATE_LIMIT,
     context_loader: ContextLoader | None = None,
     guardrail_checks: Sequence[GuardrailCheck] = DEFAULT_GUARDRAIL_CHECKS,
     audit: AuditSink | None = None,
     tracer: Tracer | None = None,
 ) -> TemplateDraftOutcome:
-    """Derive this campaign's buckets and draft one template for each due
-    bucket, in deterministic order, up to the campaign's effective limit.
-
-    A bucket that already has a non-rejected template for this campaign is
-    skipped rather than redrafted, so raising the limit and calling this
-    again tops up instead of duplicating. Only accepted drafts land in
-    outcome.templates; a rejected bucket's run is still persisted (see
-    draft_template) but has no template to instantiate from, and counts
-    toward failed_guardrails instead. Persists one template_generation_plan
-    row recording the three numbers -- estimated, limit, actual -- and the
-    policy in force, so a later question about "why only 38" has an answer.
-    """
-    buckets = derive_buckets(session, campaign_id, limit=limit, context_loader=context_loader)
-    estimated_templates = len(buckets)
+    context_loader = context_loader or functools.partial(load_client_context, session)
+    groups = _group_due_clients(
+        resolve_due_profile_keys(session, campaign_id, limit=discovery_limit)
+    )
+    estimated_templates = len(groups)
 
     policy = get_effective_policy(session, campaign_id)
     draft_limit = effective_limit(
@@ -345,20 +366,20 @@ def draft_templates_for_campaign(
 
     existing = _existing_profile_key_fingerprints(session, campaign_id)
     candidates = [
-        bucket
-        for bucket in buckets
-        if _profile_key_fingerprint(bucket.profile_key.as_dict()) not in existing
+        group
+        for group in groups
+        if _profile_key_fingerprint(group.profile_key.as_dict()) not in existing
     ]
-    skipped_existing = len(buckets) - len(candidates)
+    skipped_existing = len(groups) - len(candidates)
 
-    volumes = _bucket_observed_volumes(session, candidates)
+    volumes = _group_observed_volumes(session, candidates)
     ordered = _ordered_by_priority(candidates, volumes)
     to_draft = ordered if draft_limit is None else ordered[:draft_limit]
 
     templates: list[MessageTemplate] = []
     failed_guardrails = 0
     failed_errors = 0
-    for bucket in to_draft:
+    for group in to_draft:
         # Committed per bucket rather than once at the end: an unexpected
         # error from one bucket (a provider timeout, a network blip) is
         # caught and counted rather than left to propagate, so it does not
@@ -366,6 +387,15 @@ def draft_templates_for_campaign(
         # call. A caught bucket is simply not drafted this run; it is
         # picked up again the next time this endpoint is called.
         try:
+            bucket = _representative_bucket(session, group, context_loader)
+            if bucket is None:
+                logger.warning(
+                    "draft_templates_for_campaign.no_representative",
+                    campaign_id=campaign_id,
+                    profile_key=group.profile_key.as_dict(),
+                )
+                failed_errors += 1
+                continue
             template = draft_template(
                 session,
                 bucket,
@@ -381,7 +411,7 @@ def draft_templates_for_campaign(
             logger.exception(
                 "draft_templates_for_campaign.draft_failed",
                 campaign_id=campaign_id,
-                profile_key=bucket.profile_key.as_dict(),
+                profile_key=group.profile_key.as_dict(),
             )
             failed_errors += 1
             continue
@@ -395,6 +425,7 @@ def draft_templates_for_campaign(
     plan = TemplateGenerationPlan(
         campaign_id=campaign_id,
         estimated_templates=estimated_templates,
+        discovery_limit=discovery_limit,
         effective_limit=draft_limit,
         drafted_count=len(templates),
         skipped_existing=skipped_existing,
@@ -414,6 +445,7 @@ def draft_templates_for_campaign(
         detail={
             "campaign_id": campaign_id,
             "estimated_templates": estimated_templates,
+            "discovery_limit": discovery_limit,
             "effective_limit": draft_limit,
             "drafted_count": len(templates),
             "skipped_existing": skipped_existing,

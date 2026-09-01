@@ -43,7 +43,7 @@ class CampaignStep(Base):
     )
     step_no: Mapped[int] = mapped_column(Integer, nullable=False)
     offset_days: Mapped[int] = mapped_column(Integer, nullable=False)
-    message_angle: Mapped[str] = mapped_column(Text, nullable=False)
+    message_angle: Mapped[str | None] = mapped_column(Text, nullable=True)
     template_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
@@ -70,9 +70,6 @@ class Enrollment(Base):
     current_step: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     next_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="enrolled")
-    # One client_id can be the same real person as another client_id on a
-    # different fund. Only their primary row ever gets a touch, so a person
-    # never receives one email per fund they happen to hold.
     is_primary_contact_row: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("true")
     )

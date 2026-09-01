@@ -27,11 +27,12 @@ from app.db.base import Base
 
 
 class TemplateGenerationPlan(Base):
-    """One drafting call's estimated/limit/actual numbers, and the policy in force."""
-
     __tablename__ = "template_generation_plan"
     __table_args__ = (
         CheckConstraint("estimated_templates >= 0", name="ck_tgp_estimated_nonneg"),
+        CheckConstraint(
+            "discovery_limit IS NULL OR discovery_limit > 0", name="ck_tgp_discovery_limit_positive"
+        ),
         CheckConstraint(
             "effective_limit IS NULL OR effective_limit >= 0", name="ck_tgp_effective_limit_nonneg"
         ),
@@ -47,6 +48,7 @@ class TemplateGenerationPlan(Base):
         BigInteger, ForeignKey("campaign.campaign_id"), nullable=False, index=True
     )
     estimated_templates: Mapped[int] = mapped_column(Integer, nullable=False)
+    discovery_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Null means no limit applied, same reading as everywhere else in the
     # policy chain (campaign_template_policy, template_policy_config_version).
     effective_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
