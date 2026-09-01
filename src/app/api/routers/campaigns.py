@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.agents.email_channel import build_default_agent
@@ -83,6 +83,7 @@ from app.services.campaigns import (
     get_campaign_template_policy,
     ingest_campaign_batch,
     instantiate_campaign_template,
+    list_campaign_batches,
     list_campaign_enrollments,
     list_campaign_steps,
     list_campaigns,
@@ -98,6 +99,7 @@ from app.services.campaigns import (
 )
 from app.services.review import TemplateNotApproved
 from app.services.template_review import TemplateNotFound
+from app.workers.batch_ingest import poll_batch_until_done
 
 router = APIRouter(
     prefix="/campaigns", tags=["campaigns"], dependencies=[Depends(get_current_reviewer_id)]
@@ -574,14 +576,16 @@ def _batch_out(batch) -> GenerationBatchOut:
 @router.post("/{campaign_id}/generate/batch", response_model=GenerationBatchOut, status_code=201)
 def post_campaign_generate_batch(
     campaign_id: int,
+    background_tasks: BackgroundTasks,
     limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
     session: Session = Depends(get_session),
 ) -> GenerationBatchOut:
+    settings = get_settings()
     try:
         batch = submit_campaign_batch(
             session,
             campaign_id,
-            settings=get_settings(),
+            settings=settings,
             limit=limit,
             tracer=get_shared_tracer(),
         )
@@ -589,6 +593,10 @@ def post_campaign_generate_batch(
     except CampaignNotFound:
         session.rollback()
         raise HTTPException(status_code=404, detail="campaign not found") from None
+    if batch.status == "submitted":
+        background_tasks.add_task(
+            poll_batch_until_done, batch.generation_batch_id, settings=settings
+        )
     return _batch_out(batch)
 
 
@@ -601,6 +609,22 @@ def get_campaign_batch_status(
     except BatchNotFound:
         raise HTTPException(status_code=404, detail="batch not found") from None
     return _batch_out(batch)
+
+
+@router.get("/{campaign_id}/batches", response_model=Page[GenerationBatchOut])
+def get_campaign_batches(
+    campaign_id: int,
+    cursor: str | None = None,
+    limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    session: Session = Depends(get_session),
+) -> Page[GenerationBatchOut]:
+    try:
+        rows, next_cursor = list_campaign_batches(session, campaign_id, cursor=cursor, limit=limit)
+    except CampaignNotFound:
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    except InvalidCursor:
+        raise HTTPException(status_code=400, detail="invalid cursor") from None
+    return Page(items=[_batch_out(b) for b in rows], next_cursor=next_cursor)
 
 
 @router.post(
