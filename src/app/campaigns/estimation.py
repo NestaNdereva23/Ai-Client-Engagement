@@ -118,23 +118,28 @@ def estimate_templates_reference(
 # ---------------------------------------------------------------------------
 
 
+def resolve_due_profile_keys(
+    session: Session, campaign_id: int, *, limit: int = DEFAULT_ESTIMATE_LIMIT
+) -> list[tuple[Enrollment, ProfileKey]]:
+    due = select_due_enrollments(session, campaign_id=campaign_id, limit=limit)
+    if not due:
+        return []
+
+    campaign = session.get(Campaign, campaign_id)
+    if campaign is None or campaign.status in ("paused", "completed"):
+        return []
+
+    return _resolve_eligible_profile_keys(session, due, campaign_id=campaign_id)
+
+
 def estimate_templates_sql(
     session: Session, campaign_id: int, *, limit: int = DEFAULT_BATCH_LIMIT
 ) -> TemplateEstimate:
     """The same estimate as estimate_templates_reference, computed from a
     handful of batched column reads instead of one ClientContext per client.
     """
-    due = select_due_enrollments(session, campaign_id=campaign_id, limit=limit)
-    if not due:
-        return _to_estimate([], limit=limit)
-
-    campaign = session.get(Campaign, campaign_id)
-    if campaign is None or campaign.status in ("paused", "completed"):
-        return _to_estimate([], limit=limit)
-
-    profile_keys = _resolve_eligible_profile_keys(session, due, campaign_id=campaign_id)
     counts: dict[ProfileKey, int] = {}
-    for key in profile_keys:
+    for _enrollment, key in resolve_due_profile_keys(session, campaign_id, limit=limit):
         counts[key] = counts.get(key, 0) + 1
     buckets = [EstimatedBucket(profile_key=k, client_count=v) for k, v in counts.items()]
     return _to_estimate(buckets, limit=limit)
@@ -142,11 +147,7 @@ def estimate_templates_sql(
 
 def _resolve_eligible_profile_keys(
     session: Session, due: Sequence[Enrollment], *, campaign_id: int
-) -> list[ProfileKey]:
-    """One ProfileKey per due enrollment that survives the eligibility gate
-    and has enough data to be placed. Mirrors check_eligibility and
-    profile_key_for condition for condition; see the module docstring.
-    """
+) -> list[tuple[Enrollment, ProfileKey]]:
     client_ids = [e.client_id for e in due]
     enrollment_ids = [e.enrollment_id for e in due]
 
@@ -239,7 +240,7 @@ def _resolve_eligible_profile_keys(
         )
     }
 
-    resolved: list[ProfileKey] = []
+    resolved: list[tuple[Enrollment, ProfileKey]] = []
     for enrollment in candidates:
         client_id = enrollment.client_id
         opted_out, has_contact = vault_signals.get(client_id, (False, False))
@@ -264,7 +265,7 @@ def _resolve_eligible_profile_keys(
         features = features_by_client[client_id]
         indicator = indicators_by_client[client_id]
         primary = primary_fund_by_client.get(client_id)
-        resolved.append(_profile_key_from_columns(features, indicator, primary))
+        resolved.append((enrollment, _profile_key_from_columns(features, indicator, primary)))
 
     return resolved
 
@@ -274,11 +275,6 @@ def _profile_key_from_columns(
     indicator: ClientMessageIndicators,
     primary_fund: ClientFund | None,
 ) -> ProfileKey:
-    """Same fields load_client_facts + profile_key_for would produce, read
-    straight off the columns behind them. primary_fund missing means the
-    fact block itself would have been None, which zeroes every fact-derived
-    field below, not just the cadence one.
-    """
     has_facts = primary_fund is not None
     has_cadence = (
         has_facts

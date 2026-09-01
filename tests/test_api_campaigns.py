@@ -603,6 +603,7 @@ def cohort_clients(db: None):
         ).all()
         if campaign_ids:
             session.execute(delete(Enrollment).where(Enrollment.campaign_id.in_(campaign_ids)))
+            session.execute(delete(CampaignStep).where(CampaignStep.campaign_id.in_(campaign_ids)))
             session.execute(delete(Campaign).where(Campaign.campaign_id.in_(campaign_ids)))
         session.execute(
             delete(ClientFeatures).where(
@@ -633,9 +634,9 @@ def test_create_campaign_enrolls_exactly_the_matching_cohort(cohort_clients) -> 
         "value_band": "High",
         "recency_band": None,
         "purchase_depth": None,
-        "message_angle": None,
         "newly_dormant": None,
     }
+    assert body["steps"] == []
 
     with SessionLocal() as session:
         enrolled_ids = set(
@@ -645,6 +646,53 @@ def test_create_campaign_enrolls_exactly_the_matching_cohort(cohort_clients) -> 
         )
     assert enrolled_ids == {matching_a, matching_b}
     assert non_matching not in enrolled_ids
+
+
+def test_create_campaign_lays_out_the_sequence_it_was_given(cohort_clients) -> None:
+    """A campaign created with steps comes back with them, numbered in order."""
+    fund_id, _matching_a, _matching_b, _non_matching = cohort_clients
+    response = client.post(
+        CAMPAIGNS,
+        json={
+            "name": "cohort test campaign",
+            "cohort": {"fund_id": fund_id, "value_band": "High"},
+            "steps": [{"offset_days": 0}, {"offset_days": 7}, {"offset_days": 21}],
+        },
+    )
+    assert response.status_code == 201
+    steps = response.json()["steps"]
+    assert [s["step_no"] for s in steps] == [1, 2, 3]
+    assert [s["offset_days"] for s in steps] == [0, 7, 21]
+    assert [s["message_angle"] for s in steps] == [None, None, None]
+
+
+def test_create_campaign_422s_for_a_sequence_that_does_not_move_forward(cohort_clients) -> None:
+    fund_id, _matching_a, _matching_b, _non_matching = cohort_clients
+    response = client.post(
+        CAMPAIGNS,
+        json={
+            "name": "cohort test campaign",
+            "cohort": {"fund_id": fund_id, "value_band": "High"},
+            "steps": [{"offset_days": 7}, {"offset_days": 3}],
+        },
+    )
+    assert response.status_code == 422
+    with SessionLocal() as session:
+        assert (
+            session.scalars(
+                select(Campaign.campaign_id).where(Campaign.name == "cohort test campaign")
+            ).all()
+            == []
+        )
+
+
+def test_create_campaign_rejects_a_cohort_selected_by_angle(db: None) -> None:
+    """The angle is resolved per client at draft time, so it cannot narrow a cohort."""
+    response = client.post(
+        CAMPAIGNS,
+        json={"name": "angle cohort campaign", "cohort": {"message_angle": "pick_up_again"}},
+    )
+    assert response.status_code == 422
 
 
 def test_create_campaign_rejects_an_empty_cohort(db: None) -> None:
