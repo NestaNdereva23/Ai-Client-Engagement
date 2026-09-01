@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ACE_DIR="${ACE_DIR:-/opt/ace-deploy/Ai-Client-Engagement}"
+ACE_DIR="${ACE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 ACE_COMPOSE_FILE="${ACE_COMPOSE_FILE:-docker-compose.prod.yml}"
 ACE_ENV_FILE="${ACE_ENV_FILE:-.env.prod}"
 ACE_SERVICE="${ACE_SERVICE:-ace}"
