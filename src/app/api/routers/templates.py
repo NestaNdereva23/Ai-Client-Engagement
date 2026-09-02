@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.api.reviewer_auth import get_current_reviewer_id
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
+from app.schemas.review import ReviewOrder
 from app.schemas.templates import (
     DecideBatchTemplateFailureOut,
     DecideBatchTemplateRequest,
@@ -36,13 +37,14 @@ router = APIRouter(
 def list_templates(
     status: str = "pending_review",
     campaign_id: int | None = None,
+    order: ReviewOrder = "oldest_first",
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
 ) -> Page[MessageTemplateSummary]:
     try:
         templates, next_cursor = list_pending_templates(
-            session, status=status, campaign_id=campaign_id, cursor=cursor, limit=limit
+            session, status=status, campaign_id=campaign_id, order=order, cursor=cursor, limit=limit
         )
     except InvalidCursor:
         raise HTTPException(status_code=400, detail="invalid cursor") from None

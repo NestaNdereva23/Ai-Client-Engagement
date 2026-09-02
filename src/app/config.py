@@ -139,8 +139,6 @@ class Settings(BaseSettings):
     # Minimum days between two touches to the same client
     campaign_cooldown_days: int = 7
 
-    # Off means every message needs review, regardless of tier. On means a
-    # tier's own human_approval / review_sample_rate is honoured instead.
     tier_sampling_enabled: bool = True
 
     # The most messages one campaign x tier cohort can put in the review

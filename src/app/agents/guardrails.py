@@ -1,7 +1,7 @@
 """Checks a draft must pass before it can reach a reviewer.
 
 Each raises GuardrailFailure tagged with its own name, so the graph can
-retry or reject and the reason survives into the run record.
+retry or reject
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from app.agents.email_agent import BANNED_WORDS
 from app.rag.grounding import UngroundedClaim, enforce_grounding
 
 # A short win back email: long enough to be a real message, short enough to
@@ -26,6 +27,18 @@ _PLACEHOLDER = re.compile(r"\{\{[^}]*\}\}")
 # Client money is KES everywhere. A dollar sign or the letters USD in a
 # draft can only be the model inventing a figure in the wrong currency.
 _NON_KES_CURRENCY = re.compile(r"\$|\bUSD\b")
+
+_BANNED_WORD_PATTERN = re.compile(
+    r"\b(?:" + "|".join(re.escape(word) for word in BANNED_WORDS) + r")\w*",
+    re.IGNORECASE,
+)
+
+_PERCENT = re.compile(r"\d{1,3}(?:\.\d+)?\s*(?:%|per\s?cent)", re.IGNORECASE)
+_VAGUE_RETURN = re.compile(
+    r"\b(?:meaningful|competitive|attractive|solid|strong|healthy|generous|great|good|decent)"
+    r"\s+(?:returns?|rates?|yields?)\b",
+    re.IGNORECASE,
+)
 
 
 class GuardrailFailure(Exception):
@@ -145,14 +158,59 @@ def default_currency_check(state: Mapping[str, Any]) -> None:
         )
 
 
-# The checks agents.graph runs by default, in order: grounding, then numeric
-# traceability, then format and length, then currency. Pass a different
-# sequence to build_generation_graph to change or extend this.
+def default_banned_words_check(state: Mapping[str, Any]) -> None:
+    """A draft's subject and body must never use a word from BANNED_WORDS."""
+    text = f"{state.get('subject') or ''}\n{state.get('body') or ''}"
+    hits = sorted({match.group(0).lower() for match in _BANNED_WORD_PATTERN.finditer(text)})
+    if hits:
+        raise GuardrailFailure(
+            f"draft used a banned word: {hits}",
+            guardrail="banned_words",
+        )
+
+
+def default_sign_off_check(state: Mapping[str, Any]) -> None:
+    """When a tier contract specifies a sign off, the body must carry it verbatim."""
+    contract = state.get("contract")
+    if contract is None:
+        return
+    body = state.get("body") or ""
+    if contract.sign_off not in body:
+        raise GuardrailFailure(
+            f"body is missing the required sign off: {contract.sign_off!r}",
+            guardrail="sign_off",
+        )
+
+
+def default_rate_specificity_check(state: Mapping[str, Any]) -> None:
+    """A body must not describe a return vaguely when a real rate was retrieved.
+
+    Only fires when a retrieved chunk actually carries a percentage and the
+    body leans on a qualitative phrase like "meaningful returns" instead of
+    citing it; a body that never raises the topic of returns, or one that
+    already states a figure, is left alone.
+    """
+    body = state.get("body") or ""
+    if _PERCENT.search(body):
+        return
+    if not _VAGUE_RETURN.search(body):
+        return
+    chunk_text = " ".join(getattr(chunk, "text", "") for chunk in state.get("chunks", ()))
+    if _PERCENT.search(chunk_text):
+        raise GuardrailFailure(
+            "body describes a return vaguely while a specific rate was retrieved and available",
+            guardrail="rate_specificity",
+        )
+
+
 DEFAULT_GUARDRAIL_CHECKS: Sequence[Any] = (
     default_grounding_check,
     default_numeric_traceability_check,
     default_format_check,
     default_currency_check,
+    default_banned_words_check,
+    default_sign_off_check,
+    default_rate_specificity_check,
 )
 
 

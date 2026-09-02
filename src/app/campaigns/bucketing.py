@@ -16,6 +16,7 @@ from app.campaigns.eligibility import check_eligibility
 from app.campaigns.generation import resolve_product
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT, select_due_enrollments
 from app.db.models.campaigns import Enrollment
+from app.db.session import restricted_session
 
 
 @dataclass(frozen=True)
@@ -110,20 +111,24 @@ def derive_buckets(
     context_loader = context_loader or functools.partial(load_client_context, session)
 
     due = select_due_enrollments(session, campaign_id=campaign_id, limit=limit)
+    if not due:
+        return []
+
     buckets: dict[ProfileKey, Bucket] = {}
-    for enrollment in due:
-        result = check_eligibility(session, enrollment)
-        if not result.eligible:
-            continue
+    with restricted_session() as vault_session:
+        for enrollment in due:
+            result = check_eligibility(session, enrollment, vault_session=vault_session)
+            if not result.eligible:
+                continue
 
-        product = resolve_product(session, enrollment.client_id)
-        try:
-            context = context_loader(enrollment.client_id, product)
-        except ValueError:
-            continue
+            product = resolve_product(session, enrollment.client_id)
+            try:
+                context = context_loader(enrollment.client_id, product)
+            except ValueError:
+                continue
 
-        key = profile_key_for(context, product=product)
-        bucket = buckets.setdefault(key, Bucket(profile_key=key))
-        bucket.members.append(BucketMember(enrollment=enrollment, context=context))
+            key = profile_key_for(context, product=product)
+            bucket = buckets.setdefault(key, Bucket(profile_key=key))
+            bucket.members.append(BucketMember(enrollment=enrollment, context=context))
 
     return list(buckets.values())

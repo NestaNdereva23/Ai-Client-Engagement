@@ -1,12 +1,3 @@
-"""EmailAgent: placeholder-only drafting, prompt variant driven by the rule outcome.
-
-These prove the system prompt always carries the placeholder contract and the
-angle, that a known prompt variant selects its own framing line while an
-unknown one falls back safely rather than erroring, that facts render only
-from what was actually retrieved, and that the placeholder-presence check
-used by later milestones behaves as a pure structural rule.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -16,12 +7,14 @@ import pytest
 
 from app.agents.email_agent import (
     ALLOWED_PLACEHOLDERS,
+    BANNED_WORDS,
     PLACEHOLDER_FACT_FIELDS,
     REQUIRED_PLACEHOLDERS,
     build_system_prompt,
     build_system_prompt_blocks,
     has_required_placeholders,
     placeholder_token,
+    strip_ai_dashes,
     variant_guidance,
 )
 from app.db.session import SessionLocal
@@ -214,3 +207,79 @@ def test_required_placeholders_does_not_widen_with_the_new_vocabulary() -> None:
     assert has_required_placeholders(
         "Dear {{first_name}}, {{fund_name}} awaits. Contribution: {{typical_contribution}}."
     )
+
+
+def test_strip_ai_dashes_turns_an_unspaced_em_dash_into_a_comma() -> None:
+    text = "We're not here to convince you to return—your decision was yours to make."
+    assert strip_ai_dashes(text) == (
+        "We're not here to convince you to return, your decision was yours to make."
+    )
+
+
+def test_strip_ai_dashes_turns_a_spaced_em_dash_into_a_comma() -> None:
+    assert strip_ai_dashes("a simple, flexible option — whenever you have cash") == (
+        "a simple, flexible option, whenever you have cash"
+    )
+
+
+def test_strip_ai_dashes_handles_an_en_dash() -> None:
+    assert strip_ai_dashes("open 50–125 words") == "open 50, 125 words"
+
+
+def test_strip_ai_dashes_handles_a_double_hyphen() -> None:
+    assert strip_ai_dashes("worth a look--think it over") == "worth a look, think it over"
+
+
+def test_strip_ai_dashes_handles_a_spaced_single_hyphen() -> None:
+    assert strip_ai_dashes("a good fit - and low pressure too") == (
+        "a good fit, and low pressure too"
+    )
+
+
+def test_strip_ai_dashes_turns_a_compound_word_hyphen_into_a_space() -> None:
+    assert strip_ai_dashes("a low-pressure, win-back message") == (
+        "a low pressure, win back message"
+    )
+
+
+def test_strip_ai_dashes_leaves_text_with_no_dash_unchanged() -> None:
+    text = "Hi {{first_name}}, {{fund_name}} is currently offering 11.08%."
+    assert strip_ai_dashes(text) == text
+
+
+def test_strip_ai_dashes_passes_through_blank_input() -> None:
+    assert strip_ai_dashes("") == ""
+
+
+def test_park_is_a_banned_word() -> None:
+    assert "park" in BANNED_WORDS
+
+
+def test_system_prompt_lists_the_banned_words() -> None:
+    prompt = build_system_prompt(angle="your_next_deposit", prompt_variant="your_next_deposit")
+    assert "BANNED WORDS" in prompt
+    for word in BANNED_WORDS:
+        assert word in prompt
+
+
+def test_system_prompt_forbids_interrogating_why_the_client_left() -> None:
+    prompt = build_system_prompt(angle="you_wound_down", prompt_variant="you_wound_down")
+    assert "interrogates why the client left" in prompt
+
+
+def test_system_prompt_forbids_announcing_the_win_back_attempt() -> None:
+    prompt = build_system_prompt(angle="you_wound_down", prompt_variant="you_wound_down")
+    assert "WINNING THE CLIENT BACK" in prompt
+    assert "not trying to convince the client" in prompt
+
+
+def test_system_prompt_requires_a_greeting_and_a_sign_off() -> None:
+    prompt = build_system_prompt(angle="pick_up_again", prompt_variant="pick_up_again")
+    assert "must always open with a short greeting" in prompt
+    assert "must always end with the sign off" in prompt
+
+
+def test_system_prompt_requires_the_exact_rate_over_a_vague_phrase() -> None:
+    prompt = build_system_prompt(angle="your_next_deposit", prompt_variant="your_next_deposit")
+    assert "meaningful returns" in prompt
+    assert "state the exact figure" in prompt

@@ -13,9 +13,16 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, ValidationError, ValidationInfo, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
-from app.agents.email_agent import ALLOWED_PLACEHOLDERS, required_placeholders
+from app.agents.email_agent import ALLOWED_PLACEHOLDERS, required_placeholders, strip_ai_dashes
 
 _PLACEHOLDER = re.compile(r"\{\{[^}]*\}\}")
 _CODE_FENCE = re.compile(r"^```[a-zA-Z]*\n?|\n?```$")
@@ -32,6 +39,11 @@ class EmailDraft(BaseModel):
 
     subject: str
     body: str
+
+    @field_validator("subject", "body")
+    @classmethod
+    def _strip_dashes(cls, value: str) -> str:
+        return strip_ai_dashes(value)
 
     @model_validator(mode="after")
     def _check_placeholders(self, info: ValidationInfo) -> EmailDraft:

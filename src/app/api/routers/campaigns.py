@@ -14,7 +14,7 @@ from app.campaigns.generation_cost import (
     GenerationCostConfigMissing,
     UnknownGenerationModel,
 )
-from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT, MAX_BATCH_LIMIT
+from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT, INSTANTIATE_DEFAULT_LIMIT, MAX_BATCH_LIMIT
 from app.campaigns.template_policy import EffectivePolicy, TemplatePolicyValidationError
 from app.config import get_settings
 from app.db.models.campaigns import CampaignStep
@@ -58,6 +58,7 @@ from app.schemas.templates import (
     DraftTemplatesResult,
     EstimateComputedFromOut,
     InstantiateTemplateResult,
+    InstantiationBatchOut,
     MessageTemplateSummary,
     ProfileKeyOut,
     TemplateEstimateOut,
@@ -66,6 +67,7 @@ from app.schemas.templates import (
 )
 from app.services.campaigns import (
     CampaignNotFound,
+    InstantiationBatchNotFound,
     NonIncreasingStepOffset,
     add_campaign_step,
     campaign_readiness,
@@ -78,6 +80,7 @@ from app.services.campaigns import (
     get_campaign,
     get_campaign_batch,
     get_campaign_template_policy,
+    get_instantiation_batch,
     ingest_campaign_batch,
     instantiate_campaign_template,
     list_campaign_batches,
@@ -92,11 +95,13 @@ from app.services.campaigns import (
     run_campaign_generation,
     send_campaign,
     set_campaign_template_policy,
+    start_bulk_instantiate,
     submit_campaign_batch,
 )
 from app.services.review import TemplateNotApproved
 from app.services.template_review import TemplateNotFound
 from app.workers.batch_ingest import poll_batch_until_done
+from app.workers.instantiation import run_instantiate_all_in_background
 
 router = APIRouter(
     prefix="/campaigns", tags=["campaigns"], dependencies=[Depends(get_current_reviewer_id)]
@@ -717,7 +722,7 @@ def post_campaign_templates_draft(
 def post_campaign_template_instantiate(
     campaign_id: int,
     template_id: str,
-    limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
+    limit: int = Query(default=INSTANTIATE_DEFAULT_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
     session: Session = Depends(get_session),
 ) -> InstantiateTemplateResult:
     try:
@@ -738,3 +743,47 @@ def post_campaign_template_instantiate(
         instantiated_count=len(messages),
         messages=[OutreachMessageSummary.model_validate(m) for m in messages],
     )
+
+
+@router.post(
+    "/{campaign_id}/templates/instantiate-all",
+    response_model=InstantiationBatchOut,
+    status_code=202,
+)
+def post_campaign_templates_instantiate_all(
+    campaign_id: int,
+    background_tasks: BackgroundTasks,
+    limit: int = Query(default=INSTANTIATE_DEFAULT_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
+    session: Session = Depends(get_session),
+) -> InstantiationBatchOut:
+    try:
+        batch, template_ids = start_bulk_instantiate(session, campaign_id, limit=limit)
+        session.commit()
+    except CampaignNotFound:
+        session.rollback()
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    if batch.status == "running":
+        background_tasks.add_task(
+            run_instantiate_all_in_background,
+            batch.instantiation_batch_id,
+            campaign_id,
+            template_ids,
+            limit=limit,
+        )
+    return InstantiationBatchOut.model_validate(batch)
+
+
+@router.get(
+    "/{campaign_id}/templates/instantiate-all/{instantiation_batch_id}",
+    response_model=InstantiationBatchOut,
+)
+def get_campaign_templates_instantiate_all(
+    campaign_id: int,
+    instantiation_batch_id: str,
+    session: Session = Depends(get_session),
+) -> InstantiationBatchOut:
+    try:
+        batch = get_instantiation_batch(session, campaign_id, instantiation_batch_id)
+    except InstantiationBatchNotFound:
+        raise HTTPException(status_code=404, detail="instantiation batch not found") from None
+    return InstantiationBatchOut.model_validate(batch)

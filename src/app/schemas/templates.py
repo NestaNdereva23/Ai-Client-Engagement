@@ -103,6 +103,19 @@ class InstantiateTemplateResult(BaseModel):
     messages: list[OutreachMessageSummary]
 
 
+class InstantiationBatchOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    instantiation_batch_id: str
+    campaign_id: int
+    status: str
+    template_count: int
+    instantiated_count: int
+    failed_template_count: int
+    created_at: datetime
+    completed_at: datetime | None
+
+
 class ProfileKeyOut(BaseModel):
     """The shared, profile-defining facts one estimated bucket's clients have in common."""
 

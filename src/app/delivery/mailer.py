@@ -73,6 +73,15 @@ class SmtpMailer:
     """Sends over SMTP. The same class serves Mailpit in development (host
     and port, no credentials, no TLS) and a real server in production (the
     same fields, filled in).
+
+    A batch send (a whole campaign, a whole digest run) calls send() many
+    times on the same SmtpMailer instance, so the connection opened for the
+    first message is kept open and reused for the rest instead of
+    reconnecting per message -- opening a fresh TCP connection for every one
+    of thousands of emails is what was timing out against Mailpit locally.
+    If the server drops the reused connection (an idle timeout, a
+    per-connection message cap), send() reconnects once and retries before
+    giving up. Call close() once a batch is done.
     """
 
     def __init__(
@@ -93,15 +102,26 @@ class SmtpMailer:
         self.password = password
         self.starttls = starttls
         self.timeout = timeout
+        self._client: smtplib.SMTP | None = None
+
+    def _open_connection(self) -> smtplib.SMTP:
+        client = smtplib.SMTP(self.host, self.port, timeout=self.timeout)
+        if self.starttls:
+            client.starttls()
+        if self.username and self.password:
+            client.login(self.username, self.password)
+        return client
 
     def send(self, message: EmailMessage) -> SendResult:
         mime = build_mime_message(self.sender, message)
-        with smtplib.SMTP(self.host, self.port, timeout=self.timeout) as client:
-            if self.starttls:
-                client.starttls()
-            if self.username and self.password:
-                client.login(self.username, self.password)
-            client.send_message(mime)
+        if self._client is None:
+            self._client = self._open_connection()
+        try:
+            self._client.send_message(mime)
+        except (smtplib.SMTPException, OSError):
+            self._discard_connection()
+            self._client = self._open_connection()
+            self._client.send_message(mime)
         logger.info(
             "email_sent",
             recipient=message.to,
@@ -114,6 +134,24 @@ class SmtpMailer:
             recipient=message.to,
             subject=message.subject,
         )
+
+    def close(self) -> None:
+        """Close the connection reused across a batch of sends, if one is
+        open. The next send() after this opens a fresh one.
+        """
+        self._discard_connection()
+
+    def _discard_connection(self) -> None:
+        client, self._client = self._client, None
+        if client is None:
+            return
+        try:
+            client.quit()
+        except (smtplib.SMTPException, OSError):
+            try:
+                client.close()
+            except OSError:
+                pass
 
 
 @dataclass
@@ -144,6 +182,10 @@ class NullMailer:
             subject=message.subject,
             reason=self.reason,
         )
+
+    def close(self) -> None:
+        """No connection to close; present so callers can close() any Mailer
+        without checking which kind they got."""
 
 
 def get_mailer(settings: Settings | None = None) -> Mailer:

@@ -57,6 +57,10 @@ def build_email_sender(
     SMTP host configured, the same fallback every other mail path in the
     app already uses, so an unconfigured environment stays quiet rather
     than raising mid-send.
+
+    The chosen Mailer is exposed as send.mailer, so a caller sending a
+    whole batch through this SenderFn (send_campaign, for one) can close()
+    it once the batch is done instead of leaving a connection open.
     """
     mailer = mailer if mailer is not None else get_mailer(settings or get_settings())
 
@@ -76,4 +80,5 @@ def build_email_sender(
         logger.info("outreach_message.send", message_id=message.message_id, status=status)
         return SendResult(delivery_status=status, sent_at=datetime.now(UTC))
 
+    send.mailer = mailer
     return send

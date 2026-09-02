@@ -284,7 +284,8 @@ def test_every_catalogued_angle_generates_an_accepted_draft(db: None) -> None:
             "subject": "A moment of your time",
             "body": (
                 "Dear {{first_name}}, we would value hearing from you again "
-                "about your Cytonn Money Market Fund whenever the timing suits."
+                "about your Cytonn Money Market Fund whenever the timing suits.\n\n"
+                "Best regards, named relationship manager"
             ),
         }
     )

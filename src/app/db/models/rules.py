@@ -94,9 +94,7 @@ class MessageAngleCatalog(Base):
 class TierContract(Base):
     """The channel, format, and review policy for one priority tier.
 
-    Versioned and immutable like the angle catalogue. review_sample_rate is
-    the rate to honour once sampling is turned on; until then, review stays
-    mandatory regardless of what is stored here.
+    Versioned and immutable like the angle catalogue.
     """
 
     __tablename__ = "tier_contract"

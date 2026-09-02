@@ -6,6 +6,8 @@ smtplib.SMTP, and every other path runs through NullMailer.
 
 from __future__ import annotations
 
+import smtplib
+
 import pytest
 
 from app.config import Settings
@@ -21,7 +23,11 @@ from app.delivery.mailer import (
 
 
 class FakeSmtp:
-    """Stands in for smtplib.SMTP and records what it was asked to do."""
+    """Stands in for smtplib.SMTP and records what it was asked to do.
+
+    fail_next_send makes exactly one send_message call raise, so tests can
+    check that SmtpMailer reconnects and retries instead of giving up.
+    """
 
     instances: list[FakeSmtp] = []
 
@@ -33,14 +39,8 @@ class FakeSmtp:
         self.login_args = None
         self.messages = []
         self.closed = False
+        self.fail_next_send = False
         FakeSmtp.instances.append(self)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.closed = True
-        return False
 
     def starttls(self):
         self.started_tls = True
@@ -49,7 +49,16 @@ class FakeSmtp:
         self.login_args = (username, password)
 
     def send_message(self, message):
+        if self.fail_next_send:
+            self.fail_next_send = False
+            raise smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
         self.messages.append(message)
+
+    def quit(self):
+        self.closed = True
+
+    def close(self):
+        self.closed = True
 
 
 @pytest.fixture
@@ -113,6 +122,13 @@ def test_null_mailer_records_instead_of_sending():
     assert [m.subject for m in null.sent_messages] == ["Your morning call list"]
 
 
+def test_null_mailer_close_is_a_harmless_no_op():
+    """A caller closing whatever Mailer it got, without checking which kind,
+    must not fail against the no-op.
+    """
+    NullMailer(sender="ace@example.com").close()
+
+
 def test_a_misconfigured_environment_sends_nothing_and_still_records():
     """An unset SMTP_HOST must not raise on a scheduled run; it records."""
     built = get_mailer(Settings(smtp_host=""))
@@ -158,12 +174,55 @@ def test_smtp_mailer_sends_the_message_it_was_asked_for(fake_smtp):
     assert (client.host, client.port) == ("localhost", 1025)
     assert client.started_tls is False
     assert client.login_args is None
-    assert client.closed is True
     assert len(client.messages) == 1
     mime = client.messages[0]
     assert mime["To"] == "fa@example.com"
     assert mime["From"] == "ace@example.com"
     assert mime["Subject"] == "Your morning call list"
+
+
+def test_smtp_mailer_reuses_one_connection_across_a_batch(fake_smtp):
+    """A campaign send calls send() once per touch. Opening a fresh TCP
+    connection for every one of thousands of emails is what was timing out
+    against Mailpit; the connection opened for the first message must be
+    reused for the rest.
+    """
+    sender = SmtpMailer(host="localhost", port=1025, sender="ace@example.com")
+    for _ in range(5):
+        sender.send(a_message())
+
+    assert len(fake_smtp.instances) == 1
+    assert len(fake_smtp.instances[0].messages) == 5
+    assert fake_smtp.instances[0].closed is False
+
+
+def test_smtp_mailer_close_ends_the_reused_connection(fake_smtp):
+    sender = SmtpMailer(host="localhost", port=1025, sender="ace@example.com")
+    sender.send(a_message())
+    sender.close()
+
+    assert fake_smtp.instances[0].closed is True
+
+    # The next send after close() opens a fresh connection.
+    sender.send(a_message())
+    assert len(fake_smtp.instances) == 2
+
+
+def test_smtp_mailer_reconnects_once_if_the_server_drops_the_connection(fake_smtp):
+    """A server can drop a connection reused across a large batch (an idle
+    timeout, a per-connection message cap). One retry on a fresh connection
+    must recover the send rather than surfacing the disconnect.
+    """
+    sender = SmtpMailer(host="localhost", port=1025, sender="ace@example.com")
+    sender.send(a_message())
+    fake_smtp.instances[0].fail_next_send = True
+
+    result = sender.send(a_message())
+
+    assert result.sent is True
+    assert len(fake_smtp.instances) == 2
+    assert fake_smtp.instances[0].closed is True
+    assert len(fake_smtp.instances[1].messages) == 1
 
 
 def test_smtp_mailer_starts_tls_and_logs_in_when_configured(fake_smtp):

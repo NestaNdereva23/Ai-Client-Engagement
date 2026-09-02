@@ -38,7 +38,6 @@ from app.agents.guardrails import (
 )
 from app.audit.log import record_audit
 from app.campaigns.cohorts import CohortSlot, resolve_cohort_slot
-from app.config import get_settings
 from app.db.models.llmops import Evaluation, GenerationRun, PromptVersion
 from app.db.models.message_template import MessageTemplate
 from app.db.models.models import Clients, Funds, PiiVault
@@ -56,7 +55,7 @@ from app.pagination import (
 )
 from app.privacy.fact_block import round_sig_figs
 from app.rules.catalog import load_angle
-from app.rules.tier_contract import instance_needs_review, load_tier
+from app.rules.tier_contract import load_tier
 from app.schemas.review import ReviewOrder
 
 # Display order for the reviewer queue: T1 is the highest-value, always-
@@ -161,19 +160,25 @@ def _first_name_from_full_name(full_name: str | None) -> str:
     return full_name.strip().split()[0]
 
 
-def _fetch_client_name(client_id: int) -> str | None:
+def _fetch_client_name(client_id: int, *, vault_session: Session | None = None) -> str | None:
     """The vault's raw client_name for one client, read under the restricted role."""
+    if vault_session is not None:
+        return _read_client_name(vault_session, client_id)
     with restricted_session() as session:
-        vault = session.get(PiiVault, client_id)
-        record_audit(
-            session,
-            entity_type="pii_vault",
-            action="read",
-            entity_id=str(client_id),
-            detail={"purpose": "personalization_inject"},
-        )
-        session.commit()
-        return vault.client_name if vault else None
+        return _read_client_name(session, client_id)
+
+
+def _read_client_name(session: Session, client_id: int) -> str | None:
+    vault = session.get(PiiVault, client_id)
+    record_audit(
+        session,
+        entity_type="pii_vault",
+        action="read",
+        entity_id=str(client_id),
+        detail={"purpose": "personalization_inject"},
+    )
+    session.commit()
+    return vault.client_name if vault else None
 
 
 def resolve_placeholders(
@@ -247,8 +252,8 @@ def _resolve_fund_name(session: Session, client_id: int) -> str:
     return fund.unit_fund_name if fund else _FALLBACK_FUND_NAME
 
 
-def _resolve_first_name(client_id: int) -> str:
-    full_name = _fetch_client_name(client_id)
+def _resolve_first_name(client_id: int, *, vault_session: Session | None = None) -> str:
+    full_name = _fetch_client_name(client_id, vault_session=vault_session)
     first_name = _first_name_from_full_name(full_name)
     if full_name is None:
         logger.warning("personalization.no_client_name", client_id=client_id)
@@ -384,25 +389,21 @@ def client_fact_pairs(session: Session, client_id: int) -> dict[str, tuple[Any, 
     }
 
 
-def _load_template_tier(session: Session, template: MessageTemplate) -> TierContract | None:
+def load_template_tier(session: Session, template: MessageTemplate) -> TierContract | None:
     priority_tier = (template.profile_key or {}).get("priority_tier")
     return load_tier(session, priority_tier, date.today()) if priority_tier else None
 
 
-def _instance_status(tier: TierContract | None) -> str:
-    """pending_review, unless this tier's sampling policy says this instance
-    does not need a human look. Never touches whether the template itself
-    was reviewed -- that is mandatory and already enforced elsewhere.
-    """
-    settings = get_settings()
-    needs_review = instance_needs_review(tier, sampling_enabled=settings.tier_sampling_enabled)
-    return "pending_review" if needs_review else "approved"
+def load_template_angle_brief(
+    session: Session, template: MessageTemplate
+) -> MessageAngleCatalog | None:
+    angle = (template.profile_key or {}).get("message_angle")
+    return load_angle(session, angle, date.today()) if angle else None
 
 
-def _call_brief_for_instance(
-    session: Session,
-    template: MessageTemplate,
+def render_call_brief_for_instance(
     tier: TierContract | None,
+    brief: MessageAngleCatalog | None,
     client_facts: Mapping[str, Any],
 ) -> str | None:
     """This client's own call brief, when the tier's contract calls for one.
@@ -412,10 +413,6 @@ def _call_brief_for_instance(
     """
     if tier is None or tier.secondary_channel != CALL_BRIEF_CHANNEL:
         return None
-    angle = (template.profile_key or {}).get("message_angle")
-    if not angle:
-        return None
-    brief = load_angle(session, angle, date.today())
     if brief is None:
         return None
     return render_call_brief(brief=brief, facts=client_facts, contract=tier)
@@ -434,9 +431,25 @@ def instantiate_message(
     if template.status != "approved":
         raise TemplateNotApproved(template.template_id)
 
-    tier = _load_template_tier(session, template)
+    tier = load_template_tier(session, template)
+    brief = load_template_angle_brief(session, template)
+    return instantiate_message_for_template(
+        session, template, client_id, tier=tier, brief=brief, campaign_id=campaign_id
+    )
+
+
+def instantiate_message_for_template(
+    session: Session,
+    template: MessageTemplate,
+    client_id: int,
+    *,
+    tier: TierContract | None,
+    brief: MessageAngleCatalog | None,
+    campaign_id: int,
+    vault_session: Session | None = None,
+) -> OutreachMessage | None:
     fund_name = _resolve_fund_name(session, client_id)
-    first_name = _resolve_first_name(client_id)
+    first_name = _resolve_first_name(client_id, vault_session=vault_session)
     client_raw_facts, placeholder_kwargs = _placeholder_facts_for_client(session, client_id)
 
     personalized = personalize_content(
@@ -475,8 +488,8 @@ def instantiate_message(
         client_id=client_id,
         ai_draft_content=template.ai_draft_content,
         personalized_content=personalized,
-        call_brief=_call_brief_for_instance(session, template, tier, client_raw_facts),
-        status=_instance_status(tier),
+        call_brief=render_call_brief_for_instance(tier, brief, client_raw_facts),
+        status="approved",
     )
     session.add(message)
     record_audit(

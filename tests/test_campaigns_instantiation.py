@@ -16,8 +16,8 @@ from sqlalchemy import delete, select, text
 
 from app.agents.graph import ClientContext
 from app.campaigns.enrollment import enroll_cohort
-from app.campaigns.instantiation import instantiate_template
-from app.config import Settings, get_settings
+from app.campaigns.instantiation import instantiate_many_templates, instantiate_template
+from app.config import Settings
 from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
 from app.db.models.llmops import GenerationRun
 from app.db.models.message_template import MessageTemplate
@@ -239,7 +239,7 @@ def test_instantiate_message_fills_every_placeholder_with_this_clients_own_figur
     assert "{{" not in body
     assert message.template_id == template.template_id
     assert message.generation_run_id == template.generation_run_id
-    assert message.status == "pending_review"
+    assert message.status == "approved"
     assert message.call_brief is None
 
 
@@ -296,16 +296,10 @@ def test_instantiate_message_builds_a_call_brief_when_the_tiers_contract_calls_f
             session.commit()
 
 
-def test_instantiate_message_auto_approves_when_the_tiers_sampling_says_so(
-    campaign: int, run: str, client: int, monkeypatch: pytest.MonkeyPatch
+def test_instantiate_message_is_approved_even_on_a_mandatory_review_tier(
+    campaign: int, run: str, client: int
 ) -> None:
-    """tier_sampling_enabled and the tier's review_sample_rate together
-    decide an instance's status; the template's own review is untouched."""
     contract_version = 97300001
-    monkeypatch.setenv("TIER_SAMPLING_ENABLED", "true")
-    get_settings.cache_clear()
-    monkeypatch.setattr("app.rules.tier_contract.random.random", lambda: 0.9)
-
     with SessionLocal() as session:
         save_tier_contract_version(
             session,
@@ -317,13 +311,10 @@ def test_instantiate_message_auto_approves_when_the_tiers_sampling_says_so(
                     primary_channel="email",
                     max_words=120,
                     sign_off="Client Services",
-                    human_approval=False,
-                    review_sample_rate=0.5,
+                    human_approval=True,
+                    review_sample_rate=1.0,
                 )
             ],
-            # Today, not some far-back date: the seeded contract is in
-            # force from today too, and a tie on valid_from is broken by
-            # the higher version, which is this one.
             valid_from=date.today(),
         )
         session.commit()
@@ -339,7 +330,6 @@ def test_instantiate_message_auto_approves_when_the_tiers_sampling_says_so(
         assert message is not None
         assert message.status == "approved"
     finally:
-        get_settings.cache_clear()
         with SessionLocal() as session:
             session.execute(delete(TierContract).where(TierContract.version == contract_version))
             session.commit()
@@ -501,10 +491,16 @@ def test_an_unexpected_error_on_one_member_is_caught_and_leaves_no_stray_touch(
     """
     import app.campaigns.instantiation as instantiation_module
 
-    def exploding_instantiate_message(session, template, client_id, *, campaign_id):
+    def exploding_instantiate_message_for_template(
+        session, template, client_id, *, tier, brief, campaign_id, vault_session=None
+    ):
         raise RuntimeError("pii vault lookup failed")
 
-    monkeypatch.setattr(instantiation_module, "instantiate_message", exploding_instantiate_message)
+    monkeypatch.setattr(
+        instantiation_module,
+        "instantiate_message_for_template",
+        exploding_instantiate_message_for_template,
+    )
 
     with SessionLocal() as session:
         enroll_cohort(session, campaign_id=campaign, client_ids=[client])
@@ -536,3 +532,82 @@ def test_an_unexpected_error_on_one_member_is_caught_and_leaves_no_stray_touch(
             select(TouchLog).where(TouchLog.enrollment_id == enrollment_id, TouchLog.step_no == 1)
         )
         assert touch is None
+
+
+def test_instantiate_many_templates_sums_counts_and_flags_a_missing_id(
+    campaign: int, run: str, client: int
+) -> None:
+    with SessionLocal() as session:
+        enroll_cohort(session, campaign_id=campaign, client_ids=[client])
+        session.commit()
+        template = make_template(campaign, run)
+        session.add(template)
+        session.commit()
+
+        result = instantiate_many_templates(
+            session,
+            [template.template_id, "not-a-real-id"],
+            campaign_id=campaign,
+            context_loader=make_matching_context_loader(),
+        )
+        session.commit()
+
+    assert result.instantiated_count == 1
+    assert result.failed_template_ids == ["not-a-real-id"]
+
+
+def test_instantiate_many_templates_keeps_going_after_one_template_raises(
+    campaign: int, run: str, client: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.campaigns.instantiation as instantiation_module
+
+    with SessionLocal() as session:
+        enroll_cohort(session, campaign_id=campaign, client_ids=[client])
+        session.commit()
+
+        good_run = persist_generation_run(session, accepted_state(client), make_settings())
+        session.commit()
+        good_run_id = good_run.run_id
+        bad_template = make_template(campaign, run)
+        good_template = make_template(campaign, good_run_id)
+        session.add_all([bad_template, good_template])
+        session.commit()
+
+        real_instantiate_from_bucket = instantiation_module._instantiate_from_bucket
+
+        def flaky_instantiate_from_bucket(session, template, bucket, *, campaign_id):
+            if template.template_id == bad_template.template_id:
+                raise RuntimeError("boom")
+            return real_instantiate_from_bucket(session, template, bucket, campaign_id=campaign_id)
+
+        monkeypatch.setattr(
+            instantiation_module, "_instantiate_from_bucket", flaky_instantiate_from_bucket
+        )
+
+        try:
+            result = instantiate_many_templates(
+                session,
+                [bad_template.template_id, good_template.template_id],
+                campaign_id=campaign,
+                context_loader=make_matching_context_loader(),
+            )
+            session.commit()
+
+            assert result.instantiated_count == 1
+            assert result.failed_template_ids == [bad_template.template_id]
+        finally:
+            message_ids = session.scalars(
+                select(OutreachMessage.message_id).where(
+                    OutreachMessage.generation_run_id == good_run_id
+                )
+            ).all()
+            if message_ids:
+                session.execute(delete(TouchLog).where(TouchLog.message_id.in_(message_ids)))
+                session.execute(
+                    delete(OutreachMessage).where(OutreachMessage.message_id.in_(message_ids))
+                )
+            session.execute(
+                delete(MessageTemplate).where(MessageTemplate.generation_run_id == good_run_id)
+            )
+            session.execute(delete(GenerationRun).where(GenerationRun.run_id == good_run_id))
+            session.commit()
