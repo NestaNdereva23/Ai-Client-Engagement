@@ -120,7 +120,8 @@ def _draft() -> str:
             "body": (
                 "Dear {{first_name}}, you were putting money into your "
                 "Cytonn Money Market Fund every 30 days, usually around "
-                "KES 150,000. Restarting takes about two minutes."
+                "KES 150,000. Restarting takes about two minutes.\n\n"
+                "Best regards, named relationship manager"
             ),
         }
     )

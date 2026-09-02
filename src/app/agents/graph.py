@@ -222,6 +222,32 @@ def load_client_context(
     )
 
 
+def load_client_profile_context(session: Session, client_id: int, product: str) -> ClientContext:
+    row = (
+        session.execute(
+            select(llm_client_context).where(llm_client_context.c.client_id == client_id)
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None:
+        raise ValueError(f"no llm_client_context row for client {client_id!r}")
+
+    indicators = session.get(ClientMessageIndicators, client_id)
+    if indicators is None:
+        raise ValueError(f"no resolved message indicators for client {client_id!r}")
+
+    return ClientContext(
+        raw_context=dict(row),
+        angle=indicators.message_angle,
+        prompt_variant=indicators.prompt_variant,
+        chunks=(),
+        facts=load_client_facts(session, client_id, dict(row)),
+        priority_tier=indicators.priority_tier,
+        rule_version=indicators.rule_version,
+    )
+
+
 def _traced(
     name: str,
     fn: Callable[[GenerationState], dict[str, Any]],

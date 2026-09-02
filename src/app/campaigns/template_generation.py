@@ -190,15 +190,14 @@ def draft_template(
     session.flush()
     persist_generation_telemetry(session, run, result, tracer=tracer)
 
-    if result.get("status") != "accepted":
-        return None
-
+    accepted = result.get("status") == "accepted"
     template = MessageTemplate(
         template_id=str(uuid.uuid4()),
         campaign_id=campaign_id,
         generation_run_id=run.run_id,
         profile_key=bucket.profile_key.as_dict(),
-        ai_draft_content=run.ai_draft_content,
+        ai_draft_content=run.ai_draft_content or {},
+        status="pending_review" if accepted else "guardrail_rejected",
     )
     session.add(template)
     record_audit(
@@ -210,7 +209,7 @@ def draft_template(
         trace_id=run.trace_id,
     )
     session.flush()
-    return template
+    return template if accepted else None
 
 
 @dataclass(frozen=True)

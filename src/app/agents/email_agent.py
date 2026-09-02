@@ -8,6 +8,7 @@ scanned payload, so nothing client-specific reaches the model unchecked.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -89,6 +90,8 @@ CAMPAIGN_PROHIBITIONS = (
     "the angle, not for putting in front of the client.",
 )
 
+BANNED_WORDS = ("park",)
+
 _BASE_INSTRUCTIONS = (
     "You are an email drafting agent for dormant investment clients. "
     "Your task is to write one short, natural, professional, personalized win-back email "
@@ -153,6 +156,11 @@ _BASE_INSTRUCTIONS = (
     "Do not mention a current proposition merely because one was retrieved. "
     "Use it only when it genuinely supports the angle's CLAIM or ASK. "
     "A short, specific relevant proposition is better than a block of market commentary. "
+    "When a current rate or return is supplied and the angle permits citing it, state the exact "
+    "figure you were given. Never substitute a vague qualitative phrase such as 'meaningful "
+    "returns', 'competitive rates', 'attractive yield', or 'strong performance' for a real figure "
+    "you were actually supplied. If you are not going to state the figure, do not raise the topic "
+    "of returns at all. "
     "RETRIEVED FACTS: "
     "Retrieved facts are supporting evidence, not mandatory content. "
     "Use the smallest amount of retrieved information necessary to make the email relevant. "
@@ -175,6 +183,14 @@ _BASE_INSTRUCTIONS = (
     "whether they have been away simply because that information is available internally. "
     "The email should create a reason to reconnect, not make the client explain their past "
     "behavior. "
+    "DO NOT FRAME THIS AS WINNING THE CLIENT BACK: "
+    "Do not describe the ask as bringing the client back, winning them back, or something they "
+    "need to be convinced of. Frame it around whether the current proposition is relevant to the "
+    "client's situation today, not around their past decision to leave. "
+    "Never say or imply that you are not trying to convince the client, that their decision to "
+    "leave or pause was theirs to make, or otherwise call attention to the fact that this is a "
+    "win back message. Show low pressure through tone, not by announcing it. "
+    "Do not imply the client owes the relationship another investment. "
     "EMAIL LENGTH AND STRUCTURE: "
     "Aim for approximately 75 words in the body. "
     "The acceptable body range is 50 to 125 words. "
@@ -183,7 +199,11 @@ _BASE_INSTRUCTIONS = (
     "Do not add words merely to reach the minimum. "
     "If the angle genuinely requires more context, the email may approach 125 words, but never "
     "exceed 125 words. "
-    "The email should normally contain three short parts: "
+    "The body must always open with a short greeting naming the client, such as 'Hi "
+    "{{first_name}},', on its own line, and must always end with the sign off on its own line, "
+    "separated from the rest of the body by a blank line. Never omit the greeting or the sign "
+    "off. "
+    "The email should normally contain three short parts between the greeting and the sign off: "
     "1) a natural opening or relevant context, "
     "2) one useful and factually supported reason to reconnect, and "
     "3) the selected angle's single ASK. "
@@ -202,6 +222,9 @@ _BASE_INSTRUCTIONS = (
     "Never exceed 10 words. "
     "Keep it natural, specific, and relevant to the email. "
     "Do not use exaggerated marketing language, urgency, clickbait, or unsupported claims. "
+    "Never phrase the subject as a question that interrogates why the client left, stopped, or "
+    "stayed away, such as 'What stopped you investing with us?' or 'Why did you leave?'. Frame "
+    "the subject around what may be relevant to the client now, not around their past decision. "
     "TONE AND PURPOSE: "
     "Keep the email warm, human, professional, concise, and low pressure. "
     "The goal is to reopen a useful conversation or encourage the client to consider the relevant "
@@ -240,19 +263,32 @@ _BASE_INSTRUCTIONS = (
     "Before returning the JSON, silently verify all of the following: "
     "The output is valid JSON with exactly subject and body fields. "
     "The subject is no more than 10 words and preferably 4 to 7 words. "
+    "The subject does not interrogate why the client left or ask them to explain a past "
+    "decision. "
     "The body is between 50 and 125 words and preferably close to 75 words. "
+    "The body opens with a greeting naming the client and closes with a sign off. "
     "The body contains one clear ASK matching the selected angle. "
     "No second call to action has been added. "
     "Every client specific claim is supported by supplied facts. "
     "No unsupported number, date, amount, rate, return, count, or behavioral claim appears. "
+    "Any rate or return mentioned is stated as the exact figure supplied, never a vague "
+    "qualitative phrase. "
     "Only permitted placeholders are used. "
     "No internal targeting information has been unnecessarily exposed. "
     "No historical investigation has been manufactured. "
     "No unsupported current proposition has been introduced. "
     "There are no em dashes or hyphens. "
+    "No word from the banned word list appears, in any form. "
+    "Nothing in the email calls attention to this being a win back attempt or states that the "
+    "client is not being pressured or convinced. "
     "The email sounds natural, human, warm, concise, and appropriate for a relationship manager. "
     "If any requirement cannot be satisfied, remove the unsupported content rather than "
     "inventing it. "
+) + (
+    "BANNED WORDS: "
+    "Never use these words, or any close variant or inflection of them, anywhere in the subject "
+    "or body, even where one seems like the natural word to use: "
+    f"{', '.join(BANNED_WORDS)}. Rewrite the sentence with a different word instead. "
 )
 
 # The one-vocabulary default: every prompt_variant is a v3 angle identifier
@@ -524,3 +560,21 @@ def required_placeholders(facts: Mapping[str, Any] | None = None) -> tuple[str, 
 def has_required_placeholders(draft: str, facts: Mapping[str, Any] | None = None) -> bool:
     """True when every placeholder this draft still needs appears in it."""
     return all(token in draft for token in required_placeholders(facts))
+
+
+_COMPOUND_HYPHEN = re.compile(r"(?<=\w)-(?=\w)")
+_REMAINING_DASH = re.compile(r"\s*(?:-+|[‒–—―])\s*")
+_DUPLICATE_PUNCTUATION = re.compile(r",\s*(?=[,.;:!?])")
+_SPACE_BEFORE_PUNCTUATION = re.compile(r"\s+([,.;:!?])")
+_REPEATED_SPACE = re.compile(r"[ \t]{2,}")
+
+
+def strip_ai_dashes(text: str) -> str:
+    if not text:
+        return text
+    cleaned = _COMPOUND_HYPHEN.sub(" ", text)
+    cleaned = _REMAINING_DASH.sub(", ", cleaned)
+    cleaned = _DUPLICATE_PUNCTUATION.sub("", cleaned)
+    cleaned = _SPACE_BEFORE_PUNCTUATION.sub(r"\1", cleaned)
+    cleaned = _REPEATED_SPACE.sub(" ", cleaned)
+    return cleaned.strip(" ,")

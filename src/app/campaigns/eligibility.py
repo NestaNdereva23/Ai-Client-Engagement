@@ -51,7 +51,11 @@ class EligibilityResult:
 
 
 def check_eligibility(
-    session: Session, enrollment: Enrollment, *, cooldown_days: int | None = None
+    session: Session,
+    enrollment: Enrollment,
+    *,
+    cooldown_days: int | None = None,
+    vault_session: Session | None = None,
 ) -> EligibilityResult:
     """Evaluate every skip condition for an enrollment's next touch, in order.
 
@@ -86,7 +90,7 @@ def check_eligibility(
     if _has_unresolved_touch(session, enrollment.enrollment_id):
         return _skip(session, enrollment, reason="previous_touch_pending", terminal=False)
 
-    stop = _stop_reason(session, enrollment)
+    stop = _stop_reason(session, enrollment, vault_session=vault_session)
     if stop is not None:
         reason, terminal_status, detail = stop
         return _skip(
@@ -161,7 +165,9 @@ def _angle_held(session: Session, client_id: int) -> bool:
     return angle_is_held(session, indicators.message_angle, date.today())
 
 
-def _stop_reason(session: Session, enrollment: Enrollment) -> tuple[str, str, str | None] | None:
+def _stop_reason(
+    session: Session, enrollment: Enrollment, *, vault_session: Session | None = None
+) -> tuple[str, str, str | None] | None:
     """(reason, terminal_status, detail) for a permanent stop signal, or None."""
     suppression_reason = session.get(Suppression, enrollment.client_id)
     if suppression_reason is not None:
@@ -170,7 +176,7 @@ def _stop_reason(session: Session, enrollment: Enrollment) -> tuple[str, str, st
         )
         return "suppressed", status, suppression_reason.reason
 
-    opted_out, has_contact = _vault_signals(enrollment.client_id)
+    opted_out, has_contact = _vault_signals(enrollment.client_id, vault_session=vault_session)
     if opted_out:
         return "opted_out", "stopped_optout", None
     if not has_contact and get_settings().require_deliverable_contact:
@@ -243,21 +249,27 @@ def _has_unresolved_touch(session: Session, enrollment_id: int) -> bool:
     return message.status == "approved" and latest.sent_at is None
 
 
-def _vault_signals(client_id: int) -> tuple[bool, bool]:
-    """(opted_out, has_deliverable_contact), read once under the restricted role."""
+def _vault_signals(client_id: int, *, vault_session: Session | None = None) -> tuple[bool, bool]:
+    """(opted_out, has_deliverable_contact), read under the restricted role."""
+    if vault_session is not None:
+        return _read_vault_signals(vault_session, client_id)
     with restricted_session() as session:
-        vault = session.get(PiiVault, client_id)
-        record_audit(
-            session,
-            entity_type="pii_vault",
-            action="read",
-            entity_id=str(client_id),
-            detail={"purpose": "eligibility_gate"},
-        )
-        session.commit()
-        if vault is None:
-            return False, False
-        return vault.opt_out_flag, bool(vault.contact_email or vault.contact_whatsapp)
+        return _read_vault_signals(session, client_id)
+
+
+def _read_vault_signals(session: Session, client_id: int) -> tuple[bool, bool]:
+    vault = session.get(PiiVault, client_id)
+    record_audit(
+        session,
+        entity_type="pii_vault",
+        action="read",
+        entity_id=str(client_id),
+        detail={"purpose": "eligibility_gate"},
+    )
+    session.commit()
+    if vault is None:
+        return False, False
+    return vault.opt_out_flag, bool(vault.contact_email or vault.contact_whatsapp)
 
 
 def _within_cooldown(session: Session, client_id: int, cooldown_days: int) -> bool:

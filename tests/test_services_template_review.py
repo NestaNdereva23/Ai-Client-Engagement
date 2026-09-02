@@ -183,6 +183,56 @@ def test_list_pending_templates_filters_by_status(template) -> None:
     assert template_id not in [t.template_id for t in approved]
 
 
+def test_list_pending_templates_newest_first_paginates_in_reverse(campaign: int, run: str) -> None:
+    """order="newest_first" reverses both the row order and the cursor's walk."""
+    with SessionLocal() as session:
+        first = make_template(campaign, run)
+        session.add(first)
+        session.commit()
+        first_id = first.template_id
+
+    with SessionLocal() as session:
+        second_run = persist_generation_run(session, accepted_state(CLIENT_ID), make_settings())
+        session.commit()
+        second_run_id = second_run.run_id
+        second = make_template(campaign, second_run_id)
+        session.add(second)
+        session.commit()
+        second_id = second.template_id
+
+    try:
+        with SessionLocal() as session:
+            page_one, cursor_one = list_pending_templates(
+                session, campaign_id=campaign, order="newest_first", limit=1
+            )
+            assert [t.template_id for t in page_one] == [second_id]
+            assert cursor_one is not None
+
+            page_two, cursor_two = list_pending_templates(
+                session,
+                campaign_id=campaign,
+                order="newest_first",
+                limit=1,
+                cursor=cursor_one,
+            )
+            assert [t.template_id for t in page_two] == [first_id]
+            assert cursor_two is None
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(TemplateReviewAction).where(
+                    TemplateReviewAction.template_id.in_([first_id, second_id])
+                )
+            )
+            session.execute(
+                delete(MessageTemplate).where(
+                    MessageTemplate.template_id.in_([first_id, second_id])
+                )
+            )
+            session.execute(delete(GenerationRun).where(GenerationRun.run_id == second_run_id))
+            session.commit()
+
+
 def test_decide_approve_moves_status_to_approved(template) -> None:
     template_id, _campaign_id = template
     with SessionLocal() as session:

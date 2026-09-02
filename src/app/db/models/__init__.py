@@ -37,6 +37,7 @@ from app.db.models.generation_batch import (
     GenerationBatchItem,
 )
 from app.db.models.generation_cost import GenerationCostConfigVersion
+from app.db.models.instantiation_batch import INSTANTIATION_BATCH_STATUSES, InstantiationBatch
 from app.db.models.llmops import GenerationRun, ModelVersion, PromptVersion
 from app.db.models.message_template import (
     MESSAGE_TEMPLATE_STATUSES,
@@ -89,6 +90,7 @@ __all__ = [
     "GENERATION_BATCH_ITEM_STATUSES",
     "GENERATION_BATCH_STATUSES",
     "INGESTION_STATES",
+    "INSTANTIATION_BATCH_STATUSES",
     "INTERACTION_TYPES",
     "MESSAGE_STATUSES",
     "MESSAGE_TEMPLATE_STATUSES",
@@ -124,6 +126,7 @@ __all__ = [
     "IdempotencyKey",
     "IngestionReject",
     "IngestionStatus",
+    "InstantiationBatch",
     "MessageAngleCatalog",
     "MessageTemplate",
     "ModelVersion",

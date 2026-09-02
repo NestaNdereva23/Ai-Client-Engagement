@@ -8,7 +8,6 @@ catalogue, so all three stay in step when moved together.
 
 from __future__ import annotations
 
-import random
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -134,37 +133,7 @@ def load_tier(session: Session, tier: str, at: date) -> TierContract | None:
     return load_active_tiers(session, at).get(tier)
 
 
-def mandatory_review(tier: TierContract, *, sampling_enabled: bool) -> bool:
-    """Whether every message on this tier must be reviewed, not just some.
-
-    With sampling off, every tier is mandatory regardless of what the
-    contract stores. On, a tier's own human_approval flag decides.
-    """
-    if not sampling_enabled:
-        return True
-    return tier.human_approval
-
-
-def instance_needs_review(tier: TierContract | None, *, sampling_enabled: bool) -> bool:
-    """Whether one particular instantiated message needs a human look.
-
-    No tier row at all defaults to reviewed. Otherwise mandatory_review is
-    checked first; only once that says not every message needs review does
-    review_sample_rate get a say, as a probability, not a hard cutoff.
-    """
-    if tier is None or mandatory_review(tier, sampling_enabled=sampling_enabled):
-        return True
-    return random.random() < tier.review_sample_rate
-
-
 def cohort_sample_rate_for(tier: TierContract | None, *, sampling_enabled: bool) -> float | None:
-    """The share of one of this tier's campaign cohorts to sample, or None
-    when every message in it must be reviewed.
-
-    With sampling off, or no tier row, or the tier's own cohort_sample_rate
-    unset, every message is mandatory -- same fallback direction as
-    mandatory_review, just returning a rate instead of a bool.
-    """
     if tier is None or not sampling_enabled:
         return None
     return tier.cohort_sample_rate

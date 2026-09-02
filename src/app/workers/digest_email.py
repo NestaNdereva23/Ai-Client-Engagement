@@ -340,6 +340,10 @@ def send_digest_emails(
             )
             session.commit()
 
+    close = getattr(mailer, "close", None)
+    if close is not None:
+        close()
+
     result_summary = DigestEmailRunResult(
         digest_run_id=digest_run_id,
         advisors=len(emails),

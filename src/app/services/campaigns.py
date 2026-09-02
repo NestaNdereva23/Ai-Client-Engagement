@@ -6,10 +6,11 @@ send sequence, and running generation for whatever is due.
 from __future__ import annotations
 
 import functools
+import uuid
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import Row, func, select, tuple_
 from sqlalchemy.orm import Session
@@ -59,6 +60,7 @@ from app.db.models.campaigns import (
 )
 from app.db.models.generation_batch import GenerationBatch
 from app.db.models.generation_cost import GenerationCostConfigVersion
+from app.db.models.instantiation_batch import InstantiationBatch
 from app.db.models.message_template import MessageTemplate
 from app.db.models.models import ClientFeatures, Clients
 from app.db.models.outreach import Campaign, OutreachMessage, ReviewAction
@@ -83,6 +85,10 @@ ACTIVE_CAMPAIGN_STATUSES = ("draft", "running")
 
 class CampaignNotFound(Exception):
     """No campaign exists with the given id."""
+
+
+class InstantiationBatchNotFound(Exception):
+    pass
 
 
 class NonIncreasingStepOffset(Exception):
@@ -425,6 +431,11 @@ def send_campaign(
     running environment. Pass a different sender (the campaigns.touch stub,
     or a test fake) to override it.
 
+    The Mailer behind the default sender is closed once the whole batch is
+    sent (send.mailer, set by build_email_sender), so a large campaign
+    reuses one SMTP connection for every touch instead of reconnecting per
+    message and leaves nothing open when it's done.
+
     Flips the campaign's own status from draft to running the first time
     anything in this call actually sends -- a no-op once it already has a
     later status. Raises CampaignNotFound the same way the other
@@ -434,9 +445,14 @@ def send_campaign(
     if campaign is None:
         raise CampaignNotFound(campaign_id)
 
-    outcomes = send_due_touches_run(
-        session, campaign_id=campaign_id, sender=sender or build_email_sender()
-    )
+    send_fn = sender or build_email_sender()
+    try:
+        outcomes = send_due_touches_run(session, campaign_id=campaign_id, sender=send_fn)
+    finally:
+        close = getattr(getattr(send_fn, "mailer", None), "close", None)
+        if close is not None:
+            close()
+
     if campaign.status == "draft" and any(o.sent for o in outcomes):
         campaign.status = "running"
         session.flush()
@@ -564,6 +580,42 @@ def instantiate_campaign_template(
     if template is None or template.campaign_id != campaign_id:
         raise TemplateNotFound(template_id)
     return instantiate_template_run(session, template, campaign_id=campaign_id, limit=limit)
+
+
+def start_bulk_instantiate(
+    session: Session, campaign_id: int, *, limit: int = DEFAULT_BATCH_LIMIT
+) -> tuple[InstantiationBatch, list[str]]:
+    if session.get(Campaign, campaign_id) is None:
+        raise CampaignNotFound(campaign_id)
+
+    template_ids = list(
+        session.scalars(
+            select(MessageTemplate.template_id).where(
+                MessageTemplate.campaign_id == campaign_id,
+                MessageTemplate.status == "approved",
+            )
+        ).all()
+    )
+    batch = InstantiationBatch(
+        instantiation_batch_id=str(uuid.uuid4()),
+        campaign_id=campaign_id,
+        status="running" if template_ids else "no_approved_templates",
+        template_count=len(template_ids),
+    )
+    if not template_ids:
+        batch.completed_at = datetime.now(UTC)
+    session.add(batch)
+    session.flush()
+    return batch, template_ids
+
+
+def get_instantiation_batch(
+    session: Session, campaign_id: int, instantiation_batch_id: str
+) -> InstantiationBatch:
+    batch = session.get(InstantiationBatch, instantiation_batch_id)
+    if batch is None or batch.campaign_id != campaign_id:
+        raise InstantiationBatchNotFound(instantiation_batch_id)
+    return batch
 
 
 def estimate_campaign_templates(

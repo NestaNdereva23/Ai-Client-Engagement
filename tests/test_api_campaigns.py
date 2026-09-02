@@ -12,6 +12,7 @@ from sqlalchemy import delete, select
 from app.config import Settings
 from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
 from app.db.models.generation_cost import GenerationCostConfigVersion
+from app.db.models.instantiation_batch import InstantiationBatch
 from app.db.models.llmops import GenerationRun
 from app.db.models.message_template import MessageTemplate
 from app.db.models.models import ClientFeatures, Clients, Funds, PiiVault
@@ -489,6 +490,58 @@ def test_campaign_readiness_returns_per_status_counts(
     assert body["campaign_id"] == campaign_id
     assert body["templates"] == {"approved": 1}
     assert body["messages"] == {"pending_review": 1}
+
+
+def test_instantiate_all_returns_no_approved_templates_when_none_are_approved(
+    two_due_enrollments: int,
+) -> None:
+    response = client.post(f"{CAMPAIGNS}/{two_due_enrollments}/templates/instantiate-all")
+    assert response.status_code == 202
+    body = response.json()
+    assert body["status"] == "no_approved_templates"
+    assert body["template_count"] == 0
+    assert body["instantiated_count"] == 0
+
+    with SessionLocal() as session:
+        session.execute(
+            delete(InstantiationBatch).where(InstantiationBatch.campaign_id == two_due_enrollments)
+        )
+        session.commit()
+
+
+def test_instantiate_all_runs_every_approved_template_in_the_background(
+    campaign_with_a_template_and_a_message,
+) -> None:
+    campaign_id = campaign_with_a_template_and_a_message
+    response = client.post(f"{CAMPAIGNS}/{campaign_id}/templates/instantiate-all")
+    assert response.status_code == 202
+    body = response.json()
+    assert body["status"] == "running"
+    assert body["template_count"] == 1
+
+    status_response = client.get(
+        f"{CAMPAIGNS}/{campaign_id}/templates/instantiate-all/{body['instantiation_batch_id']}"
+    )
+    assert status_response.status_code == 200
+    assert status_response.json()["status"] == "completed"
+
+    with SessionLocal() as session:
+        session.execute(
+            delete(InstantiationBatch).where(InstantiationBatch.campaign_id == campaign_id)
+        )
+        session.commit()
+
+
+def test_instantiate_all_404s_for_an_unknown_campaign(db: None) -> None:
+    response = client.post(f"{CAMPAIGNS}/9999999/templates/instantiate-all")
+    assert response.status_code == 404
+
+
+def test_instantiate_all_status_404s_for_an_unknown_batch(two_due_enrollments: int) -> None:
+    response = client.get(
+        f"{CAMPAIGNS}/{two_due_enrollments}/templates/instantiate-all/not-a-real-id"
+    )
+    assert response.status_code == 404
 
 
 def test_campaign_readiness_404s_for_an_unknown_campaign(db: None) -> None:

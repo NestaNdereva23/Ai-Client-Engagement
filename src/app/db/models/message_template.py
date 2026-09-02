@@ -19,7 +19,14 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
-MESSAGE_TEMPLATE_STATUSES = ("pending_review", "approved", "rejected", "escalated", "held")
+MESSAGE_TEMPLATE_STATUSES = (
+    "pending_review",
+    "approved",
+    "rejected",
+    "escalated",
+    "held",
+    "guardrail_rejected",
+)
 TEMPLATE_REVIEW_OUTCOMES = ("approve", "edit_approve", "reject", "escalate", "hold")
 
 
@@ -29,7 +36,8 @@ class MessageTemplate(Base):
     __tablename__ = "message_template"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending_review', 'approved', 'rejected', 'escalated', 'held')",
+            "status IN ('pending_review', 'approved', 'rejected', 'escalated', 'held', "
+            "'guardrail_rejected')",
             name="ck_message_template_status",
         ),
     )

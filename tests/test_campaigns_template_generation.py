@@ -411,7 +411,8 @@ def test_draft_template_returns_none_and_still_persists_a_rejected_run(
         templates = session.scalars(
             select(MessageTemplate).where(MessageTemplate.generation_run_id == runs[0].run_id)
         ).all()
-        assert templates == []
+        assert len(templates) == 1
+        assert templates[0].status == "guardrail_rejected"
 
 
 # ---------------------------------------------------------------------------
@@ -772,12 +773,12 @@ def test_raising_the_limit_and_redrafting_tops_up_without_duplicating(
     assert len(rows) == 3  # no duplicates for the two buckets the first call already drafted
 
 
-def test_a_guardrail_failure_leaves_nothing_to_skip_so_it_drafts_again(
+def test_a_guardrail_failure_is_not_redrafted_on_the_next_call(
     multi_bucket_cohort: int,
 ) -> None:
-    """draft_template never persists a message_template row for a guardrail
-    failure (see draft_template), so there is nothing for the skip logic to
-    find -- the failed bucket is a plain candidate again on the next call.
+    """A guardrail failure persists a message_template row with status
+    'guardrail_rejected' (see draft_template), so the failed bucket is
+    already accounted for on the next call, not a fresh candidate.
     """
     first_llm = ScriptedLLMClient(
         [
@@ -801,7 +802,7 @@ def test_a_guardrail_failure_leaves_nothing_to_skip_so_it_drafts_again(
     assert first.failed_guardrails == 1
     assert first.skipped_existing == 0
 
-    second_llm = ScriptedLLMClient([draft_json(body="Dear {{first_name}}, this time it lands.")])
+    second_llm = ScriptedLLMClient([])
     with SessionLocal() as session:
         second = draft_templates_for_campaign(
             session,
@@ -812,9 +813,17 @@ def test_a_guardrail_failure_leaves_nothing_to_skip_so_it_drafts_again(
         )
         session.commit()
 
-    assert second.skipped_existing == 2
-    assert second.drafted_count == 1
-    assert [t.profile_key["product"] for t in second.templates] == ["high yield"]
+    assert second.skipped_existing == 3
+    assert second.drafted_count == 0
+    assert second.failed_guardrails == 0
+
+    with SessionLocal() as session:
+        rows = session.scalars(
+            select(MessageTemplate).where(MessageTemplate.campaign_id == multi_bucket_cohort)
+        ).all()
+    high_yield_rows = [r for r in rows if r.profile_key["product"] == "high yield"]
+    assert len(high_yield_rows) == 1
+    assert high_yield_rows[0].status == "guardrail_rejected"
 
 
 def test_an_unexpected_error_on_one_bucket_does_not_lose_buckets_already_drafted(

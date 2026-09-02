@@ -122,6 +122,25 @@ def test_a_still_genuinely_unknown_token_alongside_a_known_one_is_rejected() -> 
         )
 
 
+def test_parse_email_draft_strips_an_em_dash_from_the_body() -> None:
+    result = parse_email_draft(
+        draft(
+            "Come back to {{fund_name}}",
+            "Dear {{first_name}}, your decision to pause—was yours to make.",
+        )
+    )
+    assert "—" not in result.body
+    assert result.body == "Dear {{first_name}}, your decision to pause, was yours to make."
+
+
+def test_parse_email_draft_strips_a_hyphen_from_the_subject() -> None:
+    result = parse_email_draft(
+        draft("A low-pressure option at {{fund_name}}", "Dear {{first_name}}, we miss you.")
+    )
+    assert "-" not in result.subject
+    assert result.subject == "A low pressure option at {{fund_name}}"
+
+
 def test_email_draft_model_validate_raises_pydantic_validation_error_directly() -> None:
     """The lower-level model is still usable on its own, outside parse_email_draft."""
     with pytest.raises(ValidationError):

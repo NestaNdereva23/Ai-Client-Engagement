@@ -1,9 +1,4 @@
-"""The template review workflow: the queue, and reviewer decisions.
-
-Template review is mandatory and unconditional for every template, every
-tier, always -- review_sample_rate and tier_sampling_enabled only ever
-govern an instantiated outreach_message's own, separate review_action.
-"""
+"""The template review workflow: the queue, and reviewer decisions."""
 
 from __future__ import annotations
 
@@ -21,6 +16,7 @@ from app.db.models.message_template import (
     TemplateReviewAction,
 )
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_cursor, encode_cursor
+from app.schemas.review import ReviewOrder
 
 logger = structlog.get_logger(__name__)
 
@@ -74,21 +70,34 @@ def list_pending_templates(
     *,
     status: str = "pending_review",
     campaign_id: int | None = None,
+    order: ReviewOrder = "oldest_first",
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> tuple[list[MessageTemplate], str | None]:
-    """One page of templates in the given status, oldest first."""
+    """One page of templates in the given status, oldest first by default.
+
+    order="newest_first" reverses both the row order and the direction the
+    cursor walks, so paging still moves monotonically through the chosen
+    order (same scheme as list_pending_messages).
+    """
     limit = clamp_limit(limit)
     query = select(MessageTemplate).where(MessageTemplate.status == status)
     if campaign_id is not None:
         query = query.where(MessageTemplate.campaign_id == campaign_id)
-    if cursor is not None:
-        after_created_at, after_id = decode_cursor(cursor)
-        query = query.where(
-            tuple_(MessageTemplate.created_at, MessageTemplate.template_id)
-            > (after_created_at, after_id)
+    key = tuple_(MessageTemplate.created_at, MessageTemplate.template_id)
+    if order == "newest_first":
+        if cursor is not None:
+            after_created_at, after_id = decode_cursor(cursor)
+            query = query.where(key < (after_created_at, after_id))
+        query = query.order_by(
+            MessageTemplate.created_at.desc(), MessageTemplate.template_id.desc()
         )
-    query = query.order_by(MessageTemplate.created_at, MessageTemplate.template_id).limit(limit + 1)
+    else:
+        if cursor is not None:
+            after_created_at, after_id = decode_cursor(cursor)
+            query = query.where(key > (after_created_at, after_id))
+        query = query.order_by(MessageTemplate.created_at, MessageTemplate.template_id)
+    query = query.limit(limit + 1)
     rows = list(session.scalars(query).all())
 
     next_cursor = None
