@@ -8,25 +8,11 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class OutreachBucketOut(BaseModel):
-    """One count bucket, shared by every book-wide outreach-analytics breakdown."""
-
     key: str | None
     count: int
 
 
 class OutreachAnalyticsOut(BaseModel):
-    """Book-wide outreach analytics across every campaign: the enrollment
-    funnel, cohort composition, drafting/review throughput, and how contact
-    ends -- the dormant-outreach counterpart to GET /risk/analytics.
-
-    total_enrolled/primary_count/suppressed_count sum the same split
-    CampaignSummaryOut reports per campaign, across every campaign at once.
-    reengaged_count is how many primary enrollments carry
-    stopped_reengaged, the win-back funnel's actual success state;
-    reengagement_rate divides that by primary_count, since a suppressed row
-    never sends and can never reach it.
-    """
-
     total_enrolled: int
     primary_count: int
     suppressed_count: int
@@ -44,8 +30,6 @@ class OutreachAnalyticsOut(BaseModel):
 
 
 class OutreachTrendPointOut(BaseModel):
-    """One calendar day's book-wide send and response activity."""
-
     day: date
     touches_sent: int
     replies: int
@@ -53,11 +37,6 @@ class OutreachTrendPointOut(BaseModel):
 
 
 class OutreachTrendOut(BaseModel):
-    """The last N calendar days' book-wide send and response activity,
-    oldest first: the trend counterpart to the point-in-time /analytics
-    snapshot above.
-    """
-
     points: list[OutreachTrendPointOut]
 
 
@@ -71,28 +50,12 @@ class CampaignSummaryOut(BaseModel):
 
 
 class CampaignValueOut(BaseModel):
-    """What one campaign's cohort was worth, for ROI reporting.
-
-    estimated_value sums total_purchase_amount (KES) across primary
-    enrollment rows only, the same scope campaign_summary's primary_count
-    uses. valued_count is how many of those rows actually joined to a
-    Clients row, which should equal primary_count from GET
-    .../summary unless a client record is missing.
-    """
-
     campaign_id: int
     valued_count: int
     estimated_value: float
 
 
 class GenerationCostScenarioOut(BaseModel):
-    """One drafting mode's per-step and full-sequence cost, at the active rate.
-
-    count_per_step is generation calls, not clients or messages: one call
-    per client for single_generation, one call per profile bucket for
-    templates.
-    """
-
     count_per_step: int
     cost_per_step_usd: float
     cost_per_step_kes: float
@@ -101,16 +64,6 @@ class GenerationCostScenarioOut(BaseModel):
 
 
 class GenerationCostOut(BaseModel):
-    """What drafting this campaign would cost, single-generation and
-    templates side by side, at the given model's active rate.
-
-    single_generation assumes every enrolled client reaches every step;
-    templates assumes each future step's bucket count looks like the
-    current due batch's. Neither is a promise -- the same upper-bound
-    caveat GET .../value already carries for cohort value, applied here to
-    cost instead of revenue. A campaign with no steps yet prices at zero.
-    """
-
     campaign_id: int
     model: str
     config_version: int
@@ -139,19 +92,14 @@ class GenerationCostModelOut(BaseModel):
 
 
 class CampaignReadinessOut(BaseModel):
-    """Per-status counts for one campaign's templates and messages, so
-    "is this campaign fully drafted and approved" is one read instead of
-    paging GET /reviews and GET /templates across every status and
-    tallying client-side.
-
-    Keys are the status values each table's own check constraint allows
-    (pending_review, approved, rejected, escalated, held); a status with
-    no rows in it is simply absent rather than listed as zero.
-    """
+    """Per-status counts for one campaign's templates and messages, plus how much is unsent."""
 
     campaign_id: int
     templates: dict[str, int]
     messages: dict[str, int]
+    sendable_now: int
+    sent_count: int
+    next_due_at: datetime | None = None
 
 
 class CampaignListItemOut(BaseModel):
@@ -171,13 +119,6 @@ class CampaignListItemOut(BaseModel):
 
 
 class CampaignDetailOut(BaseModel):
-    """One campaign's own fields, with no enrollment counts attached.
-
-    The counts live at GET /campaigns/{campaign_id}/summary; this is the
-    plain read a page needs when it only has a campaign_id in the URL and
-    no already-fetched list row to scavenge fields from.
-    """
-
     campaign_id: int
     name: str
     campaign_type: str
@@ -189,12 +130,6 @@ class CampaignDetailOut(BaseModel):
 
 
 class EnrollmentOut(BaseModel):
-    """One row of a campaign's enrollment roster.
-
-    Distinct from a review-queue row: an enrolled client shows up here
-    whether or not a message has ever been drafted for them.
-    """
-
     enrollment_id: int
     campaign_id: int
     client_id: int

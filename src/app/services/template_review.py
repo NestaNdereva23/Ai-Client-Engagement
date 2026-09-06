@@ -56,11 +56,6 @@ class BatchDecideTemplateFailure:
 
 @dataclass(frozen=True)
 class BatchDecideTemplateResult:
-    """What one decide_template_batch call did: an action per template that
-    decided cleanly, and a reason per template that didn't. A failure never
-    rolls back the ones that succeeded.
-    """
-
     decided: list[TemplateReviewAction] = field(default_factory=list)
     failed: list[BatchDecideTemplateFailure] = field(default_factory=list)
 
@@ -74,12 +69,6 @@ def list_pending_templates(
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> tuple[list[MessageTemplate], str | None]:
-    """One page of templates in the given status, oldest first by default.
-
-    order="newest_first" reverses both the row order and the direction the
-    cursor walks, so paging still moves monotonically through the chosen
-    order (same scheme as list_pending_messages).
-    """
     limit = clamp_limit(limit)
     query = select(MessageTemplate).where(MessageTemplate.status == status)
     if campaign_id is not None:
@@ -153,13 +142,6 @@ def decide_template(
     reason: str | None = None,
     edited_content: dict | None = None,
 ) -> TemplateReviewAction:
-    """Record a reviewer's decision and move the template to the resulting status.
-
-    edit_approve overwrites ai_draft_content with the reviewer's edited
-    version -- every future instantiation reads it from there, so the diff
-    recorded here is the last time the model's own wording is visible
-    anywhere.
-    """
     if outcome not in TEMPLATE_REVIEW_OUTCOMES:
         raise InvalidOutcome(outcome)
     if outcome == "edit_approve" and not edited_content:
@@ -210,17 +192,6 @@ def decide_template_batch(
     reviewer_id: str,
     reason: str | None = None,
 ) -> BatchDecideTemplateResult:
-    """Apply decide_template() to each template in template_ids, one at a time.
-
-    Same template_review_action and audit row per template as calling POST
-    .../decide once per id -- this just saves the round trips. A template
-    that can't be decided (not found, already decided) is skipped and
-    reported in .failed rather than aborting the rest of the batch.
-
-    edit_approve is refused up front: a batch shares one outcome and
-    reason across every template, and an edit is inherently per-template,
-    so there is no sensible edited_content to apply to all of them.
-    """
     if outcome not in TEMPLATE_REVIEW_OUTCOMES:
         raise InvalidOutcome(outcome)
     if outcome == "edit_approve":

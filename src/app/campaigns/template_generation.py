@@ -39,7 +39,10 @@ from app.campaigns.generation import resolve_product
 from app.campaigns.template_policy import EffectivePolicy, effective_limit, get_effective_policy
 from app.config import Settings
 from app.db.models.campaigns import Enrollment
-from app.db.models.message_template import MessageTemplate
+from app.db.models.message_template import (
+    TEMPLATE_STATUSES_BLOCKING_REDRAFT,
+    MessageTemplate,
+)
 from app.db.models.models import ClientFund
 from app.db.models.template_generation_plan import TemplateGenerationPlan
 from app.llmops.telemetry import persist_generation_telemetry
@@ -237,13 +240,17 @@ def _profile_key_fingerprint(data: Mapping[str, object]) -> str:
 
 
 def _existing_profile_key_fingerprints(session: Session, campaign_id: int) -> set[str]:
-    """Every profile_key already carrying a non-rejected template for this
+    """Every profile_key that already has a usable template for this
     campaign. A bucket matching one of these is a top-up, not a fresh draft.
+
+    Rejected templates do not count, and neither do the ones a guardrail
+    turned down. Those buckets have no template a reviewer can approve, so
+    the next call drafts them again.
     """
     rows = session.scalars(
         select(MessageTemplate.profile_key).where(
             MessageTemplate.campaign_id == campaign_id,
-            MessageTemplate.status != "rejected",
+            MessageTemplate.status.in_(TEMPLATE_STATUSES_BLOCKING_REDRAFT),
         )
     )
     return {_profile_key_fingerprint(row) for row in rows}

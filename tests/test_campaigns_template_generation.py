@@ -613,14 +613,6 @@ def test_deterministic_order_with_no_limit_drafts_every_bucket(multi_bucket_coho
 def test_a_narrow_discovery_window_hides_buckets_a_wide_one_finds(
     multi_bucket_cohort: int,
 ) -> None:
-    """discovery_limit decides which buckets are visible at all.
-
-    Scanning only the first three due enrollments finds the one bucket they
-    share and no others, however small the rest are. That is the failure a
-    campaign covering a whole audience runs into: its rarest buckets sit
-    outside a short window, so they are never drafted and their clients are
-    never written to. The default window is wide for exactly that reason.
-    """
     llm = ScriptedLLMClient([draft_json(body="Dear {{first_name}}, come back to us.")])
 
     with SessionLocal() as session:
@@ -773,13 +765,9 @@ def test_raising_the_limit_and_redrafting_tops_up_without_duplicating(
     assert len(rows) == 3  # no duplicates for the two buckets the first call already drafted
 
 
-def test_a_guardrail_failure_is_not_redrafted_on_the_next_call(
+def test_a_guardrail_failure_is_redrafted_on_the_next_call(
     multi_bucket_cohort: int,
 ) -> None:
-    """A guardrail failure persists a message_template row with status
-    'guardrail_rejected' (see draft_template), so the failed bucket is
-    already accounted for on the next call, not a fresh candidate.
-    """
     first_llm = ScriptedLLMClient(
         [
             draft_json(body="Dear {{first_name}}, come back to us."),  # money market
@@ -802,7 +790,9 @@ def test_a_guardrail_failure_is_not_redrafted_on_the_next_call(
     assert first.failed_guardrails == 1
     assert first.skipped_existing == 0
 
-    second_llm = ScriptedLLMClient([])
+    second_llm = ScriptedLLMClient(
+        [draft_json(body="Dear {{first_name}}, come back to us.")]  # high yield, retried
+    )
     with SessionLocal() as session:
         second = draft_templates_for_campaign(
             session,
@@ -813,8 +803,8 @@ def test_a_guardrail_failure_is_not_redrafted_on_the_next_call(
         )
         session.commit()
 
-    assert second.skipped_existing == 3
-    assert second.drafted_count == 0
+    assert second.skipped_existing == 2
+    assert second.drafted_count == 1
     assert second.failed_guardrails == 0
 
     with SessionLocal() as session:
@@ -822,17 +812,15 @@ def test_a_guardrail_failure_is_not_redrafted_on_the_next_call(
             select(MessageTemplate).where(MessageTemplate.campaign_id == multi_bucket_cohort)
         ).all()
     high_yield_rows = [r for r in rows if r.profile_key["product"] == "high yield"]
-    assert len(high_yield_rows) == 1
-    assert high_yield_rows[0].status == "guardrail_rejected"
+    assert sorted(row.status for row in high_yield_rows) == [
+        "guardrail_rejected",
+        "pending_review",
+    ]
 
 
 def test_an_unexpected_error_on_one_bucket_does_not_lose_buckets_already_drafted(
     multi_bucket_cohort: int,
 ) -> None:
-    """draft_templates_for_campaign commits per bucket, so a provider error on
-    one bucket must not roll back templates already drafted for the others
-    in the same call -- the whole reason it commits per bucket rather than
-    once at the end."""
 
     class FlakyLLMClient:
         model = "stub"
@@ -883,10 +871,6 @@ def test_an_unexpected_error_on_one_bucket_does_not_lose_buckets_already_drafted
 
 
 def test_a_human_rejected_template_is_redrafted_not_skipped(multi_bucket_cohort: int) -> None:
-    """Unlike a guardrail failure, a human rejection leaves a message_template
-    row behind -- status='rejected' -- and §6.3 is explicit that only a
-    *non*-rejected row counts as "already has a template".
-    """
     llm = ScriptedLLMClient([draft_json(body="Dear {{first_name}}, come back to us.")] * 3)
     with SessionLocal() as session:
         first = draft_templates_for_campaign(

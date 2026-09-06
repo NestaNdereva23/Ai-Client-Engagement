@@ -125,17 +125,6 @@ class ModelFactBlock(BaseModel):
 
 
 class RiskFactBlock(BaseModel):
-    """The closed, band-only set of real figures a briefing narrative may cite.
-
-    Mirrors ModelFactBlock's discipline for the active-book risk briefing
-    (AM15): every field is a band already computed and reviewed elsewhere in
-    this codebase (RISK_BANDS, ROUTES, BALANCE_TIERS, RECENCY_BANDS,
-    VALUE_TIERS, FUND_DISPLAY_NAMES, the six sig_* signals) or a boolean
-    caveat -- no name, code, exact amount, or exact date. Nothing here is a
-    new statistical cutoff; see privacy/fact_block.py's construction site in
-    services/briefing.py for where each field comes from.
-    """
-
     model_config = ConfigDict(extra="forbid")
 
     risk_band: _band(RISK_BANDS) | None = None

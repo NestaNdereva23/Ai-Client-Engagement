@@ -1,5 +1,3 @@
-# Provider-abstracted client for the model API
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -64,8 +62,6 @@ class AnthropicLLMClient:
             "system": system,
             "messages": [{"role": "user", "content": user}],
         }
-        # Newer Claude models reject a non-default temperature outright, so
-        # it is only sent when explicitly configured.
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
 
@@ -132,12 +128,67 @@ class OllamaLLMClient:
             raise LLMClientError(f"model request failed: {exc}") from exc
 
         reply = response.json()
-        logger.info("ollama_response_body", model=self.model, body=reply)
         self.last_usage = LLMUsage(
             input_tokens=reply.get("prompt_eval_count", 0),
             output_tokens=reply.get("eval_count", 0),
         )
         return reply["message"]["content"]
+
+
+class LlamaCppLLMClient:
+    """Talks to a local llama.cpp server over its OpenAI-style chat endpoint."""
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        max_tokens: int,
+        temperature: float | None = None,
+        base_url: str = "http://localhost:8080",
+        timeout: float = 120.0,
+        json_output: bool = True,
+        client: httpx.Client | None = None,
+    ) -> None:
+        self.model = model
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.json_output = json_output
+        self.last_usage: LLMUsage | None = None
+        self._client = client or httpx.Client(base_url=base_url, timeout=timeout)
+
+    def generate(self, *, system: str, user: str) -> str:
+        """Send one system/user turn to the local server and return the reply text."""
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "max_tokens": self.max_tokens,
+            "stream": False,
+        }
+        if self.temperature is not None:
+            body["temperature"] = self.temperature
+        if self.json_output:
+            body["response_format"] = {"type": "json_object"}
+
+        try:
+            response = self._client.post("/v1/chat/completions", json=body)
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.warning("llm_client.request_failed", model=self.model, error=str(exc))
+            raise LLMClientError(f"model request failed: {exc}") from exc
+
+        reply = response.json()
+        usage = reply.get("usage") or {}
+        self.last_usage = LLMUsage(
+            input_tokens=usage.get("prompt_tokens", 0),
+            output_tokens=usage.get("completion_tokens", 0),
+        )
+        choices = reply.get("choices") or []
+        if not choices:
+            raise LLMClientError("model returned no choices")
+        return choices[0]["message"]["content"] or ""
 
 
 def _build_llm_client(
@@ -149,6 +200,8 @@ def _build_llm_client(
     anthropic_api_key: str,
     ollama_base_url: str,
     ollama_timeout: float,
+    llamacpp_base_url: str,
+    llamacpp_timeout: float,
     json_output: bool = True,
 ) -> LLMClient:
     if provider == "anthropic":
@@ -162,6 +215,15 @@ def _build_llm_client(
             temperature=temperature,
             base_url=ollama_base_url,
             timeout=ollama_timeout,
+            json_output=json_output,
+        )
+    if provider == "llamacpp":
+        return LlamaCppLLMClient(
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            base_url=llamacpp_base_url,
+            timeout=llamacpp_timeout,
             json_output=json_output,
         )
     raise ValueError(f"unknown LLM provider: {provider!r}")
@@ -178,6 +240,8 @@ def get_llm_client(settings: Settings | None = None) -> LLMClient:
         anthropic_api_key=settings.anthropic_api_key,
         ollama_base_url=settings.ollama_base_url,
         ollama_timeout=settings.ollama_timeout_seconds,
+        llamacpp_base_url=settings.llamacpp_base_url,
+        llamacpp_timeout=settings.llamacpp_timeout_seconds,
     )
 
 
@@ -201,6 +265,8 @@ def get_judge_llm_client(settings: Settings | None = None) -> LLMClient:
         anthropic_api_key=settings.anthropic_api_key,
         ollama_base_url=settings.ollama_base_url,
         ollama_timeout=settings.ollama_timeout_seconds,
+        llamacpp_base_url=settings.llamacpp_base_url,
+        llamacpp_timeout=settings.llamacpp_timeout_seconds,
     )
 
 
@@ -224,6 +290,8 @@ def get_briefing_llm_client(settings: Settings | None = None) -> LLMClient:
         anthropic_api_key=settings.anthropic_api_key,
         ollama_base_url=settings.ollama_base_url,
         ollama_timeout=settings.ollama_timeout_seconds,
+        llamacpp_base_url=settings.llamacpp_base_url,
+        llamacpp_timeout=settings.llamacpp_timeout_seconds,
         json_output=False,
     )
 

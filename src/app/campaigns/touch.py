@@ -33,6 +33,7 @@ from app.audit.log import record_audit
 from app.campaigns.eligibility import check_eligibility, check_stop_conditions
 from app.campaigns.scheduler import (
     DEFAULT_BATCH_LIMIT,
+    SCHEDULABLE_STATUSES,
     advance_enrollment,
     count_stale_contacts,
     select_due_enrollments,
@@ -250,27 +251,30 @@ class SendOutcome:
 
 
 def send_due_touches(
-    session: Session, *, campaign_id: int, sender: SenderFn = stub_sender
+    session: Session,
+    *,
+    campaign_id: int,
+    sender: SenderFn = stub_sender,
+    limit: int = DEFAULT_BATCH_LIMIT,
 ) -> list[SendOutcome]:
-    """Send every approved, not-yet-sent touch in this campaign.
-
-    A touch qualifies once generate_touch gave it a message and review
-    approved that message; send_touch does the real send-gate recheck and
-    enrollment advance for each one. One touch failing, blocked by a stop
-    condition that appeared since approval, does not stop the rest of the
-    batch: it is recorded as its own outcome and the loop moves on.
-    """
-    touches = session.execute(
-        select(TouchLog)
-        .join(OutreachMessage, OutreachMessage.message_id == TouchLog.message_id)
-        .join(Enrollment, Enrollment.enrollment_id == TouchLog.enrollment_id)
-        .where(
-            Enrollment.campaign_id == campaign_id,
-            TouchLog.sent_at.is_(None),
-            OutreachMessage.status == "approved",
+    """Send up to limit approved, not-yet-sent touches in this campaign."""
+    touches = (
+        session.execute(
+            select(TouchLog)
+            .join(OutreachMessage, OutreachMessage.message_id == TouchLog.message_id)
+            .join(Enrollment, Enrollment.enrollment_id == TouchLog.enrollment_id)
+            .where(
+                Enrollment.campaign_id == campaign_id,
+                Enrollment.status.in_(SCHEDULABLE_STATUSES),
+                TouchLog.sent_at.is_(None),
+                OutreachMessage.status == "approved",
+            )
+            .order_by(TouchLog.touch_id)
+            .limit(limit)
         )
-        .order_by(TouchLog.touch_id)
-    ).scalars()
+        .scalars()
+        .all()
+    )
 
     outcomes = []
     for touch in touches:
@@ -279,6 +283,18 @@ def send_due_touches(
         except SendBlocked as exc:
             outcomes.append(
                 SendOutcome(touch.touch_id, touch.enrollment_id, sent=False, reason=exc.reason)
+            )
+            session.commit()
+            continue
+        except Exception:
+            session.rollback()
+            logger.exception(
+                "send_due_touches.send_failed",
+                touch_id=touch.touch_id,
+                enrollment_id=touch.enrollment_id,
+            )
+            outcomes.append(
+                SendOutcome(touch.touch_id, touch.enrollment_id, sent=False, reason="send_error")
             )
             continue
         outcomes.append(
@@ -289,6 +305,7 @@ def send_due_touches(
                 delivery_status=touch.delivery_status,
             )
         )
+        session.commit()
     return outcomes
 
 

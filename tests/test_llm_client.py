@@ -1,8 +1,8 @@
 """The LLM client is provider-abstracted and config-driven.
 
-These prove get_llm_client() builds the client Settings asks for (Claude or
-Ollama), AnthropicLLMClient and OllamaLLMClient both talk to an injected
-transport so tests never hit the network, and as_model_call() produces
+These prove get_llm_client() builds the client Settings asks for (Claude,
+Ollama, or a local llama.cpp server), and that every client talks to an
+injected transport so tests never hit the network, and as_model_call() produces
 something run_model_boundary can call directly.
 """
 
@@ -18,6 +18,7 @@ from app.config import Settings
 from app.privacy.boundary import run_model_boundary
 from app.privacy.llm_client import (
     AnthropicLLMClient,
+    LlamaCppLLMClient,
     LLMClientError,
     OllamaLLMClient,
     as_model_call,
@@ -87,13 +88,12 @@ def make_settings(**overrides) -> Settings:
         "judge_llm_model": "",
         "judge_llm_temperature": None,
         "judge_llm_max_tokens": 512,
-        # Pinned, not left to the schema default: a local .env that sets any
-        # BRIEFING_LLM_* value would otherwise leak into these assertions.
         "briefing_llm_provider": "",
         "briefing_llm_model": "",
         "briefing_llm_temperature": None,
         "briefing_llm_max_tokens": 1024,
         "ollama_timeout_seconds": 120.0,
+        "llamacpp_timeout_seconds": 120.0,
     }
     defaults.update(overrides)
     return Settings(**defaults)
@@ -410,6 +410,153 @@ def test_ollama_generate_wraps_a_non_2xx_response() -> None:
 
     client = _ollama_client(handler)
     with pytest.raises(LLMClientError):
+        client.generate(system="s", user="u")
+
+
+def _llamacpp_client(handler, **overrides) -> LlamaCppLLMClient:
+    transport = httpx.MockTransport(handler)
+    defaults = {
+        "model": "local-model",
+        "max_tokens": 256,
+        "client": httpx.Client(transport=transport, base_url="http://localhost:8080"),
+    }
+    defaults.update(overrides)
+    return LlamaCppLLMClient(**defaults)
+
+
+def _llamacpp_reply(text: str, **extra) -> dict:
+    reply = {"choices": [{"message": {"content": text}}]}
+    reply.update(extra)
+    return reply
+
+
+def test_get_llm_client_builds_llamacpp_from_settings() -> None:
+    settings = make_settings(
+        llm_provider="llamacpp",
+        llm_model="local-model",
+        llm_max_tokens=256,
+        llamacpp_base_url="http://localhost:9090",
+        llamacpp_timeout_seconds=600.0,
+    )
+    client = get_llm_client(settings)
+
+    assert isinstance(client, LlamaCppLLMClient)
+    assert client.model == "local-model"
+    assert client.max_tokens == 256
+    assert str(client._client.base_url) == "http://localhost:9090"
+    assert client._client.timeout.read == 600.0
+
+
+def test_get_judge_llm_client_builds_llamacpp_from_settings() -> None:
+    settings = make_settings(llm_provider="llamacpp", llm_model="local-model")
+    assert isinstance(get_judge_llm_client(settings), LlamaCppLLMClient)
+
+
+def test_get_briefing_llm_client_builds_llamacpp_without_json_mode() -> None:
+    settings = make_settings(llm_provider="llamacpp", llm_model="local-model")
+    client = get_briefing_llm_client(settings)
+
+    assert isinstance(client, LlamaCppLLMClient)
+    assert client.json_output is False
+
+
+def test_llamacpp_generate_posts_the_configured_model_and_messages() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_llamacpp_reply("Dear {{first_name}}"))
+
+    client = _llamacpp_client(handler)
+    text = client.generate(system="be brief", user="recency_band: Over 6y")
+
+    assert text == "Dear {{first_name}}"
+    assert seen["url"] == "http://localhost:8080/v1/chat/completions"
+    assert seen["body"]["model"] == "local-model"
+    assert seen["body"]["max_tokens"] == 256
+    assert seen["body"]["stream"] is False
+    assert seen["body"]["messages"] == [
+        {"role": "system", "content": "be brief"},
+        {"role": "user", "content": "recency_band: Over 6y"},
+    ]
+
+
+def test_llamacpp_generate_asks_for_json_by_default_and_can_turn_it_off() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_llamacpp_reply("{}"))
+
+    _llamacpp_client(handler).generate(system="s", user="u")
+    assert seen["body"]["response_format"] == {"type": "json_object"}
+
+    _llamacpp_client(handler, json_output=False).generate(system="s", user="u")
+    assert "response_format" not in seen["body"]
+
+
+def test_llamacpp_generate_passes_temperature_only_when_configured() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_llamacpp_reply("ok"))
+
+    _llamacpp_client(handler, temperature=0.3).generate(system="s", user="u")
+    assert seen["body"]["temperature"] == 0.3
+
+    _llamacpp_client(handler).generate(system="s", user="u")
+    assert "temperature" not in seen["body"]
+
+
+def test_llamacpp_generate_sets_last_usage_from_the_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        usage = {"prompt_tokens": 31, "completion_tokens": 12}
+        return httpx.Response(200, json=_llamacpp_reply("ok", usage=usage))
+
+    client = _llamacpp_client(handler)
+    client.generate(system="s", user="u")
+
+    assert client.last_usage.input_tokens == 31
+    assert client.last_usage.output_tokens == 12
+
+
+def test_llamacpp_generate_defaults_usage_when_the_response_omits_it() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_llamacpp_reply("ok"))
+
+    client = _llamacpp_client(handler)
+    client.generate(system="s", user="u")
+
+    assert client.last_usage.input_tokens == 0
+    assert client.last_usage.output_tokens == 0
+
+
+def test_llamacpp_generate_wraps_transport_errors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("server is down")
+
+    client = _llamacpp_client(handler)
+    with pytest.raises(LLMClientError, match="model request failed"):
+        client.generate(system="s", user="u")
+
+
+def test_llamacpp_generate_wraps_a_non_2xx_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    client = _llamacpp_client(handler)
+    with pytest.raises(LLMClientError, match="model request failed"):
+        client.generate(system="s", user="u")
+
+
+def test_llamacpp_generate_fails_when_the_response_has_no_choices() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": []})
+
+    client = _llamacpp_client(handler)
+    with pytest.raises(LLMClientError, match="no choices"):
         client.generate(system="s", user="u")
 
 

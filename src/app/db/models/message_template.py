@@ -29,6 +29,13 @@ MESSAGE_TEMPLATE_STATUSES = (
 )
 TEMPLATE_REVIEW_OUTCOMES = ("approve", "edit_approve", "reject", "escalate", "hold")
 
+TEMPLATE_STATUSES_BLOCKING_REDRAFT = (
+    "pending_review",
+    "approved",
+    "escalated",
+    "held",
+)
+
 
 class MessageTemplate(Base):
     """One bucket's drafted template: the shared profile plus the placeholder draft."""

@@ -36,7 +36,7 @@ from app.campaigns.instantiation import instantiate_template as instantiate_temp
 from app.campaigns.preview import BatchCohortPreview, CohortPreview
 from app.campaigns.preview import preview_cohort as preview_cohort_run
 from app.campaigns.preview import preview_cohort_batch as preview_cohort_batch_run
-from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT
+from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT, SCHEDULABLE_STATUSES
 from app.campaigns.template_generation import TemplateDraftOutcome, draft_templates_for_campaign
 from app.campaigns.template_policy import (
     EffectivePolicy,
@@ -204,11 +204,8 @@ def campaign_value(session: Session, campaign_id: int) -> dict[str, float | int]
     }
 
 
-def campaign_readiness(session: Session, campaign_id: int) -> dict[str, dict[str, int]]:
-    """Per-status counts for one campaign's templates and messages.
-
-    Answers "is this campaign fully drafted and approved" in one read.
-    """
+def campaign_readiness(session: Session, campaign_id: int) -> dict[str, object]:
+    """Per-status counts for one campaign's templates and messages, plus how much is unsent."""
     if session.get(Campaign, campaign_id) is None:
         raise CampaignNotFound(campaign_id)
 
@@ -223,9 +220,37 @@ def campaign_readiness(session: Session, campaign_id: int) -> dict[str, dict[str
         .group_by(OutreachMessage.status)
     ).all()
 
+    sendable_now = session.scalar(
+        select(func.count(TouchLog.touch_id))
+        .join(OutreachMessage, OutreachMessage.message_id == TouchLog.message_id)
+        .join(Enrollment, Enrollment.enrollment_id == TouchLog.enrollment_id)
+        .where(
+            Enrollment.campaign_id == campaign_id,
+            Enrollment.status.in_(SCHEDULABLE_STATUSES),
+            TouchLog.sent_at.is_(None),
+            OutreachMessage.status == "approved",
+        )
+    )
+    sent_count = session.scalar(
+        select(func.count(TouchLog.touch_id))
+        .join(Enrollment, Enrollment.enrollment_id == TouchLog.enrollment_id)
+        .where(Enrollment.campaign_id == campaign_id, TouchLog.sent_at.isnot(None))
+    )
+    next_due_at = session.scalar(
+        select(func.min(Enrollment.next_due_at)).where(
+            Enrollment.campaign_id == campaign_id,
+            Enrollment.status.in_(SCHEDULABLE_STATUSES),
+            Enrollment.next_due_at.isnot(None),
+            Enrollment.next_due_at > func.now(),
+        )
+    )
+
     return {
         "templates": {status: count for status, count in template_rows},
         "messages": {status: count for status, count in message_rows},
+        "sendable_now": sendable_now or 0,
+        "sent_count": sent_count or 0,
+        "next_due_at": next_due_at,
     }
 
 
@@ -422,32 +447,21 @@ def run_campaign_generation(
 
 
 def send_campaign(
-    session: Session, campaign_id: int, *, sender: SenderFn | None = None
+    session: Session,
+    campaign_id: int,
+    *,
+    sender: SenderFn | None = None,
+    limit: int = DEFAULT_BATCH_LIMIT,
 ) -> list[SendOutcome]:
-    """Send every approved, not-yet-sent touch in this campaign right now.
-
-    sender defaults to build_email_sender(): the real mail path, through
-    whatever Mailer app.delivery.mailer.get_mailer() resolves to for the
-    running environment. Pass a different sender (the campaigns.touch stub,
-    or a test fake) to override it.
-
-    The Mailer behind the default sender is closed once the whole batch is
-    sent (send.mailer, set by build_email_sender), so a large campaign
-    reuses one SMTP connection for every touch instead of reconnecting per
-    message and leaves nothing open when it's done.
-
-    Flips the campaign's own status from draft to running the first time
-    anything in this call actually sends -- a no-op once it already has a
-    later status. Raises CampaignNotFound the same way the other
-    campaign-scoped calls do.
-    """
     campaign = session.get(Campaign, campaign_id)
     if campaign is None:
         raise CampaignNotFound(campaign_id)
 
     send_fn = sender or build_email_sender()
     try:
-        outcomes = send_due_touches_run(session, campaign_id=campaign_id, sender=send_fn)
+        outcomes = send_due_touches_run(
+            session, campaign_id=campaign_id, sender=send_fn, limit=limit
+        )
     finally:
         close = getattr(getattr(send_fn, "mailer", None), "close", None)
         if close is not None:

@@ -1,10 +1,4 @@
-"""Turn one client-fund's fired signals into one human-readable magnitude line.
-
-Picks the single fired signal that weighs heaviest in this client's own
-risk_config_version -- the signal that actually drove the score, not just
-declaration order -- and renders one short phrase for how bad it is. Ties
-break by SIGNAL_ORDER, the same order risk_reasons is joined in.
-"""
+"""Turn one client-fund's fired signals into one human-readable magnitude line."""
 
 from __future__ import annotations
 
@@ -31,13 +25,6 @@ def _withdrawal_pct(largest_withdrawal: float | None, balance: float | None) -> 
 
 
 def pick_primary_signal(signals: dict[str, bool], weights: dict[str, float]) -> str | None:
-    """The fired signal with the largest weight in `weights`, or None when
-    nothing fired. A tie goes to whichever comes first in SIGNAL_ORDER.
-
-    Public because both the per-client magnitude phrase below and any
-    book-wide "which signal drives most clients" breakdown need the exact
-    same pick.
-    """
     fired = [name for name in SIGNAL_ORDER if signals.get(name)]
     if not fired:
         return None
@@ -83,12 +70,6 @@ def primary_signal_magnitude(
     months_until_empty: float | None,
     reference_date: date | None = None,
 ) -> str | None:
-    """One line: the label and magnitude of whichever fired signal carries
-    the largest weight in this client's own risk_config_version -- the
-    signal that actually drove the score, not just the first one listed.
-    None when nothing fired, the same "no signal" case risk_reasons
-    already carries.
-    """
     name = pick_primary_signal(signals, weights)
     if name is None:
         return None
