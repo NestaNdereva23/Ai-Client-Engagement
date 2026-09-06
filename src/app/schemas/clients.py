@@ -6,14 +6,11 @@ from datetime import date, datetime
 
 from pydantic import BaseModel
 
+from app.pagination import Page
+from app.schemas.rules import AngleStatusOut
+
 
 class ClientSummaryOut(BaseModel):
-    """One client's buckets: no name, no code, no raw figures.
-
-    call_brief is the one exception, only ever populated on the
-    single-client detail read, never the list.
-    """
-
     client_id: int
     unit_fund_id: int
     recency_band: str | None
@@ -27,13 +24,6 @@ class ClientSummaryOut(BaseModel):
 
 
 class ClientIdentityOut(BaseModel):
-    """Identity and product, straight off clients/client_features/funds.
-
-    client_id and client_code are pseudonymous re-attachment keys and stay
-    restricted from the model boundary; showing them here widens what this
-    console displays, not what any prompt may cite.
-    """
-
     client_id: int
     client_code: str | None
     unit_fund_id: int
@@ -57,13 +47,6 @@ class ClientBandsOut(BaseModel):
 
 
 class ClientFlagsOut(BaseModel):
-    """Boolean facts about this client's history.
-
-    history_censored belongs next to any count in this profile: 83.7 percent
-    of relationships have a capped purchase history, and a count shown
-    without this flag reads as a complete one.
-    """
-
     in_wave: bool | None
     newly_dormant: bool | None
     has_depth: bool | None
@@ -74,10 +57,6 @@ class ClientFlagsOut(BaseModel):
 
 
 class ClientActivityOut(BaseModel):
-    """What this client did, in KES -- see ClientFlagsOut.history_censored
-    before reading n_purchases_returned or observed_volume as a complete count.
-    """
-
     last_activity_date: date | None
     days_since_last_activity: int | None
     observed_volume: int | None
@@ -87,8 +66,6 @@ class ClientActivityOut(BaseModel):
 
 
 class ClientRoutingOut(BaseModel):
-    """The angle and tier this client resolved to, and the rule that produced it."""
-
     message_angle: str | None
     priority_tier: str | None
     urgency: str | None
@@ -98,8 +75,6 @@ class ClientRoutingOut(BaseModel):
 
 
 class ClientEnrollmentOut(BaseModel):
-    """One campaign this client is or was enrolled in."""
-
     enrollment_id: int
     campaign_id: int
     status: str
@@ -122,11 +97,6 @@ class ClientTouchOut(BaseModel):
 
 
 class ClientOutreachMessageOut(BaseModel):
-    """One outreach_message's status history. Never the drafted or
-    personalized content -- personalized_content carries the re-attached
-    name, which this profile does not expose (see the router docstring).
-    """
-
     message_id: str
     campaign_id: int
     template_id: str | None
@@ -137,8 +107,6 @@ class ClientOutreachMessageOut(BaseModel):
 
 
 class ClientContactEventOut(BaseModel):
-    """One inbound signal: a reply, open, bounce, complaint, or opt-out."""
-
     id: int
     type: str
     occurred_at: datetime
@@ -146,8 +114,6 @@ class ClientContactEventOut(BaseModel):
 
 
 class ClientSuppressionOut(BaseModel):
-    """Whether this client is suppressed, and why, if so."""
-
     is_suppressed: bool
     reason: str | None
     source: str | None
@@ -155,11 +121,6 @@ class ClientSuppressionOut(BaseModel):
 
 
 class ClientProfileOut(BaseModel):
-    """The fuller, non-PII client profile: identity, bands, flags, activity,
-    routing, and every campaign/engagement record. No name -- that is
-    ClientNameOut, a separate, gated endpoint (see the router docstring).
-    """
-
     identity: ClientIdentityOut
     bands: ClientBandsOut
     flags: ClientFlagsOut
@@ -174,10 +135,6 @@ class ClientProfileOut(BaseModel):
 
 
 class ClientNameOut(BaseModel):
-    """The one PII field this console withholds everywhere else. Gated
-    behind the reviewer key and audited on every read (see the router).
-    """
-
     client_id: int
     client_name: str | None
 
@@ -210,15 +167,11 @@ class SegmentDistributionOut(BaseModel):
 
 
 class ClientBookSummaryOut(BaseModel):
-    """Book-wide client and fund counts."""
-
     total_clients: int
     fund_count: int
 
 
 class EnrollmentSummaryOut(BaseModel):
-    """Distinct clients currently enrolled vs. excluded, book-wide."""
-
     enrolled_count: int
     excluded_count: int
 
@@ -229,7 +182,22 @@ class SuppressionReasonCountOut(BaseModel):
 
 
 class SuppressionSummaryOut(BaseModel):
-    """Book-wide suppression count, with a reason breakdown."""
-
     suppressed_count: int
     by_reason: list[SuppressionReasonCountOut]
+
+
+class ReengagementSummaryOut(BaseModel):
+    primary_count: int
+    reengaged_count: int
+    reengagement_rate: float
+
+
+class ClientsOverviewOut(BaseModel):
+    book: ClientBookSummaryOut
+    segments: SegmentDistributionOut
+    enrollment: EnrollmentSummaryOut
+    suppression: SuppressionSummaryOut
+    reengagement: ReengagementSummaryOut
+    angles: list[AngleStatusOut]
+    records_rejected: int | None
+    roster: Page[ClientSummaryOut]

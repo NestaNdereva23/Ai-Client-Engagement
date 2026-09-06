@@ -1080,6 +1080,22 @@ def test_send_sends_the_approved_touch_and_flips_the_campaign_to_running(
     assert detail.json()["status"] == "running"
 
 
+def test_readiness_reflects_a_send_the_messages_status_count_cannot(
+    campaign_with_an_approved_touch: int, unconfigured_mailer: NullMailer
+) -> None:
+    before = client.get(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/readiness").json()
+    assert before["messages"]["approved"] == 1
+    assert before["sendable_now"] == 1
+    assert before["sent_count"] == 0
+
+    client.post(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/send")
+
+    after = client.get(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/readiness").json()
+    assert after["messages"]["approved"] == 1
+    assert after["sendable_now"] == 0
+    assert after["sent_count"] == 1
+
+
 def test_send_is_a_no_op_the_second_time(
     campaign_with_an_approved_touch: int, unconfigured_mailer: NullMailer
 ) -> None:

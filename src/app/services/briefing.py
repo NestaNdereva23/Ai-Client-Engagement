@@ -1,22 +1,3 @@
-"""Assemble and audit one client-fund's on-demand briefing.
-
-Gathers the fact block render_briefing needs from client_risk_features and
-active_client_fund, attaches the client's name last, and audits both the
-name read and the briefing view itself, matching Section 19 of the
-implementation plan.
-
-get_briefing itself never calls a model. It will serve a narration that was
-already drafted and stored for this client, when one matching today's facts
-exists, but it never waits on one being drafted: with nothing stored it
-returns the deterministic text, same as it always did.
-
-get_narrative_briefing (AM15) reuses the exact same gathered facts to also
-offer an optional model-narrated version, generated through
-briefing.narrative's own crossing of the model boundary, with get_briefing's
-own deterministic text as its fallback. What it accepts is stored, so the
-next look at the same client costs nothing.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -146,10 +127,6 @@ def _fund_name(session: Session, unit_fund_id: int) -> str:
 
 
 def _months_until_empty_threshold(session: Session, config_version: int) -> float:
-    """The MONTHS_UNTIL_EMPTY threshold the config version that scored this
-    client used, so the briefing's fee caveat is judged against the same
-    number the score itself was computed with.
-    """
     thresholds = session.scalar(
         select(RiskConfigVersion.thresholds).where(RiskConfigVersion.version == config_version)
     )
@@ -157,9 +134,6 @@ def _months_until_empty_threshold(session: Session, config_version: int) -> floa
 
 
 def _client_name(client_id: int) -> str | None:
-    """The client's real name, read once under the restricted role and
-    audited -- the same pattern eligibility.py::_vault_signals uses.
-    """
     with restricted_session() as restricted:
         name = restricted.scalar(
             select(PiiVault.client_name).where(PiiVault.client_id == client_id)
@@ -178,15 +152,6 @@ def _client_name(client_id: int) -> str | None:
 def gather_briefing_facts(
     session: Session, client_id: int, unit_fund_id: int, reference_date: date
 ) -> BriefingFacts | None:
-    """Everything render_briefing (and, for AM15, RiskFactBlock) need for
-    one client-fund relationship, or None when there is not enough data to
-    render anything.
-
-    The one place both get_briefing and get_narrative_briefing gather their
-    facts, so the deterministic text and the narrative's own grounding can
-    never disagree about what is true for this client -- they are always
-    built from the exact same BriefingFacts instance.
-    """
     risk = session.get(ClientRiskFeatures, (client_id, unit_fund_id))
     active = session.get(ActiveClientFund, (client_id, unit_fund_id))
     if risk is None or active is None:
@@ -225,10 +190,6 @@ def gather_briefing_facts(
 
 
 def _basis(facts: BriefingFacts) -> list[str]:
-    """The same fired signals the "WHY THIS CLIENT SURFACED" section of a
-    rendered briefing lists, in the same order -- the discrete facts AM11
-    actually weighed, not a paraphrase of them.
-    """
     return [SIGNAL_LABELS[sig] for sig in SIGNAL_ORDER if facts.signals.get(sig)]
 
 
@@ -240,16 +201,6 @@ def get_briefing(
     viewing_fa_id: str,
     reference_date: date | None = None,
 ) -> BriefingView:
-    """Render one client-fund's briefing and audit the view.
-
-    Raises BriefingNotFound when either the score or the behavioural row is
-    missing -- there is not enough to render a page that means anything.
-
-    Serves a narration instead of the deterministic text when one was
-    already drafted for this client and still matches today's facts, which
-    for the clients the digest surfaces is the normal case. Never drafts
-    one: this read stays instant, and mode says which text came back.
-    """
     ref = reference_date if reference_date is not None else date.today()
     facts = gather_briefing_facts(session, client_id, unit_fund_id, ref)
     if facts is None:
@@ -285,12 +236,6 @@ def get_briefing(
 
 
 def _deposit_trend_band(deposit_trend: float | None) -> str:
-    """rising/flat/falling/unknown: the same three-way split render_briefing
-    already makes inline with TREND_EPS, in prose, just given a name so it
-    can be a RiskFactBlock field instead. Mirrors transform/features.py's
-    own _trend_band, which bands the dormant book's ticket_trend the same
-    way against the same constant.
-    """
     if deposit_trend is None:
         return "unknown"
     if abs(deposit_trend) < TREND_EPS:
@@ -299,25 +244,6 @@ def _deposit_trend_band(deposit_trend: float | None) -> str:
 
 
 def to_risk_fact_block(facts: BriefingFacts) -> RiskFactBlock:
-    """The band-only projection of facts a briefing narrative may see.
-
-    Every field here is already a closed band or a boolean somewhere on
-    facts; deposit_trend_band is the one new band, and it is a rename of a
-    comparison render_briefing already makes (see _deposit_trend_band).
-    render_briefing's "balance covers only N months of fees" caveat is the
-    same comparison sig_going_dormant already made at scoring time (both
-    read months_until_empty against the same config version's own
-    MONTHS_UNTIL_EMPTY), so that signal alone covers it here -- no separate
-    fee-runway flag. balance_tier falls back to "Unknown" for display in
-    facts itself (render_briefing always wants text to print); that
-    sentinel is not a real band member, so it maps to no fact here rather
-    than failing RiskFactBlock's closed vocabulary. fund_name classifies
-    facts.fund_name (the free-text name render_briefing prints) through
-    transform.features's own money-market/high-yield name classifier --
-    the same rule Phase 1 already uses to bucket a fund by name, reused
-    rather than re-derived -- then maps the result to the same reviewed
-    display name ModelFactBlock uses.
-    """
     return RiskFactBlock(
         risk_band=facts.risk_band,
         route=facts.route,

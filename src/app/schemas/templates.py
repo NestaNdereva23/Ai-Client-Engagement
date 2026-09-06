@@ -180,18 +180,6 @@ class TemplatePolicyOut(BaseModel):
 
 
 class DraftTemplatesResult(BaseModel):
-    """What one drafting call produced, and the plan behind it.
-
-    Three numbers, never conflated: estimated_templates (this call's due
-    cohort, before any skip or limit), effective_limit (the cap the policy
-    in force resolved to, or null for no limit), and drafted_count (what
-    actually landed). skipped_existing counts buckets a previous call
-    already templated; failed_guardrails counts ones this call attempted
-    but every guardrail retry rejected; failed_errors counts ones an
-    unexpected error interrupted before a guardrail verdict was ever
-    reached, and which are picked up again the next call.
-    """
-
     estimated_templates: int
     effective_limit: int | None
     drafted_count: int

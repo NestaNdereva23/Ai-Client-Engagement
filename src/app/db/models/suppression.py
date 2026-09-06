@@ -1,12 +1,4 @@
-"""The compliance suppression list: client_ids who must never be contacted.
-
-Fed by /integration/suppressions today; the eligibility gate (M9, design
-§10A) will consult it before every touch once that gate exists. One row per
-client (client_id is the primary key, not an append-only log), the latest
-sync wins. client_id carries no foreign key to clients, the same as
-pii_vault, since a suppression can arrive for a client our own ingestion has
-not seen yet.
-"""
+"""The compliance suppression list: client_ids who must never be contacted."""
 
 from __future__ import annotations
 

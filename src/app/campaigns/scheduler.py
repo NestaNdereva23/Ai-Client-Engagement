@@ -24,7 +24,7 @@ DEFAULT_BATCH_LIMIT = 500
 MAX_BATCH_LIMIT = 20000
 INSTANTIATE_DEFAULT_LIMIT = 20000
 
-_SCHEDULABLE_STATUSES = ("enrolled", "in_progress")
+SCHEDULABLE_STATUSES = ("enrolled", "in_progress")
 
 
 def select_due_enrollments(
@@ -41,7 +41,7 @@ def select_due_enrollments(
             & (TouchLog.step_no == next_step_no),
         )
         .where(
-            Enrollment.status.in_(_SCHEDULABLE_STATUSES),
+            Enrollment.status.in_(SCHEDULABLE_STATUSES),
             Enrollment.is_primary_contact_row.is_(True),
             (Enrollment.next_due_at.is_(None)) | (Enrollment.next_due_at <= func.now()),
             TouchLog.touch_id.is_(None),

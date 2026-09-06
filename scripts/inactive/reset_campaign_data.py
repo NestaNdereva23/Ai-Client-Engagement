@@ -1,31 +1,3 @@
-"""Wipe campaign/enrollment/outreach data so campaign setups can be re-tested
-without re-running ingestion, transform, or indicator resolution.
-
-Leaves untouched: raw_staging, clients, client_fund, transactions,
-client_features, client_message_indicators, business_rules,
-message_angle_catalog, tier_contract, and the versioned model/prompt/rubric
-registries (model_versions, prompt_versions, rubric_versions) -- none of that
-is campaign-specific, all of it is expensive to rebuild, and none of it needs
-to change between campaign test runs.
-
-Clears: campaign, campaign_step, enrollment, touch_log, outreach_message,
-review_action, message_template, message_template_review_action,
-generation_batch, generation_batch_item, template_generation_plan,
-campaign_template_policy, and the LLM generation history a campaign run
-creates (generation_runs, llm_requests, llm_responses, token_usage,
-tool_calls, trace_refs, evaluations). contact_events is left alone; it is
-keyed by client_id, not campaign, and isn't cleared by this script.
-
-Dry run (default): prints how many rows in each table would be deleted.
-    uv run python scripts/inactive/reset_campaign_data.py
-
-Actually delete everything:
-    uv run python scripts/inactive/reset_campaign_data.py --yes
-
-Only one campaign, leaving others alone:
-    uv run python scripts/inactive/reset_campaign_data.py --campaign-id 3 --yes
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -41,6 +13,7 @@ from sqlalchemy.orm import Session  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog  # noqa: E402
 from app.db.models.generation_batch import GenerationBatch, GenerationBatchItem  # noqa: E402
+from app.db.models.instantiation_batch import InstantiationBatch  # noqa: E402
 from app.db.models.llmops import (  # noqa: E402
     Evaluation,
     GenerationRun,
@@ -142,6 +115,11 @@ def _build_steps(campaign_ids: list[int] | None, run_ids: list[str] | None):
         ),
         ("enrollment", Enrollment, _in_or_all(Enrollment.campaign_id, campaign_ids)),
         ("campaign_step", CampaignStep, _in_or_all(CampaignStep.campaign_id, campaign_ids)),
+        (
+            "instantiation_batch",
+            InstantiationBatch,
+            _in_or_all(InstantiationBatch.campaign_id, campaign_ids),
+        ),
         ("campaign", Campaign, _in_or_all(Campaign.campaign_id, campaign_ids)),
     ]
 

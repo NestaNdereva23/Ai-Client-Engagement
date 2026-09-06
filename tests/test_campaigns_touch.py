@@ -1,16 +1,3 @@
-"""Recording a touch, generating it through review, sending it, and
-reconciling touch_log against enrollment state.
-
-record_touch and generate_touch cover the idempotent-insert-before-send
-guarantee directly: a repeated call finds the same row and, once a
-message exists, never calls generate again. run_due_enrollments covers
-the gate-then-generate batch path ending at pending_review, never
-auto-advancing the enrollment. send_touch covers the happy path (advance,
-audit) and the send-time recheck actually blocking a delivery.
-reconcile_enrollment covers catching current_step up after a simulated
-crash between send and advance.
-"""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -21,10 +8,12 @@ from sqlalchemy import delete, select
 
 from app.campaigns.touch import (
     SendBlocked,
+    SendResult,
     generate_touch,
     reconcile_enrollment,
     record_touch,
     run_due_enrollments,
+    send_due_touches,
     send_touch,
 )
 from app.config import Settings
@@ -37,6 +26,7 @@ from app.db.models.rules import ClientMessageIndicators
 from app.db.models.suppression import Suppression
 from app.db.session import SessionLocal
 from app.llmops.versions import persist_generation_run
+from app.services.campaigns import campaign_readiness
 
 _FUND_ID = 997
 
@@ -712,3 +702,127 @@ def test_reconcile_enrollment_is_a_no_op_when_already_consistent(
         row = session.get(Enrollment, enrollment_id)
         assert row.current_step == 0
         assert row.next_due_at == before
+
+
+def test_send_due_touches_survives_one_bad_send_and_never_resends_what_already_went_out(
+    campaign_with_steps: int, client_row: int, second_client_row: int
+) -> None:
+    with SessionLocal() as session:
+        good_enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=client_row
+        )
+        bad_enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=second_client_row
+        )
+        good_message = _make_message(
+            session, campaign_id=campaign_with_steps, client_id=client_row, status="approved"
+        )
+        bad_message = _make_message(
+            session,
+            campaign_id=campaign_with_steps,
+            client_id=second_client_row,
+            status="approved",
+        )
+        good_touch = record_touch(session, good_enrollment, 1)
+        good_touch.message_id = good_message.message_id
+        bad_touch = record_touch(session, bad_enrollment, 1)
+        bad_touch.message_id = bad_message.message_id
+        session.commit()
+
+        def flaky_sender(message: OutreachMessage) -> SendResult:
+            if message.client_id == second_client_row:
+                raise RuntimeError("simulated SMTP rejection")
+            return SendResult(delivery_status="sent", sent_at=datetime.now(UTC))
+
+        outcomes = send_due_touches(session, campaign_id=campaign_with_steps, sender=flaky_sender)
+        good_touch_id = good_touch.touch_id
+        bad_touch_id = bad_touch.touch_id
+
+    by_touch = {o.touch_id: o for o in outcomes}
+    assert by_touch[good_touch_id].sent is True
+    assert by_touch[bad_touch_id].sent is False
+    assert by_touch[bad_touch_id].reason == "send_error"
+
+    with SessionLocal() as session:
+        assert session.get(TouchLog, good_touch_id).sent_at is not None
+        assert session.get(TouchLog, bad_touch_id).sent_at is None
+
+        def fixed_sender(message: OutreachMessage) -> SendResult:
+            return SendResult(delivery_status="sent", sent_at=datetime.now(UTC))
+
+        retried = send_due_touches(session, campaign_id=campaign_with_steps, sender=fixed_sender)
+
+    assert [o.touch_id for o in retried] == [bad_touch_id]
+    assert retried[0].sent is True
+
+
+def test_send_due_touches_limit_sends_a_slice_and_leaves_the_rest_for_next_call(
+    campaign_with_steps: int, client_row: int, second_client_row: int
+) -> None:
+    with SessionLocal() as session:
+        first_enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=client_row
+        )
+        second_enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=second_client_row
+        )
+        first_message = _make_message(
+            session, campaign_id=campaign_with_steps, client_id=client_row, status="approved"
+        )
+        second_message = _make_message(
+            session,
+            campaign_id=campaign_with_steps,
+            client_id=second_client_row,
+            status="approved",
+        )
+        first_touch = record_touch(session, first_enrollment, 1)
+        first_touch.message_id = first_message.message_id
+        second_touch = record_touch(session, second_enrollment, 1)
+        second_touch.message_id = second_message.message_id
+        session.commit()
+
+        first_slice = send_due_touches(session, campaign_id=campaign_with_steps, limit=1)
+        assert len(first_slice) == 1
+        assert first_slice[0].sent is True
+        first_sent_touch_id = first_slice[0].touch_id
+
+        second_slice = send_due_touches(session, campaign_id=campaign_with_steps, limit=1)
+        assert len(second_slice) == 1
+        assert second_slice[0].sent is True
+        second_sent_touch_id = second_slice[0].touch_id
+
+    assert {first_sent_touch_id, second_sent_touch_id} == {
+        first_touch.touch_id,
+        second_touch.touch_id,
+    }
+
+    with SessionLocal() as session:
+        empty_slice = send_due_touches(session, campaign_id=campaign_with_steps, limit=1)
+    assert empty_slice == []
+
+
+def test_readiness_reports_the_next_due_date_once_step_one_is_fully_sent(
+    campaign_with_steps: int, client_row: int
+) -> None:
+    with SessionLocal() as session:
+        enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=client_row
+        )
+        message = _make_message(
+            session, campaign_id=campaign_with_steps, client_id=client_row, status="approved"
+        )
+        touch = record_touch(session, enrollment, 1)
+        touch.message_id = message.message_id
+        session.commit()
+
+        before = campaign_readiness(session, campaign_with_steps)
+        assert before["sendable_now"] == 1
+        assert before["next_due_at"] is None
+
+        send_touch(session, touch)
+        session.commit()
+
+        after = campaign_readiness(session, campaign_with_steps)
+        assert after["sendable_now"] == 0
+        assert after["sent_count"] == 1
+        assert after["next_due_at"] is not None

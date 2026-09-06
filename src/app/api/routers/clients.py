@@ -18,16 +18,19 @@ from app.schemas.clients import (
     ClientOutreachMessageOut,
     ClientProfileOut,
     ClientRoutingOut,
+    ClientsOverviewOut,
     ClientSummaryOut,
     ClientSuppressionOut,
     ClientTouchOut,
     EnrollmentSummaryOut,
+    ReengagementSummaryOut,
     SegmentBucketOut,
     SegmentDistributionOut,
     SuppressionReasonCountOut,
     SuppressionSummaryOut,
     ValueRecencyBucketOut,
 )
+from app.schemas.rules import AngleStatusOut
 from app.services.clients import (
     ClientNotFound,
     ClientProfile,
@@ -41,6 +44,7 @@ from app.services.clients import (
     segment_distribution,
     suppression_summary,
 )
+from app.services.clients_overview import ClientsOverview, clients_overview
 
 router = APIRouter(tags=["clients"], dependencies=[Depends(get_current_reviewer_id)])
 
@@ -121,6 +125,74 @@ def get_clients_suppression_summary(
             for reason, count in summary.by_reason
         ],
     )
+
+
+def _to_overview_out(overview: ClientsOverview) -> ClientsOverviewOut:
+    segments = overview.segments
+    enrollment = overview.enrollment
+    return ClientsOverviewOut(
+        book=ClientBookSummaryOut(
+            total_clients=overview.book.total_clients, fund_count=overview.book.fund_count
+        ),
+        segments=SegmentDistributionOut(
+            by_purchase_depth=[
+                SegmentBucketOut(key=k, count=c) for k, c in segments.by_purchase_depth
+            ],
+            by_value_band=[SegmentBucketOut(key=k, count=c) for k, c in segments.by_value_band],
+            by_cadence_band=[SegmentBucketOut(key=k, count=c) for k, c in segments.by_cadence_band],
+            by_message_angle=[
+                SegmentBucketOut(key=k, count=c) for k, c in segments.by_message_angle
+            ],
+            by_value_and_recency=[
+                ValueRecencyBucketOut(value_band=v, recency_band=r, count=c)
+                for v, r, c in segments.by_value_and_recency
+            ],
+            stale_contact_count=segments.stale_contact_count,
+            history_censored_count=segments.history_censored_count,
+            purchases_censored_count=segments.purchases_censored_count,
+            unknown_recency_count=segments.unknown_recency_count,
+        ),
+        enrollment=EnrollmentSummaryOut(
+            enrolled_count=enrollment.enrolled_count, excluded_count=enrollment.excluded_count
+        ),
+        suppression=SuppressionSummaryOut(
+            suppressed_count=overview.suppression.suppressed_count,
+            by_reason=[
+                SuppressionReasonCountOut(reason=reason, count=count)
+                for reason, count in overview.suppression.by_reason
+            ],
+        ),
+        reengagement=ReengagementSummaryOut(
+            primary_count=enrollment.primary_count,
+            reengaged_count=enrollment.reengaged_count,
+            reengagement_rate=enrollment.reengagement_rate,
+        ),
+        angles=[
+            AngleStatusOut(angle=a, version=v, valid_from=vf, valid_to=vt, held=held)
+            for a, v, vf, vt, held in overview.angles
+        ],
+        records_rejected=overview.records_rejected,
+        roster=Page(
+            items=[_to_summary(r) for r in overview.roster],
+            next_cursor=overview.roster_next_cursor,
+        ),
+    )
+
+
+@router.get("/clients/overview", response_model=ClientsOverviewOut)
+def get_clients_overview(
+    roster_limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    session: Session = Depends(get_session),
+) -> ClientsOverviewOut:
+    """Open the Clients and Segments tab in one call.
+
+    The tab used to fan out to /clients, /segments, /clients/summary,
+    /clients/enrollment-summary, /clients/suppression-summary, /rules/angles,
+    /data/quality and /campaigns/analytics. Those all still exist and are
+    unchanged; this collapses the opening read into a single request so the
+    browser is not queueing eight of them behind its per-host limit.
+    """
+    return _to_overview_out(clients_overview(session, roster_limit=roster_limit))
 
 
 @router.get("/clients/{client_id}", response_model=ClientSummaryOut)

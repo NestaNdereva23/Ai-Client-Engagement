@@ -22,9 +22,22 @@ def run_instantiate_all_in_background(
     session_factory: sessionmaker[Session] = SessionLocal,
 ) -> None:
     with session_factory() as session:
+
+        def save_progress(instantiated_count: int, failed_count: int) -> None:
+            running = session.get(InstantiationBatch, instantiation_batch_id)
+            if running is None:
+                return
+            running.instantiated_count = instantiated_count
+            running.failed_template_count = failed_count
+            session.commit()
+
         try:
             result = instantiate_many_templates(
-                session, template_ids, campaign_id=campaign_id, limit=limit
+                session,
+                template_ids,
+                campaign_id=campaign_id,
+                limit=limit,
+                on_progress=save_progress,
             )
         except Exception:
             session.rollback()

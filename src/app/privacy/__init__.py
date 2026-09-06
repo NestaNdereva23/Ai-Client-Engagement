@@ -11,6 +11,7 @@ from app.privacy.boundary import (
 from app.privacy.fact_block import ModelFactBlock, round_sig_figs
 from app.privacy.llm_client import (
     AnthropicLLMClient,
+    LlamaCppLLMClient,
     LLMClient,
     LLMClientError,
     OllamaLLMClient,
@@ -34,6 +35,7 @@ __all__ = [
     "InboundLeak",
     "LLMClient",
     "LLMClientError",
+    "LlamaCppLLMClient",
     "ModelCall",
     "ModelFactBlock",
     "OllamaLLMClient",

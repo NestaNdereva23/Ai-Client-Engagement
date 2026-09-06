@@ -1,17 +1,7 @@
-"""Instantiation: turn an approved template into one outreach_message per
-matching client.
-
-A template must be approved before any instance is written from it --
-services.review.instantiate_message enforces that. Membership is
-re-derived, not replayed from draft time: message_template stores only the
-profile, not which enrollments were in it, so a client who becomes due for
-the same profile later is picked up too.
-"""
-
 from __future__ import annotations
 
 import functools
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 import structlog
@@ -121,6 +111,19 @@ class InstantiateManyResult:
     failed_template_ids: list[str] = field(default_factory=list)
 
 
+ProgressSink = Callable[[int, int], None]
+
+
+def _report(on_progress: ProgressSink | None, instantiated_count: int, failed_count: int) -> None:
+    """Report progress without letting a broken reporter stop the run."""
+    if on_progress is None:
+        return
+    try:
+        on_progress(instantiated_count, failed_count)
+    except Exception:
+        logger.exception("instantiate_many_templates.progress_failed")
+
+
 def instantiate_many_templates(
     session: Session,
     template_ids: Sequence[str],
@@ -128,7 +131,14 @@ def instantiate_many_templates(
     campaign_id: int,
     limit: int = DEFAULT_BATCH_LIMIT,
     context_loader: ContextLoader | None = None,
+    on_progress: ProgressSink | None = None,
 ) -> InstantiateManyResult:
+    """Instantiate each approved template in turn.
+
+    on_progress is called after every template with the running totals, so
+    a caller watching this run has something to show while it is still
+    going rather than only once it ends.
+    """
     context_loader = context_loader or functools.partial(load_client_profile_context, session)
     buckets = derive_buckets(session, campaign_id, limit=limit, context_loader=context_loader)
 
@@ -138,6 +148,7 @@ def instantiate_many_templates(
         template = session.get(MessageTemplate, template_id)
         if template is None:
             failed_template_ids.append(template_id)
+            _report(on_progress, instantiated_count, len(failed_template_ids))
             continue
         try:
             bucket = _matching_bucket(buckets, template)
@@ -150,8 +161,10 @@ def instantiate_many_templates(
                 template_id=template_id,
             )
             failed_template_ids.append(template_id)
+            _report(on_progress, instantiated_count, len(failed_template_ids))
             continue
         instantiated_count += len(messages)
+        _report(on_progress, instantiated_count, len(failed_template_ids))
     return InstantiateManyResult(
         instantiated_count=instantiated_count, failed_template_ids=failed_template_ids
     )

@@ -501,10 +501,12 @@ def post_campaign_generate(
 
 @router.post("/{campaign_id}/send", response_model=list[TouchSendOutcomeOut])
 def post_campaign_send(
-    campaign_id: int, session: Session = Depends(get_session)
+    campaign_id: int,
+    limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
+    session: Session = Depends(get_session),
 ) -> list[TouchSendOutcomeOut]:
     try:
-        outcomes = send_campaign(session, campaign_id)
+        outcomes = send_campaign(session, campaign_id, limit=limit)
         session.commit()
     except CampaignNotFound:
         session.rollback()
