@@ -34,8 +34,8 @@ EXPECTED_ACTIVE_TXN_KEYS = {
     "sale_type",
 }
 
-# Reused from contracts.py: the envelope shape is the same {"data": [...]}.
-EXPECTED_ENVELOPE_KEYS = {"data"}
+# Reused from contracts.py: the envelope shape is the same {"data": [...], "meta": {...}}.
+EXPECTED_ENVELOPE_KEYS = {"data", "meta"}
 
 
 class ActiveTransactionRecord(BaseModel):

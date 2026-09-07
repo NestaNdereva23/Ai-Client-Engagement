@@ -123,6 +123,23 @@ def test_mixed_date_and_string_amount_parsed(db, cleanup_runs, normalized_ids):
         assert row.last_deposit_date.isoformat() == "2026-07-01"
 
 
+def test_persist_writes_first_deposit_date(db, cleanup_runs, normalized_ids):
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    normalized_ids["clients"].add(9108)
+
+    payload = _one_fund(1, [_client(9108, 10, 91081, date="2026-06-15T00:00:00")])
+    with SessionLocal() as session:
+        _seed_run(session, run_id, payload)
+        transform_active_run(session, run_id)
+
+    with SessionLocal() as session:
+        row = session.execute(
+            select(ActiveClientFund).where(ActiveClientFund.client_id == 9108)
+        ).scalar_one()
+        assert row.first_deposit_date.isoformat() == "2026-06-15"
+
+
 def test_sale_type_survives_flatten(db, cleanup_runs, normalized_ids):
     """flatten_active_run keeps sale_type on the in-memory row, ahead of it
     landing on the persisted active_transaction row -- see

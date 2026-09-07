@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
-EXPECTED_ENVELOPE_KEYS = {"data"}
+EXPECTED_ENVELOPE_KEYS = {"data", "meta"}
 EXPECTED_FUND_KEYS = {
     "unit_fund_id",
     "unit_fund_name",
@@ -33,6 +33,7 @@ EXPECTED_TXN_KEYS = {
     "unit_price",
     "fees_incurred",
     "unit_fund",
+    "sale_type",
 }
 
 
@@ -45,7 +46,10 @@ class RawEnvelope(BaseModel):
 
 
 class TransactionRecord(BaseModel):
-    """A single purchase or sale. Amount and date stay as strings."""
+    """A single purchase or sale. Amount and date stay as strings. sale_type
+    is only ever populated on a sale; it is a passthrough field here, and
+    only later stages decide what it means.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
@@ -55,6 +59,7 @@ class TransactionRecord(BaseModel):
     unit_fund_id: int | None = None
     unit_price: float | None = None
     fees_incurred: float | None = None
+    sale_type: str | None = None
 
     @field_validator("number", "date", mode="before")
     @classmethod

@@ -47,6 +47,7 @@ def _row(**overrides) -> ActiveFeatureMeasures:
         avg_deposit_amount=50_000.0,
         max_deposit_amount=100_000.0,
         last_deposit_amount=50_000.0,
+        first_deposit_date=None,
         deposit_trend=0.0,
         largest_withdrawal=None,
         last_withdrawal_date=None,
