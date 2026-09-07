@@ -10,6 +10,13 @@ from app.db.models.active_clients import (
     ActiveClientInteraction,
     ActiveTransaction,
 )
+from app.db.models.agent import (
+    CONTENT_MIXES,
+    PERMISSION_LEVELS,
+    AgentActionCatalog,
+)
+from app.db.models.agent_permission import DEFAULT_PERMISSION, AgentPermission
+from app.db.models.agent_proposal import PROPOSAL_STATUSES, AgentProposal, AgentProposalClient
 from app.db.models.api import IdempotencyKey
 from app.db.models.audit import AuditLog
 from app.db.models.auth import REVIEWER_ROLES, ReviewerUser
@@ -86,6 +93,8 @@ __all__ = [
     "COMPLAINT_CHANNELS",
     "COMPLAINT_STATUSES",
     "CONTACT_EVENT_TYPES",
+    "CONTENT_MIXES",
+    "DEFAULT_PERMISSION",
     "ENROLLMENT_STATUSES",
     "GENERATION_BATCH_ITEM_STATUSES",
     "GENERATION_BATCH_STATUSES",
@@ -94,12 +103,18 @@ __all__ = [
     "INTERACTION_TYPES",
     "MESSAGE_STATUSES",
     "MESSAGE_TEMPLATE_STATUSES",
+    "PERMISSION_LEVELS",
+    "PROPOSAL_STATUSES",
     "REVIEWER_ROLES",
     "REVIEW_OUTCOMES",
     "TEMPLATE_REVIEW_OUTCOMES",
     "ActiveClientFund",
     "ActiveClientInteraction",
     "ActiveTransaction",
+    "AgentActionCatalog",
+    "AgentPermission",
+    "AgentProposal",
+    "AgentProposalClient",
     "AuditLog",
     "BriefingNarrative",
     "BusinessRule",

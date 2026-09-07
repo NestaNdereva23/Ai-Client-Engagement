@@ -109,5 +109,19 @@ def test_schema_drift_clean_and_dirty():
     assert schema_drift(dirty) == {"surprise", "extra"}
 
 
+def test_schema_drift_accepts_meta():
+    payload = _sample_payload()
+    payload["meta"] = {"total": 2, "current_page": 1, "last_page": 1}
+    assert schema_drift(payload) == set()
+
+
+def test_schema_drift_accepts_sale_type_on_a_sale():
+    payload = _sample_payload()
+    payload["data"][0]["clients"][0]["last_2_sales"] = [
+        {"id": 100, "date": "2025-02-01", "number": "500", "sale_type": "unit_sale"}
+    ]
+    assert schema_drift(payload) == set()
+
+
 def test_envelope_defaults_to_empty():
     assert RawEnvelope.model_validate({}).data == []

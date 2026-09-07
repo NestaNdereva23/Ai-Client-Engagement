@@ -34,6 +34,7 @@ class ActiveClientFund(Base):
     n_deposits: Mapped[int] = mapped_column(Integer, nullable=False)
     n_withdrawals: Mapped[int] = mapped_column(Integer, nullable=False)
     last_deposit_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    first_deposit_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     last_withdrawal_slot_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     deposit_count_capped: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")

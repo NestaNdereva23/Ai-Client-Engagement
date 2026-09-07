@@ -218,6 +218,26 @@ def test_months_until_empty_ignores_a_client_with_no_visible_withdrawals_at_all(
     assert m.months_until_empty == 6.0
 
 
+def test_first_deposit_date_with_one_deposit() -> None:
+    m = _only(_payload([(1, "2024-01-01T00:00:00", "10000")]))
+    assert m.first_deposit_date == date(2024, 1, 1)
+
+
+def test_first_deposit_date_with_many_deposits_is_the_earliest() -> None:
+    deposits = [
+        (1, "2024-03-15T00:00:00", "10000"),
+        (2, "2024-01-01T00:00:00", "50000"),
+        (3, "2024-02-01T00:00:00", "20000"),
+    ]
+    m = _only(_payload(deposits))
+    assert m.first_deposit_date == date(2024, 1, 1)
+
+
+def test_first_deposit_date_none_without_deposits() -> None:
+    m = _only(_payload([], withdrawals=[(50, "2024-01-01T00:00:00", "10000")]))
+    assert m.first_deposit_date is None
+
+
 def test_recency_counts_days_since_deposit_not_any_transaction() -> None:
     m = _only(
         _payload(

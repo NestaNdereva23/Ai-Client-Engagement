@@ -88,6 +88,7 @@ class ActiveFeatureMeasures:
     avg_deposit_amount: float | None
     max_deposit_amount: float | None
     last_deposit_amount: float | None
+    first_deposit_date: date | None
     deposit_trend: float | None
     largest_withdrawal: float | None
     # The most recent date among real withdrawals specifically -- not the
@@ -271,6 +272,7 @@ def derive_active_measures(
             avg_deposit_amount=(sum(amounts) / len(amounts)) if amounts else None,
             max_deposit_amount=max(amounts) if amounts else None,
             last_deposit_amount=_last_deposit_amount(deposited),
+            first_deposit_date=deposit_dates[0] if deposit_dates else None,
             deposit_trend=_log_slope(amounts),
             largest_withdrawal=largest_withdrawal,
             last_withdrawal_date=_last_withdrawal_date(withdrawn, system_fee_max),
