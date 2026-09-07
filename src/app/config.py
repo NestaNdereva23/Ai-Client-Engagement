@@ -133,6 +133,10 @@ class Settings(BaseSettings):
 
     campaign_cooldown_days: int = 7
 
+    agent_new_client_days: int = 30
+    agent_awaiting_call_days: int = 2
+    agent_contact_cooldown_days: int = 7
+
     tier_sampling_enabled: bool = True
 
     cohort_sample_cap: int = 25

@@ -23,6 +23,9 @@ Stages, in order:
     8. Pre-draft the AI narrations for the clients the digest surfaced, when
        that feature is on. Best effort too, and runs last precisely because
        nothing ahead of it depends on it finishing.
+    9. Build tonight's watch list and write a proposed action for each group
+       that has someone in it, using a fixed rule table. No model is
+       involved yet, and nothing sends. Best effort, same as steps 7 and 8.
 
 A completed run is never redone: calling run() again with the same run_id
 just returns its summary. A run that failed partway resumes: ingestion picks
@@ -43,6 +46,7 @@ import structlog
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.agents.propose import propose_watchlist
 from app.audit.log import record_audit
 from app.campaigns.nurture_bridge import enroll_auto_checkin_clients
 from app.config import get_settings
@@ -420,6 +424,7 @@ class RiskDetectionWorker:
             self._enroll_auto_checkin(changes)
             self._send_digest_emails(digest_run.digest_run_id, allocation.covering)
             self._warm_narratives(digest_run.digest_run_id)
+            self._propose_watchlist_actions(run.run_id, run.reference_ts.date())
 
             result = RiskRunResult(
                 run_id=run.run_id,
@@ -494,6 +499,26 @@ class RiskDetectionWorker:
                 send_digest_emails(session, digest_run_id, covering=covering)
         except Exception:
             logger.exception("risk_detection.digest_email_failed", digest_run_id=digest_run_id)
+
+    def _propose_watchlist_actions(self, run_id: str, as_of: date) -> None:
+        """Build tonight's watch list and write a proposed action per group.
+
+        Best effort and in its own session, same reason as the digest email
+        and the narration warm up: the run has already committed, and a
+        problem here is not a reason to fail a pass that scored and routed
+        the whole book. Everything this writes stays at suggest only.
+        """
+        try:
+            with self._session_factory() as session:
+                proposals = propose_watchlist(session, as_of, run_id=run_id)
+                session.commit()
+                logger.info(
+                    "risk_detection.watchlist_proposed",
+                    run_id=run_id,
+                    proposals=len(proposals),
+                )
+        except Exception:
+            logger.exception("risk_detection.watchlist_propose_failed", run_id=run_id)
 
     def _ingest(self, run: RiskRun) -> None:
         """Pull the active-clients feed into raw_staging, keyed by this run's own id."""

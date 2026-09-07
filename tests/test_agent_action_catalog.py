@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 
 from app.agents.action_catalog import (
     ActionCatalogValidationError,
@@ -49,20 +49,39 @@ def _spec(action_code: str = "trial_action", **overrides: object) -> ActionSpec:
     return ActionSpec(**fields)  # type: ignore[arg-type]
 
 
+def _next_version(session) -> int:
+    """A version number no real migration has used yet, so a test never
+    collides with catalogue data that ships with the app.
+    """
+    highest = session.scalar(select(func.max(AgentActionCatalog.version)))
+    return (highest or 0) + 1
+
+
 @pytest.fixture
 def catalog_versions():
-    """Remove any versions a test writes and reopen the seed it closed."""
+    """Remove any versions a test writes and restore the valid_to values it
+    closed on the versions that were already there.
+    """
     versions: list[int] = []
+    with SessionLocal() as session:
+        before = dict(
+            session.execute(
+                select(AgentActionCatalog.version, AgentActionCatalog.valid_to).distinct()
+            ).all()
+        )
+
     yield versions
+
     if not versions:
         return
     with SessionLocal() as session:
         session.execute(delete(AgentActionCatalog).where(AgentActionCatalog.version.in_(versions)))
-        session.execute(
-            update(AgentActionCatalog)
-            .where(AgentActionCatalog.version == SEEDED_VERSION)
-            .values(valid_to=None)
-        )
+        for version, valid_to in before.items():
+            session.execute(
+                update(AgentActionCatalog)
+                .where(AgentActionCatalog.version == version)
+                .values(valid_to=valid_to)
+            )
         session.commit()
 
 
@@ -110,9 +129,21 @@ def test_a_well_formed_catalogue_passes() -> None:
     validate_actions([_spec("one", message_angle="sitting_still", channel="email"), _spec("two")])
 
 
+def _seed_actions(session) -> dict[str, AgentActionCatalog]:
+    """The first shipped version, read by its own version number rather than
+    by date, since a later version may already be in force today.
+    """
+    rows = session.scalars(
+        select(AgentActionCatalog)
+        .where(AgentActionCatalog.version == SEEDED_VERSION)
+        .order_by(AgentActionCatalog.catalog_id)
+    ).all()
+    return {row.action_code: row for row in rows}
+
+
 def test_the_seed_ships_all_eight_actions(db: None) -> None:
     with SessionLocal() as session:
-        actions = load_active_actions(session, IN_FORCE)
+        actions = _seed_actions(session)
     assert set(actions) == set(SEEDED_ACTIONS)
 
 
@@ -128,26 +159,26 @@ def test_the_seed_keeps_the_order_it_was_written_in(db: None) -> None:
 
 def test_every_seeded_action_starts_at_suggest_only(db: None) -> None:
     with SessionLocal() as session:
-        actions = load_active_actions(session, IN_FORCE)
+        actions = _seed_actions(session)
     assert {row.default_permission for row in actions.values()} == {"suggest_only"}
 
 
 def test_nothing_ships_paused(db: None) -> None:
     with SessionLocal() as session:
-        actions = load_active_actions(session, IN_FORCE)
+        actions = _seed_actions(session)
     assert not any(row.paused for row in actions.values())
 
 
 def test_only_do_nothing_sends_no_message(db: None) -> None:
     with SessionLocal() as session:
-        actions = load_active_actions(session, IN_FORCE)
+        actions = _seed_actions(session)
     silent = {code for code, row in actions.items() if row.message_angle is None}
     assert silent == {"do_nothing"}
 
 
 def test_the_seeded_catalogue_would_pass_its_own_validation(db: None) -> None:
     with SessionLocal() as session:
-        actions = load_active_actions(session, IN_FORCE)
+        actions = _seed_actions(session)
     validate_actions(
         [
             ActionSpec(
@@ -181,28 +212,34 @@ def test_a_new_version_closes_the_old_one_and_takes_over(
 ) -> None:
     starts = date(2026, 10, 1)
     with SessionLocal() as session:
-        catalog_versions.append(2)
-        save_action_catalog_version(session, 2, [_spec("only_action")], valid_from=starts)
+        version = _next_version(session)
+        catalog_versions.append(version)
+        save_action_catalog_version(session, version, [_spec("only_action")], valid_from=starts)
         session.commit()
 
     with SessionLocal() as session:
-        assert active_action_catalog_version(session, starts) == 2
+        assert active_action_catalog_version(session, starts) == version
         assert set(load_active_actions(session, starts)) == {"only_action"}
 
 
 def test_the_old_version_is_still_readable_after_a_new_one_lands(
     db: None, catalog_versions: list[int]
 ) -> None:
-    """A proposal made under version one has to stay explainable afterwards."""
+    """A proposal made under whatever version is in force today has to stay
+    explainable once a newer version replaces it.
+    """
     starts = date(2026, 10, 1)
     with SessionLocal() as session:
-        catalog_versions.append(2)
-        save_action_catalog_version(session, 2, [_spec("only_action")], valid_from=starts)
+        before_version = active_action_catalog_version(session, IN_FORCE)
+        before_actions = set(load_active_actions(session, IN_FORCE))
+        version = _next_version(session)
+        catalog_versions.append(version)
+        save_action_catalog_version(session, version, [_spec("only_action")], valid_from=starts)
         session.commit()
 
     with SessionLocal() as session:
-        assert active_action_catalog_version(session, IN_FORCE) == SEEDED_VERSION
-        assert set(load_active_actions(session, IN_FORCE)) == set(SEEDED_ACTIONS)
+        assert active_action_catalog_version(session, IN_FORCE) == before_version
+        assert set(load_active_actions(session, IN_FORCE)) == before_actions
 
 
 def test_there_is_no_catalogue_before_the_first_one_starts(db: None) -> None:
@@ -216,10 +253,11 @@ def test_a_paused_action_is_read_back_but_never_offered(
 ) -> None:
     starts = date(2026, 10, 1)
     with SessionLocal() as session:
-        catalog_versions.append(2)
+        version = _next_version(session)
+        catalog_versions.append(version)
         save_action_catalog_version(
             session,
-            2,
+            version,
             [_spec("rested_action", paused=True), _spec("busy_action")],
             valid_from=starts,
         )
