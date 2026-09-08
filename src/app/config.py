@@ -177,6 +177,19 @@ class Settings(BaseSettings):
     agent_awaiting_call_days: int = 2
     agent_contact_cooldown_days: int = 7
 
+    # What one agent run may spend on its own investigation queries.
+    agent_query_call_budget: int = 12
+    agent_query_timeout_ms: int = 5000
+    agent_query_max_conditions: int = 10
+    agent_query_max_values: int = 25
+    agent_query_max_periods: int = 12
+    # A group smaller than this is not reported at all: with a narrow enough
+    # filter, a count of one is a person.
+    agent_query_min_group_size: int = 5
+
+    # How many findings one agent run may write, so a screen cannot be flooded.
+    agent_insight_write_cap: int = 8
+
     tier_sampling_enabled: bool = True
 
     cohort_sample_cap: int = 25

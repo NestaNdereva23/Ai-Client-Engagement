@@ -9,9 +9,12 @@ from typing import Any
 
 import structlog
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from app.agents.query_tools import QUERY_TOOL_FUNCTIONS, QUERY_TOOL_NAMES
 from app.agents.tools import TOOL_FUNCTIONS
+from app.config import get_settings
 from app.db.models.agent_run import AgentToolCall
 from app.privacy.scanners import OutboundLeak, scan_outbound
 
@@ -207,3 +210,131 @@ def make_async_tool_executor(
         return await asyncio.to_thread(call_tool, tool_name, tool_input)
 
     return async_call_tool
+
+
+async def next_ordinal_async(session: AsyncSession, run_id: int) -> int:
+    """The async twin of next_ordinal."""
+    highest = await session.scalar(
+        select(func.coalesce(func.max(AgentToolCall.ordinal), 0)).where(
+            AgentToolCall.run_id == run_id
+        )
+    )
+    return highest + 1
+
+
+async def record_tool_call_async(
+    session: AsyncSession,
+    *,
+    run_id: int,
+    ordinal: int,
+    tool_name: str,
+    tool_input: dict[str, Any],
+    tool_output: dict[str, Any],
+) -> None:
+    """The async twin of record_tool_call.
+
+    This one commits. An investigation query that runs too long rolls its
+    own transaction back, and the trace of what was asked must survive that.
+    """
+    session.add(
+        AgentToolCall(
+            run_id=run_id,
+            ordinal=ordinal,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            tool_output=tool_output,
+        )
+    )
+    await session.commit()
+
+
+async def query_calls_made(session: AsyncSession, run_id: int) -> int:
+    """How many investigation queries this run has already spent."""
+    made = await session.scalar(
+        select(func.count())
+        .select_from(AgentToolCall)
+        .where(AgentToolCall.run_id == run_id, AgentToolCall.tool_name.in_(QUERY_TOOL_NAMES))
+    )
+    return int(made or 0)
+
+
+def make_async_query_executor(
+    session: AsyncSession,
+    run_id: int,
+    *,
+    tools: Mapping[str, Callable[..., Awaitable[dict[str, Any]]]] | None = None,
+) -> AsyncToolCall:
+    """Build the call_tool function for the agent's own investigation queries.
+
+    These tools read through the async session rather than a worker thread,
+    because waiting on the database is most of what they do. Everything else
+    matches the blocking executor: an unknown name, a bad argument and a
+    tool's own refusal all come back as an ordinary dict, every call is
+    written to agent_tool_call, and no output reaches the model before the
+    scanner has seen it. One extra rule lives here: a run may only spend so
+    many of these, and the call past the budget is refused and recorded.
+    """
+    registry = dict(tools or QUERY_TOOL_FUNCTIONS)
+    budget = get_settings().agent_query_call_budget
+
+    async def call_tool(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+        ordinal = await next_ordinal_async(session, run_id)
+        logger.info(
+            "agent_query_call",
+            run_id=run_id,
+            ordinal=ordinal,
+            tool_name=tool_name,
+            tool_input=tool_input,
+        )
+
+        async def finish(output: dict[str, Any]) -> dict[str, Any]:
+            await record_tool_call_async(
+                session,
+                run_id=run_id,
+                ordinal=ordinal,
+                tool_name=tool_name,
+                tool_input=tool_input,
+                tool_output=output,
+            )
+            return output
+
+        function = registry.get(tool_name)
+        if function is None:
+            return await finish(
+                {
+                    "error": "unknown_tool",
+                    "message": f"'{tool_name}' is not a tool this agent can call",
+                }
+            )
+
+        if await query_calls_made(session, run_id) >= budget:
+            logger.warning("agent_query_call.budget_spent", run_id=run_id, budget=budget)
+            return await finish(
+                {
+                    "error": "budget_spent",
+                    "message": (f"this run has already used its {budget} investigation queries"),
+                }
+            )
+
+        try:
+            output = await function(session, **tool_input)
+        except TypeError as exc:
+            return await finish({"error": "invalid_input", "message": str(exc)})
+
+        try:
+            scanned_tool_output(output)
+        except OutboundLeak:
+            logger.error("agent_query_call.output_blocked", run_id=run_id, tool_name=tool_name)
+            await finish({"error": "output_blocked", "message": "this tool's answer was withheld"})
+            raise
+
+        logger.info(
+            "agent_query_call.result",
+            run_id=run_id,
+            ordinal=ordinal,
+            tool_name=tool_name,
+            tool_output=output,
+        )
+        return await finish(output)
+
+    return call_tool

@@ -97,6 +97,9 @@ class AgentProposal(Base):
     campaign_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("campaign.campaign_id"), nullable=True
     )
+    insight_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("agent_insight.insight_id"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
