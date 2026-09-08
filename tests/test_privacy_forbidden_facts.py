@@ -4,6 +4,9 @@ Each test sends a payload carrying exactly one forbidden thing through the
 real boundary entry point, scan_inbound, and asserts it is blocked. This is
 the audit trail for the anonymisation checklist: a reviewer can point at one
 test per prohibited category rather than trusting the schema by inspection.
+
+The last group runs the same checklist against the async path, so a category
+cannot be covered on one path and missed on the other.
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from app.privacy.boundary import run_conversation_boundary_async
 from app.privacy.fact_block import ModelFactBlock
 from app.privacy.scanners import InboundLeak, scan_inbound
 
@@ -107,3 +111,41 @@ def test_fund_name_cannot_carry_free_text() -> None:
 def test_a_contact_channel_hidden_inside_fund_name_is_still_forbidden() -> None:
     """The one free-text-shaped field in the old design is now closed too."""
     _blocked(fund_name="reach me at jane.doe@example.com or 0712345678")
+
+
+# The same checklist, run against the path that awaits the model. Nothing
+# here is a second copy of the rules: it drives the async entry point and
+# expects the very same block, category by category.
+FORBIDDEN_BY_CATEGORY = [
+    ("client_name", {"client_name": "Jane Doe"}),
+    ("client_code", {"client_code": "C-1001"}),
+    ("client_id", {"client_id": 1001}),
+    ("contact_email", {"contact_email": "jane@example.com"}),
+    ("contact_whatsapp", {"contact_whatsapp": "+254712345678"}),
+    ("balance", {"balance": 0.0}),
+    ("exact_date", {"exit_date": "2024-07-15"}),
+    ("free_text", {"fund_name": "reach me at jane.doe@example.com"}),
+]
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    [case for _, case in FORBIDDEN_BY_CATEGORY],
+    ids=[name for name, _ in FORBIDDEN_BY_CATEGORY],
+)
+async def test_the_async_boundary_blocks_every_forbidden_category(forbidden: dict) -> None:
+    called = False
+
+    async def converse(messages: list[dict]):
+        nonlocal called
+        called = True
+        raise AssertionError("the model must not be called")
+
+    async def call_tool(name: str, tool_input: dict) -> dict:
+        return {}
+
+    with pytest.raises(InboundLeak):
+        await run_conversation_boundary_async(
+            {**_VALID_BASE, **forbidden}, converse, call_tool, max_turns=2
+        )
+    assert called is False

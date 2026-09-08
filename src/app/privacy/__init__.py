@@ -2,6 +2,8 @@
 
 from app.privacy.boundary import (
     MODEL_ALLOWED_KEYS,
+    AsyncConverseCall,
+    AsyncToolCall,
     AuditSink,
     BoundaryAudit,
     ConverseCall,
@@ -9,6 +11,7 @@ from app.privacy.boundary import (
     ScannedConversation,
     ToolCall,
     run_conversation_boundary,
+    run_conversation_boundary_async,
     run_model_boundary,
     to_model_context,
 )
@@ -33,6 +36,8 @@ from app.privacy.scanners import (
 __all__ = [
     "MODEL_ALLOWED_KEYS",
     "AnthropicLLMClient",
+    "AsyncConverseCall",
+    "AsyncToolCall",
     "AuditSink",
     "BoundaryAudit",
     "BoundaryLeak",
@@ -51,6 +56,7 @@ __all__ = [
     "get_llm_client",
     "round_sig_figs",
     "run_conversation_boundary",
+    "run_conversation_boundary_async",
     "run_model_boundary",
     "scan_inbound",
     "scan_outbound",

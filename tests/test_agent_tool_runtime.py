@@ -10,6 +10,7 @@ from sqlalchemy import delete, select
 from app.agents import tool_runtime as runtime_module
 from app.agents.tool_runtime import (
     UnknownTool,
+    make_async_tool_executor,
     make_tool_executor,
     next_ordinal,
     record_tool_call,
@@ -175,3 +176,39 @@ def test_call_tool_gives_each_call_in_a_run_its_own_ordinal(run: int, monkeypatc
             select(AgentToolCall).where(AgentToolCall.run_id == run).order_by(AgentToolCall.ordinal)
         ).all()
     assert [row.ordinal for row in rows] == [1, 2]
+
+
+async def test_async_call_tool_records_the_call_the_same_way(run: int, monkeypatch) -> None:
+    monkeypatch.setattr(
+        runtime_module, "TOOL_FUNCTIONS", {"list_groups": lambda session, **kw: {"groups": []}}
+    )
+    with SessionLocal() as session:
+        call_tool = make_async_tool_executor(session, run)
+        output = await call_tool("list_groups", {})
+        session.commit()
+
+    assert output == {"groups": []}
+    with SessionLocal() as session:
+        row = session.scalar(select(AgentToolCall).where(AgentToolCall.run_id == run))
+    assert row.tool_name == "list_groups"
+    assert row.tool_output == {"groups": []}
+    assert row.ordinal == 1
+
+
+async def test_async_call_tool_withholds_and_raises_when_the_output_leaks(
+    run: int, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        runtime_module,
+        "TOOL_FUNCTIONS",
+        {"list_groups": lambda session, **kw: {"email": "someone@example.com"}},
+    )
+    with SessionLocal() as session:
+        call_tool = make_async_tool_executor(session, run)
+        with pytest.raises(OutboundLeak):
+            await call_tool("list_groups", {})
+        session.commit()
+
+    with SessionLocal() as session:
+        row = session.scalar(select(AgentToolCall).where(AgentToolCall.run_id == run))
+    assert row.tool_output["error"] == "output_blocked"

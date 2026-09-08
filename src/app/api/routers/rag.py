@@ -14,13 +14,13 @@ router = APIRouter(prefix="/rag", tags=["rag"], dependencies=[Depends(get_curren
 
 
 @router.post("/reports", response_model=RagIngestOut, status_code=201)
-async def upload_report(
+def upload_report(
     file: UploadFile,
     document_title: str | None = Form(None),
     document_source: str | None = Form(None),
     session: Session = Depends(get_session),
 ) -> RagIngestOut:
-    content = await file.read()
+    content = file.file.read()
     try:
         result = ingest_uploaded_report(
             session, content, document_title=document_title, document_source=document_source

@@ -49,6 +49,40 @@ class Settings(BaseSettings):
     db_timezone: str = "Africa/Nairobi"
     db_safe_role: str = "ace_safe"
     db_restricted_role: str = "ace_restricted"
+    db_pool_size: int = 10
+    db_max_overflow: int = 10
+    db_async_pool_size: int | None = None
+    db_async_max_overflow: int | None = None
+    worker_threads: int = 40
+    slow_request_ms: int = 1000
+
+    @property
+    def max_db_connections(self) -> int:
+        return self.db_pool_size + self.db_max_overflow
+
+    @property
+    def async_pool_size(self) -> int:
+        if self.db_async_pool_size is None:
+            return self.db_pool_size
+        return self.db_async_pool_size
+
+    @property
+    def async_max_overflow(self) -> int:
+        if self.db_async_max_overflow is None:
+            return self.db_max_overflow
+        return self.db_async_max_overflow
+
+    @property
+    def max_async_db_connections(self) -> int:
+        return self.async_pool_size + self.async_max_overflow
+
+    @property
+    def max_total_db_connections(self) -> int:
+        return self.max_db_connections + self.max_async_db_connections
+
+    @property
+    def worker_thread_count(self) -> int:
+        return max(self.worker_threads, self.max_db_connections)
 
     embedding_provider: str = "hashing"
     embedding_model: str = "dev-hashing"

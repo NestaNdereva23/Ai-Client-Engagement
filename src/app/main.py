@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import anyio.to_thread
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqladmin import Admin
@@ -18,6 +19,7 @@ from app.api.idempotency import IdempotencyMiddleware
 from app.api.middleware import CorrelationIdMiddleware
 from app.api.routers import health, reviewer_ui
 from app.config import Settings, get_settings
+from app.db.async_session import dispose_async_engine
 from app.db.session import engine
 from app.llmops.tracing import shutdown_shared_tracer
 from app.logging_config import configure_logging
@@ -27,12 +29,12 @@ __version__ = "0.1.0"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Release the shared tracer's background export thread on shutdown.
-    Nothing to set up: the tracer is built on the first request that needs
-    one, and a deployment with Langfuse unconfigured never builds one at all.
-    """
+    settings: Settings = app.state.settings
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    limiter.total_tokens = settings.worker_thread_count
     yield
     shutdown_shared_tracer()
+    await dispose_async_engine()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -69,7 +71,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         https_only=settings.is_production,
     )
 
-    # Routers
     app.include_router(health.router)
     app.include_router(v1.router)
     app.include_router(reviewer_ui.router)

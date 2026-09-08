@@ -13,7 +13,7 @@ afterwards, outside this function.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
@@ -47,6 +47,12 @@ class ConversationTurnLike(Protocol):
 ConverseCall = Callable[[list[dict[str, Any]]], ConversationTurnLike]
 
 ToolCall = Callable[[str, dict[str, Any]], Any]
+
+# The same two, for a path that waits on the model and on the tools instead
+# of holding a thread while they run.
+AsyncConverseCall = Callable[[list[dict[str, Any]]], Awaitable[ConversationTurnLike]]
+
+AsyncToolCall = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
 
 @dataclass(frozen=True)
@@ -147,6 +153,93 @@ def tool_result_block(call_id: str, output: Any) -> dict[str, Any]:
     return {"type": "tool_result", "tool_use_id": call_id, "content": content}
 
 
+class _ConversationScans:
+    """The privacy scans one tool calling conversation runs.
+
+    Built once per conversation and used by both the blocking and the async
+    path, so neither can gain or lose a check the other does not have.
+    """
+
+    def __init__(
+        self,
+        identifiers: Iterable[str],
+        *,
+        entity_id: str | None,
+        run_id: str | None,
+        trace_id: str | None,
+        audit: AuditSink | None,
+    ) -> None:
+        self.identifiers = tuple(identifiers)
+        self.entity_id = entity_id
+        self.run_id = run_id
+        self.trace_id = trace_id
+        self.audit = audit
+
+    def record(
+        self,
+        fields: list[str],
+        *,
+        inbound: str = "skipped",
+        outbound: str = "skipped",
+        reason: str | None = None,
+    ) -> None:
+        if self.audit is None:
+            return
+        self.audit(
+            BoundaryAudit(
+                fields=fields,
+                inbound=inbound,
+                outbound=outbound,
+                entity_id=self.entity_id,
+                run_id=self.run_id,
+                trace_id=self.trace_id,
+                reason=reason,
+            )
+        )
+
+    def first_messages(self, payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Scan the starting context and turn it into the opening message."""
+        try:
+            scan_inbound(dict(payload), self.identifiers)
+        except InboundLeak as leak:
+            self.record(sorted(payload), inbound="blocked", reason=str(leak))
+            raise
+        self.record(sorted(payload), inbound="pass")
+        starter_text = render_model_context(payload) or "Begin."
+        return [{"role": "user", "content": starter_text}]
+
+    def turn(self, turn: ConversationTurnLike) -> None:
+        """Scan one turn of model text and every tool call it asks for."""
+        try:
+            scan_outbound(turn.text, self.identifiers)
+        except OutboundLeak as leak:
+            self.record(["turn_text"], outbound="blocked", reason=str(leak))
+            raise
+        self.record(["turn_text"], outbound="pass")
+
+        for request in turn.tool_requests:
+            rendered_input = json.dumps(dict(request.tool_input), sort_keys=True)
+            try:
+                scan_outbound(rendered_input, self.identifiers)
+            except OutboundLeak as leak:
+                self.record(
+                    [f"tool_input:{request.tool_name}"], outbound="blocked", reason=str(leak)
+                )
+                raise
+            self.record([f"tool_input:{request.tool_name}"], outbound="pass")
+
+    def tool_output(self, request: ToolRequestLike, output: Any) -> dict[str, Any]:
+        """Scan one tool result and return the block that goes back to the model."""
+        block = tool_result_block(request.call_id, output)
+        try:
+            scan_outbound(block["content"], self.identifiers)
+        except OutboundLeak as leak:
+            self.record([f"tool_output:{request.tool_name}"], outbound="blocked", reason=str(leak))
+            raise
+        self.record([f"tool_output:{request.tool_name}"], outbound="pass")
+        return block
+
+
 def run_conversation_boundary(
     context: Mapping[str, Any],
     converse: ConverseCall,
@@ -170,81 +263,69 @@ def run_conversation_boundary(
     sink, when given, records one row per crossing, including the one that
     failed.
     """
-    identifiers = tuple(identifiers)
-    payload = dict(context)
-
-    def record(
-        fields: list[str],
-        *,
-        inbound: str = "skipped",
-        outbound: str = "skipped",
-        reason: str | None = None,
-    ) -> None:
-        if audit is not None:
-            audit(
-                BoundaryAudit(
-                    fields=fields,
-                    inbound=inbound,
-                    outbound=outbound,
-                    entity_id=entity_id,
-                    run_id=run_id,
-                    trace_id=trace_id,
-                    reason=reason,
-                )
-            )
-
-    def scan_turn(turn: ConversationTurnLike) -> None:
-        try:
-            scan_outbound(turn.text, identifiers)
-        except OutboundLeak as leak:
-            record(["turn_text"], outbound="blocked", reason=str(leak))
-            raise
-        record(["turn_text"], outbound="pass")
-
-        for request in turn.tool_requests:
-            rendered_input = json.dumps(dict(request.tool_input), sort_keys=True)
-            try:
-                scan_outbound(rendered_input, identifiers)
-            except OutboundLeak as leak:
-                record([f"tool_input:{request.tool_name}"], outbound="blocked", reason=str(leak))
-                raise
-            record([f"tool_input:{request.tool_name}"], outbound="pass")
-
-    def run_tools(turn: ConversationTurnLike) -> list[dict[str, Any]]:
-        blocks: list[dict[str, Any]] = []
-        for request in turn.tool_requests:
-            output = call_tool(request.tool_name, dict(request.tool_input))
-            block = tool_result_block(request.call_id, output)
-            try:
-                scan_outbound(block["content"], identifiers)
-            except OutboundLeak as leak:
-                record([f"tool_output:{request.tool_name}"], outbound="blocked", reason=str(leak))
-                raise
-            record([f"tool_output:{request.tool_name}"], outbound="pass")
-            blocks.append(block)
-        return blocks
-
-    try:
-        scan_inbound(payload, identifiers)
-    except InboundLeak as leak:
-        record(sorted(payload), inbound="blocked", reason=str(leak))
-        raise
-    record(sorted(payload), inbound="pass")
-
-    starter_text = render_model_context(payload) or "Begin."
-    messages: list[dict[str, Any]] = [{"role": "user", "content": starter_text}]
+    scans = _ConversationScans(
+        identifiers, entity_id=entity_id, run_id=run_id, trace_id=trace_id, audit=audit
+    )
+    messages = scans.first_messages(context)
 
     for turn_number in range(1, max_turns + 1):
         turn = converse(messages)
-        scan_turn(turn)
+        scans.turn(turn)
 
         if not turn.tool_requests:
             return ScannedConversation(final_text=turn.text, stopped_reason="final_answer")
         if turn_number == max_turns:
             break
 
+        results = [
+            scans.tool_output(request, call_tool(request.tool_name, dict(request.tool_input)))
+            for request in turn.tool_requests
+        ]
         messages.append({"role": "assistant", "content": assistant_content_blocks(turn)})
-        messages.append({"role": "user", "content": run_tools(turn)})
+        messages.append({"role": "user", "content": results})
+
+    return ScannedConversation(final_text=None, stopped_reason="turn_limit")
+
+
+async def run_conversation_boundary_async(
+    context: Mapping[str, Any],
+    converse: AsyncConverseCall,
+    call_tool: AsyncToolCall,
+    *,
+    identifiers: Iterable[str] = (),
+    max_turns: int,
+    entity_id: str | None = None,
+    run_id: str | None = None,
+    trace_id: str | None = None,
+    audit: AuditSink | None = None,
+) -> ScannedConversation:
+    """The async twin of run_conversation_boundary, turn for turn.
+
+    It waits on the model and on the tools instead of holding a thread, and
+    runs the very same scans, in the same places, in both directions: the
+    checks live in _ConversationScans and are called from here and from the
+    blocking path alike.
+    """
+    scans = _ConversationScans(
+        identifiers, entity_id=entity_id, run_id=run_id, trace_id=trace_id, audit=audit
+    )
+    messages = scans.first_messages(context)
+
+    for turn_number in range(1, max_turns + 1):
+        turn = await converse(messages)
+        scans.turn(turn)
+
+        if not turn.tool_requests:
+            return ScannedConversation(final_text=turn.text, stopped_reason="final_answer")
+        if turn_number == max_turns:
+            break
+
+        results = []
+        for request in turn.tool_requests:
+            output = await call_tool(request.tool_name, dict(request.tool_input))
+            results.append(scans.tool_output(request, output))
+        messages.append({"role": "assistant", "content": assistant_content_blocks(turn)})
+        messages.append({"role": "user", "content": results})
 
     return ScannedConversation(final_text=None, stopped_reason="turn_limit")
 

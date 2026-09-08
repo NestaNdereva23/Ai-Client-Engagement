@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 import structlog
@@ -17,6 +18,8 @@ from app.privacy.scanners import OutboundLeak, scan_outbound
 logger = structlog.get_logger(__name__)
 
 ToolCall = Callable[[str, dict[str, Any]], Any]
+
+AsyncToolCall = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
 
 class UnknownTool(Exception):
@@ -183,3 +186,24 @@ def make_tool_executor(
         return output
 
     return call_tool
+
+
+def make_async_tool_executor(
+    session: Session,
+    run_id: int,
+    *,
+    extra_tools: Mapping[str, Callable[..., dict[str, Any]]] | None = None,
+) -> AsyncToolCall:
+    """The async twin of make_tool_executor, for a run that awaits its tools.
+
+    Every tool here reads the database through the blocking session, so the
+    work runs in a worker thread rather than on the event loop. It is the
+    same executor underneath: the dispatch, the scanner and the tool call
+    record are one code path, not two.
+    """
+    call_tool = make_tool_executor(session, run_id, extra_tools=extra_tools)
+
+    async def async_call_tool(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+        return await asyncio.to_thread(call_tool, tool_name, tool_input)
+
+    return async_call_tool
