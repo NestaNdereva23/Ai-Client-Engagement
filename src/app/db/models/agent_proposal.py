@@ -70,9 +70,9 @@ class AgentProposal(Base):
     )
 
     proposal_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    # The night the agent ran that produced this proposal. No foreign key yet
-    # because the table that would hold that run does not exist yet.
-    run_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    run_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("agent_run.run_id"), nullable=True
+    )
     action_code: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     catalog_version: Mapped[int] = mapped_column(Integer, nullable=False)
     group_name: Mapped[str] = mapped_column(Text, nullable=False)

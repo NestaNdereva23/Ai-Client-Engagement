@@ -21,6 +21,8 @@ from app.privacy.llm_client import (
     LlamaCppLLMClient,
     LLMClientError,
     OllamaLLMClient,
+    ToolSpec,
+    ToolUseRequest,
     as_model_call,
     build_batch_request,
     get_anthropic_batch_client,
@@ -45,6 +47,14 @@ class FakeTextBlock:
         self.text = text
 
 
+class FakeToolUseBlock:
+    def __init__(self, call_id: str, name: str, tool_input: dict) -> None:
+        self.type = "tool_use"
+        self.id = call_id
+        self.name = name
+        self.input = tool_input
+
+
 class FakeUsage:
     def __init__(self, input_tokens: int = 10, output_tokens: int = 20) -> None:
         self.input_tokens = input_tokens
@@ -53,9 +63,14 @@ class FakeUsage:
 
 class FakeResponse:
     def __init__(
-        self, text: str, stop_reason: str = "end_turn", usage: FakeUsage | None = None
+        self,
+        text: str,
+        stop_reason: str = "end_turn",
+        usage: FakeUsage | None = None,
+        tool_uses: list[FakeToolUseBlock] | None = None,
     ) -> None:
-        self.content = [FakeTextBlock(text)]
+        self.content = [FakeTextBlock(text)] if text else []
+        self.content.extend(tool_uses or [])
         self.stop_reason = stop_reason
         self.usage = usage or FakeUsage()
 
@@ -72,9 +87,22 @@ class FakeMessages:
         return self._response
 
 
+class FakeSequentialMessages:
+    def __init__(self, responses: list[FakeResponse]) -> None:
+        self._responses = list(responses)
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return self._responses.pop(0)
+
+
 class FakeAnthropic:
-    def __init__(self, response: FakeResponse | Exception) -> None:
-        self.messages = FakeMessages(response)
+    def __init__(self, response: FakeResponse | Exception | list[FakeResponse]) -> None:
+        if isinstance(response, list):
+            self.messages: FakeMessages | FakeSequentialMessages = FakeSequentialMessages(response)
+        else:
+            self.messages = FakeMessages(response)
 
 
 def make_settings(**overrides) -> Settings:
@@ -170,6 +198,230 @@ def test_generate_wraps_sdk_errors() -> None:
     client = AnthropicLLMClient(api_key="k", model="claude-opus-5", max_tokens=100, client=fake)
     with pytest.raises(LLMClientError, match="boom"):
         client.generate(system="s", user="u")
+
+
+def test_converse_sends_the_message_history_and_declared_tools() -> None:
+    fake = FakeAnthropic(FakeResponse("Dear {{first_name}}, come back."))
+    client = AnthropicLLMClient(api_key="k", model="claude-opus-5", max_tokens=100, client=fake)
+    tools = [
+        ToolSpec(
+            name="list_groups",
+            description="List tonight's groups.",
+            input_schema={"type": "object"},
+        )
+    ]
+    messages = [{"role": "user", "content": "what needs attention tonight?"}]
+
+    turn = client.converse(system="you are the agent", messages=messages, tools=tools)
+
+    call = fake.messages.calls[0]
+    assert call["messages"] == messages
+    assert call["tools"] == [
+        {
+            "name": "list_groups",
+            "description": "List tonight's groups.",
+            "input_schema": {"type": "object"},
+        }
+    ]
+    assert turn.text == "Dear {{first_name}}, come back."
+    assert turn.tool_requests == ()
+    assert turn.stop_reason == "end_turn"
+
+
+def test_converse_omits_tools_from_the_request_when_none_are_given() -> None:
+    fake = FakeAnthropic(FakeResponse("answer"))
+    client = AnthropicLLMClient(api_key="k", model="claude-opus-5", max_tokens=100, client=fake)
+
+    client.converse(system="s", messages=[{"role": "user", "content": "u"}], tools=[])
+
+    assert "tools" not in fake.messages.calls[0]
+
+
+def test_converse_returns_the_tools_the_model_wants_to_call() -> None:
+    tool_use = FakeToolUseBlock("call_1", "list_groups", {"date": "today"})
+    fake = FakeAnthropic(FakeResponse("", stop_reason="tool_use", tool_uses=[tool_use]))
+    client = AnthropicLLMClient(api_key="k", model="claude-opus-5", max_tokens=100, client=fake)
+
+    turn = client.converse(system="s", messages=[{"role": "user", "content": "u"}], tools=[])
+
+    assert turn.stop_reason == "tool_use"
+    assert turn.tool_requests == (
+        ToolUseRequest(call_id="call_1", tool_name="list_groups", tool_input={"date": "today"}),
+    )
+
+
+def test_converse_sets_last_usage_the_same_way_generate_does() -> None:
+    fake = FakeAnthropic(FakeResponse("answer", usage=FakeUsage(input_tokens=11, output_tokens=4)))
+    client = AnthropicLLMClient(api_key="k", model="claude-opus-5", max_tokens=100, client=fake)
+
+    turn = client.converse(system="s", messages=[{"role": "user", "content": "u"}], tools=[])
+
+    assert turn.usage.input_tokens == 11
+    assert turn.usage.output_tokens == 4
+    assert client.last_usage == turn.usage
+
+
+def test_converse_raises_llm_client_error_on_refusal() -> None:
+    fake = FakeAnthropic(FakeResponse("", stop_reason="refusal"))
+    client = AnthropicLLMClient(api_key="k", model="claude-opus-5", max_tokens=100, client=fake)
+    with pytest.raises(LLMClientError, match="declined"):
+        client.converse(system="s", messages=[{"role": "user", "content": "u"}], tools=[])
+
+
+def test_run_conversation_returns_a_final_answer_when_no_tool_is_needed() -> None:
+    fake = FakeAnthropic(FakeResponse("no action needed tonight"))
+    client = AnthropicLLMClient(api_key="k", model="claude-opus-5", max_tokens=100, client=fake)
+    tools = [ToolSpec(name="list_groups", description="lists groups", input_schema={})]
+
+    result = client.run_conversation(
+        system="s", user="anything to do tonight?", tools=tools, call_tool=lambda name, args: {}
+    )
+
+    assert result.stopped_reason == "final_answer"
+    assert result.final_text == "no action needed tonight"
+    assert len(result.turns) == 1
+    assert len(fake.messages.calls) == 1
+
+
+def test_run_conversation_calls_a_tool_then_returns_the_final_answer() -> None:
+    tool_use = FakeToolUseBlock("call_1", "list_groups", {"date": "today"})
+    fake = FakeAnthropic(
+        [
+            FakeResponse("", stop_reason="tool_use", tool_uses=[tool_use]),
+            FakeResponse("three groups need attention"),
+        ]
+    )
+    client = AnthropicLLMClient(api_key="k", model="claude-opus-5", max_tokens=100, client=fake)
+    tool_calls: list[tuple[str, dict]] = []
+
+    def call_tool(name: str, tool_input: dict) -> dict:
+        tool_calls.append((name, tool_input))
+        return {"groups": 3}
+
+    tools = [ToolSpec(name="list_groups", description="lists groups", input_schema={})]
+    result = client.run_conversation(
+        system="s", user="what needs attention tonight?", tools=tools, call_tool=call_tool
+    )
+
+    assert tool_calls == [("list_groups", {"date": "today"})]
+    assert result.stopped_reason == "final_answer"
+    assert result.final_text == "three groups need attention"
+    assert len(result.turns) == 2
+
+    second_request = fake.messages.calls[1]
+    assert second_request["messages"][1] == {
+        "role": "assistant",
+        "content": [
+            {"type": "tool_use", "id": "call_1", "name": "list_groups", "input": {"date": "today"}}
+        ],
+    }
+    assert second_request["messages"][2] == {
+        "role": "user",
+        "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": '{"groups": 3}'}],
+    }
+
+
+def test_run_conversation_handles_several_tool_calls_before_the_final_answer() -> None:
+    first_tool = FakeToolUseBlock("call_1", "list_groups", {})
+    second_tool = FakeToolUseBlock("call_2", "describe_group", {"group": "fees_will_empty"})
+    fake = FakeAnthropic(
+        [
+            FakeResponse("", stop_reason="tool_use", tool_uses=[first_tool]),
+            FakeResponse("", stop_reason="tool_use", tool_uses=[second_tool]),
+            FakeResponse("send the fee warning"),
+        ]
+    )
+    client = AnthropicLLMClient(api_key="k", model="claude-opus-5", max_tokens=100, client=fake)
+    seen_tools: list[str] = []
+
+    def call_tool(name: str, tool_input: dict) -> dict:
+        seen_tools.append(name)
+        return {"ok": True}
+
+    tools = [
+        ToolSpec(name="list_groups", description="lists groups", input_schema={}),
+        ToolSpec(name="describe_group", description="describes a group", input_schema={}),
+    ]
+    result = client.run_conversation(system="s", user="u", tools=tools, call_tool=call_tool)
+
+    assert seen_tools == ["list_groups", "describe_group"]
+    assert result.stopped_reason == "final_answer"
+    assert result.final_text == "send the fee warning"
+    assert len(result.turns) == 3
+
+
+def test_run_conversation_calls_every_tool_requested_in_one_turn() -> None:
+    parallel_tools = [
+        FakeToolUseBlock("call_1", "list_groups", {}),
+        FakeToolUseBlock("call_2", "check_allowance", {}),
+    ]
+    fake = FakeAnthropic(
+        [
+            FakeResponse("", stop_reason="tool_use", tool_uses=parallel_tools),
+            FakeResponse("here is what tonight looks like"),
+        ]
+    )
+    client = AnthropicLLMClient(api_key="k", model="claude-opus-5", max_tokens=100, client=fake)
+    seen_tools: list[str] = []
+
+    def call_tool(name: str, tool_input: dict) -> dict:
+        seen_tools.append(name)
+        return {"ok": True}
+
+    tools = [
+        ToolSpec(name="list_groups", description="lists groups", input_schema={}),
+        ToolSpec(name="check_allowance", description="checks the daily allowance", input_schema={}),
+    ]
+    result = client.run_conversation(system="s", user="u", tools=tools, call_tool=call_tool)
+
+    assert seen_tools == ["list_groups", "check_allowance"]
+    assert len(result.turns) == 2
+    tool_result_message = fake.messages.calls[1]["messages"][2]
+    tool_use_ids = [block["tool_use_id"] for block in tool_result_message["content"]]
+    assert tool_use_ids == ["call_1", "call_2"]
+
+
+def test_run_conversation_stops_at_the_turn_cap_without_calling_the_last_requested_tool() -> None:
+    always_wants_a_tool = [
+        FakeResponse(
+            "", stop_reason="tool_use", tool_uses=[FakeToolUseBlock(f"call_{n}", "list_groups", {})]
+        )
+        for n in range(3)
+    ]
+    fake = FakeAnthropic(always_wants_a_tool)
+    client = AnthropicLLMClient(api_key="k", model="claude-opus-5", max_tokens=100, client=fake)
+    tool_calls: list[str] = []
+
+    def call_tool(name: str, tool_input: dict) -> dict:
+        tool_calls.append(name)
+        return {}
+
+    tools = [ToolSpec(name="list_groups", description="lists groups", input_schema={})]
+    result = client.run_conversation(
+        system="s", user="u", tools=tools, call_tool=call_tool, max_turns=3
+    )
+
+    assert result.stopped_reason == "turn_limit"
+    assert result.final_text is None
+    assert len(result.turns) == 3
+    assert len(tool_calls) == 2
+    assert len(fake.messages.calls) == 3
+
+
+def test_run_conversation_uses_the_default_turn_cap_when_none_is_given() -> None:
+    tool_use = FakeToolUseBlock("call_1", "list_groups", {})
+    fake = FakeAnthropic(
+        [FakeResponse("", stop_reason="tool_use", tool_uses=[tool_use]), FakeResponse("done")]
+    )
+    client = AnthropicLLMClient(api_key="k", model="claude-opus-5", max_tokens=100, client=fake)
+    tools = [ToolSpec(name="list_groups", description="lists groups", input_schema={})]
+
+    result = client.run_conversation(
+        system="s", user="u", tools=tools, call_tool=lambda name, tool_input: {}
+    )
+
+    assert result.stopped_reason == "final_answer"
+    assert result.final_text == "done"
 
 
 def test_get_llm_client_builds_ollama_from_settings() -> None:

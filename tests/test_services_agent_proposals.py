@@ -11,9 +11,12 @@ from app.agents.proposal_state import InvalidTransition
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.audit import AuditLog
 from app.db.session import SessionLocal
+from app.pagination import MAX_LIMIT
 from app.services.agent_proposals import (
+    DailyUsage,
     ProposalNotFound,
     count_proposals,
+    daily_usage,
     decide_proposal,
     get_proposal,
     get_proposal_clients,
@@ -165,6 +168,15 @@ def test_list_proposals_excludes_an_action_code(proposals: list[int]) -> None:
     assert later_id not in ids
 
 
+def test_list_proposals_filters_by_group_name(proposals: list[int]) -> None:
+    earlier_id, later_id = proposals
+    with SessionLocal() as session:
+        rows, _ = list_proposals(session, group_name="fees will empty")
+    ids = {proposal.proposal_id for proposal, _ in rows}
+    assert later_id in ids
+    assert earlier_id not in ids
+
+
 def test_list_proposals_paginates_with_a_cursor(proposals: list[int]) -> None:
     earlier_id, later_id = proposals
     with SessionLocal() as session:
@@ -189,8 +201,8 @@ def test_count_proposals_matches_the_same_filters(
 ) -> None:
     with SessionLocal() as session:
         total = count_proposals(session, proposal_date=date.today())
-        rows, _ = list_proposals(session, proposal_date=date.today(), limit=200)
-    assert total == len(rows)
+        rows, _ = list_proposals(session, proposal_date=date.today(), limit=MAX_LIMIT)
+    assert len(rows) == min(total, MAX_LIMIT)
     assert proposal_from_yesterday not in {proposal.proposal_id for proposal, _ in rows}
 
 
@@ -278,3 +290,115 @@ def test_decide_proposal_raises_when_missing(db: None) -> None:
             decide_proposal(
                 session, 0, decision="approve", reason="does not exist", decided_by=REVIEWER
             )
+
+
+@pytest.fixture
+def usage_proposals(db: None):
+    """Three proposals made today: one committed with a left out client, one
+    rejected, and one for a different action, so daily_usage has a known
+    answer to be checked against.
+    """
+    with SessionLocal() as session:
+        committed = _make_proposal(
+            action_code="fee_warning",
+            group_name="fees will empty",
+            client_count=3,
+            money_total_kes=100_000.0,
+            status="approved",
+        )
+        session.add(committed)
+        session.flush()
+        session.add_all(
+            [
+                AgentProposalClient(
+                    proposal_id=committed.proposal_id,
+                    client_id=960003,
+                    unit_fund_id=FUND_ID,
+                    included=True,
+                ),
+                AgentProposalClient(
+                    proposal_id=committed.proposal_id,
+                    client_id=960004,
+                    unit_fund_id=FUND_ID,
+                    included=True,
+                ),
+                AgentProposalClient(
+                    proposal_id=committed.proposal_id,
+                    client_id=960005,
+                    unit_fund_id=FUND_ID,
+                    included=False,
+                    skip_reason="on_do_not_contact_list",
+                ),
+            ]
+        )
+
+        rejected = _make_proposal(
+            action_code="fee_warning",
+            group_name="fees will empty",
+            client_count=1,
+            money_total_kes=999_999.0,
+            status="rejected",
+        )
+        session.add(rejected)
+        session.flush()
+        session.add(
+            AgentProposalClient(
+                proposal_id=rejected.proposal_id,
+                client_id=960006,
+                unit_fund_id=FUND_ID,
+                included=True,
+            )
+        )
+
+        other_action = _make_proposal(
+            action_code="start_win_back",
+            group_name="very small and quiet",
+            client_count=1,
+            money_total_kes=50_000.0,
+            status="approved",
+        )
+        session.add(other_action)
+        session.flush()
+        session.add(
+            AgentProposalClient(
+                proposal_id=other_action.proposal_id,
+                client_id=960007,
+                unit_fund_id=FUND_ID,
+                included=True,
+            )
+        )
+        session.commit()
+        ids = [committed.proposal_id, rejected.proposal_id, other_action.proposal_id]
+
+    yield ids
+
+    with SessionLocal() as session:
+        session.execute(delete(AgentProposalClient).where(AgentProposalClient.proposal_id.in_(ids)))
+        session.execute(delete(AgentProposal).where(AgentProposal.proposal_id.in_(ids)))
+        session.commit()
+
+
+def test_daily_usage_counts_included_clients_and_committed_money(
+    usage_proposals: list[int],
+) -> None:
+    with SessionLocal() as session:
+        usage = daily_usage(session, action_code="fee_warning", as_of=date.today())
+    assert usage == DailyUsage(used_clients=2, used_money_kes=100_000.0)
+
+
+def test_daily_usage_ignores_a_rejected_proposal(usage_proposals: list[int]) -> None:
+    with SessionLocal() as session:
+        usage = daily_usage(session, action_code="fee_warning", as_of=date.today())
+    assert usage.used_money_kes == 100_000.0
+
+
+def test_daily_usage_ignores_a_different_action(usage_proposals: list[int]) -> None:
+    with SessionLocal() as session:
+        usage = daily_usage(session, action_code="start_win_back", as_of=date.today())
+    assert usage == DailyUsage(used_clients=1, used_money_kes=50_000.0)
+
+
+def test_daily_usage_is_zero_for_an_action_with_nothing_today(db: None) -> None:
+    with SessionLocal() as session:
+        usage = daily_usage(session, action_code="a_totally_unused_action", as_of=date.today())
+    assert usage == DailyUsage(used_clients=0, used_money_kes=0.0)

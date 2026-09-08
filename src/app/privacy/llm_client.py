@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 import anthropic
 import httpx
@@ -10,9 +11,17 @@ from anthropic.types.message_create_params import MessageCreateParamsNonStreamin
 from anthropic.types.messages.batch_create_params import Request as BatchRequest
 
 from app.config import Settings, get_settings
-from app.privacy.boundary import ModelCall
+from app.privacy.boundary import (
+    ConverseCall,
+    ModelCall,
+    assistant_content_blocks,
+    render_model_context,
+    tool_result_block,
+)
 
 logger = structlog.get_logger(__name__)
+
+DEFAULT_MAX_TURNS = 8
 
 
 class LLMClientError(RuntimeError):
@@ -25,6 +34,46 @@ class LLMUsage:
 
     input_tokens: int
     output_tokens: int
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    """One tool a model may call, declared the same way whether it reads or writes."""
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ToolUseRequest:
+    """One tool the model wants to call, with the id its result must reference."""
+
+    call_id: str
+    tool_name: str
+    tool_input: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ConversationTurn:
+    """One round trip with the model: its text, any tools it wants to call, and its usage."""
+
+    text: str
+    tool_requests: tuple[ToolUseRequest, ...]
+    usage: LLMUsage
+    stop_reason: str
+
+
+@dataclass(frozen=True)
+class ConversationResult:
+    """How a whole tool calling conversation ended, and every turn it took to get there."""
+
+    final_text: str | None
+    turns: tuple[ConversationTurn, ...]
+    stopped_reason: Literal["final_answer", "turn_limit"]
+
+
+ToolExecutor = Callable[[str, dict[str, Any]], Any]
 
 
 @runtime_checkable
@@ -80,6 +129,92 @@ class AnthropicLLMClient:
         )
         text = "".join(block.text for block in response.content if block.type == "text")
         return text
+
+    def converse(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: Sequence[ToolSpec] = (),
+    ) -> ConversationTurn:
+        """Send one turn of a conversation, returning a final answer or tool requests."""
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "system": system,
+            "messages": messages,
+        }
+        if self.temperature is not None:
+            kwargs["temperature"] = self.temperature
+        if tools:
+            kwargs["tools"] = [
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": tool.input_schema,
+                }
+                for tool in tools
+            ]
+
+        try:
+            response = self._client.messages.create(**kwargs)
+        except anthropic.APIError as exc:
+            logger.warning("llm_client.request_failed", model=self.model, error=str(exc))
+            raise LLMClientError(f"model request failed: {exc}") from exc
+
+        if response.stop_reason == "refusal":
+            raise LLMClientError("model declined the request")
+
+        self.last_usage = LLMUsage(
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+        )
+        text = "".join(block.text for block in response.content if block.type == "text")
+        tool_requests = tuple(
+            ToolUseRequest(call_id=block.id, tool_name=block.name, tool_input=block.input)
+            for block in response.content
+            if block.type == "tool_use"
+        )
+        return ConversationTurn(
+            text=text,
+            tool_requests=tool_requests,
+            usage=self.last_usage,
+            stop_reason=response.stop_reason,
+        )
+
+    def run_conversation(
+        self,
+        *,
+        system: str,
+        user: str,
+        tools: Sequence[ToolSpec],
+        call_tool: ToolExecutor,
+        max_turns: int = DEFAULT_MAX_TURNS,
+    ) -> ConversationResult:
+        """Hold a conversation, calling tools as needed, until a final answer or the turn cap."""
+        messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
+        turns: list[ConversationTurn] = []
+
+        for turn_number in range(1, max_turns + 1):
+            turn = self.converse(system=system, messages=messages, tools=tools)
+            turns.append(turn)
+            if not turn.tool_requests:
+                return ConversationResult(
+                    final_text=turn.text, turns=tuple(turns), stopped_reason="final_answer"
+                )
+            if turn_number == max_turns:
+                break
+            messages.append({"role": "assistant", "content": assistant_content_blocks(turn)})
+            messages.append({"role": "user", "content": _tool_result_blocks(turn, call_tool)})
+
+        return ConversationResult(final_text=None, turns=tuple(turns), stopped_reason="turn_limit")
+
+
+def _tool_result_blocks(turn: ConversationTurn, call_tool: ToolExecutor) -> list[dict[str, Any]]:
+    return [
+        tool_result_block(request.call_id, call_tool(request.tool_name, request.tool_input))
+        for request in turn.tool_requests
+    ]
 
 
 class OllamaLLMClient:
@@ -296,13 +431,20 @@ def get_briefing_llm_client(settings: Settings | None = None) -> LLMClient:
     )
 
 
-def render_model_context(payload: dict[str, Any]) -> str:
-    return "\n".join(f"{key}: {value}" for key, value in sorted(payload.items()))
-
-
 def as_model_call(client: LLMClient, *, system: str) -> ModelCall:
     def call(payload: dict[str, Any]) -> str:
         return client.generate(system=system, user=render_model_context(payload))
+
+    return call
+
+
+def as_converse_call(
+    client: AnthropicLLMClient, *, system: str, tools: Sequence[ToolSpec] = ()
+) -> ConverseCall:
+    """Adapt a tool calling client into the shape run_conversation_boundary drives."""
+
+    def call(messages: list[dict[str, Any]]) -> ConversationTurn:
+        return client.converse(system=system, messages=messages, tools=tools)
 
     return call
 

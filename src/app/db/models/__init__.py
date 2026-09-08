@@ -17,6 +17,7 @@ from app.db.models.agent import (
 )
 from app.db.models.agent_permission import DEFAULT_PERMISSION, AgentPermission
 from app.db.models.agent_proposal import PROPOSAL_STATUSES, AgentProposal, AgentProposalClient
+from app.db.models.agent_run import AGENT_RUN_STATES, AGENT_RUN_TRIGGERS, AgentRun, AgentToolCall
 from app.db.models.api import IdempotencyKey
 from app.db.models.audit import AuditLog
 from app.db.models.auth import REVIEWER_ROLES, ReviewerUser
@@ -87,6 +88,8 @@ from app.db.models.template_generation_plan import TemplateGenerationPlan
 from app.db.models.template_policy import CampaignTemplatePolicy, TemplatePolicyConfigVersion
 
 __all__ = [
+    "AGENT_RUN_STATES",
+    "AGENT_RUN_TRIGGERS",
     "CAMPAIGN_STATUSES",
     "COHORT_STATUSES",
     "COMPLAINT_CATEGORIES",
@@ -115,6 +118,8 @@ __all__ = [
     "AgentPermission",
     "AgentProposal",
     "AgentProposalClient",
+    "AgentRun",
+    "AgentToolCall",
     "AuditLog",
     "BriefingNarrative",
     "BusinessRule",

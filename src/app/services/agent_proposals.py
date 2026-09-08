@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
@@ -14,6 +15,11 @@ from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_id_cursor, encode_
 
 _DECISION_TO_STATUS = {"approve": "approved", "reject": "rejected"}
 
+# A proposal in either of these statuses never reached a client, so it never
+# used any of the day's allowance. Every other status, including one still
+# waiting on a decision, counts as committed.
+ALLOWANCE_EXCLUDED_STATUSES = ("rejected", "expired")
+
 
 class ProposalNotFound(Exception):
     """No agent_proposal exists with the given id."""
@@ -25,6 +31,7 @@ def _proposal_filters(
     proposal_date: date | None,
     action_code: str | None,
     exclude_action_code: str | None,
+    group_name: str | None = None,
 ) -> list[Any]:
     clauses: list[Any] = []
     if status is not None:
@@ -35,6 +42,8 @@ def _proposal_filters(
         clauses.append(AgentProposal.action_code == action_code)
     if exclude_action_code is not None:
         clauses.append(AgentProposal.action_code != exclude_action_code)
+    if group_name is not None:
+        clauses.append(AgentProposal.group_name == group_name)
     return clauses
 
 
@@ -60,6 +69,7 @@ def list_proposals(
     proposal_date: date | None = None,
     action_code: str | None = None,
     exclude_action_code: str | None = None,
+    group_name: str | None = None,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> tuple[list[tuple[AgentProposal, int | None]], str | None]:
@@ -73,6 +83,7 @@ def list_proposals(
         proposal_date=proposal_date,
         action_code=action_code,
         exclude_action_code=exclude_action_code,
+        group_name=group_name,
     )
     query = select(AgentProposal).where(*filters)
     if cursor is not None:
@@ -98,6 +109,7 @@ def count_proposals(
     proposal_date: date | None = None,
     action_code: str | None = None,
     exclude_action_code: str | None = None,
+    group_name: str | None = None,
 ) -> int:
     """How many proposals list_proposals' filters would return in total."""
     return session.scalar(
@@ -109,6 +121,7 @@ def count_proposals(
                 proposal_date=proposal_date,
                 action_code=action_code,
                 exclude_action_code=exclude_action_code,
+                group_name=group_name,
             )
         )
     )
@@ -131,6 +144,40 @@ def get_proposal_clients(session: Session, proposal_id: int) -> list[AgentPropos
             .order_by(AgentProposalClient.proposal_client_id)
         ).all()
     )
+
+
+@dataclass(frozen=True)
+class DailyUsage:
+    """How much of one action's daily allowance its proposals have used up."""
+
+    used_clients: int
+    used_money_kes: float
+
+
+def daily_usage(session: Session, *, action_code: str, as_of: date) -> DailyUsage:
+    """Clients and money this action's proposals have committed to today.
+
+    Money is read straight off agent_proposal.money_total_kes, which
+    propose_group already computes from the included clients only. Clients
+    are counted from agent_proposal_client instead, since
+    agent_proposal.client_count is the whole group, included and excluded
+    members together.
+    """
+    matches = [
+        AgentProposal.action_code == action_code,
+        func.date(AgentProposal.created_at) == as_of,
+        AgentProposal.status.not_in(ALLOWANCE_EXCLUDED_STATUSES),
+    ]
+    used_money = session.scalar(
+        select(func.coalesce(func.sum(AgentProposal.money_total_kes), 0.0)).where(*matches)
+    )
+    used_clients = session.scalar(
+        select(func.count(func.distinct(AgentProposalClient.client_id)))
+        .select_from(AgentProposal)
+        .join(AgentProposalClient, AgentProposalClient.proposal_id == AgentProposal.proposal_id)
+        .where(*matches, AgentProposalClient.included.is_(True))
+    )
+    return DailyUsage(used_clients=used_clients or 0, used_money_kes=float(used_money or 0.0))
 
 
 def decide_proposal(

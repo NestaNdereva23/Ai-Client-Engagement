@@ -13,6 +13,7 @@ from sqlalchemy import delete, func, select, text
 from app.campaigns.nurture_bridge import AUTO_CHECKIN_CAMPAIGN_TYPE
 from app.config import get_settings
 from app.db.models.active_clients import ActiveClientFund
+from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.audit import AuditLog
 from app.db.models.campaigns import Enrollment
 from app.db.models.digest import DigestEmailSend, DigestLine, DigestRun
@@ -102,8 +103,33 @@ def _delete_run_rows(session, run_id: str) -> None:
     session.execute(delete(AuditLog).where(AuditLog.run_id == run_id))
 
 
+def _delete_agent_proposal_rows(session, client_ids: list[int]) -> None:
+    """The agent proposals a full run's own propose_watchlist step writes
+    for these clients. A full run has no risk_run_id to key on: propose.py
+    only hands its run_id to record_audit, never onto agent_proposal itself.
+    """
+    proposal_ids = session.scalars(
+        select(AgentProposalClient.proposal_id)
+        .where(AgentProposalClient.client_id.in_(client_ids))
+        .distinct()
+    ).all()
+    if not proposal_ids:
+        return
+    session.execute(
+        delete(AuditLog).where(
+            AuditLog.entity_type == "agent_proposal",
+            AuditLog.entity_id.in_([str(proposal_id) for proposal_id in proposal_ids]),
+        )
+    )
+    session.execute(
+        delete(AgentProposalClient).where(AgentProposalClient.proposal_id.in_(proposal_ids))
+    )
+    session.execute(delete(AgentProposal).where(AgentProposal.proposal_id.in_(proposal_ids)))
+
+
 def _delete_client_rows(session, client_ids: list[int]) -> None:
     """Everything the fixture writes for a batch of client ids."""
+    _delete_agent_proposal_rows(session, client_ids)
     session.execute(delete(ClientRiskFeatures).where(ClientRiskFeatures.client_id.in_(client_ids)))
     session.execute(delete(ActiveClientFund).where(ActiveClientFund.client_id.in_(client_ids)))
     session.execute(delete(PiiVault).where(PiiVault.client_id.in_(client_ids)))
