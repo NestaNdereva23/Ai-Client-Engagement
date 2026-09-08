@@ -82,6 +82,9 @@ class AgentProposal(Base):
     money_total_kes: Mapped[float | None] = mapped_column(Float, nullable=True)
     evidence: Mapped[str] = mapped_column(Text, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
+    # {skip_reason: count of client funds left out for it}. Excludes only;
+    # a fully included group has an empty dict, never a missing one.
+    skip_reason_counts: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     # Null for an action that sends no message.
     angle: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_mix: Mapped[str | None] = mapped_column(Text, nullable=True)

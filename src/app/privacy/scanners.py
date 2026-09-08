@@ -57,8 +57,20 @@ _PATTERNS: dict[str, re.Pattern[str]] = {
     "money": re.compile(
         r"(?:KES|KSh|Ksh|USD|\$)\s?\d[\d,]*(?:\.\d+)?|\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d{2}"
     ),
-    # ISO or slash-separated calendar dates.
-    "date": re.compile(r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}/\d{1,2}/\d{2,4}\b"),
+    # ISO or slash-separated calendar dates, with an optional ISO time and
+    # timezone offset attached (a timestamp field's own isoformat() output,
+    # e.g. "2026-09-08T10:00:33.858921+03:00"). The time and offset digits
+    # are just as phone-or-account-shaped as the date digits are, so both
+    # must be stripped together before account_or_phone runs.
+    "date": re.compile(
+        r"\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?\b"
+        r"|\b\d{1,2}/\d{1,2}/\d{2,4}\b"
+    ),
+    # A bare, unquoted JSON number value, e.g. "money_total_kes": 3542891.
+    # A read tool's own aggregate totals and counts render exactly like this
+    # once json.dumps turns the result into text; a real leaked phone or
+    # account number would come back as a quoted string, not a bare number.
+    "json_number_value": re.compile(r"(?<=: )\d+(?:\.\d+)?(?=[,}\]])"),
 }
 _INBOUND_CATEGORIES = ("email", "account_or_phone", "money", "date")
 # A placeholder-only draft may not carry a live contact channel.
@@ -90,7 +102,19 @@ class OutboundLeak(BoundaryLeak):
 
 
 def _pattern_reasons(text: str, categories: Iterable[str]) -> list[str]:
-    return [name for name in categories if _PATTERNS[name].search(text)]
+    # A calendar date's own digits (e.g. "2026-09-08") are seven or more
+    # digits with separators between them, so they also match account_or_phone
+    # unless scrubbed out first. Dates are handled by their own "date"
+    # category; account_or_phone should only fire on a real phone or account
+    # number, not on a date that happens to be shaped like one.
+    without_dates = _PATTERNS["date"].sub(" ", text)
+    without_dates_or_json_numbers = _PATTERNS["json_number_value"].sub(" ", without_dates)
+    reasons = []
+    for name in categories:
+        haystack = without_dates_or_json_numbers if name == "account_or_phone" else text
+        if _PATTERNS[name].search(haystack):
+            reasons.append(name)
+    return reasons
 
 
 def _validate_against_known_schema(payload: Mapping[str, Any]) -> BaseModel:

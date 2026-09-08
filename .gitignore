@@ -30,7 +30,7 @@ htmlcov/
 Thumbs.db
 plan/
 CLAUDE.md
-.claude/
+.claude/*
 docs/
 phase2-ticketing/
 README1.md

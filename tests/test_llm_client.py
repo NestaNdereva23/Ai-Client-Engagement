@@ -15,7 +15,7 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.privacy.boundary import run_model_boundary
+from app.privacy.boundary import run_conversation_boundary, run_model_boundary
 from app.privacy.llm_client import (
     AnthropicLLMClient,
     LlamaCppLLMClient,
@@ -23,12 +23,15 @@ from app.privacy.llm_client import (
     OllamaLLMClient,
     ToolSpec,
     ToolUseRequest,
+    as_converse_call,
     as_model_call,
     build_batch_request,
+    get_agent_llm_client,
     get_anthropic_batch_client,
     get_briefing_llm_client,
     get_judge_llm_client,
     get_llm_client,
+    resolve_agent_model_config,
     resolve_briefing_model_config,
     resolve_judge_model_config,
 )
@@ -120,6 +123,10 @@ def make_settings(**overrides) -> Settings:
         "briefing_llm_model": "",
         "briefing_llm_temperature": None,
         "briefing_llm_max_tokens": 1024,
+        "agent_llm_provider": "",
+        "agent_llm_model": "",
+        "agent_llm_temperature": None,
+        "agent_llm_max_tokens": 2048,
         "ollama_timeout_seconds": 120.0,
         "llamacpp_timeout_seconds": 120.0,
     }
@@ -530,6 +537,47 @@ def test_get_briefing_llm_client_uses_a_distinct_briefing_model_when_configured(
     assert briefing_client.model == "qwen3.5"
 
 
+def test_resolve_agent_model_config_falls_back_to_generation_when_unset() -> None:
+    settings = make_settings(llm_provider="ollama", llm_model="phi4-mini")
+    provider, model, temperature, max_tokens = resolve_agent_model_config(settings)
+    assert (provider, model) == ("ollama", "phi4-mini")
+    assert max_tokens == 2048
+
+
+def test_resolve_agent_model_config_uses_the_configured_agent_model() -> None:
+    settings = make_settings(
+        llm_provider="ollama",
+        llm_model="phi4-mini",
+        agent_llm_provider="ollama",
+        agent_llm_model="qwen3.5",
+        agent_llm_temperature=0.1,
+        agent_llm_max_tokens=4096,
+    )
+    provider, model, temperature, max_tokens = resolve_agent_model_config(settings)
+    assert (provider, model, temperature, max_tokens) == ("ollama", "qwen3.5", 0.1, 4096)
+
+
+def test_get_agent_llm_client_falls_back_to_the_generation_client_when_unset() -> None:
+    settings = make_settings(llm_provider="ollama", llm_model="phi4-mini")
+    client = get_agent_llm_client(settings)
+    assert isinstance(client, OllamaLLMClient)
+    assert client.model == "phi4-mini"
+
+
+def test_get_agent_llm_client_works_with_any_configured_provider() -> None:
+    """The agent loop holds a tool calling conversation, but that is not a
+    reason to lock it to one provider: Anthropic, Ollama and llama.cpp all
+    hold one here.
+    """
+    assert isinstance(
+        get_agent_llm_client(make_settings(llm_provider="anthropic")), AnthropicLLMClient
+    )
+    assert isinstance(get_agent_llm_client(make_settings(llm_provider="ollama")), OllamaLLMClient)
+    assert isinstance(
+        get_agent_llm_client(make_settings(llm_provider="llamacpp")), LlamaCppLLMClient
+    )
+
+
 def _ollama_client(handler, **overrides) -> OllamaLLMClient:
     transport = httpx.MockTransport(handler)
     defaults = {
@@ -663,6 +711,120 @@ def test_ollama_generate_wraps_a_non_2xx_response() -> None:
     client = _ollama_client(handler)
     with pytest.raises(LLMClientError):
         client.generate(system="s", user="u")
+
+
+def test_ollama_converse_sends_the_translated_messages_and_tools() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"message": {"content": "three groups need attention"}})
+
+    client = _ollama_client(handler)
+    tools = [ToolSpec(name="list_groups", description="lists tonight's groups", input_schema={})]
+    messages = [{"role": "user", "content": "what needs attention tonight?"}]
+
+    turn = client.converse(system="you are the agent", messages=messages, tools=tools)
+
+    assert turn.text == "three groups need attention"
+    assert turn.tool_requests == ()
+    assert turn.stop_reason == "end_turn"
+    assert seen["body"]["messages"] == [
+        {"role": "system", "content": "you are the agent"},
+        {"role": "user", "content": "what needs attention tonight?"},
+    ]
+    assert seen["body"]["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "list_groups",
+                "description": "lists tonight's groups",
+                "parameters": {},
+            },
+        }
+    ]
+
+
+def test_ollama_converse_returns_the_tool_calls_the_model_wants_to_make() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {"function": {"name": "list_groups", "arguments": {"as_of": "today"}}}
+                    ],
+                }
+            },
+        )
+
+    client = _ollama_client(handler)
+    turn = client.converse(system="s", messages=[{"role": "user", "content": "u"}])
+
+    assert turn.stop_reason == "tool_use"
+    assert turn.tool_requests == (
+        ToolUseRequest(call_id="0", tool_name="list_groups", tool_input={"as_of": "today"}),
+    )
+
+
+def test_ollama_converse_translates_a_tool_use_reply_and_its_result_back_into_the_next_turn() -> (
+    None
+):
+    seen_bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen_bodies.append(body)
+        if len(seen_bodies) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {"name": "list_groups", "arguments": {}},
+                            }
+                        ],
+                    }
+                },
+            )
+        return httpx.Response(200, json={"message": {"content": "three groups need attention"}})
+
+    client = _ollama_client(handler)
+    tools = [ToolSpec(name="list_groups", description="lists groups", input_schema={})]
+
+    def call_tool(name: str, tool_input: dict) -> dict:
+        return {"groups": 3}
+
+    result = run_conversation_boundary(
+        {},
+        as_converse_call(client, system="s", tools=tools),
+        call_tool,
+        max_turns=4,
+    )
+
+    assert result.stopped_reason == "final_answer"
+    assert result.final_text == "three groups need attention"
+    second_request_messages = seen_bodies[1]["messages"]
+    assert second_request_messages[2] == {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "list_groups", "arguments": "{}"},
+            }
+        ],
+    }
+    assert second_request_messages[3] == {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": '{"groups": 3}',
+    }
 
 
 def _llamacpp_client(handler, **overrides) -> LlamaCppLLMClient:
@@ -810,6 +972,76 @@ def test_llamacpp_generate_fails_when_the_response_has_no_choices() -> None:
     client = _llamacpp_client(handler)
     with pytest.raises(LLMClientError, match="no choices"):
         client.generate(system="s", user="u")
+
+
+def test_llamacpp_converse_sends_the_translated_messages_and_tools() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_llamacpp_reply("three groups need attention"))
+
+    client = _llamacpp_client(handler)
+    tools = [ToolSpec(name="list_groups", description="lists tonight's groups", input_schema={})]
+    messages = [{"role": "user", "content": "what needs attention tonight?"}]
+
+    turn = client.converse(system="you are the agent", messages=messages, tools=tools)
+
+    assert turn.text == "three groups need attention"
+    assert turn.tool_requests == ()
+    assert turn.stop_reason == "end_turn"
+    assert seen["body"]["messages"] == [
+        {"role": "system", "content": "you are the agent"},
+        {"role": "user", "content": "what needs attention tonight?"},
+    ]
+    assert seen["body"]["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "list_groups",
+                "description": "lists tonight's groups",
+                "parameters": {},
+            },
+        }
+    ]
+
+
+def test_llamacpp_converse_returns_the_tool_calls_the_model_wants_to_make() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_llamacpp_reply(
+                "",
+                choices=[
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "function": {
+                                        "name": "check_allowance",
+                                        "arguments": '{"action_code": "fee_warning"}',
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+            ),
+        )
+
+    client = _llamacpp_client(handler)
+    turn = client.converse(system="s", messages=[{"role": "user", "content": "u"}])
+
+    assert turn.stop_reason == "tool_use"
+    assert turn.tool_requests == (
+        ToolUseRequest(
+            call_id="call_1",
+            tool_name="check_allowance",
+            tool_input={"action_code": "fee_warning"},
+        ),
+    )
 
 
 class StubLLMClient:

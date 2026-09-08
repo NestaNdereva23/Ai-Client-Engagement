@@ -46,7 +46,7 @@ import structlog
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.agents.propose import propose_watchlist
+from app.agents.agent_loop import AgentRunInProgress, run_nightly_agent
 from app.audit.log import record_audit
 from app.campaigns.nurture_bridge import enroll_auto_checkin_clients
 from app.config import get_settings
@@ -57,7 +57,7 @@ from app.db.session import SessionLocal
 from app.ingestion.complaints_source import ComplaintsSource, get_complaints_source
 from app.ingestion.endpoints import resolve_endpoint
 from app.ingestion.fa_assignment_source import FaAssignmentSource, get_fa_assignment_source
-from app.privacy.llm_client import get_briefing_llm_client
+from app.privacy.llm_client import get_agent_llm_client, get_briefing_llm_client
 from app.risk.fa_allocation import ClientLoad
 from app.risk.history import write_snapshot
 from app.risk.routing import RoutableRow, RouteResult, route_population
@@ -424,7 +424,7 @@ class RiskDetectionWorker:
             self._enroll_auto_checkin(changes)
             self._send_digest_emails(digest_run.digest_run_id, allocation.covering)
             self._warm_narratives(digest_run.digest_run_id)
-            self._propose_watchlist_actions(run.run_id, run.reference_ts.date())
+            self._run_agent(run.reference_ts.date())
 
             result = RiskRunResult(
                 run_id=run.run_id,
@@ -500,25 +500,36 @@ class RiskDetectionWorker:
         except Exception:
             logger.exception("risk_detection.digest_email_failed", digest_run_id=digest_run_id)
 
-    def _propose_watchlist_actions(self, run_id: str, as_of: date) -> None:
-        """Build tonight's watch list and write a proposed action per group.
+    def _run_agent(self, as_of: date) -> None:
+        """Start the agent once this risk run has finished, when the setting
+        allows it.
 
         Best effort and in its own session, same reason as the digest email
         and the narration warm up: the run has already committed, and a
         problem here is not a reason to fail a pass that scored and routed
-        the whole book. Everything this writes stays at suggest only.
+        the whole book. Skipped entirely when the setting is off, and skipped
+        without being treated as a failure when a run is already going.
         """
+        settings = get_settings()
+        if not settings.agent_run_after_risk_detection:
+            return
         try:
             with self._session_factory() as session:
-                proposals = propose_watchlist(session, as_of, run_id=run_id)
-                session.commit()
-                logger.info(
-                    "risk_detection.watchlist_proposed",
-                    run_id=run_id,
-                    proposals=len(proposals),
+                run = run_nightly_agent(
+                    session,
+                    trigger="nightly",
+                    llm_client=get_agent_llm_client(settings),
+                    as_of=as_of,
                 )
+                logger.info(
+                    "risk_detection.agent_run_started",
+                    agent_run_id=run.run_id,
+                    agent_run_state=run.state,
+                )
+        except AgentRunInProgress as exc:
+            logger.info("risk_detection.agent_run_skipped", reason=str(exc))
         except Exception:
-            logger.exception("risk_detection.watchlist_propose_failed", run_id=run_id)
+            logger.exception("risk_detection.agent_run_failed", as_of=as_of.isoformat())
 
     def _ingest(self, run: RiskRun) -> None:
         """Pull the active-clients feed into raw_staging, keyed by this run's own id."""

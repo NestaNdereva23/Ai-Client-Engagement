@@ -1,28 +1,20 @@
-"""Runs one read tool, checks what it returns, and records the call.
-
-Every tool in app.agents.tools returns a plain dict, whether it succeeds or
-refuses. This module is the one place a tool name turns into an actual call:
-it renders the result the same way a tool result is rendered for the model,
-runs it past the same privacy scanner every other model crossing goes
-through, and only then writes the call to agent_tool_call so it can be read
-back later. A tool whose output somehow carried a live contact channel is
-never handed back or stored as written: the call is recorded with the reason
-it was withheld, and the block is raised so the run stops rather than carry
-a leak forward in its own history.
-"""
+"""Runs one read tool, checks what it returns, and records the call."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
+import structlog
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.agents.tools import TOOL_FUNCTIONS
 from app.db.models.agent_run import AgentToolCall
 from app.privacy.scanners import OutboundLeak, scan_outbound
+
+logger = structlog.get_logger(__name__)
 
 ToolCall = Callable[[str, dict[str, Any]], Any]
 
@@ -91,7 +83,12 @@ def scanned_tool_output(output: dict[str, Any]) -> str:
     return rendered
 
 
-def make_tool_executor(session: Session, run_id: int) -> ToolCall:
+def make_tool_executor(
+    session: Session,
+    run_id: int,
+    *,
+    extra_tools: Mapping[str, Callable[..., dict[str, Any]]] | None = None,
+) -> ToolCall:
     """Build the call_tool function for one agent run.
 
     The result matches the shape app.privacy.boundary.run_conversation_boundary
@@ -99,18 +96,36 @@ def make_tool_executor(session: Session, run_id: int) -> ToolCall:
     success, a refusal, an unknown tool name, or a bad argument, is written
     to agent_tool_call before it is returned; a call whose output is blocked
     by the scanner is written too, with the output withheld, and then raised.
+
+    extra_tools adds tool functions beyond the read-only registry in
+    app.agents.tools, for one step that needs a tool of its own, such as
+    choose recording its decisions. Each takes the session first, then the
+    call's arguments, exactly like a registered tool, and is dispatched,
+    recorded and scanned the same way.
     """
+    extra_tools = extra_tools or {}
 
     def call_tool(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
         ordinal = next_ordinal(session, run_id)
+        logger.info(
+            "agent_tool_call",
+            run_id=run_id,
+            ordinal=ordinal,
+            tool_name=tool_name,
+            tool_input=tool_input,
+        )
 
         try:
-            output = run_tool(session, tool_name, tool_input)
+            if tool_name in extra_tools:
+                output = extra_tools[tool_name](session, **tool_input)
+            else:
+                output = run_tool(session, tool_name, tool_input)
         except UnknownTool:
             output = {
                 "error": "unknown_tool",
                 "message": f"'{tool_name}' is not a tool this agent can call",
             }
+            logger.warning("agent_tool_call.unknown_tool", run_id=run_id, tool_name=tool_name)
             record_tool_call(
                 session,
                 run_id=run_id,
@@ -122,6 +137,9 @@ def make_tool_executor(session: Session, run_id: int) -> ToolCall:
             return output
         except TypeError as exc:
             output = {"error": "invalid_input", "message": str(exc)}
+            logger.warning(
+                "agent_tool_call.invalid_input", run_id=run_id, tool_name=tool_name, error=str(exc)
+            )
             record_tool_call(
                 session,
                 run_id=run_id,
@@ -136,6 +154,7 @@ def make_tool_executor(session: Session, run_id: int) -> ToolCall:
             scanned_tool_output(output)
         except OutboundLeak:
             withheld = {"error": "output_blocked", "message": "this tool's answer was withheld"}
+            logger.error("agent_tool_call.output_blocked", run_id=run_id, tool_name=tool_name)
             record_tool_call(
                 session,
                 run_id=run_id,
@@ -146,6 +165,13 @@ def make_tool_executor(session: Session, run_id: int) -> ToolCall:
             )
             raise
 
+        logger.info(
+            "agent_tool_call.result",
+            run_id=run_id,
+            ordinal=ordinal,
+            tool_name=tool_name,
+            tool_output=output,
+        )
         record_tool_call(
             session,
             run_id=run_id,

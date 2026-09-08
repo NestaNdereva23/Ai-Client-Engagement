@@ -231,7 +231,8 @@ def run_conversation_boundary(
         raise
     record(sorted(payload), inbound="pass")
 
-    messages: list[dict[str, Any]] = [{"role": "user", "content": render_model_context(payload)}]
+    starter_text = render_model_context(payload) or "Begin."
+    messages: list[dict[str, Any]] = [{"role": "user", "content": starter_text}]
 
     for turn_number in range(1, max_turns + 1):
         turn = converse(messages)

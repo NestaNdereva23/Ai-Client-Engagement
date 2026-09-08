@@ -51,11 +51,12 @@ class AgentRun(Base):
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="running")
     trigger: Mapped[str] = mapped_column(Text, nullable=False)
     risk_run_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("risk_run.run_id"), nullable=True
+        String(36), ForeignKey("risk_run.run_id", ondelete="SET NULL"), nullable=True
     )
     plan_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     cost_kes: Mapped[float | None] = mapped_column(Float, nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class AgentToolCall(Base):

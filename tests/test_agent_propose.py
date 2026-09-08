@@ -24,6 +24,7 @@ from app.agents.propose import (
     ProposalActionMissing,
     propose_group,
     propose_watchlist,
+    skip_reason_counts,
 )
 from app.agents.watchlist import (
     FEES_WILL_EMPTY,
@@ -297,6 +298,7 @@ def test_a_paused_action_becomes_do_nothing_for_the_whole_group(clean: None, mon
     included = _included(proposal_id)
     assert included[ELIGIBLE_CLIENT] == ACTION_PAUSED
     assert included[SUPPRESSED_CLIENT] == ACTION_PAUSED
+    assert proposal.skip_reason_counts == {ACTION_PAUSED: 2}
 
 
 def test_a_client_with_two_funds_counts_once_in_the_qualifying_number(clean: None) -> None:
@@ -429,3 +431,22 @@ def test_propose_watchlist_proposes_and_excludes_across_a_full_run(
     included = _included(fee_proposal.proposal_id)
     assert included[ELIGIBLE_CLIENT] is True
     assert included[SUPPRESSED_CLIENT] == ON_DO_NOT_CONTACT_LIST
+
+
+def test_skip_reason_counts_tallies_only_the_left_out() -> None:
+    assert skip_reason_counts(
+        {
+            (1, FUND_ID): None,
+            (2, FUND_ID): ON_DO_NOT_CONTACT_LIST,
+            (3, FUND_ID): ON_DO_NOT_CONTACT_LIST,
+            (4, FUND_ID): OPEN_COMPLAINT,
+        }
+    ) == {ON_DO_NOT_CONTACT_LIST: 2, OPEN_COMPLAINT: 1}
+
+
+def test_skip_reason_counts_is_empty_when_everyone_qualifies() -> None:
+    assert skip_reason_counts({(1, FUND_ID): None, (2, FUND_ID): None}) == {}
+
+
+def test_skip_reason_counts_is_empty_for_no_members() -> None:
+    assert skip_reason_counts({}) == {}

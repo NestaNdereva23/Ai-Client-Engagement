@@ -21,6 +21,10 @@ class AgentProposalSummaryOut(BaseModel):
     client_count: int
     included_count: int | None
     money_total_kes: float | None
+    # {skip_reason: count of client funds left out for it}. None on a
+    # proposal written before this was tracked; an empty dict means every
+    # client fund qualified.
+    skip_reason_counts: dict[str, int] | None
     status: str
     permission_applied: str
     created_at: datetime

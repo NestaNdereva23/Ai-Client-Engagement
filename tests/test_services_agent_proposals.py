@@ -183,8 +183,9 @@ def test_list_proposals_paginates_with_a_cursor(proposals: list[int]) -> None:
         first_page, cursor = list_proposals(session, limit=1)
         second_page, next_cursor = list_proposals(session, limit=1, cursor=cursor)
     assert [proposal.proposal_id for proposal, _ in first_page] == [later_id]
+    assert cursor is not None
     assert [proposal.proposal_id for proposal, _ in second_page] == [earlier_id]
-    assert next_cursor is not None
+    assert next_cursor is None
 
 
 def test_list_proposals_reports_how_many_clients_are_included(

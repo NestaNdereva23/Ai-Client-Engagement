@@ -294,7 +294,10 @@ def _latest_event_type(
         ContactEvent.client_id == client_id, ContactEvent.type.in_(types)
     )
     if since is not None:
-        query = query.where(ContactEvent.occurred_at > since)
+        # >= rather than > : a reply timestamped the same instant as the touch
+        # (clock resolution, or a batch import that stamps both the same way)
+        # still counts as a reply to that touch, not as having come before it.
+        query = query.where(ContactEvent.occurred_at >= since)
     query = query.order_by(ContactEvent.occurred_at.desc()).limit(1)
     return session.scalar(query)
 

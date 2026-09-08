@@ -102,15 +102,15 @@ def propose_group(
     mapped_code = GROUP_ACTIONS.get(group.name)
     if mapped_code is None:
         raise ProposalActionMissing(f"the group '{group.name}' has no action in the rule table")
-    mapped_action = _load_action_or_raise(session, mapped_code, as_of)
+    mapped_action = load_action_or_raise(session, mapped_code, as_of)
 
-    skip_reasons = _skip_reasons(session, group.members, mapped_action, as_of, cooldown_days)
-    included = [member for member in group.members if skip_reasons[_key(member)] is None]
+    skip_reasons = group_skip_reasons(session, group.members, mapped_action, as_of, cooldown_days)
+    included = [member for member in group.members if skip_reasons[member_key(member)] is None]
 
     if included:
         action = mapped_action
     else:
-        action = _load_action_or_raise(session, DO_NOTHING_ACTION, as_of)
+        action = load_action_or_raise(session, DO_NOTHING_ACTION, as_of)
 
     return _save_proposal(
         session,
@@ -124,7 +124,12 @@ def propose_group(
     )
 
 
-def _load_action_or_raise(session: Session, action_code: str, as_of: date) -> AgentActionCatalog:
+def load_action_or_raise(session: Session, action_code: str, as_of: date) -> AgentActionCatalog:
+    """One action from the live catalogue, or raise ProposalActionMissing.
+
+    Shared with the model driven proposal flow, so a run fails loudly rather
+    than proposing against an action that no longer exists.
+    """
     action = load_action(session, action_code, as_of)
     if action is None:
         raise ProposalActionMissing(
@@ -133,30 +138,50 @@ def _load_action_or_raise(session: Session, action_code: str, as_of: date) -> Ag
     return action
 
 
-def _key(member: GroupMember) -> tuple[int, int]:
+def member_key(member: GroupMember) -> tuple[int, int]:
+    """A client fund's identity within a group, for keying a skip reason to it."""
     return (member.client_id, member.unit_fund_id)
 
 
-def _skip_reasons(
+def skip_reason_counts(skip_reasons: dict[tuple[int, int], str | None]) -> dict[str, int]:
+    """How many client funds were left out, tallied by reason.
+
+    Members with no reason (they were included) do not appear. Stored on
+    the proposal itself, so a group that empties itself always says which
+    check emptied it, without a separate query over agent_proposal_client.
+    """
+    counts: dict[str, int] = {}
+    for reason in skip_reasons.values():
+        if reason is None:
+            continue
+        counts[reason] = counts.get(reason, 0) + 1
+    return counts
+
+
+def group_skip_reasons(
     session: Session,
     members: Sequence[GroupMember],
     action: AgentActionCatalog,
     as_of: date,
     cooldown_days: int | None,
 ) -> dict[tuple[int, int], str | None]:
-    """Why each member of the group was left out, or None if they qualify."""
+    """Why each member of the group was left out, or None if they qualify.
+
+    Shared with the model driven proposal flow, so both ways of choosing an
+    action run the same gates before anything is proposed.
+    """
     if action_is_paused(session, action.action_code, as_of):
-        return {_key(member): ACTION_PAUSED for member in members}
+        return {member_key(member): ACTION_PAUSED for member in members}
 
     settings = get_settings()
     cooldown = settings.agent_contact_cooldown_days if cooldown_days is None else cooldown_days
     return {
-        _key(member): _member_skip_reason(session, member, action, as_of, cooldown)
+        member_key(member): member_skip_reason(session, member, action, as_of, cooldown)
         for member in members
     }
 
 
-def _member_skip_reason(
+def member_skip_reason(
     session: Session,
     member: GroupMember,
     action: AgentActionCatalog,
@@ -226,11 +251,12 @@ def _save_proposal(
         group_definition=dict(group.definition),
         client_count=total_count,
         money_total_kes=money_total,
-        evidence=_evidence(group, thresholds),
+        evidence=group_evidence(group, thresholds),
         reason=_reason(action, group, included_count=included_count, total_count=total_count),
         angle=action.message_angle,
         content_mix=action.content_mix,
         permission_applied=effective_permission(session, action.action_code),
+        skip_reason_counts=skip_reason_counts(skip_reasons),
         status="proposed",
     )
     session.add(proposal)
@@ -241,8 +267,8 @@ def _save_proposal(
             proposal_id=proposal.proposal_id,
             client_id=member.client_id,
             unit_fund_id=member.unit_fund_id,
-            included=skip_reasons[_key(member)] is None,
-            skip_reason=skip_reasons[_key(member)],
+            included=skip_reasons[member_key(member)] is None,
+            skip_reason=skip_reasons[member_key(member)],
         )
         for member in group.members
     )
@@ -264,7 +290,8 @@ def _save_proposal(
     return proposal
 
 
-def _evidence(group: WatchGroup, thresholds: WatchlistThresholds) -> str:
+def group_evidence(group: WatchGroup, thresholds: WatchlistThresholds) -> str:
+    """The plain language evidence behind one group, shared with the model driven flow."""
     count = group.client_count
     if group.name == SIGNED_UP_RECENTLY:
         return (

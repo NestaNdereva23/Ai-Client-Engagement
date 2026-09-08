@@ -93,6 +93,12 @@ class Settings(BaseSettings):
     briefing_llm_max_tokens: int = 1024
     briefing_prewarm_limit: int = 200
 
+    agent_llm_provider: str = ""
+    agent_llm_model: str = ""
+    agent_llm_temperature: float | None = None
+    agent_llm_max_tokens: int = 2048
+    agent_run_after_risk_detection: bool = False
+
     langfuse_base_url: str = ""
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""

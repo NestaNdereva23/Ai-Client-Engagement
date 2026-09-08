@@ -15,15 +15,17 @@ from app.config import get_settings
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.audit import AuditLog
-from app.db.models.campaigns import Enrollment
+from app.db.models.campaigns import Enrollment, TouchLog
 from app.db.models.digest import DigestEmailSend, DigestLine, DigestRun
 from app.db.models.fa_assignment import FaAssignment
+from app.db.models.llmops import GenerationRun
 from app.db.models.models import ClientFeatures, Clients, PiiVault
-from app.db.models.outreach import Campaign
+from app.db.models.outreach import Campaign, OutreachMessage, ReviewAction
 from app.db.models.risk import ClientRiskFeatures, RiskRun, RiskSnapshot
 from app.db.models.rules import ClientMessageIndicators
 from app.db.session import SessionLocal
 from app.delivery.mailer import NullMailer
+from app.workers import risk_detection
 from app.workers.risk_detection import RiskDetectionWorker
 
 FUND_ID = 920
@@ -104,9 +106,8 @@ def _delete_run_rows(session, run_id: str) -> None:
 
 
 def _delete_agent_proposal_rows(session, client_ids: list[int]) -> None:
-    """The agent proposals a full run's own propose_watchlist step writes
-    for these clients. A full run has no risk_run_id to key on: propose.py
-    only hands its run_id to record_audit, never onto agent_proposal itself.
+    """Any agent proposals written for these clients, in case a test turns
+    the agent on for a run instead of mocking it.
     """
     proposal_ids = session.scalars(
         select(AgentProposalClient.proposal_id)
@@ -472,16 +473,44 @@ def cleanup_auto_checkin_run():
     with SessionLocal() as session:
         for run_id in run_ids:
             _delete_run_rows(session, run_id)
-        session.execute(
-            delete(Enrollment).where(
-                Enrollment.client_id == AUTO_CHECKIN_CLIENT_ID,
-                Enrollment.campaign_id.in_(
-                    select(Campaign.campaign_id).where(
-                        Campaign.campaign_type == AUTO_CHECKIN_CAMPAIGN_TYPE
-                    )
-                ),
-            )
+        # The worker's own campaign sweep can enroll this client into
+        # whatever it qualifies for, not only auto_checkin_nurture (it
+        # also matched dormant_reengagement in practice), so this clears
+        # every campaign's enrollment for the client rather than one type.
+        client_enrollment_ids = select(Enrollment.enrollment_id).where(
+            Enrollment.client_id == AUTO_CHECKIN_CLIENT_ID
         )
+        session.execute(delete(TouchLog).where(TouchLog.enrollment_id.in_(client_enrollment_ids)))
+        session.execute(delete(Enrollment).where(Enrollment.client_id == AUTO_CHECKIN_CLIENT_ID))
+        # Auto checkin enrollment also drafts and sends a message, the same
+        # generation_run / outreach_message / touch_log chain
+        # test_nurture_bridge.py's _cleanup_client clears, keyed by client
+        # rather than by run_id since this worker never hands its run_id
+        # onto them.
+        message_ids = session.scalars(
+            select(OutreachMessage.message_id).where(
+                OutreachMessage.client_id == AUTO_CHECKIN_CLIENT_ID
+            )
+        ).all()
+        if message_ids:
+            session.execute(delete(TouchLog).where(TouchLog.message_id.in_(message_ids)))
+            session.execute(delete(ReviewAction).where(ReviewAction.message_id.in_(message_ids)))
+        generation_run_ids = session.scalars(
+            select(GenerationRun.run_id).where(
+                GenerationRun.run_id.in_(
+                    select(OutreachMessage.generation_run_id).where(
+                        OutreachMessage.client_id == AUTO_CHECKIN_CLIENT_ID
+                    )
+                )
+            )
+        ).all()
+        session.execute(
+            delete(OutreachMessage).where(OutreachMessage.client_id == AUTO_CHECKIN_CLIENT_ID)
+        )
+        if generation_run_ids:
+            session.execute(
+                delete(GenerationRun).where(GenerationRun.run_id.in_(generation_run_ids))
+            )
         session.execute(
             delete(AuditLog).where(
                 AuditLog.entity_type == "enrollment", AuditLog.action == "auto_checkin_sync"
@@ -572,3 +601,63 @@ def test_route_change_away_from_auto_checkin_does_not_unenroll(
 
     assert still_enrolled is not None
     assert still_enrolled.status == "enrolled"
+
+
+def test_the_agent_starts_after_a_clean_run_when_the_setting_is_on(
+    monkeypatch, db, cleanup_risk_runs
+) -> None:
+    settings = get_settings().model_copy(update={"agent_run_after_risk_detection": True})
+    monkeypatch.setattr(risk_detection, "get_settings", lambda: settings)
+    calls = []
+    monkeypatch.setattr(
+        risk_detection,
+        "run_nightly_agent",
+        lambda session, **kwargs: calls.append(kwargs),
+    )
+
+    run_id = uuid4().hex
+    cleanup_risk_runs.append(run_id)
+    result = _worker().run(run_id=run_id)
+
+    with SessionLocal() as session:
+        reference_date = session.get(RiskRun, run_id).reference_ts.date()
+
+    assert result.state == "completed"
+    assert len(calls) == 1
+    assert calls[0]["trigger"] == "nightly"
+    assert calls[0]["as_of"] == reference_date
+
+
+def test_the_risk_run_still_completes_when_the_agent_fails(
+    monkeypatch, db, cleanup_risk_runs
+) -> None:
+    settings = get_settings().model_copy(update={"agent_run_after_risk_detection": True})
+    monkeypatch.setattr(risk_detection, "get_settings", lambda: settings)
+
+    def _raise(session, **kwargs):
+        raise RuntimeError("the agent model is unreachable")
+
+    monkeypatch.setattr(risk_detection, "run_nightly_agent", _raise)
+
+    run_id = uuid4().hex
+    cleanup_risk_runs.append(run_id)
+    result = _worker().run(run_id=run_id)
+
+    assert result.state == "completed"
+
+
+def test_the_agent_is_left_alone_when_the_setting_is_off(
+    monkeypatch, db, cleanup_risk_runs
+) -> None:
+    calls = []
+    monkeypatch.setattr(
+        risk_detection,
+        "run_nightly_agent",
+        lambda session, **kwargs: calls.append(kwargs),
+    )
+
+    run_id = uuid4().hex
+    cleanup_risk_runs.append(run_id)
+    _worker().run(run_id=run_id)
+
+    assert calls == []

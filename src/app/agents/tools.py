@@ -18,7 +18,7 @@ from collections.abc import Callable, Sequence
 from datetime import date
 from typing import Any
 
-from sqlalchemy import select, tuple_
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.action_catalog import load_action, load_active_actions
@@ -131,18 +131,27 @@ def describe_group(
     if group is None or not group.members:
         return empty
 
-    keys = [(member.client_id, member.unit_fund_id) for member in group.members]
-    risk_rows = session.execute(
-        select(
-            ClientRiskFeatures.client_id,
-            ClientRiskFeatures.unit_fund_id,
-            ClientRiskFeatures.risk_band,
-            ClientRiskFeatures.value_tier,
-        ).where(tuple_(ClientRiskFeatures.client_id, ClientRiskFeatures.unit_fund_id).in_(keys))
-    ).all()
+    # A group can hold tens of thousands of members, so the risk rows are
+    # fetched by the small set of funds a group actually spans, then matched
+    # back to this group's exact members in Python. Filtering by a single
+    # composite key for every member in one query builds a WHERE clause big
+    # enough to overflow Postgres's own query parser on a large group.
+    keys = {(member.client_id, member.unit_fund_id) for member in group.members}
+    fund_ids = {member.unit_fund_id for member in group.members}
+    risk_rows = [
+        row
+        for row in session.execute(
+            select(
+                ClientRiskFeatures.client_id,
+                ClientRiskFeatures.unit_fund_id,
+                ClientRiskFeatures.risk_band,
+                ClientRiskFeatures.value_tier,
+            ).where(ClientRiskFeatures.unit_fund_id.in_(fund_ids))
+        ).all()
+        if (row.client_id, row.unit_fund_id) in keys
+    ]
     matched_keys = {(row.client_id, row.unit_fund_id) for row in risk_rows}
 
-    fund_ids = {member.unit_fund_id for member in group.members}
     fund_names = dict(
         session.execute(
             select(Funds.unit_fund_id, Funds.unit_fund_name).where(Funds.unit_fund_id.in_(fund_ids))
