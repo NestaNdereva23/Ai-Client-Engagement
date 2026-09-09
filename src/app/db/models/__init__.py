@@ -15,6 +15,7 @@ from app.db.models.agent import (
     PERMISSION_LEVELS,
     AgentActionCatalog,
 )
+from app.db.models.agent_event import AGENT_EVENT_KINDS, AgentEvent
 from app.db.models.agent_insight import (
     INSIGHT_CONFIDENCE_LEVELS,
     INSIGHT_KINDS,
@@ -96,6 +97,7 @@ from app.db.models.template_generation_plan import TemplateGenerationPlan
 from app.db.models.template_policy import CampaignTemplatePolicy, TemplatePolicyConfigVersion
 
 __all__ = [
+    "AGENT_EVENT_KINDS",
     "AGENT_RUN_STATES",
     "AGENT_RUN_TRIGGERS",
     "CAMPAIGN_STATUSES",
@@ -126,6 +128,7 @@ __all__ = [
     "ActiveClientInteraction",
     "ActiveTransaction",
     "AgentActionCatalog",
+    "AgentEvent",
     "AgentInsight",
     "AgentInsightClient",
     "AgentInsightFact",

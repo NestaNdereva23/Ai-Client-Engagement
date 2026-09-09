@@ -39,10 +39,17 @@ class Tracer(Protocol):
         metadata: dict[str, Any] | None = None,
         as_type: str = "span",
         model: str | None = None,
+        parent: Any = None,
     ) -> Any: ...
 
     def end_span(
-        self, handle: Any, *, output: Any, usage_details: dict[str, int] | None = None
+        self,
+        handle: Any,
+        *,
+        output: Any,
+        usage_details: dict[str, int] | None = None,
+        level: str | None = None,
+        status_message: str | None = None,
     ) -> None:
         """Close a span opened by start_span, optionally attaching token usage."""
         ...
@@ -72,11 +79,18 @@ class NullTracer:
         metadata: dict[str, Any] | None = None,
         as_type: str = "span",
         model: str | None = None,
+        parent: Any = None,
     ) -> None:
         return None
 
     def end_span(
-        self, handle: Any, *, output: Any, usage_details: dict[str, int] | None = None
+        self,
+        handle: Any,
+        *,
+        output: Any,
+        usage_details: dict[str, int] | None = None,
+        level: str | None = None,
+        status_message: str | None = None,
     ) -> None:
         return None
 
@@ -116,8 +130,23 @@ class LangfuseTracer:
         metadata: dict[str, Any] | None = None,
         as_type: str = "span",
         model: str | None = None,
+        parent: Any = None,
     ) -> Any:
+        """Open one observation, nested inside parent when one is given.
+
+        A span with no parent hangs off the trace itself, which is what a
+        graph node wants. A model call or a tool call passes the span it
+        happened inside, so the trace reads as the tree it actually was.
+        """
         try:
+            if parent is not None:
+                return parent.start_observation(
+                    name=name,
+                    input=input,
+                    metadata=metadata,
+                    as_type=as_type,
+                    model=model,
+                )
             return self._client.start_observation(
                 trace_context={"trace_id": trace_id},
                 name=name,
@@ -131,12 +160,23 @@ class LangfuseTracer:
             return None
 
     def end_span(
-        self, handle: Any, *, output: Any, usage_details: dict[str, int] | None = None
+        self,
+        handle: Any,
+        *,
+        output: Any,
+        usage_details: dict[str, int] | None = None,
+        level: str | None = None,
+        status_message: str | None = None,
     ) -> None:
         if handle is None:
             return
         try:
-            handle.update(output=output, usage_details=usage_details)
+            handle.update(
+                output=output,
+                usage_details=usage_details,
+                level=level,
+                status_message=status_message,
+            )
             handle.end()
         except Exception:
             logger.warning("langfuse_span_end_failed", exc_info=True)

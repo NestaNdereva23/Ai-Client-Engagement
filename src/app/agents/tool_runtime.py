@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
@@ -12,9 +13,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from app.agents.events import NO_EVENTS, EventLog, tool_finished
 from app.agents.query_tools import QUERY_TOOL_FUNCTIONS, QUERY_TOOL_NAMES
 from app.agents.tools import TOOL_FUNCTIONS
 from app.config import get_settings
+from app.db.models.agent_event import TOOL_STARTED
 from app.db.models.agent_run import AgentToolCall
 from app.privacy.scanners import OutboundLeak, scan_outbound
 
@@ -37,6 +40,54 @@ def next_ordinal(session: Session, run_id: int) -> int:
         )
     )
     return highest + 1
+
+
+class CallBudget:
+    """How many investigation queries one caller may still spend.
+
+    Counting the run's own rows back from the database is enough for a
+    single conversation. A run investigating several groups at the same
+    time needs a budget per group instead, or the first group to get going
+    spends what the others were going to use.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self._taken = 0
+        self._lock = threading.Lock()
+
+    def take(self) -> bool:
+        """Claim one query, or answer False when they are all spent."""
+        with self._lock:
+            if self._taken >= self.limit:
+                return False
+            self._taken += 1
+            return True
+
+
+class OrdinalSource:
+    """Hands out the next tool call ordinal for one run, one caller at a time.
+
+    Reading the highest ordinal back from the database works while a run
+    makes one call after another. A run investigating several groups at the
+    same time would read the same highest ordinal twice and collide on the
+    unique key, so the counter is kept here instead and guarded by a lock.
+    """
+
+    def __init__(self, start: int) -> None:
+        self._next = start
+        self._lock = threading.Lock()
+
+    @classmethod
+    def from_database(cls, session: Session, run_id: int) -> OrdinalSource:
+        """A counter carrying on from whatever this run has already recorded."""
+        return cls(next_ordinal(session, run_id))
+
+    def take(self) -> int:
+        with self._lock:
+            ordinal = self._next
+            self._next += 1
+        return ordinal
 
 
 def record_tool_call(
@@ -94,6 +145,8 @@ def make_tool_executor(
     run_id: int,
     *,
     extra_tools: Mapping[str, Callable[..., dict[str, Any]]] | None = None,
+    ordinals: OrdinalSource | None = None,
+    events: EventLog = NO_EVENTS,
 ) -> ToolCall:
     """Build the call_tool function for one agent run.
 
@@ -112,7 +165,7 @@ def make_tool_executor(
     extra_tools = extra_tools or {}
 
     def call_tool(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
-        ordinal = next_ordinal(session, run_id)
+        ordinal = ordinals.take() if ordinals is not None else next_ordinal(session, run_id)
         logger.info(
             "agent_tool_call",
             run_id=run_id,
@@ -120,6 +173,19 @@ def make_tool_executor(
             tool_name=tool_name,
             tool_input=tool_input,
         )
+        events.record(TOOL_STARTED, tool_name=tool_name, ordinal=ordinal)
+
+        def done(output: dict[str, Any]) -> dict[str, Any]:
+            record_tool_call(
+                session,
+                run_id=run_id,
+                ordinal=ordinal,
+                tool_name=tool_name,
+                tool_input=tool_input,
+                tool_output=output,
+            )
+            tool_finished(events, tool_name=tool_name, ordinal=ordinal, output=output)
+            return output
 
         try:
             if tool_name in extra_tools:
@@ -127,48 +193,24 @@ def make_tool_executor(
             else:
                 output = run_tool(session, tool_name, tool_input)
         except UnknownTool:
-            output = {
-                "error": "unknown_tool",
-                "message": f"'{tool_name}' is not a tool this agent can call",
-            }
             logger.warning("agent_tool_call.unknown_tool", run_id=run_id, tool_name=tool_name)
-            record_tool_call(
-                session,
-                run_id=run_id,
-                ordinal=ordinal,
-                tool_name=tool_name,
-                tool_input=tool_input,
-                tool_output=output,
+            return done(
+                {
+                    "error": "unknown_tool",
+                    "message": f"'{tool_name}' is not a tool this agent can call",
+                }
             )
-            return output
         except TypeError as exc:
-            output = {"error": "invalid_input", "message": str(exc)}
             logger.warning(
                 "agent_tool_call.invalid_input", run_id=run_id, tool_name=tool_name, error=str(exc)
             )
-            record_tool_call(
-                session,
-                run_id=run_id,
-                ordinal=ordinal,
-                tool_name=tool_name,
-                tool_input=tool_input,
-                tool_output=output,
-            )
-            return output
+            return done({"error": "invalid_input", "message": str(exc)})
 
         try:
             scanned_tool_output(output)
         except OutboundLeak:
-            withheld = {"error": "output_blocked", "message": "this tool's answer was withheld"}
             logger.error("agent_tool_call.output_blocked", run_id=run_id, tool_name=tool_name)
-            record_tool_call(
-                session,
-                run_id=run_id,
-                ordinal=ordinal,
-                tool_name=tool_name,
-                tool_input=tool_input,
-                tool_output=withheld,
-            )
+            done({"error": "output_blocked", "message": "this tool's answer was withheld"})
             raise
 
         logger.info(
@@ -178,15 +220,7 @@ def make_tool_executor(
             tool_name=tool_name,
             tool_output=output,
         )
-        record_tool_call(
-            session,
-            run_id=run_id,
-            ordinal=ordinal,
-            tool_name=tool_name,
-            tool_input=tool_input,
-            tool_output=output,
-        )
-        return output
+        return done(output)
 
     return call_tool
 
@@ -196,6 +230,8 @@ def make_async_tool_executor(
     run_id: int,
     *,
     extra_tools: Mapping[str, Callable[..., dict[str, Any]]] | None = None,
+    ordinals: OrdinalSource | None = None,
+    events: EventLog = NO_EVENTS,
 ) -> AsyncToolCall:
     """The async twin of make_tool_executor, for a run that awaits its tools.
 
@@ -204,7 +240,9 @@ def make_async_tool_executor(
     same executor underneath: the dispatch, the scanner and the tool call
     record are one code path, not two.
     """
-    call_tool = make_tool_executor(session, run_id, extra_tools=extra_tools)
+    call_tool = make_tool_executor(
+        session, run_id, extra_tools=extra_tools, ordinals=ordinals, events=events
+    )
 
     async def async_call_tool(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
         return await asyncio.to_thread(call_tool, tool_name, tool_input)
@@ -248,21 +286,14 @@ async def record_tool_call_async(
     await session.commit()
 
 
-async def query_calls_made(session: AsyncSession, run_id: int) -> int:
-    """How many investigation queries this run has already spent."""
-    made = await session.scalar(
-        select(func.count())
-        .select_from(AgentToolCall)
-        .where(AgentToolCall.run_id == run_id, AgentToolCall.tool_name.in_(QUERY_TOOL_NAMES))
-    )
-    return int(made or 0)
-
-
 def make_async_query_executor(
     session: AsyncSession,
     run_id: int,
     *,
     tools: Mapping[str, Callable[..., Awaitable[dict[str, Any]]]] | None = None,
+    ordinals: OrdinalSource | None = None,
+    budget: CallBudget | None = None,
+    events: EventLog = NO_EVENTS,
 ) -> AsyncToolCall:
     """Build the call_tool function for the agent's own investigation queries.
 
@@ -271,14 +302,16 @@ def make_async_query_executor(
     matches the blocking executor: an unknown name, a bad argument and a
     tool's own refusal all come back as an ordinary dict, every call is
     written to agent_tool_call, and no output reaches the model before the
-    scanner has seen it. One extra rule lives here: a run may only spend so
+    scanner has seen it. One extra rule lives here: a caller may only spend so
     many of these, and the call past the budget is refused and recorded.
     """
     registry = dict(tools or QUERY_TOOL_FUNCTIONS)
-    budget = get_settings().agent_query_call_budget
+    budget = budget or CallBudget(get_settings().agent_query_call_budget)
 
     async def call_tool(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
-        ordinal = await next_ordinal_async(session, run_id)
+        ordinal = (
+            ordinals.take() if ordinals is not None else await next_ordinal_async(session, run_id)
+        )
         logger.info(
             "agent_query_call",
             run_id=run_id,
@@ -286,6 +319,7 @@ def make_async_query_executor(
             tool_name=tool_name,
             tool_input=tool_input,
         )
+        events.record(TOOL_STARTED, tool_name=tool_name, ordinal=ordinal)
 
         async def finish(output: dict[str, Any]) -> dict[str, Any]:
             await record_tool_call_async(
@@ -296,6 +330,7 @@ def make_async_query_executor(
                 tool_input=tool_input,
                 tool_output=output,
             )
+            tool_finished(events, tool_name=tool_name, ordinal=ordinal, output=output)
             return output
 
         function = registry.get(tool_name)
@@ -307,12 +342,12 @@ def make_async_query_executor(
                 }
             )
 
-        if await query_calls_made(session, run_id) >= budget:
-            logger.warning("agent_query_call.budget_spent", run_id=run_id, budget=budget)
+        if not budget.take():
+            logger.warning("agent_query_call.budget_spent", run_id=run_id, budget=budget.limit)
             return await finish(
                 {
                     "error": "budget_spent",
-                    "message": (f"this run has already used its {budget} investigation queries"),
+                    "message": (f"this investigation has used all {budget.limit} of its queries"),
                 }
             )
 
@@ -336,5 +371,39 @@ def make_async_query_executor(
             tool_output=output,
         )
         return await finish(output)
+
+    return call_tool
+
+
+def make_investigation_tool_executor(
+    *,
+    blocking_session: Session,
+    query_session: AsyncSession,
+    run_id: int,
+    write_tools: Mapping[str, Callable[..., dict[str, Any]]],
+    ordinals: OrdinalSource,
+    query_budget: CallBudget,
+    events: EventLog = NO_EVENTS,
+) -> AsyncToolCall:
+    """One call_tool for an investigation, over both kinds of tool it has.
+
+    The investigation queries read through the async session, because
+    waiting on the database is most of what they do, and they come out of
+    this investigation's own query budget rather than a shared one. The read tools and the
+    tools that write a finding down go through the blocking session in a
+    worker thread. Both halves are the executors above, unchanged, so the
+    dispatch, the scanner and the tool call record stay one code path.
+    """
+    query_call = make_async_query_executor(
+        query_session, run_id, ordinals=ordinals, budget=query_budget, events=events
+    )
+    other_call = make_async_tool_executor(
+        blocking_session, run_id, extra_tools=write_tools, ordinals=ordinals, events=events
+    )
+
+    async def call_tool(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+        if tool_name in QUERY_TOOL_NAMES:
+            return await query_call(tool_name, tool_input)
+        return await other_call(tool_name, tool_input)
 
     return call_tool

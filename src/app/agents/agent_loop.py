@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.action_catalog import selectable_actions
+from app.agents.events import NO_EVENTS, EventLog, RunEventLog
 from app.agents.permissions import effective_permission
 from app.agents.propose import (
     DO_NOTHING_ACTION,
@@ -28,6 +29,7 @@ from app.agents.propose import (
     member_key,
     skip_reason_counts,
 )
+from app.agents.run_cost import run_cost_kes
 from app.agents.tool_runtime import make_tool_executor
 from app.agents.tools import TOOL_SPECS
 from app.agents.watchlist import (
@@ -38,15 +40,27 @@ from app.agents.watchlist import (
     load_thresholds,
 )
 from app.audit.log import record_audit
-from app.campaigns.generation_cost import (
-    GenerationCostConfigMissing,
-    UnknownGenerationModel,
-    active_generation_cost_config,
-)
 from app.db.models.agent import AgentActionCatalog
+from app.db.models.agent_event import (
+    APPROVAL_NEEDED,
+    ERROR,
+    PROPOSAL_CREATED,
+    RUN_COMPLETED,
+    RUN_STARTED,
+    RUN_STATUS,
+    STEP_COMPLETED,
+    STEP_STARTED,
+    WARNING,
+)
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.agent_run import AgentRun
 from app.db.models.risk import RiskRun
+from app.llmops.spans import (
+    ModelCallTally,
+    counting_converse,
+    traced_converse,
+    traced_tool_call,
+)
 from app.llmops.tracing import NullTracer, Tracer
 from app.privacy.boundary import AuditSink, run_conversation_boundary
 from app.privacy.llm_client import (
@@ -68,6 +82,8 @@ FALLBACK_PLAN_TEXT = "The model did not settle on a plan tonight, so no group is
 NOT_SELECTED_TONIGHT = "not_selected_tonight"
 
 CHOOSE_ACTION_TOOL_NAME = "choose_action"
+
+ACTS_ALONE = "act_alone"
 
 
 class AgentRunInProgress(RuntimeError):
@@ -167,6 +183,8 @@ class AgentLoopState(TypedDict, total=False):
     summary: str
     cost_kes: float | None
     model_call_count: int
+    input_tokens: int
+    output_tokens: int
 
 
 def build_plan_system_prompt(as_of: date) -> str:
@@ -330,17 +348,6 @@ def make_choose_action_tool(
     return choose_action
 
 
-def _run_cost_kes(session: Session, model: str, as_of: date, call_count: int) -> float | None:
-    """What this run's model calls cost, or None when the model has no priced rate."""
-    if call_count <= 0:
-        return None
-    try:
-        config = active_generation_cost_config(session, model, as_of)
-    except (UnknownGenerationModel, GenerationCostConfigMissing):
-        return None
-    return call_count * config.cost_per_generation_kes
-
-
 def build_agent_loop_graph(
     *,
     session: Session,
@@ -352,20 +359,37 @@ def build_agent_loop_graph(
     max_choose_attempts: int = DEFAULT_MAX_CHOOSE_ATTEMPTS,
     tracer: Tracer | None = None,
     audit: AuditSink | None = None,
+    events: EventLog = NO_EVENTS,
 ) -> CompiledStateGraph:
     """Wire the six steps into a compiled graph, ready to invoke() once."""
     tracer = tracer or NullTracer()
 
     def _traced(name: str, fn):
+        """One span per step, handed to the step so it can nest its own work."""
+
         def wrapped(state: AgentLoopState) -> dict[str, Any]:
-            handle = tracer.start_span(trace_id=trace_id, name=name, input=_span_input(state))
-            result = fn(state)
+            handle = tracer.start_span(
+                trace_id=trace_id,
+                name=name,
+                input=_span_input(state),
+                metadata={"run_id": run_id, "as_of": as_of.isoformat()},
+            )
+            events.record(STEP_STARTED, step=name)
+            try:
+                result = fn(state, handle)
+            except Exception as exc:
+                tracer.end_span(
+                    handle, output={"error": str(exc)}, level="ERROR", status_message=str(exc)
+                )
+                events.record(ERROR, about="step", step=name, reason=str(exc))
+                raise
             tracer.end_span(handle, output=_span_output(result))
+            events.record(STEP_COMPLETED, step=name)
             return result
 
         return wrapped
 
-    def gather(state: AgentLoopState) -> dict[str, Any]:
+    def gather(state: AgentLoopState, _span: Any) -> dict[str, Any]:
         thresholds = load_thresholds(session, as_of)
         groups = build_watchlist(session, as_of, thresholds)
         actions = selectable_actions(session, as_of)
@@ -391,12 +415,33 @@ def build_agent_loop_graph(
             },
         )
         session.commit()
+        events.record(
+            RUN_STATUS,
+            stage="gathered",
+            group_count=len([g for g in groups if g.members]),
+            action_count=len(actions),
+        )
         return {"groups": groups, "actions": actions, "thresholds": thresholds}
 
-    def plan(state: AgentLoopState) -> dict[str, Any]:
+    def plan(state: AgentLoopState, span: Any) -> dict[str, Any]:
         system_prompt = build_plan_system_prompt(as_of)
-        call_tool = make_tool_executor(session, run_id)
-        converse = as_converse_call(llm_client, system=system_prompt, tools=TOOL_SPECS)
+        tally = ModelCallTally()
+        call_tool = traced_tool_call(
+            make_tool_executor(session, run_id, events=events),
+            tracer=tracer,
+            trace_id=trace_id,
+            parent=span,
+        )
+        converse = traced_converse(
+            counting_converse(
+                as_converse_call(llm_client, system=system_prompt, tools=TOOL_SPECS), tally
+            ),
+            tracer=tracer,
+            trace_id=trace_id,
+            model=llm_client.model,
+            parent=span,
+            system=system_prompt,
+        )
 
         result = run_conversation_boundary(
             {},
@@ -416,6 +461,7 @@ def build_agent_loop_graph(
             run_id=run_id,
             stopped_reason=result.stopped_reason,
             plan_text=plan_text,
+            **tally.as_detail(),
         )
         record_audit(
             session,
@@ -423,14 +469,23 @@ def build_agent_loop_graph(
             action="plan",
             entity_id=str(run_id),
             run_id=str(run_id),
-            detail={"plan_text": plan_text, "stopped_reason": result.stopped_reason},
+            detail={
+                "plan_text": plan_text,
+                "stopped_reason": result.stopped_reason,
+                **tally.as_detail(),
+            },
         )
         run_row = session.get(AgentRun, run_id)
         run_row.plan_text = plan_text
         session.commit()
-        return {"plan_text": plan_text, "model_call_count": 1}
+        return {
+            "plan_text": plan_text,
+            "model_call_count": tally.calls,
+            "input_tokens": tally.input_tokens,
+            "output_tokens": tally.output_tokens,
+        }
 
-    def choose(state: AgentLoopState) -> dict[str, Any]:
+    def choose(state: AgentLoopState, span: Any) -> dict[str, Any]:
         groups = state["groups"]
         actions = state["actions"]
         candidate_names = [g.name for g in groups if g.members]
@@ -438,7 +493,8 @@ def build_agent_loop_graph(
         choices: dict[str, AgentChoice] = {}
         fell_back = False
         last_error: str | None = None
-        calls_made = 0
+        attempts = 0
+        tally = ModelCallTally()
 
         if candidate_names:
             fell_back = True
@@ -454,7 +510,16 @@ def build_agent_loop_graph(
                     actions=actions, candidate_group_names=candidate_names
                 ),
             )
-            converse = as_converse_call(llm_client, system=system_prompt, tools=tools)
+            converse = traced_converse(
+                counting_converse(
+                    as_converse_call(llm_client, system=system_prompt, tools=tools), tally
+                ),
+                tracer=tracer,
+                trace_id=trace_id,
+                model=llm_client.model,
+                parent=span,
+                system=system_prompt,
+            )
 
             for _ in range(max_choose_attempts):
                 attempt_choices: dict[str, AgentChoice] = {}
@@ -465,8 +530,16 @@ def build_agent_loop_graph(
                     choices=attempt_choices,
                     refusals=refusals,
                 )
-                call_tool = make_tool_executor(
-                    session, run_id, extra_tools={CHOOSE_ACTION_TOOL_NAME: choose_action_tool}
+                call_tool = traced_tool_call(
+                    make_tool_executor(
+                        session,
+                        run_id,
+                        extra_tools={CHOOSE_ACTION_TOOL_NAME: choose_action_tool},
+                        events=events,
+                    ),
+                    tracer=tracer,
+                    trace_id=trace_id,
+                    parent=span,
                 )
 
                 result = run_conversation_boundary(
@@ -478,7 +551,7 @@ def build_agent_loop_graph(
                     trace_id=trace_id,
                     audit=audit,
                 )
-                calls_made += 1
+                attempts += 1
                 if result.stopped_reason != "final_answer":
                     last_error = (
                         refusals[-1]
@@ -499,8 +572,9 @@ def build_agent_loop_graph(
                 for name, choice in choices.items()
             },
             fell_back=fell_back,
-            attempts=calls_made,
+            attempts=attempts,
             last_error=last_error,
+            **tally.as_detail(),
         )
         record_audit(
             session,
@@ -514,17 +588,29 @@ def build_agent_loop_graph(
                     for name, choice in choices.items()
                 },
                 "fell_back": fell_back,
-                "attempts": calls_made,
+                "attempts": attempts,
                 "last_error": last_error,
+                **tally.as_detail(),
             },
         )
         session.commit()
+        events.record(
+            RUN_STATUS,
+            stage="chosen",
+            groups_needing_a_decision=len(candidate_names),
+            chosen_count=len(choices),
+            attempts=attempts,
+        )
+        if fell_back:
+            events.record(WARNING, about="choose", reason="fell_back", last_error=last_error)
         return {
             "choices": choices,
-            "model_call_count": state.get("model_call_count", 0) + calls_made,
+            "model_call_count": state.get("model_call_count", 0) + tally.calls,
+            "input_tokens": state.get("input_tokens", 0) + tally.input_tokens,
+            "output_tokens": state.get("output_tokens", 0) + tally.output_tokens,
         }
 
-    def check(state: AgentLoopState) -> dict[str, Any]:
+    def check(state: AgentLoopState, _span: Any) -> dict[str, Any]:
         checked: dict[str, GroupDecision] = {}
         for group in state["groups"]:
             if not group.members:
@@ -595,7 +681,7 @@ def build_agent_loop_graph(
         session.commit()
         return {"checked": checked}
 
-    def propose(state: AgentLoopState) -> dict[str, Any]:
+    def propose(state: AgentLoopState, _span: Any) -> dict[str, Any]:
         proposals: list[AgentProposal] = []
         for group in state["groups"]:
             decision = state["checked"].get(group.name)
@@ -654,6 +740,25 @@ def build_agent_loop_graph(
                     "included_count": len(decision.included),
                 },
             )
+            events.record(
+                PROPOSAL_CREATED,
+                proposal_id=proposal.proposal_id,
+                group_name=group.name,
+                action_code=decision.action.action_code,
+                included_count=len(decision.included),
+                permission_applied=proposal.permission_applied,
+            )
+            if (
+                decision.action.action_code != DO_NOTHING_ACTION
+                and proposal.permission_applied != ACTS_ALONE
+            ):
+                events.record(
+                    APPROVAL_NEEDED,
+                    proposal_id=proposal.proposal_id,
+                    group_name=group.name,
+                    action_code=decision.action.action_code,
+                    included_count=len(decision.included),
+                )
             proposals.append(proposal)
 
         record_audit(
@@ -667,7 +772,7 @@ def build_agent_loop_graph(
         session.commit()
         return {"proposals": proposals}
 
-    def report(state: AgentLoopState) -> dict[str, Any]:
+    def report(state: AgentLoopState, _span: Any) -> dict[str, Any]:
         proposals = state["proposals"]
         checked = state["checked"]
 
@@ -692,7 +797,7 @@ def build_agent_loop_graph(
         if empty_groups:
             lines.append(f"{empty_groups} groups had nobody in them tonight.")
 
-        cost_kes = _run_cost_kes(session, llm_client.model, as_of, state.get("model_call_count", 0))
+        cost_kes = run_cost_kes(session, llm_client.model, as_of, state.get("model_call_count", 0))
         if cost_kes is not None:
             lines.append(f"This run cost about {cost_kes:.2f} KES in model calls.")
 
@@ -704,7 +809,15 @@ def build_agent_loop_graph(
             action="report",
             entity_id=str(run_id),
             run_id=str(run_id),
-            detail={"summary": summary},
+            detail={
+                "summary": summary,
+                "cost_kes": cost_kes,
+                "model_calls": state.get("model_call_count", 0),
+                "input_tokens": state.get("input_tokens", 0),
+                "output_tokens": state.get("output_tokens", 0),
+                "trace_id": trace_id,
+                "trace_url": tracer.get_trace_url(trace_id),
+            },
         )
         run_row = session.get(AgentRun, run_id)
         run_row.summary = summary
@@ -781,6 +894,7 @@ def execute_agent_run(
     max_choose_attempts: int = DEFAULT_MAX_CHOOSE_ATTEMPTS,
     tracer: Tracer | None = None,
     audit: AuditSink | None = None,
+    events: EventLog | None = None,
 ) -> AgentRun:
     """Run the six-step graph against an agent_run row start_agent_run
     already opened.
@@ -798,11 +912,20 @@ def execute_agent_run(
     tracer = tracer or NullTracer()
     run_id = run.run_id
     trace_id = uuid.uuid4().hex
+    own_events = events is None
+    events = RunEventLog(run_id) if own_events else events
 
     logger.info(
         "agent_loop.run_executing",
         run_id=run_id,
         trace_id=trace_id,
+        as_of=as_of.isoformat(),
+        model=llm_client.model,
+    )
+    events.record(
+        RUN_STARTED,
+        agent="nightly",
+        trigger=run.trigger,
         as_of=as_of.isoformat(),
         model=llm_client.model,
     )
@@ -817,34 +940,49 @@ def execute_agent_run(
         max_choose_attempts=max_choose_attempts,
         tracer=tracer,
         audit=audit,
+        events=events,
     )
 
     try:
-        graph.invoke({})
-    except Exception as exc:
-        logger.exception("agent_loop.run_failed", run_id=run_id, reason=str(exc))
-        session.rollback()
-        run = session.get(AgentRun, run_id)
-        run.state = "failed"
-        run.failure_reason = str(exc)
-        run.finished_at = datetime.now(UTC)
-        record_audit(
-            session,
-            entity_type="agent_run",
-            action="failed",
-            entity_id=str(run_id),
-            run_id=str(run_id),
-            detail={"reason": str(exc)},
-        )
-        session.commit()
-        return run
+        try:
+            graph.invoke({})
+        except Exception as exc:
+            logger.exception("agent_loop.run_failed", run_id=run_id, reason=str(exc))
+            events.record(ERROR, about="run", reason=str(exc))
+            events.record(RUN_COMPLETED, state="failed", reason=str(exc))
+            session.rollback()
+            run = session.get(AgentRun, run_id)
+            run.state = "failed"
+            run.failure_reason = str(exc)
+            run.finished_at = datetime.now(UTC)
+            record_audit(
+                session,
+                entity_type="agent_run",
+                action="failed",
+                entity_id=str(run_id),
+                run_id=str(run_id),
+                detail={"reason": str(exc)},
+            )
+            session.commit()
+            tracer.flush()
+            return run
 
-    run = session.get(AgentRun, run_id)
-    run.state = "completed"
-    run.finished_at = datetime.now(UTC)
-    session.commit()
-    logger.info("agent_loop.run_completed", run_id=run_id, summary=run.summary)
-    return run
+        run = session.get(AgentRun, run_id)
+        run.state = "completed"
+        run.finished_at = datetime.now(UTC)
+        session.commit()
+        tracer.flush()
+        events.record(RUN_COMPLETED, state="completed", cost_kes=run.cost_kes)
+        logger.info(
+            "agent_loop.run_completed",
+            run_id=run_id,
+            summary=run.summary,
+            trace_url=tracer.get_trace_url(trace_id),
+        )
+        return run
+    finally:
+        if own_events:
+            events.close()
 
 
 def run_nightly_agent(
@@ -857,6 +995,7 @@ def run_nightly_agent(
     max_choose_attempts: int = DEFAULT_MAX_CHOOSE_ATTEMPTS,
     tracer: Tracer | None = None,
     audit: AuditSink | None = None,
+    events: EventLog | None = None,
 ) -> AgentRun:
     """Start a run and take it all the way through, in one call.
 
@@ -875,4 +1014,5 @@ def run_nightly_agent(
         max_choose_attempts=max_choose_attempts,
         tracer=tracer,
         audit=audit,
+        events=events,
     )

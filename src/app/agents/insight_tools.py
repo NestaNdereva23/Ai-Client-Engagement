@@ -17,12 +17,14 @@ own; a person decides what happens next.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.agents.events import NO_EVENTS, EventLog
 from app.agents.query_fields import (
     FIELD_NAMES,
     FUND_TABLE,
@@ -32,6 +34,7 @@ from app.agents.query_fields import (
 )
 from app.audit.log import record_audit
 from app.config import get_settings
+from app.db.models.agent_event import INSIGHT_CREATED, INSIGHT_UPDATED
 from app.db.models.agent_insight import (
     INSIGHT_CONFIDENCE_LEVELS,
     INSIGHT_KINDS,
@@ -76,10 +79,51 @@ def insights_written(session: Session, run_id: int) -> int:
     return int(written or 0)
 
 
+class InsightWriteBudget:
+    """How many findings a run has left to write, shared across its groups.
+
+    Counting the run's own rows back from the database is enough while a
+    run writes one finding after another. A run investigating several
+    groups at the same time writes through a session per group, so no group
+    can see what another has written but not yet committed. The count is
+    kept here instead, and every group takes from the same one.
+    """
+
+    def __init__(self, cap: int) -> None:
+        self.cap = cap
+        self._taken = 0
+        self._lock = threading.Lock()
+
+    def take(self) -> bool:
+        """Claim one place, or answer False when the run has spent them all."""
+        with self._lock:
+            if self._taken >= self.cap:
+                return False
+            self._taken += 1
+            return True
+
+    @property
+    def spent(self) -> bool:
+        return self._taken >= self.cap
+
+    @property
+    def taken(self) -> int:
+        return self._taken
+
+
 def make_insight_tools(
-    *, run_id: int, dismissals: list[dict[str, Any]] | None = None
+    *,
+    run_id: int,
+    dismissals: list[dict[str, Any]] | None = None,
+    budget: InsightWriteBudget | None = None,
+    events: EventLog = NO_EVENTS,
 ) -> dict[str, Callable[..., dict[str, Any]]]:
     """Build the write tools for one agent run.
+
+    A budget hands the cap to every group of one run at once, for a run
+    that investigates its groups side by side. Without one the cap is
+    counted from the run's own rows, which is what a single conversation
+    needs.
 
     Each one takes the session first and then the call's arguments, exactly
     like a registered read tool, so the executor dispatches it, scans what it
@@ -104,8 +148,9 @@ def make_insight_tools(
         money_total_kes: float | None = None,
         avoid_saying: str | None = None,
     ) -> dict[str, Any]:
-        cap = get_settings().agent_insight_write_cap
-        if insights_written(session, run_id) >= cap:
+        cap = get_settings().agent_insight_write_cap if budget is None else budget.cap
+        spent = budget.spent if budget is not None else insights_written(session, run_id) >= cap
+        if spent:
             return _refuse("write_cap_reached", f"this run has already written its {cap} findings")
 
         if kind not in INSIGHT_KINDS:
@@ -137,6 +182,9 @@ def make_insight_tools(
             except FilterRefused as exc:
                 return _refuse("bad_filter", str(exc))
 
+        if budget is not None and not budget.take():
+            return _refuse("write_cap_reached", f"this run has already written its {cap} findings")
+
         insight = AgentInsight(
             run_id=run_id,
             kind=kind,
@@ -162,10 +210,19 @@ def make_insight_tools(
             run_id=str(run_id),
             detail={"kind": kind, "group_name": insight.group_name, "title": insight.title},
         )
+        events.record(
+            INSIGHT_CREATED,
+            insight_id=insight.insight_id,
+            insight_kind=kind,
+            group_name=insight.group_name,
+            client_count=client_count,
+            confidence=confidence,
+        )
+        written = budget.taken if budget is not None else insights_written(session, run_id)
         return {
             "status": "written",
             "insight_id": insight.insight_id,
-            "written_this_run": insights_written(session, run_id),
+            "written_this_run": written,
             "cap": cap,
         }
 
@@ -209,6 +266,13 @@ def make_insight_tools(
             entity_id=str(fact.fact_id),
             run_id=str(run_id),
             detail={"insight_id": insight_id, "source_table": source_table},
+        )
+        events.record(
+            INSIGHT_UPDATED,
+            insight_id=insight_id,
+            change="fact_added",
+            fact_id=fact.fact_id,
+            source_table=source_table,
         )
         return {"status": "recorded", "fact_id": fact.fact_id, "insight_id": insight_id}
 
