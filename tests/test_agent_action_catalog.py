@@ -42,6 +42,7 @@ def _spec(action_code: str = "trial_action", **overrides: object) -> ActionSpec:
         "title": "A title",
         "who": "Who it is for",
         "evidence_required": "What must be true first",
+        "response_kind": "automated_email",
         "content_mix": "balanced",
         "default_permission": "suggest_only",
     }
@@ -191,6 +192,7 @@ def test_the_seeded_catalogue_would_pass_its_own_validation(db: None) -> None:
                 message_angle=row.message_angle,
                 channel=row.channel,
                 money_ceiling_kes=row.money_ceiling_kes,
+                response_kind=row.response_kind,
                 paused=row.paused,
             )
             for row in actions.values()

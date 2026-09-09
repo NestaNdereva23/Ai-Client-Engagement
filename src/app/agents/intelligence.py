@@ -59,7 +59,7 @@ from app.db.models.agent_event import (
     WARNING,
 )
 from app.db.models.agent_insight import AgentInsight
-from app.db.models.agent_run import AgentRun
+from app.db.models.agent_run import INTELLIGENCE_AGENT, AgentRun
 from app.db.session import SessionLocal
 from app.llmops.spans import ModelCallTally, traced_aconverse, traced_async_tool_call
 from app.llmops.tracing import NullTracer, Tracer
@@ -840,7 +840,9 @@ async def run_intelligence_agent(
     events: EventLog | None = None,
 ) -> AgentRun:
     """Start a run and take it all the way through, in one call."""
-    run = await asyncio.to_thread(lambda: start_agent_run(session, trigger=trigger, as_of=as_of))
+    run = await asyncio.to_thread(
+        lambda: start_agent_run(session, trigger=trigger, as_of=as_of, kind=INTELLIGENCE_AGENT)
+    )
     return await execute_intelligence_run(
         session,
         run,

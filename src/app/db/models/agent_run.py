@@ -32,6 +32,17 @@ AGENT_RUN_STATES = ("running", "completed", "failed")
 
 AGENT_RUN_TRIGGERS = ("nightly", "manual", "chat")
 
+NIGHTLY_AGENT = "nightly"
+INTELLIGENCE_AGENT = "intelligence"
+ACTION_AGENT = "action"
+
+# Which agent the run belongs to. The two that read the whole book take a
+# while and only one of them may go at a time; an action run answers one
+# accepted finding, so it runs whenever a person asks for it.
+AGENT_KINDS = (NIGHTLY_AGENT, INTELLIGENCE_AGENT, ACTION_AGENT)
+
+BOOK_WIDE_AGENTS = (NIGHTLY_AGENT, INTELLIGENCE_AGENT)
+
 
 class AgentRun(Base):
     """One run of the agent loop, from start to finish."""
@@ -41,6 +52,10 @@ class AgentRun(Base):
         CheckConstraint("state IN ('running', 'completed', 'failed')", name="ck_agent_run_state"),
         CheckConstraint("trigger IN ('nightly', 'manual', 'chat')", name="ck_agent_run_trigger"),
         CheckConstraint("cost_kes IS NULL OR cost_kes >= 0", name="ck_agent_run_cost_not_negative"),
+        CheckConstraint(
+            "agent_kind IN ('nightly', 'intelligence', 'action')",
+            name="ck_agent_run_agent_kind",
+        ),
     )
 
     run_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -50,6 +65,11 @@ class AgentRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="running")
     trigger: Mapped[str] = mapped_column(Text, nullable=False)
+    agent_kind: Mapped[str] = mapped_column(Text, nullable=False, server_default=NIGHTLY_AGENT)
+    # The finding an action run was started for. Null for the other agents.
+    insight_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("agent_insight.insight_id"), nullable=True, index=True
+    )
     risk_run_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("risk_run.run_id", ondelete="SET NULL"), nullable=True
     )

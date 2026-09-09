@@ -53,7 +53,7 @@ from app.db.models.agent_event import (
     WARNING,
 )
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
-from app.db.models.agent_run import AgentRun
+from app.db.models.agent_run import BOOK_WIDE_AGENTS, NIGHTLY_AGENT, AgentRun
 from app.db.models.risk import RiskRun
 from app.llmops.spans import (
     ModelCallTally,
@@ -857,27 +857,42 @@ def _latest_completed_risk_run_id(session: Session) -> str | None:
     )
 
 
-def start_agent_run(session: Session, *, trigger: str, as_of: date | None = None) -> AgentRun:
+def start_agent_run(
+    session: Session,
+    *,
+    trigger: str,
+    as_of: date | None = None,
+    kind: str = NIGHTLY_AGENT,
+    insight_id: int | None = None,
+) -> AgentRun:
     """Open a new agent_run row and commit it, ready for execute_agent_run.
 
-    Refuses with AgentRunInProgress when a run is already under way, rather
-    than queuing silently: only one run goes at a time. Records which risk
-    run's data is on file right now, or that there is none -- the agent
+    A run that reads the whole book refuses with AgentRunInProgress when
+    another one of those is already under way, rather than queuing silently.
+    An action run answers one finding a person has just accepted, so it
+    starts whatever else is going and holds nothing up itself. Records which
+    risk run's data is on file right now, or that there is none -- the agent
     never needs a risk run to exist.
     """
     as_of = as_of or date.today()
-    in_progress = session.scalar(select(AgentRun).where(AgentRun.state == "running").limit(1))
-    if in_progress is not None:
-        raise AgentRunInProgress(f"agent run {in_progress.run_id} is already running")
+    if kind in BOOK_WIDE_AGENTS:
+        in_progress = session.scalar(
+            select(AgentRun)
+            .where(AgentRun.state == "running", AgentRun.agent_kind.in_(BOOK_WIDE_AGENTS))
+            .limit(1)
+        )
+        if in_progress is not None:
+            raise AgentRunInProgress(f"agent run {in_progress.run_id} is already running")
 
     risk_run_id = _latest_completed_risk_run_id(session)
-    run = AgentRun(trigger=trigger, risk_run_id=risk_run_id)
+    run = AgentRun(trigger=trigger, risk_run_id=risk_run_id, agent_kind=kind, insight_id=insight_id)
     session.add(run)
     session.commit()
     logger.info(
         "agent_loop.run_started",
         run_id=run.run_id,
         trigger=trigger,
+        agent_kind=kind,
         as_of=as_of.isoformat(),
         risk_run_id=risk_run_id,
     )

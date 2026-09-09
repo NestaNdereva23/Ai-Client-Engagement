@@ -32,6 +32,31 @@ CONTENT_MIXES = ("learning_only", "mostly_learning", "balanced", "mostly_ask")
 # How much freedom an action has, from weakest to strongest.
 PERMISSION_LEVELS = ("suggest_only", "approve_each", "approve_sample", "act_alone")
 
+# The sorts of thing the business can actually do about a finding. The code
+# that carries an action out reads this rather than matching on action codes,
+# so a new action of a sort that already works needs no new branch.
+RESPONSE_KINDS = (
+    "automated_email",
+    "advisor_task",
+    "phone_call",
+    "campaign_enrolment",
+    "product_teaching",
+    "monitor_only",
+    "escalate",
+    "change_client_state",
+    "ask_a_person_first",
+)
+
+# The sorts of response that reach the client. The rest are internal: a task,
+# an escalation, a change of handling, a note to watch. Only these run the
+# checks about contacting somebody.
+CONTACTING_RESPONSE_KINDS = (
+    "automated_email",
+    "phone_call",
+    "campaign_enrolment",
+    "product_teaching",
+)
+
 
 class AgentActionCatalog(Base):
     """One action the agent may propose, as it stood in one catalogue version."""
@@ -53,6 +78,12 @@ class AgentActionCatalog(Base):
             "money_ceiling_kes IS NULL OR money_ceiling_kes > 0",
             name="ck_agent_action_catalog_money_ceiling_positive",
         ),
+        CheckConstraint(
+            "response_kind IN ('automated_email', 'advisor_task', 'phone_call', "
+            "'campaign_enrolment', 'product_teaching', 'monitor_only', 'escalate', "
+            "'change_client_state', 'ask_a_person_first')",
+            name="ck_agent_action_catalog_response_kind",
+        ),
     )
 
     catalog_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -61,6 +92,8 @@ class AgentActionCatalog(Base):
     action_code: Mapped[str] = mapped_column(Text, nullable=False)
     # A short name a person reads on the screen.
     title: Mapped[str] = mapped_column(Text, nullable=False)
+    # Which sort of response this is, from RESPONSE_KINDS.
+    response_kind: Mapped[str] = mapped_column(Text, nullable=False)
     # Which clients the action is for, in plain words.
     who: Mapped[str] = mapped_column(Text, nullable=False)
     # What must be true in the data before the action may be chosen.
