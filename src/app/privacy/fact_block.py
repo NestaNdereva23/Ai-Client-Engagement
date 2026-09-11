@@ -32,7 +32,7 @@ from app.transform.features import (
 
 # The schema a message is stamped with, so it can be explained later even if
 # the fields change. Bump on any change to the fields or their meaning.
-MODEL_FACT_BLOCK_VERSION = 2
+MODEL_FACT_BLOCK_VERSION = 3
 
 # Same purpose as MODEL_FACT_BLOCK_VERSION, for RiskFactBlock.
 RISK_FACT_BLOCK_VERSION = 1
@@ -44,6 +44,13 @@ RISK_FACT_BLOCK_VERSION = 1
 DEPOSIT_TREND_BANDS = ("rising", "flat", "falling", "unknown")
 
 _MONTH_FORMAT = re.compile(r"^\d{4}-\d{2}$")
+
+# The month a message may name in words, e.g. "December 2026". A month and a
+# year only: there is no day here to leak.
+_MONTH_NAME_FORMAT = re.compile(
+    r"^(January|February|March|April|May|June|July|August|September|October|"
+    r"November|December) \d{4}$"
+)
 
 # The name a message may use for each fund type. A reviewed constant, not
 # ingested text, so a wording change upstream can never widen what a message
@@ -93,6 +100,7 @@ class ModelFactBlock(BaseModel):
     invested_every_n_days: int | None = None
     days_held_after_last_topup: int | None = None
     month_they_left: str | None = None
+    month_the_account_empties: str | None = None
 
     @model_validator(mode="after")
     def _apply_privacy_rules(self) -> ModelFactBlock:
@@ -108,6 +116,12 @@ class ModelFactBlock(BaseModel):
 
         if self.month_they_left is not None and not _MONTH_FORMAT.match(self.month_they_left):
             raise ValueError(f"month_they_left must be YYYY-MM, got '{self.month_they_left}'")
+
+        empties = self.month_the_account_empties
+        if empties is not None and not _MONTH_NAME_FORMAT.match(empties):
+            raise ValueError(
+                f"month_the_account_empties must be a month and a year, got '{empties}'"
+            )
         return self
 
     def to_dict(self, permitted_keys: Sequence[str] | None = None) -> dict[str, Any]:

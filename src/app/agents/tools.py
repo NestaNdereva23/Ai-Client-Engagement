@@ -45,7 +45,7 @@ from app.rules.catalog import load_active_angles
 from app.services.agent_proposals import daily_usage, list_proposals
 from app.services.briefing import gather_briefing_facts, to_risk_fact_block
 from app.services.rag import search as search_rag_corpus
-from app.transform.features import _fund_type as classify_fund_type
+from app.transform.features import fund_type_from_name as classify_fund_type
 
 _MAX_SEARCH_RESULTS = 10
 _SEARCH_SCORE_DECIMALS = 3

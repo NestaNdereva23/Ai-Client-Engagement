@@ -47,3 +47,13 @@ llm_client_numeric_facts = Table(
     Column("days_held_after_last_topup", Integer),
     Column("month_they_left", Text),
 )
+
+# The active book's own figure, for a client who still holds a balance rather
+# than one who left. Coarsened to a month and a year in SQL, like the month
+# above, and kept apart so it can be granted and revoked on its own.
+llm_active_client_facts = Table(
+    "llm_active_client_facts",
+    view_metadata,
+    Column("client_id", BigInteger, primary_key=True),
+    Column("month_the_account_empties", Text),
+)

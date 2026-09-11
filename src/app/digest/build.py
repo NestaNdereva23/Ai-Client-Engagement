@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from sqlalchemy import func, select, tuple_
 from sqlalchemy.orm import Session
 
-from app.db.models.active_clients import ActiveClientInteraction
+from app.db.models.active_clients import HANDLED_INTERACTION_TYPES, ActiveClientInteraction
 from app.db.models.complaints import ClientComplaint
 from app.db.models.digest import DigestLine
 from app.db.models.risk import RiskSnapshot
@@ -78,6 +78,12 @@ class DigestBuildResult:
 def latest_interactions_for(
     session: Session, keys: list[tuple[int, int]]
 ) -> dict[tuple[int, int], ActiveClientInteraction]:
+    """The last time somebody dealt with each client fund.
+
+    Only the types that mean a person handled it count. A flag asking
+    somebody to look is not one of them, so flagging a client never pushes
+    them down the morning list or lets a batch count as worked.
+    """
     if not keys:
         return {}
     latest_ids = {
@@ -91,7 +97,8 @@ def latest_interactions_for(
             .where(
                 tuple_(ActiveClientInteraction.client_id, ActiveClientInteraction.unit_fund_id).in_(
                     keys
-                )
+                ),
+                ActiveClientInteraction.type.in_(HANDLED_INTERACTION_TYPES),
             )
             .group_by(ActiveClientInteraction.client_id, ActiveClientInteraction.unit_fund_id)
         ).all()

@@ -18,7 +18,11 @@ from sqlalchemy.orm import Session
 from app.agents.email_agent import build_system_prompt
 from app.agents.guardrails import DEFAULT_GUARDRAIL_CHECKS, GuardrailFailure
 from app.db.models.rules import ClientMessageIndicators
-from app.db.models.views import llm_client_context, llm_client_numeric_facts
+from app.db.models.views import (
+    llm_active_client_facts,
+    llm_client_context,
+    llm_client_numeric_facts,
+)
 from app.llmops.tracing import NullTracer, Tracer
 from app.privacy.boundary import AuditSink, run_model_boundary, to_model_context
 from app.privacy.fact_block import FUND_DISPLAY_NAMES, ModelFactBlock
@@ -61,6 +65,10 @@ _NUMERIC_FACT_KEYS = (
     "days_held_after_last_topup",
     "month_they_left",
 )
+
+# The one angle allowed to name the month an account runs out, since that
+# month is the whole reason the message is being written.
+FEE_WARNING_ANGLE = "fee_warning"
 
 
 @dataclass(frozen=True)
@@ -148,13 +156,21 @@ def new_generation_state(*, client_id: int, product: str) -> GenerationState:
 
 
 def load_client_facts(
-    session: Session, client_id: int, bands_row: Mapping[str, Any]
+    session: Session,
+    client_id: int,
+    bands_row: Mapping[str, Any],
+    *,
+    extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Assemble one client's fact block from the two allow-listed views.
+    """Assemble one client's fact block from the allow-listed views.
 
     Routed through ModelFactBlock rather than handed over raw, so the amounts
     round and a cadence fact with no real cadence drops out before anything
-    downstream can quote it. None when the client has no numeric row yet.
+    downstream can quote it. None when there is nothing real to say: no
+    numeric row and nothing handed in.
+
+    extra is for a fact only one angle is allowed to use, so it reaches the
+    block by the same validated route as the rest rather than beside it.
     """
     numeric = (
         session.execute(
@@ -165,23 +181,41 @@ def load_client_facts(
         .mappings()
         .one_or_none()
     )
-    if numeric is None:
+    if numeric is None and not extra:
         return None
 
     facts: dict[str, Any] = {
         key: bands_row[key] for key in _BAND_FACT_KEYS if bands_row.get(key) is not None
     }
     for key in _NUMERIC_FACT_KEYS:
-        value = numeric.get(key)
+        value = None if numeric is None else numeric.get(key)
         if value is not None:
             # Postgres returns a computed ratio as numeric, which would coerce
             # to int and silently truncate.
             facts[key] = float(value) if isinstance(value, Decimal) else value
+    facts.update(extra or {})
 
     fund_name = FUND_DISPLAY_NAMES.get(bands_row.get("fund_type") or "")
     if fund_name is not None:
         facts["fund_name"] = fund_name
     return ModelFactBlock(**facts).to_dict()
+
+
+def month_the_account_empties(session: Session, client_id: int) -> str | None:
+    """The month this client's largest holding runs out at the current fee."""
+    return session.scalar(
+        select(llm_active_client_facts.c.month_the_account_empties).where(
+            llm_active_client_facts.c.client_id == client_id
+        )
+    )
+
+
+def _angle_only_facts(session: Session, client_id: int, angle: str) -> dict[str, Any]:
+    """The facts one angle alone may use, empty for every other angle."""
+    if angle != FEE_WARNING_ANGLE:
+        return {}
+    month = month_the_account_empties(session, client_id)
+    return {} if month is None else {"month_the_account_empties": month}
 
 
 def load_client_context(
@@ -214,7 +248,12 @@ def load_client_context(
         chunks=chunks,
         brief=brief,
         contract=load_tier(session, indicators.priority_tier, on),
-        facts=load_client_facts(session, client_id, dict(row)),
+        facts=load_client_facts(
+            session,
+            client_id,
+            dict(row),
+            extra=_angle_only_facts(session, client_id, indicators.message_angle),
+        ),
         priority_tier=indicators.priority_tier,
         rule_version=indicators.rule_version,
         angle_catalog_version=brief.version if brief is not None else None,

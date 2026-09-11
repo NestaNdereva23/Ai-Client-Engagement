@@ -21,6 +21,7 @@ from app.agents.graph import (
     ContextLoader,
     GenerationState,
     GuardrailCheck,
+    PromptBuilder,
     build_generation_graph,
     load_client_context,
     new_generation_state,
@@ -70,13 +71,14 @@ class EmailAgent:
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         audit: AuditSink | None = None,
         tracer: Tracer | None = None,
+        prompt_builder: PromptBuilder = build_system_prompt,
     ) -> None:
         self._tracer = tracer or NullTracer()
         self._graph = build_generation_graph(
             context_loader=context_loader,
             llm_client=llm_client,
             guardrail_checks=guardrail_checks,
-            prompt_builder=build_system_prompt,
+            prompt_builder=prompt_builder,
             max_attempts=max_attempts,
             audit=audit,
             tracer=self._tracer,
@@ -98,6 +100,7 @@ def build_default_agent(
     *,
     audit: AuditSink | None = None,
     tracer: Tracer | None = None,
+    prompt_builder: PromptBuilder = build_system_prompt,
 ) -> EmailAgent:
     """The production EmailAgent: a real configured LLM client, context reads
     bound to this session. The one place a caller outside a test builds a
@@ -110,4 +113,5 @@ def build_default_agent(
         llm_client=get_llm_client(settings),
         audit=audit,
         tracer=tracer,
+        prompt_builder=prompt_builder,
     )

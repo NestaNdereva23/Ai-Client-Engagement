@@ -23,7 +23,7 @@ from app.privacy.llm_client import LLMClient
 from app.risk.signals import SIGNAL_LABELS, SIGNAL_ORDER
 from app.transform.active_features import BALANCE_TIERS
 from app.transform.features import TREND_EPS
-from app.transform.features import _fund_type as classify_fund_type
+from app.transform.features import fund_type_from_name as classify_fund_type
 
 
 class BriefingNotFound(Exception):

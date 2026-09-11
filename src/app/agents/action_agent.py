@@ -20,8 +20,7 @@ to it. Either way every client left out is written down with the reason.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime
 from typing import Any, TypedDict
 
@@ -31,14 +30,18 @@ from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy.orm import Session
 
 from app.agents.action_catalog import selectable_actions
-from app.agents.agent_loop import ACTS_ALONE, GroupDecision, start_agent_run
+from app.agents.agent_loop import GroupDecision, start_agent_run
 from app.agents.events import NO_EVENTS, EventLog, RunEventLog
 from app.agents.insight_members import ResolvedMembers, resolve_insight_members
-from app.agents.insight_state import transition_insight
-from app.agents.permissions import effective_permission
+from app.agents.insight_proposal import (
+    ACCEPTED,
+    InsightBrief,
+    brief_for,
+    gate_members,
+    save_insight_proposal,
+)
 from app.agents.propose import (
     DO_NOTHING_ACTION,
-    group_skip_reasons,
     load_action_or_raise,
     member_key,
     skip_reason_counts,
@@ -46,13 +49,10 @@ from app.agents.propose import (
 from app.agents.run_cost import run_cost_kes
 from app.agents.tool_runtime import make_tool_executor
 from app.agents.tools import TOOL_SPECS
-from app.agents.watchlist import GroupMember
 from app.audit.log import record_audit
-from app.db.models.agent import CONTACTING_RESPONSE_KINDS, AgentActionCatalog
+from app.db.models.agent import AgentActionCatalog
 from app.db.models.agent_event import (
-    APPROVAL_NEEDED,
     ERROR,
-    PROPOSAL_CREATED,
     RUN_COMPLETED,
     RUN_STARTED,
     RUN_STATUS,
@@ -61,7 +61,7 @@ from app.db.models.agent_event import (
     WARNING,
 )
 from app.db.models.agent_insight import AgentInsight
-from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
+from app.db.models.agent_proposal import AgentProposal
 from app.db.models.agent_run import ACTION_AGENT, AgentRun
 from app.llmops.spans import ModelCallTally, counting_converse, traced_converse, traced_tool_call
 from app.llmops.tracing import NullTracer, Tracer
@@ -81,9 +81,6 @@ CHOOSE_RESPONSE_TOOL_NAME = "choose_response"
 DEFAULT_CHOOSE_MAX_TURNS = 6
 DEFAULT_MAX_CHOOSE_ATTEMPTS = 2
 
-ACCEPTED = "accepted"
-ACTED_ON = "acted_on"
-
 NO_CLIENTS_FOUND = "no_clients_found"
 
 NOT_CHOSEN = "no_response_was_chosen"
@@ -93,45 +90,6 @@ MODEL_CHOSE_NOTHING = "the model did not settle on a response for this finding"
 
 class InsightNotActionable(Exception):
     """The finding is not in a state where a response may be decided."""
-
-
-@dataclass(frozen=True)
-class InsightBrief:
-    """One accepted finding, as the action agent is handed it.
-
-    Counts, bands and the finding's own words only. No client id and no
-    client name reaches this shape, the same rule everything the agent reads
-    already follows.
-    """
-
-    insight_id: int
-    kind: str
-    title: str
-    group_name: str
-    client_count: int
-    money_total_kes: float | None
-    confidence: str
-    confidence_reason: str
-    suggestion: str
-    why_now: str
-    avoid_saying: str | None
-
-
-def brief_for(insight: AgentInsight) -> InsightBrief:
-    """The finding, cut down to what the model may read."""
-    return InsightBrief(
-        insight_id=insight.insight_id,
-        kind=insight.kind,
-        title=insight.title,
-        group_name=insight.group_name,
-        client_count=insight.client_count,
-        money_total_kes=insight.money_total_kes,
-        confidence=insight.confidence,
-        confidence_reason=insight.confidence_reason,
-        suggestion=insight.suggestion,
-        why_now=insight.why_now,
-        avoid_saying=insight.avoid_saying,
-    )
 
 
 class ActionAgentState(TypedDict, total=False):
@@ -342,32 +300,6 @@ def make_choose_response_tool(
         }
 
     return choose_response
-
-
-def contact_checks_apply(action: AgentActionCatalog) -> bool:
-    """Whether this response reaches the client, so the contact checks run."""
-    return action.response_kind in CONTACTING_RESPONSE_KINDS
-
-
-def gate_members(
-    session: Session,
-    *,
-    action: AgentActionCatalog,
-    members: Sequence[GroupMember],
-    as_of: date,
-    cooldown_days: int | None,
-) -> dict[tuple[int, int], str | None]:
-    """Why each client fund was left out of this response, or None if it stays."""
-    if contact_checks_apply(action):
-        return group_skip_reasons(session, members, action, as_of, cooldown_days)
-    return {member_key(member): None for member in members}
-
-
-def insight_evidence(brief: InsightBrief) -> str:
-    """The plain language evidence behind the proposal, from the finding."""
-    return (
-        f"{brief.title}, covering {brief.client_count} clients. Why it matters now: {brief.why_now}"
-    )
 
 
 def build_action_agent_graph(
@@ -634,51 +566,17 @@ def build_action_agent_graph(
         return {"decision": decision}
 
     def propose(state: ActionAgentState, _span: Any) -> dict[str, Any]:
-        brief = state["brief"]
         decision = state["decision"]
         resolved = state["resolved"]
         insight = session.get(AgentInsight, insight_id)
 
-        proposal = AgentProposal(
-            run_id=run_id,
-            insight_id=insight_id,
-            action_code=decision.action.action_code,
-            catalog_version=decision.action.version,
-            group_name=brief.group_name,
-            group_definition=(
-                None if insight.group_definition is None else dict(insight.group_definition)
-            ),
-            client_count=len({member.client_id for member in resolved.members}),
-            money_total_kes=sum(member.balance for member in decision.included),
-            evidence=insight_evidence(brief),
-            reason=decision.reason,
-            angle=decision.action.message_angle,
-            content_mix=decision.action.content_mix,
-            permission_applied=effective_permission(session, decision.action.action_code),
-            skip_reason_counts=skip_reason_counts(decision.skip_reasons),
-            status="proposed",
-        )
-        session.add(proposal)
-        session.flush()
-
-        session.add_all(
-            AgentProposalClient(
-                proposal_id=proposal.proposal_id,
-                client_id=member.client_id,
-                unit_fund_id=member.unit_fund_id,
-                included=decision.skip_reasons[member_key(member)] is None,
-                skip_reason=decision.skip_reasons[member_key(member)],
-            )
-            for member in resolved.members
-            if member_key(member) in decision.skip_reasons
-        )
-        session.flush()
-
-        transition_insight(
+        proposal = save_insight_proposal(
             session,
-            insight,
-            to_state=ACTED_ON,
-            reason=f"proposal {proposal.proposal_id} was written for this finding",
+            insight=insight,
+            decision=decision,
+            members=resolved.members,
+            run_id=run_id,
+            events=events,
         )
 
         logger.info(
@@ -689,39 +587,6 @@ def build_action_agent_graph(
             action_code=decision.action.action_code,
             included_count=len(decision.included),
         )
-        record_audit(
-            session,
-            entity_type="agent_proposal",
-            action="create",
-            entity_id=str(proposal.proposal_id),
-            run_id=str(run_id),
-            detail={
-                "insight_id": insight_id,
-                "group_name": brief.group_name,
-                "action_code": decision.action.action_code,
-                "included_count": len(decision.included),
-            },
-        )
-        events.record(
-            PROPOSAL_CREATED,
-            proposal_id=proposal.proposal_id,
-            insight_id=insight_id,
-            group_name=brief.group_name,
-            action_code=decision.action.action_code,
-            included_count=len(decision.included),
-            permission_applied=proposal.permission_applied,
-        )
-        if (
-            decision.action.action_code != DO_NOTHING_ACTION
-            and proposal.permission_applied != ACTS_ALONE
-        ):
-            events.record(
-                APPROVAL_NEEDED,
-                proposal_id=proposal.proposal_id,
-                group_name=brief.group_name,
-                action_code=decision.action.action_code,
-                included_count=len(decision.included),
-            )
         record_audit(
             session,
             entity_type="agent_run",

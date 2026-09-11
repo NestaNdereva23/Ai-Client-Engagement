@@ -16,7 +16,6 @@ from app.transform.features import (
     VALUE_BAND_CUTOFFS,
     _cadence_band,
     _exit_reason,
-    _fund_type,
     _has_depth,
     _hold_band,
     _in_wave,
@@ -26,6 +25,7 @@ from app.transform.features import (
     _recency_band,
     _trend_band,
     _value_band,
+    fund_type_from_name,
 )
 
 LOW, MID, HIGH = VALUE_BAND_CUTOFFS
@@ -148,7 +148,7 @@ def test_exit_reason_mapping(exit_type: str | None, expected: str) -> None:
     ],
 )
 def test_fund_type_mapping(name: str | None, expected: str) -> None:
-    assert _fund_type(name) == expected
+    assert fund_type_from_name(name) == expected
 
 
 @pytest.mark.parametrize(

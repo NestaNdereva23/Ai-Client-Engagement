@@ -28,7 +28,7 @@ from app.rules.tier_contract import (
 )
 from app.transform.features import _priority_tier
 
-SEEDED_VERSION = 1
+SEEDED_VERSION = 4
 IN_FORCE = date(2026, 12, 15)
 
 VALUE_BANDS = ("Low", "Medium", "High", "Top")
@@ -144,18 +144,22 @@ def test_the_word_caps_match_the_tier_contract(db: None) -> None:
     }
 
 
-def test_only_the_top_tier_carries_a_call_brief(db: None) -> None:
+def test_no_tier_carries_a_call_brief(db: None) -> None:
     with SessionLocal() as session:
         tiers = load_active_tiers(session, IN_FORCE)
-    assert tiers["T1"].secondary_channel == "call_brief"
-    assert tiers["T2"].secondary_channel is None
-    assert tiers["T3"].secondary_channel is None
+    assert all(row.secondary_channel != "call_brief" for row in tiers.values())
 
 
-def test_only_the_top_tier_requires_approval_in_the_contract_itself(db: None) -> None:
+def test_every_tier_requires_approval_in_the_contract_itself(db: None) -> None:
     with SessionLocal() as session:
         tiers = load_active_tiers(session, IN_FORCE)
-    assert [tier for tier, row in tiers.items() if row.human_approval] == ["T1"]
+    assert all(row.human_approval for row in tiers.values())
+
+
+def test_the_earlier_versions_no_longer_come_back_into_force(db: None) -> None:
+    with SessionLocal() as session:
+        assert active_tier_contract_version(session, date(2026, 9, 11)) == SEEDED_VERSION
+        assert active_tier_contract_version(session, IN_FORCE) == SEEDED_VERSION
 
 
 @pytest.fixture

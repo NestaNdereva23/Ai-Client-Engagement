@@ -91,7 +91,7 @@ def _fee_warning_reply() -> list[ConversationTurn]:
     return _choose_reply(
         {
             "action_code": "fee_warning",
-            "angle": "sitting_still",
+            "angle": "fee_warning",
             "reason": "their balance runs out within a few months at the current fee",
         }
     )
@@ -216,7 +216,7 @@ def test_an_accepted_finding_becomes_a_proposal_that_names_it() -> None:
     proposal = proposals[0]
     assert proposal.insight_id == insight_id
     assert proposal.action_code == "fee_warning"
-    assert proposal.angle == "sitting_still"
+    assert proposal.angle == "fee_warning"
     assert proposal.status == "proposed"
     assert insight.state == "acted_on"
 
@@ -314,9 +314,7 @@ def test_what_the_finding_says_to_avoid_reaches_the_drafting_prompt() -> None:
 
     assert any(AVOID_SAYING in line for line in lines)
 
-    prompt = build_system_prompt(
-        angle="sitting_still", prompt_variant=None, extra_prohibitions=lines
-    )
+    prompt = build_system_prompt(angle="fee_warning", prompt_variant=None, extra_prohibitions=lines)
     assert AVOID_SAYING in prompt
     for line in lines:
         assert f"- {line}" in prompt

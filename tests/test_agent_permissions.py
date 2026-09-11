@@ -16,9 +16,12 @@ from app.db.models.agent_permission import DEFAULT_PERMISSION, AgentPermission
 from app.db.models.audit import AuditLog
 from app.db.session import SessionLocal
 
+# The two that went live are set so a person reads every message; the rest
+# stay at the safest level.
+LIVE_ACTIONS = ("welcome_and_top_up", "fee_warning")
+
 SEEDED_ACTIONS = (
-    "welcome_and_top_up",
-    "fee_warning",
+    *LIVE_ACTIONS,
     "start_win_back",
     "ask_what_changed",
     "suggest_second_fund",
@@ -50,7 +53,8 @@ def test_every_seeded_action_has_a_setting(db: None) -> None:
         ).all()
     settings = {row.action_code: row.permission for row in rows}
     for action_code in SEEDED_ACTIONS:
-        assert settings[action_code] == "suggest_only"
+        expected = "approve_each" if action_code in LIVE_ACTIONS else "suggest_only"
+        assert settings[action_code] == expected
 
 
 def test_a_seeded_setting_carries_no_caps(db: None) -> None:
