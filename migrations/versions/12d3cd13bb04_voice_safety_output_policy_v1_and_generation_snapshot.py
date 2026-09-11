@@ -1,66 +1,19 @@
-from __future__ import annotations
+from collections.abc import Sequence
+from datetime import UTC, date, datetime
 
-import re
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from datetime import date
-from typing import Any, Protocol, runtime_checkable
+import sqlalchemy as sa
+from alembic import op
+from sqlalchemy.dialects.postgresql import JSONB
 
-from sqlalchemy.orm import Session
+revision: str = "12d3cd13bb04"
+down_revision: str | Sequence[str] | None = "a2e5c9d47f1b"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
-from app.personalization.eligibility import PLACEHOLDER_FACT_FIELDS
-from app.rag.grounding import GroundingChunk
-from app.rules.catalog import load_angle
+_POLICY_VERSION = 1
+_VALID_FROM = date(2026, 9, 11)
 
-ALLOWED_PLACEHOLDERS = (
-    "{{first_name}}",
-    "{{fund_name}}",
-    *(f"{{{{{field}}}}}" for field in PLACEHOLDER_FACT_FIELDS),
-)
-
-REQUIRED_PLACEHOLDERS = ("{{first_name}}", "{{fund_name}}")
-REQUIRED_PLACEHOLDERS_WITH_FACTS = ("{{first_name}}",)
-
-
-@runtime_checkable
-class AngleBrief(Protocol):
-    headline: str
-    who: str
-    claim: str
-    ask: str
-    never: str
-    use: str | None
-
-
-@runtime_checkable
-class FormatContract(Protocol):
-    max_words: int
-    sign_off: str
-
-
-CAMPAIGN_PROHIBITIONS = (
-    "Never state how many times the client invested. Only part of their history "
-    "is visible, so any count would be wrong for much of this population.",
-    "Never mention a balance, an amount still invested, or money waiting in an "
-    "account. Every client here holds none.",
-    "Never imply when the client first invested, or how long the relationship "
-    "lasted in total. Only their recent activity is visible.",
-    "Never state a number that is not in the facts you were given. Do not "
-    "calculate, round, or combine them into a new one.",
-    "Never promise a return, a rate, or a guarantee.",
-    "Never open the email by asking the client to confirm their contact details, "
-    "identity, or preferred email address. Do not use contact verification as a "
-    "generic opener, a personalization technique, or a safety habit, only when the "
-    "selected angle's ask itself is to verify contact details.",
-    "Never ask the client to explain, justify, or confirm a historical transaction "
-    "or account event, unless the selected angle's ask is itself that diagnostic "
-    "question. Facts about how or why an account event happened are for choosing "
-    "the angle, not for putting in front of the client.",
-)
-
-BANNED_WORDS = ("park",)
-
-_BASE_INSTRUCTIONS_CORE = (
+_VOICE_TEXT_V1 = (
     "You are an email drafting agent for dormant investment clients. "
     "Your task is to write one short, natural, professional, personalized win-back email "
     "using ONLY facts explicitly provided in the input. "
@@ -254,291 +207,239 @@ _BASE_INSTRUCTIONS_CORE = (
     "inventing it. "
 )
 
+_BANNED_WORDS_V1 = ["park"]
+_CAMPAIGN_PROHIBITIONS_V1 = [
+    "Never state how many times the client invested. Only part of their history "
+    "is visible, so any count would be wrong for much of this population.",
+    "Never mention a balance, an amount still invested, or money waiting in an "
+    "account. Every client here holds none.",
+    "Never imply when the client first invested, or how long the relationship "
+    "lasted in total. Only their recent activity is visible.",
+    "Never state a number that is not in the facts you were given. Do not "
+    "calculate, round, or combine them into a new one.",
+    "Never promise a return, a rate, or a guarantee.",
+    "Never open the email by asking the client to confirm their contact details, "
+    "identity, or preferred email address. Do not use contact verification as a "
+    "generic opener, a personalization technique, or a safety habit, only when the "
+    "selected angle's ask itself is to verify contact details.",
+    "Never ask the client to explain, justify, or confirm a historical transaction "
+    "or account event, unless the selected angle's ask is itself that diagnostic "
+    "question. Facts about how or why an account event happened are for choosing "
+    "the angle, not for putting in front of the client.",
+]
 
-def _banned_words_clause(words: Sequence[str]) -> str:
-    if not words:
-        return ""
-    return (
-        "BANNED WORDS: "
-        "Never use these words, or any close variant or inflection of them, anywhere in the "
-        "subject or body, even where one seems like the natural word to use: "
-        f"{', '.join(words)}. Rewrite the sentence with a different word instead. "
-    )
-
-
-def _banned_phrases_clause(phrases: Sequence[str]) -> str:
-    if not phrases:
-        return ""
-    return (
-        "BANNED PHRASES: "
-        "Never use these exact phrases anywhere in the subject or body: "
-        f"{', '.join(phrases)}. Rewrite the sentence to avoid them. "
-    )
-
-
-def _resolved_instructions(
-    voice_text: str | None = None,
-    safety_words: Sequence[str] | None = None,
-    safety_phrases: Sequence[str] | None = None,
-) -> str:
-    core = voice_text if voice_text is not None else _BASE_INSTRUCTIONS_CORE
-    words = safety_words if safety_words is not None else BANNED_WORDS
-    phrases = safety_phrases if safety_phrases is not None else ()
-    return core + _banned_words_clause(words) + _banned_phrases_clause(phrases)
-
-
-_BASE_INSTRUCTIONS = _resolved_instructions()
-
-_DEFAULT_VARIANT_GUIDANCE = (
-    "Offer a flexible, low pressure way back in, grounded only in the facts provided."
+_OUTPUT_SCHEMA_NOTE_V1 = (
+    "OUTPUT FORMAT: Return ONLY one valid JSON object with exactly two fields: "
+    '{"subject": "...", "body": "..."}. Do not return markdown, code fences, '
+    "explanations, notes, or any text before or after the JSON object. The output "
+    "must be raw JSON. "
 )
+_PLACEHOLDER_FIELDS_V1 = [
+    "typical_contribution",
+    "largest_contribution",
+    "years_since_exit",
+    "days_held_after_last_topup",
+    "month_they_left",
+    "cadence_interval_days",
+]
+_FORMATTING_RESTRICTIONS_V1 = {
+    "body_target_words": 75,
+    "body_min_words": 50,
+    "body_max_words": 125,
+    "subject_min_words": 4,
+    "subject_max_words_preferred": 7,
+    "subject_max_words": 10,
+    "no_em_dashes": True,
+}
 
 
-def _angle_guidance(angle) -> str:
-    return f"{angle.claim}. {angle.ask}."
+def upgrade() -> None:
+    op.add_column("voice_contract", sa.Column("body_markdown", sa.Text(), nullable=True))
+    op.add_column("voice_contract", sa.Column("persona", sa.Text(), nullable=True))
+    op.add_column("voice_contract", sa.Column("tone", sa.Text(), nullable=True))
+    op.add_column("voice_contract", sa.Column("writing_style", sa.Text(), nullable=True))
+    op.add_column("voice_contract", sa.Column("structure", sa.Text(), nullable=True))
+    op.add_column("voice_contract", sa.Column("subject_guidance", sa.Text(), nullable=True))
+    op.add_column("voice_contract", sa.Column("length_guidance", sa.Text(), nullable=True))
+    op.add_column("voice_contract", sa.Column("readability_guidance", sa.Text(), nullable=True))
+    op.add_column("voice_contract", sa.Column("rendered_text", sa.Text(), nullable=True))
 
+    op.add_column("safety_policy", sa.Column("banned_words", JSONB(), nullable=True))
+    op.add_column("safety_policy", sa.Column("banned_phrases", JSONB(), nullable=True))
+    op.add_column("safety_policy", sa.Column("campaign_prohibitions", JSONB(), nullable=True))
+    op.add_column("safety_policy", sa.Column("claim_restrictions", sa.Text(), nullable=True))
 
-def variant_guidance(
-    prompt_variant: str | None,
-    *,
-    session: Session | None = None,
-    at: date | None = None,
-) -> str:
-    if not prompt_variant:
-        return _DEFAULT_VARIANT_GUIDANCE
-    if session is not None and at is not None:
-        angle = load_angle(session, prompt_variant, at)
-        if angle is not None:
-            return _angle_guidance(angle)
-    return _DEFAULT_VARIANT_GUIDANCE
+    op.add_column("output_policy", sa.Column("output_schema_note", sa.Text(), nullable=True))
+    op.add_column("output_policy", sa.Column("placeholder_rules", JSONB(), nullable=True))
+    op.add_column("output_policy", sa.Column("formatting_restrictions", JSONB(), nullable=True))
 
-
-def template_text(
-    prompt_variant: str | None,
-    *,
-    session: Session | None = None,
-    at: date | None = None,
-    voice_text: str | None = None,
-    safety_words: Sequence[str] | None = None,
-    safety_phrases: Sequence[str] | None = None,
-) -> str:
-    base = _resolved_instructions(voice_text, safety_words, safety_phrases)
-    return f"{base}\n\n{variant_guidance(prompt_variant, session=session, at=at)}"
-
-
-def conditional_prohibitions(facts: Mapping[str, Any] | None) -> list[str]:
-    if not facts:
-        return []
-
-    lines: list[str] = []
-    if not facts.get("invested_every_n_days"):
-        lines.append(
-            "This client has no measurable cadence. Never reference a rhythm, "
-            "a schedule, or a pattern of investing."
-        )
-    if facts.get("exit_reason") == "charge_settled":
-        lines.append(
-            "This client's balance settled to zero through a charge, not a "
-            "withdrawal they asked for. This is internal targeting context only: "
-            "never refer to a decision to leave, and never mention the balance, "
-            "the charge, or the account settling to zero to the client."
-        )
-    return lines
-
-
-def _prohibitions_block(
-    brief: AngleBrief | None,
-    facts: Mapping[str, Any] | None,
-    extra: Sequence[str] = (),
-    campaign_prohibitions: Sequence[str] | None = None,
-) -> str:
-    lines = (
-        list(campaign_prohibitions)
-        if campaign_prohibitions is not None
-        else list(CAMPAIGN_PROHIBITIONS)
+    op.add_column(
+        "generation_runs", sa.Column("tier_contract_version", sa.Integer(), nullable=True)
     )
-    if brief is not None:
-        lines.append(brief.never)
-    lines.extend(extra)
-    lines.extend(conditional_prohibitions(facts))
-    return "\n".join(f"- {line}" for line in lines)
+    op.add_column(
+        "generation_runs", sa.Column("voice_contract_version", sa.Integer(), nullable=True)
+    )
+    op.add_column(
+        "generation_runs", sa.Column("safety_policy_version", sa.Integer(), nullable=True)
+    )
+    op.add_column(
+        "generation_runs", sa.Column("output_policy_version", sa.Integer(), nullable=True)
+    )
+    op.add_column(
+        "generation_runs",
+        sa.Column("personalization_policy_version", sa.Integer(), nullable=True),
+    )
+    op.add_column("generation_runs", sa.Column("context_payload", JSONB(), nullable=True))
 
-
-def _brief_block(brief: AngleBrief) -> str:
-    lines = [
-        f"Angle: {brief.headline}\n"
-        f"What is true about this client: {brief.claim}\n"
-        f"What to ask them for: {brief.ask}"
-    ]
-    if brief.use:
-        lines.append(f"How retrieved facts may be used for this angle: {brief.use}")
-    return "\n".join(lines)
-
-
-def _contract_block(contract: FormatContract) -> str:
-    return (
-        f"Write no more than {contract.max_words} words in the body. "
-        f"Sign the message off as {contract.sign_off}."
+    voice_contract = sa.table(
+        "voice_contract",
+        sa.column("version", sa.Integer),
+        sa.column("status", sa.Text),
+        sa.column("body_markdown", sa.Text),
+        sa.column("rendered_text", sa.Text),
+        sa.column("valid_from", sa.Date),
+        sa.column("valid_to", sa.Date),
+        sa.column("published_at", sa.DateTime(timezone=True)),
+    )
+    op.bulk_insert(
+        voice_contract,
+        [
+            {
+                "version": _POLICY_VERSION,
+                "status": "published",
+                "body_markdown": _VOICE_TEXT_V1,
+                "rendered_text": _VOICE_TEXT_V1,
+                "valid_from": _VALID_FROM,
+                "valid_to": None,
+                "published_at": datetime.now(UTC),
+            }
+        ],
     )
 
-
-def _render_facts(chunks: Sequence[GroundingChunk]) -> str:
-    if not chunks:
-        return "(no facts retrieved; do not cite a rate or return)"
-    return "\n".join(f"- {chunk.text}" for chunk in chunks)
-
-
-def build_system_prompt(
-    *,
-    angle: str | None,
-    prompt_variant: str | None,
-    chunks: Sequence[GroundingChunk] = (),
-    brief: AngleBrief | None = None,
-    contract: FormatContract | None = None,
-    facts: Mapping[str, Any] | None = None,
-    extra_prohibitions: Sequence[str] = (),
-    voice_text: str | None = None,
-    safety_words: Sequence[str] | None = None,
-    safety_phrases: Sequence[str] | None = None,
-    campaign_prohibitions: Sequence[str] | None = None,
-    output_rules: str | None = None,
-) -> str:
-    sections = [
-        template_text(
-            prompt_variant,
-            voice_text=voice_text,
-            safety_words=safety_words,
-            safety_phrases=safety_phrases,
-        )
-    ]
-
-    if output_rules is not None:
-        sections.append(output_rules)
-
-    if brief is not None:
-        sections.append(_brief_block(brief))
-    else:
-        sections.append(f"Angle: {angle or 'winback'}")
-
-    if contract is not None:
-        sections.append(_contract_block(contract))
-
-    sections.append(
-        "You must never:\n"
-        + _prohibitions_block(brief, facts, extra_prohibitions, campaign_prohibitions)
+    safety_policy = sa.table(
+        "safety_policy",
+        sa.column("version", sa.Integer),
+        sa.column("status", sa.Text),
+        sa.column("banned_words", JSONB),
+        sa.column("banned_phrases", JSONB),
+        sa.column("campaign_prohibitions", JSONB),
+        sa.column("valid_from", sa.Date),
+        sa.column("valid_to", sa.Date),
+        sa.column("published_at", sa.DateTime(timezone=True)),
+    )
+    op.bulk_insert(
+        safety_policy,
+        [
+            {
+                "version": _POLICY_VERSION,
+                "status": "published",
+                "banned_words": _BANNED_WORDS_V1,
+                "banned_phrases": [],
+                "campaign_prohibitions": _CAMPAIGN_PROHIBITIONS_V1,
+                "valid_from": _VALID_FROM,
+                "valid_to": None,
+                "published_at": datetime.now(UTC),
+            }
+        ],
     )
 
-    if facts:
-        sections.append(
-            "The client's own figures are given in the user message. Use only "
-            "those, exactly as written, and omit any claim you have no fact for."
-        )
-
-    sections.append(f"Facts you may cite (only these, verbatim):\n{_render_facts(chunks)}")
-    return "\n\n".join(sections)
-
-
-@dataclass(frozen=True)
-class SystemPromptBlocks:
-    cached: str
-    dynamic: str
-
-
-def build_system_prompt_blocks(
-    *,
-    angle: str | None,
-    prompt_variant: str | None,
-    chunks: Sequence[GroundingChunk] = (),
-    brief: AngleBrief | None = None,
-    contract: FormatContract | None = None,
-    facts: Mapping[str, Any] | None = None,
-    extra_prohibitions: Sequence[str] = (),
-) -> SystemPromptBlocks:
-    cached_sections = [template_text(prompt_variant)]
-
-    if brief is not None:
-        cached_sections.append(_brief_block(brief))
-    else:
-        cached_sections.append(f"Angle: {angle or 'winback'}")
-
-    if contract is not None:
-        cached_sections.append(_contract_block(contract))
-
-    cached_sections.append(
-        f"You must never:\n{_prohibitions_block(brief, None, extra_prohibitions)}"
+    output_policy = sa.table(
+        "output_policy",
+        sa.column("version", sa.Integer),
+        sa.column("status", sa.Text),
+        sa.column("output_schema_note", sa.Text),
+        sa.column("placeholder_rules", JSONB),
+        sa.column("formatting_restrictions", JSONB),
+        sa.column("valid_from", sa.Date),
+        sa.column("valid_to", sa.Date),
+        sa.column("published_at", sa.DateTime(timezone=True)),
     )
-    cached_sections.append(f"Facts you may cite (only these, verbatim):\n{_render_facts(chunks)}")
-
-    dynamic_sections = []
-    conditional = conditional_prohibitions(facts)
-    if conditional:
-        dynamic_sections.append(
-            "This client also must never:\n" + "\n".join(f"- {line}" for line in conditional)
-        )
-    if facts:
-        dynamic_sections.append(
-            "The client's own figures are given in the user message. Use only "
-            "those, exactly as written, and omit any claim you have no fact for."
-        )
-
-    return SystemPromptBlocks(
-        cached="\n\n".join(cached_sections), dynamic="\n\n".join(dynamic_sections)
+    op.bulk_insert(
+        output_policy,
+        [
+            {
+                "version": _POLICY_VERSION,
+                "status": "published",
+                "output_schema_note": _OUTPUT_SCHEMA_NOTE_V1,
+                "placeholder_rules": {"fields": _PLACEHOLDER_FIELDS_V1},
+                "formatting_restrictions": _FORMATTING_RESTRICTIONS_V1,
+                "valid_from": _VALID_FROM,
+                "valid_to": None,
+                "published_at": datetime.now(UTC),
+            }
+        ],
     )
 
+    active_configuration = sa.table(
+        "active_configuration",
+        sa.column("component_type", sa.Text),
+        sa.column("component_key", sa.Text),
+        sa.column("active_version", sa.Integer),
+    )
+    op.bulk_insert(
+        active_configuration,
+        [
+            {
+                "component_type": "voice_contract",
+                "component_key": "default",
+                "active_version": _POLICY_VERSION,
+            },
+            {
+                "component_type": "safety_policy",
+                "component_key": "default",
+                "active_version": _POLICY_VERSION,
+            },
+            {
+                "component_type": "output_policy",
+                "component_key": "default",
+                "active_version": _POLICY_VERSION,
+            },
+        ],
+    )
 
-def render_call_brief(
-    *,
-    brief: AngleBrief,
-    facts: Mapping[str, Any],
-    contract: FormatContract | None = None,
-) -> str:
-    lines = [
-        f"Call brief: {brief.headline}",
-        "",
-        f"Who this is: {brief.who}",
-        f"What is true about them: {brief.claim}",
-        f"What to ask for: {brief.ask}",
-        "",
-        "What you must never say:",
-        _prohibitions_block(brief, facts),
-        "",
-        "What we know about them:",
-    ]
-    lines.extend(f"- {key}: {value}" for key, value in sorted(facts.items()))
-    if contract is not None:
-        lines.extend(["", f"Call as: {contract.sign_off}."])
-    return "\n".join(lines)
-
-
-def placeholder_token(field: str) -> str:
-    if field not in PLACEHOLDER_FACT_FIELDS:
-        raise ValueError(f"{field!r} is not a placeholder-filled fact")
-    return f"{{{{{field}}}}}"
-
-
-def required_placeholders(facts: Mapping[str, Any] | None = None) -> tuple[str, ...]:
-    if facts and facts.get("fund_name"):
-        return REQUIRED_PLACEHOLDERS_WITH_FACTS
-    return REQUIRED_PLACEHOLDERS
+    op.alter_column("voice_contract", "rendered_text", nullable=False)
 
 
-def has_required_placeholders(draft: str, facts: Mapping[str, Any] | None = None) -> bool:
-    return all(token in draft for token in required_placeholders(facts))
+def downgrade() -> None:
+    op.execute(
+        sa.text(
+            "DELETE FROM active_configuration "
+            "WHERE component_type IN ('voice_contract', 'safety_policy', 'output_policy') "
+            "AND component_key = 'default'"
+        )
+    )
+    op.execute(
+        sa.text("DELETE FROM output_policy WHERE version = :v").bindparams(v=_POLICY_VERSION)
+    )
+    op.execute(
+        sa.text("DELETE FROM safety_policy WHERE version = :v").bindparams(v=_POLICY_VERSION)
+    )
+    op.execute(
+        sa.text("DELETE FROM voice_contract WHERE version = :v").bindparams(v=_POLICY_VERSION)
+    )
 
+    op.drop_column("generation_runs", "context_payload")
+    op.drop_column("generation_runs", "personalization_policy_version")
+    op.drop_column("generation_runs", "output_policy_version")
+    op.drop_column("generation_runs", "safety_policy_version")
+    op.drop_column("generation_runs", "voice_contract_version")
+    op.drop_column("generation_runs", "tier_contract_version")
 
-_COMPOUND_HYPHEN = re.compile(r"(?<=\w)-(?=\w)")
-_REMAINING_DASH = re.compile(r"\s*(?:-+|[‒–—―])\s*")
-_DUPLICATE_PUNCTUATION = re.compile(r",\s*(?=[,.;:!?])")
-_SPACE_BEFORE_PUNCTUATION = re.compile(r"\s+([,.;:!?])")
-_REPEATED_SPACE = re.compile(r"[ \t]{2,}")
+    op.drop_column("output_policy", "formatting_restrictions")
+    op.drop_column("output_policy", "placeholder_rules")
+    op.drop_column("output_policy", "output_schema_note")
 
+    op.drop_column("safety_policy", "claim_restrictions")
+    op.drop_column("safety_policy", "campaign_prohibitions")
+    op.drop_column("safety_policy", "banned_phrases")
+    op.drop_column("safety_policy", "banned_words")
 
-def strip_ai_dashes(text: str) -> str:
-    if not text:
-        return text
-    cleaned = _COMPOUND_HYPHEN.sub(" ", text)
-    cleaned = _REMAINING_DASH.sub(", ", cleaned)
-    cleaned = _DUPLICATE_PUNCTUATION.sub("", cleaned)
-    cleaned = _SPACE_BEFORE_PUNCTUATION.sub(r"\1", cleaned)
-    cleaned = _REPEATED_SPACE.sub(" ", cleaned)
-    return cleaned.strip(" ,")
+    op.drop_column("voice_contract", "rendered_text")
+    op.drop_column("voice_contract", "readability_guidance")
+    op.drop_column("voice_contract", "length_guidance")
+    op.drop_column("voice_contract", "subject_guidance")
+    op.drop_column("voice_contract", "structure")
+    op.drop_column("voice_contract", "writing_style")
+    op.drop_column("voice_contract", "tone")
+    op.drop_column("voice_contract", "persona")
+    op.drop_column("voice_contract", "body_markdown")

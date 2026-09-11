@@ -12,6 +12,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -20,7 +21,6 @@ CONFIGURATION_STATUSES = ("draft", "published", "archived")
 
 
 class ActiveConfiguration(Base):
-    # One row per (component_type, component_key): the version live now.
     __tablename__ = "active_configuration"
     __table_args__ = (
         UniqueConstraint(
@@ -38,8 +38,6 @@ class ActiveConfiguration(Base):
 
 
 class VoiceContract(Base):
-    # Content columns (body_markdown, rendered_text, and the structured
-    # fields) land once the prompt assembly work that reads them does.
     __tablename__ = "voice_contract"
     __table_args__ = (
         UniqueConstraint("version", name="uq_voice_contract_version"),
@@ -51,6 +49,15 @@ class VoiceContract(Base):
     voice_contract_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="published")
+    body_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
+    persona: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tone: Mapped[str | None] = mapped_column(Text, nullable=True)
+    writing_style: Mapped[str | None] = mapped_column(Text, nullable=True)
+    structure: Mapped[str | None] = mapped_column(Text, nullable=True)
+    subject_guidance: Mapped[str | None] = mapped_column(Text, nullable=True)
+    length_guidance: Mapped[str | None] = mapped_column(Text, nullable=True)
+    readability_guidance: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rendered_text: Mapped[str] = mapped_column(Text, nullable=False)
     valid_from: Mapped[date | None] = mapped_column(Date, nullable=True)
     valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_by: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -62,8 +69,6 @@ class VoiceContract(Base):
 
 
 class SafetyPolicy(Base):
-    # Content columns (banned_words, banned_phrases, campaign_prohibitions,
-    # claim_restrictions) land once the guardrail read path is switched over.
     __tablename__ = "safety_policy"
     __table_args__ = (
         UniqueConstraint("version", name="uq_safety_policy_version"),
@@ -75,6 +80,10 @@ class SafetyPolicy(Base):
     safety_policy_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="published")
+    banned_words: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    banned_phrases: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    campaign_prohibitions: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    claim_restrictions: Mapped[str | None] = mapped_column(Text, nullable=True)
     valid_from: Mapped[date | None] = mapped_column(Date, nullable=True)
     valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_by: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -86,8 +95,6 @@ class SafetyPolicy(Base):
 
 
 class OutputPolicy(Base):
-    # Content columns (output_schema_note, placeholder_rules,
-    # formatting_restrictions) land once prompt assembly reads them.
     __tablename__ = "output_policy"
     __table_args__ = (
         UniqueConstraint("version", name="uq_output_policy_version"),
@@ -99,6 +106,9 @@ class OutputPolicy(Base):
     output_policy_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="published")
+    output_schema_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    placeholder_rules: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    formatting_restrictions: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     valid_from: Mapped[date | None] = mapped_column(Date, nullable=True)
     valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_by: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -110,8 +120,6 @@ class OutputPolicy(Base):
 
 
 class FactEligibilityRule(Base):
-    # One row per (policy_version, angle, fact_field). angle None means the
-    # row applies to every angle unless a more specific row overrides it.
     __tablename__ = "fact_eligibility_rule"
     __table_args__ = (
         UniqueConstraint(
@@ -135,8 +143,6 @@ class FactEligibilityRule(Base):
 
 
 class PersonalizationPolicy(Base):
-    # The version wrapper for a set of fact_eligibility_rule rows, added
-    # alongside that table.
     __tablename__ = "personalization_policy"
     __table_args__ = (
         UniqueConstraint("version", name="uq_personalization_policy_version"),

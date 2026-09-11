@@ -1,13 +1,3 @@
-"""The prompt/model version registry and the generation runs stamped with them.
-
-prompt_versions and model_versions are content addressed: a version is
-identified by a hash of what it actually contains (the template text, or the
-provider/model/temperature/max_tokens tuple), so calling with an unchanged
-config reuses the same row and a genuine change registers a new one. There is
-no time-windowed validity here, unlike business_rules; version identity is
-the content itself.
-"""
-
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -20,8 +10,6 @@ from app.db.base import Base
 
 
 class ModelVersion(Base):
-    """One distinct (provider, model, temperature, max_tokens) configuration."""
-
     __tablename__ = "model_versions"
 
     model_version_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -36,8 +24,6 @@ class ModelVersion(Base):
 
 
 class PromptVersion(Base):
-    """One distinct rendered instruction template for a channel and prompt variant."""
-
     __tablename__ = "prompt_versions"
 
     prompt_version_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -52,8 +38,6 @@ class PromptVersion(Base):
 
 
 class GenerationRun(Base):
-    """One terminal draft-generation run, stamped with the versions that produced it."""
-
     __tablename__ = "generation_runs"
 
     run_id: Mapped[str] = mapped_column(Text, primary_key=True, autoincrement=False)
@@ -62,42 +46,33 @@ class GenerationRun(Base):
         BigInteger, ForeignKey("clients.client_id"), nullable=False, index=True
     )
     product: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # The client's resolved tier at generation time, snapshotted here because
-    # client_message_indicators is upserted per client and can move on to a
-    # different tier later; the angle is snapshotted the same way, on
-    # prompt_versions.angle.
     priority_tier: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
-    # The reproducibility stamp: which data pull, rule set, and angle
-    # catalogue produced this message, so it can still be explained months
-    # later even after all three have since moved on. Set once at persist
-    # time and never updated afterward, the same as every other field on
-    # this row.
     data_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     rule_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     angle_catalog_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tier_contract_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    voice_contract_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    safety_policy_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_policy_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    personalization_policy_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     prompt_version_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("prompt_versions.prompt_version_id"), nullable=False
     )
     model_version_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("model_versions.model_version_id"), nullable=False
     )
-    status: Mapped[str] = mapped_column(Text, nullable=False)  # "accepted" | "rejected"
+    status: Mapped[str] = mapped_column(Text, nullable=False)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False)
     failed_guardrail: Mapped[str | None] = mapped_column(Text, nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # The model's structured output exactly as generated, pre re-attachment;
-    # null when a run never reached structured-output parsing (an inbound
-    # boundary leak never reaches here at all, an outbound leak or malformed
-    # JSON leaves no validated content to store).
     ai_draft_content: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    context_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 
 class LLMRequest(Base):
-    """One model call attempt within a generation run."""
-
     __tablename__ = "llm_requests"
 
     request_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -115,8 +90,6 @@ class LLMRequest(Base):
 
 
 class LLMResponse(Base):
-    """The reply for one llm_requests row; raw_output is null for a pii_scan block."""
-
     __tablename__ = "llm_responses"
 
     response_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -131,8 +104,6 @@ class LLMResponse(Base):
 
 
 class TokenUsage(Base):
-    """Token counts for one llm_requests row; null when the client didn't report usage."""
-
     __tablename__ = "token_usage"
 
     token_usage_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -147,8 +118,6 @@ class TokenUsage(Base):
 
 
 class ToolCall(Base):
-    """One non-LLM tool invocation (context fetch, RAG retrieval) within a run."""
-
     __tablename__ = "tool_calls"
 
     tool_call_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -164,8 +133,6 @@ class ToolCall(Base):
 
 
 class TraceRef(Base):
-    """The Langfuse trace id (and resolved URL, when available) for one run."""
-
     __tablename__ = "trace_refs"
 
     run_id: Mapped[str] = mapped_column(
@@ -179,8 +146,6 @@ class TraceRef(Base):
 
 
 class RubricVersion(Base):
-    """One distinct LLM-as-judge rubric, content addressed like prompt_versions."""
-
     __tablename__ = "rubric_versions"
 
     rubric_version_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -192,8 +157,6 @@ class RubricVersion(Base):
 
 
 class Evaluation(Base):
-    """One judge scoring of one generation run's draft."""
-
     __tablename__ = "evaluations"
 
     evaluation_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

@@ -1,12 +1,3 @@
-"""Register prompt and model versions, and stamp them on a generation run.
-
-Both registries are get or create by content hash: registering an unchanged
-(model, temperature, max_tokens) tuple or an unchanged prompt template reuses
-the existing row; a genuine change writes a new one. This module is the only
-place a GenerationState gets persisted, deliberately kept outside
-agents.graph so the graph itself never needs a database to be unit tested.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -29,7 +20,6 @@ from app.llmops.judge import rubric_text
 from app.privacy.llm_client import resolve_judge_model_config
 from app.schemas.evaluation import EvaluationScores
 
-# The only channel today; a future SMS/WhatsApp agent registers its own.
 EMAIL_CHANNEL = "email"
 
 
@@ -45,7 +35,6 @@ def get_or_create_model_version(
     temperature: float | None,
     max_tokens: int,
 ) -> ModelVersion:
-    """Look up the (provider, model, temperature, max_tokens) tuple, or register it."""
     config_hash = _hash(f"{provider}|{model_id}|{temperature}|{max_tokens}")
     existing = session.scalar(select(ModelVersion).where(ModelVersion.config_hash == config_hash))
     if existing is not None:
@@ -70,13 +59,6 @@ def get_or_create_prompt_version(
     prompt_variant: str,
     angle: str,
 ) -> PromptVersion:
-    """Look up the rendered instruction template for this variant, or register it.
-
-    Hashed together with channel/prompt_variant/angle, not the rendered text
-    alone: with no per-variant guidance dictionary left, an uncatalogued
-    variant's rendered text is now the same generic default for every angle,
-    so text alone could no longer tell two different variants apart.
-    """
     text = template_text(prompt_variant or None)
     template_hash = _hash(f"{channel}|{prompt_variant}|{angle}|{text}")
     existing = session.scalar(
@@ -104,15 +86,6 @@ def persist_generation_run(
     *,
     channel: str = EMAIL_CHANNEL,
 ) -> GenerationRun:
-    """Stamp a terminal GenerationState with its prompt and model version, and store it.
-
-    state must be terminal (status "accepted" or "rejected"); settings is the
-    same config that built the LLMClient the run used, so the stamped model
-    version always matches what actually generated the draft. ai_draft_content
-    is state["raw_structured_output"] unchanged, which is null for a run that
-    never reached structured-output parsing (a pii_scan leak or malformed
-    JSON).
-    """
     model_version = get_or_create_model_version(
         session,
         provider=settings.llm_provider,
@@ -136,6 +109,11 @@ def persist_generation_run(
         data_date=state.get("data_date"),
         rule_version=state.get("rule_version"),
         angle_catalog_version=state.get("angle_catalog_version"),
+        tier_contract_version=state.get("tier_contract_version"),
+        voice_contract_version=state.get("voice_contract_version"),
+        safety_policy_version=state.get("safety_policy_version"),
+        output_policy_version=state.get("output_policy_version"),
+        personalization_policy_version=state.get("personalization_policy_version"),
         prompt_version_id=prompt_version.prompt_version_id,
         model_version_id=model_version.model_version_id,
         status=state["status"],
@@ -143,6 +121,7 @@ def persist_generation_run(
         failed_guardrail=state.get("failed_guardrail"),
         reason=state.get("reason"),
         ai_draft_content=state.get("raw_structured_output"),
+        context_payload=state.get("context"),
     )
     session.add(run)
     session.flush()
@@ -150,7 +129,6 @@ def persist_generation_run(
 
 
 def get_or_create_rubric_version(session: Session) -> RubricVersion:
-    """Look up the current judge rubric, or register it."""
     text = rubric_text()
     rubric_hash = _hash(text)
     existing = session.scalar(select(RubricVersion).where(RubricVersion.rubric_hash == rubric_hash))
@@ -169,11 +147,6 @@ def persist_evaluation(
     scores: EvaluationScores,
     settings: Settings,
 ) -> Evaluation:
-    """Stamp a judge's scores with the rubric/model version that produced them, and store them.
-
-    Stamps the model judge_draft actually ran with, not generation's: they
-    differ whenever judge_llm_provider/judge_llm_model are set.
-    """
     rubric_version = get_or_create_rubric_version(session)
     provider, model_id, temperature, max_tokens = resolve_judge_model_config(settings)
     model_version = get_or_create_model_version(

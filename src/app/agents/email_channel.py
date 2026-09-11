@@ -1,13 +1,3 @@
-"""EmailAgent: the email channel, registered behind the orchestrator.
-
-Wraps the generation graph (agents.graph) and EmailAgent's own prompt logic
-(agents.email_agent) behind the orchestrator.ChannelAgent shape: a channel
-name plus one generate(client_id, product) method. This is module
-wires the two together, so agents.graph never has to import
-agents.email_agent's default prompt builder itself in a way that would stop
-a different channel from reusing the graph machinery.
-"""
-
 from __future__ import annotations
 
 import functools
@@ -18,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.agents.email_agent import build_system_prompt, render_call_brief
 from app.agents.graph import (
     DEFAULT_MAX_ATTEMPTS,
+    ConfigResolver,
     ContextLoader,
     GenerationState,
     GuardrailCheck,
@@ -27,23 +18,17 @@ from app.agents.graph import (
     new_generation_state,
 )
 from app.agents.guardrails import DEFAULT_GUARDRAIL_CHECKS
+from app.agents.prompt_config import resolve_active_configuration
 from app.config import Settings, get_settings
 from app.llmops.tracing import NullTracer, Tracer
 from app.privacy.boundary import AuditSink
 from app.privacy.llm_client import LLMClient, get_llm_client
 
 CHANNEL = "email"
-# What a tier contract names when its tier gets a brief as well as an email.
 CALL_BRIEF_CHANNEL = "call_brief"
 
 
 def attach_call_brief(state: GenerationState) -> GenerationState:
-    """Render the accompanying call brief for a tier whose contract adds one.
-
-    A second render of the draft that was already accepted, from the same
-    angle brief and the same facts, so the brief and the email cannot tell
-    the client two different stories.
-    """
     contract = state.get("contract")
     brief = state.get("brief")
     if state.get("status") != "accepted" or contract is None or brief is None:
@@ -58,8 +43,6 @@ def attach_call_brief(state: GenerationState) -> GenerationState:
 
 
 class EmailAgent:
-    """The email channel agent: channel_id "email", draft generation via agents.graph."""
-
     channel = CHANNEL
 
     def __init__(
@@ -72,6 +55,7 @@ class EmailAgent:
         audit: AuditSink | None = None,
         tracer: Tracer | None = None,
         prompt_builder: PromptBuilder = build_system_prompt,
+        config_resolver: ConfigResolver | None = None,
     ) -> None:
         self._tracer = tracer or NullTracer()
         self._graph = build_generation_graph(
@@ -79,13 +63,13 @@ class EmailAgent:
             llm_client=llm_client,
             guardrail_checks=guardrail_checks,
             prompt_builder=prompt_builder,
+            config_resolver=config_resolver,
             max_attempts=max_attempts,
             audit=audit,
             tracer=self._tracer,
         )
 
     def generate(self, *, client_id: int, product: str) -> GenerationState:
-        """Run the graph for one client's draft and return the terminal state."""
         state = new_generation_state(client_id=client_id, product=product)
         try:
             final = self._graph.invoke(state)
@@ -102,11 +86,6 @@ def build_default_agent(
     tracer: Tracer | None = None,
     prompt_builder: PromptBuilder = build_system_prompt,
 ) -> EmailAgent:
-    """The production EmailAgent: a real configured LLM client, context reads
-    bound to this session. The one place a caller outside a test builds a
-    real ChannelAgent, so a campaign batch run and a reviewer's regenerate
-    request both go through the identical wiring.
-    """
     settings = settings or get_settings()
     return EmailAgent(
         context_loader=functools.partial(load_client_context, session),
@@ -114,4 +93,5 @@ def build_default_agent(
         audit=audit,
         tracer=tracer,
         prompt_builder=prompt_builder,
+        config_resolver=functools.partial(resolve_active_configuration, session),
     )
