@@ -13,12 +13,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.db.models.rules import MessageAngleCatalog
+from app.rules import versioning
 
 # Every field carries meaning a message depends on, so none may be blank.
 # use joined the brief after version 1 shipped; the column stays nullable so
@@ -80,9 +81,10 @@ def save_catalog_version(
     """
     validate_angles(angles)
 
-    if session.scalar(select(func.count()).where(MessageAngleCatalog.version == version)):
+    if versioning.version_exists(session, "message_angle_catalog", version):
         raise CatalogValidationError(f"version {version} already exists and may not be mutated")
 
+    published_at = datetime.now(UTC)
     session.add_all(
         MessageAngleCatalog(
             version=version,
@@ -96,10 +98,19 @@ def save_catalog_version(
             held=spec.held,
             valid_from=valid_from,
             valid_to=valid_to,
+            status="published",
+            published_at=published_at,
         )
         for spec in angles
     )
     session.flush()
+
+    if valid_to is None:
+        for spec in angles:
+            versioning.record_published_version(
+                session, "message_angle_catalog", spec.angle, version
+            )
+
     return len(angles)
 
 

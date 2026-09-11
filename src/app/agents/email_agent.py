@@ -16,19 +16,9 @@ from typing import Any, Protocol, runtime_checkable
 
 from sqlalchemy.orm import Session
 
+from app.personalization.eligibility import PLACEHOLDER_FACT_FIELDS
 from app.rag.grounding import GroundingChunk
 from app.rules.catalog import load_angle
-
-# Facts a bucketed template stands in with a token instead of a real number,
-# since its draft is shared by clients who each have their own value.
-PLACEHOLDER_FACT_FIELDS = (
-    "typical_contribution",
-    "largest_contribution",
-    "years_since_exit",
-    "days_held_after_last_topup",
-    "month_they_left",
-    "cadence_interval_days",
-)
 
 # Every token a draft may ever use for anything client specific: the two a
 # draft has always needed, plus one per field in PLACEHOLDER_FACT_FIELDS. A

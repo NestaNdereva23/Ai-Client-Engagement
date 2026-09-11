@@ -12,6 +12,7 @@ from datetime import date, datetime
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Float,
@@ -32,6 +33,9 @@ class BusinessRule(Base):
     __tablename__ = "business_rules"
     __table_args__ = (
         UniqueConstraint("version", "priority", name="uq_business_rules_version_priority"),
+        CheckConstraint(
+            "status IN ('draft', 'published', 'archived')", name="ck_business_rules_status"
+        ),
     )
 
     rule_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -43,8 +47,12 @@ class BusinessRule(Base):
     urgency: Mapped[str] = mapped_column(Text, nullable=False)
     priority_tier: Mapped[str] = mapped_column(Text, nullable=False)
     prompt_variant: Mapped[str] = mapped_column(Text, nullable=False)
-    valid_from: Mapped[date] = mapped_column(Date, nullable=False)
+    valid_from: Mapped[date | None] = mapped_column(Date, nullable=True)
     valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="published")
+    created_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -62,6 +70,10 @@ class MessageAngleCatalog(Base):
     __tablename__ = "message_angle_catalog"
     __table_args__ = (
         UniqueConstraint("version", "angle", name="uq_message_angle_catalog_version_angle"),
+        CheckConstraint(
+            "status IN ('draft', 'published', 'archived')",
+            name="ck_message_angle_catalog_status",
+        ),
     )
 
     catalog_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -84,8 +96,12 @@ class MessageAngleCatalog(Base):
     # A client still resolves, generates, and reviews normally; only the
     # final send is held. Lifted by a catalogue change, not a deploy.
     held: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
-    valid_from: Mapped[date] = mapped_column(Date, nullable=False)
+    valid_from: Mapped[date | None] = mapped_column(Date, nullable=True)
     valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="published")
+    created_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -98,7 +114,12 @@ class TierContract(Base):
     """
 
     __tablename__ = "tier_contract"
-    __table_args__ = (UniqueConstraint("version", "tier", name="uq_tier_contract_version_tier"),)
+    __table_args__ = (
+        UniqueConstraint("version", "tier", name="uq_tier_contract_version_tier"),
+        CheckConstraint(
+            "status IN ('draft', 'published', 'archived')", name="ck_tier_contract_status"
+        ),
+    )
 
     contract_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
@@ -115,8 +136,12 @@ class TierContract(Base):
     # every message in this tier's cohorts must be reviewed -- see
     # app.rules.tier_contract.cohort_sample_rate_for.
     cohort_sample_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
-    valid_from: Mapped[date] = mapped_column(Date, nullable=False)
+    valid_from: Mapped[date | None] = mapped_column(Date, nullable=True)
     valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="published")
+    created_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.db.models.rules import BusinessRule
+from app.rules import versioning
+from app.rules.versioning import DEFAULT_COMPONENT_KEY
 from app.transform.features import (
     CADENCE_BANDS,
     EXIT_REASONS,
@@ -154,9 +156,10 @@ def save_version(
     if validate:
         validate_rules(rules)
 
-    if session.scalar(select(func.count()).where(BusinessRule.version == version)):
+    if versioning.version_exists(session, "business_rules", version):
         raise RuleValidationError(f"version {version} already exists and may not be mutated")
 
+    published_at = datetime.now(UTC)
     rows = [
         BusinessRule(
             version=version,
@@ -169,11 +172,19 @@ def save_version(
             prompt_variant=rule.prompt_variant,
             valid_from=valid_from,
             valid_to=valid_to,
+            status="published",
+            published_at=published_at,
         )
         for rule in rules
     ]
     session.add_all(rows)
     session.flush()
+
+    if valid_to is None:
+        versioning.record_published_version(
+            session, "business_rules", DEFAULT_COMPONENT_KEY, version
+        )
+
     return len(rows)
 
 
