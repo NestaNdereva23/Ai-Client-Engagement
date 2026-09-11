@@ -1,0 +1,340 @@
+"""Runs one read tool, checks what it returns, and records the call."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any
+
+import structlog
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
+
+from app.agents.query_tools import QUERY_TOOL_FUNCTIONS, QUERY_TOOL_NAMES
+from app.agents.tools import TOOL_FUNCTIONS
+from app.config import get_settings
+from app.db.models.agent_run import AgentToolCall
+from app.privacy.scanners import OutboundLeak, scan_outbound
+
+logger = structlog.get_logger(__name__)
+
+ToolCall = Callable[[str, dict[str, Any]], Any]
+
+AsyncToolCall = Callable[[str, dict[str, Any]], Awaitable[Any]]
+
+
+class UnknownTool(Exception):
+    """The dispatcher was asked for a tool name that is not registered."""
+
+
+def next_ordinal(session: Session, run_id: int) -> int:
+    """The ordinal the next tool call in this run should use."""
+    highest = session.scalar(
+        select(func.coalesce(func.max(AgentToolCall.ordinal), 0)).where(
+            AgentToolCall.run_id == run_id
+        )
+    )
+    return highest + 1
+
+
+def record_tool_call(
+    session: Session,
+    *,
+    run_id: int,
+    ordinal: int,
+    tool_name: str,
+    tool_input: dict[str, Any],
+    tool_output: dict[str, Any],
+) -> AgentToolCall:
+    """Write one tool call to the trace. The caller owns the transaction."""
+    row = AgentToolCall(
+        run_id=run_id,
+        ordinal=ordinal,
+        tool_name=tool_name,
+        tool_input=tool_input,
+        tool_output=tool_output,
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def run_tool(session: Session, tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+    """Call one read tool by name and return its output.
+
+    Raises UnknownTool for a name outside the registry, and lets a TypeError
+    through for an argument a tool does not accept: both mean the request
+    was built wrong, not that the tool itself refused it. A tool's own
+    refusals come back as an ordinary dict with an "error" key, the same
+    shape as any other result.
+    """
+    function = TOOL_FUNCTIONS.get(tool_name)
+    if function is None:
+        raise UnknownTool(tool_name)
+    return function(session, **tool_input)
+
+
+def scanned_tool_output(output: dict[str, Any]) -> str:
+    """The JSON text one tool result becomes, once it has passed the scanner.
+
+    Raises OutboundLeak, unchanged, when that text carries a live contact
+    channel. Nothing here strips the leak and carries on: a tool producing
+    one is a bug in that tool, and the run must stop rather than send it
+    on to the model.
+    """
+    rendered = json.dumps(output, sort_keys=True, default=str)
+    scan_outbound(rendered)
+    return rendered
+
+
+def make_tool_executor(
+    session: Session,
+    run_id: int,
+    *,
+    extra_tools: Mapping[str, Callable[..., dict[str, Any]]] | None = None,
+) -> ToolCall:
+    """Build the call_tool function for one agent run.
+
+    The result matches the shape app.privacy.boundary.run_conversation_boundary
+    expects, so it can be handed to it directly. Every call this makes, a
+    success, a refusal, an unknown tool name, or a bad argument, is written
+    to agent_tool_call before it is returned; a call whose output is blocked
+    by the scanner is written too, with the output withheld, and then raised.
+
+    extra_tools adds tool functions beyond the read-only registry in
+    app.agents.tools, for one step that needs a tool of its own, such as
+    choose recording its decisions. Each takes the session first, then the
+    call's arguments, exactly like a registered tool, and is dispatched,
+    recorded and scanned the same way.
+    """
+    extra_tools = extra_tools or {}
+
+    def call_tool(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+        ordinal = next_ordinal(session, run_id)
+        logger.info(
+            "agent_tool_call",
+            run_id=run_id,
+            ordinal=ordinal,
+            tool_name=tool_name,
+            tool_input=tool_input,
+        )
+
+        try:
+            if tool_name in extra_tools:
+                output = extra_tools[tool_name](session, **tool_input)
+            else:
+                output = run_tool(session, tool_name, tool_input)
+        except UnknownTool:
+            output = {
+                "error": "unknown_tool",
+                "message": f"'{tool_name}' is not a tool this agent can call",
+            }
+            logger.warning("agent_tool_call.unknown_tool", run_id=run_id, tool_name=tool_name)
+            record_tool_call(
+                session,
+                run_id=run_id,
+                ordinal=ordinal,
+                tool_name=tool_name,
+                tool_input=tool_input,
+                tool_output=output,
+            )
+            return output
+        except TypeError as exc:
+            output = {"error": "invalid_input", "message": str(exc)}
+            logger.warning(
+                "agent_tool_call.invalid_input", run_id=run_id, tool_name=tool_name, error=str(exc)
+            )
+            record_tool_call(
+                session,
+                run_id=run_id,
+                ordinal=ordinal,
+                tool_name=tool_name,
+                tool_input=tool_input,
+                tool_output=output,
+            )
+            return output
+
+        try:
+            scanned_tool_output(output)
+        except OutboundLeak:
+            withheld = {"error": "output_blocked", "message": "this tool's answer was withheld"}
+            logger.error("agent_tool_call.output_blocked", run_id=run_id, tool_name=tool_name)
+            record_tool_call(
+                session,
+                run_id=run_id,
+                ordinal=ordinal,
+                tool_name=tool_name,
+                tool_input=tool_input,
+                tool_output=withheld,
+            )
+            raise
+
+        logger.info(
+            "agent_tool_call.result",
+            run_id=run_id,
+            ordinal=ordinal,
+            tool_name=tool_name,
+            tool_output=output,
+        )
+        record_tool_call(
+            session,
+            run_id=run_id,
+            ordinal=ordinal,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            tool_output=output,
+        )
+        return output
+
+    return call_tool
+
+
+def make_async_tool_executor(
+    session: Session,
+    run_id: int,
+    *,
+    extra_tools: Mapping[str, Callable[..., dict[str, Any]]] | None = None,
+) -> AsyncToolCall:
+    """The async twin of make_tool_executor, for a run that awaits its tools.
+
+    Every tool here reads the database through the blocking session, so the
+    work runs in a worker thread rather than on the event loop. It is the
+    same executor underneath: the dispatch, the scanner and the tool call
+    record are one code path, not two.
+    """
+    call_tool = make_tool_executor(session, run_id, extra_tools=extra_tools)
+
+    async def async_call_tool(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+        return await asyncio.to_thread(call_tool, tool_name, tool_input)
+
+    return async_call_tool
+
+
+async def next_ordinal_async(session: AsyncSession, run_id: int) -> int:
+    """The async twin of next_ordinal."""
+    highest = await session.scalar(
+        select(func.coalesce(func.max(AgentToolCall.ordinal), 0)).where(
+            AgentToolCall.run_id == run_id
+        )
+    )
+    return highest + 1
+
+
+async def record_tool_call_async(
+    session: AsyncSession,
+    *,
+    run_id: int,
+    ordinal: int,
+    tool_name: str,
+    tool_input: dict[str, Any],
+    tool_output: dict[str, Any],
+) -> None:
+    """The async twin of record_tool_call.
+
+    This one commits. An investigation query that runs too long rolls its
+    own transaction back, and the trace of what was asked must survive that.
+    """
+    session.add(
+        AgentToolCall(
+            run_id=run_id,
+            ordinal=ordinal,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            tool_output=tool_output,
+        )
+    )
+    await session.commit()
+
+
+async def query_calls_made(session: AsyncSession, run_id: int) -> int:
+    """How many investigation queries this run has already spent."""
+    made = await session.scalar(
+        select(func.count())
+        .select_from(AgentToolCall)
+        .where(AgentToolCall.run_id == run_id, AgentToolCall.tool_name.in_(QUERY_TOOL_NAMES))
+    )
+    return int(made or 0)
+
+
+def make_async_query_executor(
+    session: AsyncSession,
+    run_id: int,
+    *,
+    tools: Mapping[str, Callable[..., Awaitable[dict[str, Any]]]] | None = None,
+) -> AsyncToolCall:
+    """Build the call_tool function for the agent's own investigation queries.
+
+    These tools read through the async session rather than a worker thread,
+    because waiting on the database is most of what they do. Everything else
+    matches the blocking executor: an unknown name, a bad argument and a
+    tool's own refusal all come back as an ordinary dict, every call is
+    written to agent_tool_call, and no output reaches the model before the
+    scanner has seen it. One extra rule lives here: a run may only spend so
+    many of these, and the call past the budget is refused and recorded.
+    """
+    registry = dict(tools or QUERY_TOOL_FUNCTIONS)
+    budget = get_settings().agent_query_call_budget
+
+    async def call_tool(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+        ordinal = await next_ordinal_async(session, run_id)
+        logger.info(
+            "agent_query_call",
+            run_id=run_id,
+            ordinal=ordinal,
+            tool_name=tool_name,
+            tool_input=tool_input,
+        )
+
+        async def finish(output: dict[str, Any]) -> dict[str, Any]:
+            await record_tool_call_async(
+                session,
+                run_id=run_id,
+                ordinal=ordinal,
+                tool_name=tool_name,
+                tool_input=tool_input,
+                tool_output=output,
+            )
+            return output
+
+        function = registry.get(tool_name)
+        if function is None:
+            return await finish(
+                {
+                    "error": "unknown_tool",
+                    "message": f"'{tool_name}' is not a tool this agent can call",
+                }
+            )
+
+        if await query_calls_made(session, run_id) >= budget:
+            logger.warning("agent_query_call.budget_spent", run_id=run_id, budget=budget)
+            return await finish(
+                {
+                    "error": "budget_spent",
+                    "message": (f"this run has already used its {budget} investigation queries"),
+                }
+            )
+
+        try:
+            output = await function(session, **tool_input)
+        except TypeError as exc:
+            return await finish({"error": "invalid_input", "message": str(exc)})
+
+        try:
+            scanned_tool_output(output)
+        except OutboundLeak:
+            logger.error("agent_query_call.output_blocked", run_id=run_id, tool_name=tool_name)
+            await finish({"error": "output_blocked", "message": "this tool's answer was withheld"})
+            raise
+
+        logger.info(
+            "agent_query_call.result",
+            run_id=run_id,
+            ordinal=ordinal,
+            tool_name=tool_name,
+            tool_output=output,
+        )
+        return await finish(output)
+
+    return call_tool

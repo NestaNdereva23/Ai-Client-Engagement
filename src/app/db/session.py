@@ -5,25 +5,32 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import get_settings
 
 _settings = get_settings()
 
+
+def timezone_connect_args(timezone: str) -> dict[str, str]:
+    """Ask for the time zone as a connection startup option.
+
+    It has to be a startup option rather than a SET statement, because a SET
+    runs inside the transaction it lands in and is undone by the rollback the
+    pool does when the connection is handed back.
+    """
+    return {"options": f"-c timezone={timezone}"}
+
+
 engine = create_engine(
     _settings.database_url,
     pool_pre_ping=True,
+    pool_size=_settings.db_pool_size,
+    max_overflow=_settings.db_max_overflow,
+    connect_args=timezone_connect_args(_settings.db_timezone),
     future=True,
 )
-
-
-@event.listens_for(engine, "connect")
-def _set_session_timezone(dbapi_connection, _connection_record):
-    """Make each connection report timestamps in the configured time zone."""
-    with dbapi_connection.cursor() as cursor:
-        cursor.execute(f"SET TIME ZONE '{_settings.db_timezone}'")
 
 
 SessionLocal = sessionmaker(

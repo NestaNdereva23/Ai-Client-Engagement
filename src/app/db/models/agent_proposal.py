@@ -70,9 +70,9 @@ class AgentProposal(Base):
     )
 
     proposal_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    # The night the agent ran that produced this proposal. No foreign key yet
-    # because the table that would hold that run does not exist yet.
-    run_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    run_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("agent_run.run_id"), nullable=True
+    )
     action_code: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     catalog_version: Mapped[int] = mapped_column(Integer, nullable=False)
     group_name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -82,6 +82,9 @@ class AgentProposal(Base):
     money_total_kes: Mapped[float | None] = mapped_column(Float, nullable=True)
     evidence: Mapped[str] = mapped_column(Text, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
+    # {skip_reason: count of client funds left out for it}. Excludes only;
+    # a fully included group has an empty dict, never a missing one.
+    skip_reason_counts: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     # Null for an action that sends no message.
     angle: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_mix: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -93,6 +96,9 @@ class AgentProposal(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     campaign_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("campaign.campaign_id"), nullable=True
+    )
+    insight_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("agent_insight.insight_id"), nullable=True, index=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

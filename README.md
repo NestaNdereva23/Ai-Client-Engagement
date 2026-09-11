@@ -61,6 +61,38 @@ Phase 2 adds risk scoring for the active client book, on top of the same ingesti
 
 They follow existing conventions: `db/models/` gets one file per new table group (`active_clients.py`, `risk.py`, `fa_assignment.py`, `complaints.py`, `digest.py`), and `api/routers/` plus `schemas/` get one file per new domain (`risk.py`, `digest.py`, `briefing.py`), mounted the same way the Phase 1 routers are.
 
+## Which database session to use
+
+There are two ways into the database, and they run side by side.
+
+Use the blocking one for almost everything. A normal endpoint is a plain
+`def` that takes `Depends(get_session)`. FastAPI runs it in a worker thread,
+so it does not hold up anything else, and every endpoint in the app works
+this way today.
+
+Use the async one only when the request has to stay open for a long time: a
+live stream, a long agent run, anything that waits and waits. Those are
+`async def` and take `Depends(get_async_session)`. An async request waits
+without holding a thread at all, which is the whole point.
+
+Never mix them. An `async def` that touches the blocking session stops the
+event loop for every other request for as long as the database call takes.
+`tests/test_async_route_discipline.py` walks every route and fails the build
+if that ever appears.
+
+The two paths have separate pools, sized by `DB_POOL_SIZE` /
+`DB_MAX_OVERFLOW` and `DB_ASYNC_POOL_SIZE` / `DB_ASYNC_MAX_OVERFLOW` (the
+async pair defaults to the blocking pair). Separate caps mean a burst on one
+path cannot take every connection and leave the other waiting. Both together
+have to stay under the Postgres connection limit.
+
+Both paths ask for `DB_TIMEZONE` as a connection startup option, so a
+timestamp does not depend on which path wrote it.
+
+Where a helper is needed on both sides, add an async twin next to the
+blocking one rather than rewriting it; `app.services.agent_runs` is the
+example.
+
 ## Design principles
 
 - No client personal data (names, contact details, identifiers) is ever sent to the LLM. Personal data lives in a separate `pii_vault` table that a restricted DB role owns; the model-facing path runs under a safe role that can read only `llm_client_context`, an allow-listed view of tiers and buckets.

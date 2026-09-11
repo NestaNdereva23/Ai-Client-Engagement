@@ -13,6 +13,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
+from app.db.models.agent_run import AgentRun
 from app.db.session import SessionLocal
 
 _FUND_ID = 994
@@ -53,6 +54,45 @@ def test_a_proposal_can_be_created_by_hand(proposal: int) -> None:
     assert row.status == "proposed"
     assert row.decided_by is None
     assert row.campaign_id is None
+    assert row.run_id is None
+
+
+def test_a_proposal_can_carry_the_run_it_came_from(db: None) -> None:
+    with SessionLocal() as session:
+        agent_run = AgentRun(trigger="manual")
+        session.add(agent_run)
+        session.flush()
+        proposal = AgentProposal(
+            action_code="start_win_back",
+            catalog_version=1,
+            group_name="test proposal group",
+            client_count=1,
+            evidence="one dormant client",
+            reason="win back before they close the account",
+            permission_applied="suggest_only",
+            run_id=agent_run.run_id,
+        )
+        session.add(proposal)
+        session.commit()
+        run_id, proposal_id = agent_run.run_id, proposal.proposal_id
+
+    with SessionLocal() as session:
+        row = session.get(AgentProposal, proposal_id)
+        assert row.run_id == run_id
+
+    with SessionLocal() as session:
+        session.execute(delete(AgentProposal).where(AgentProposal.proposal_id == proposal_id))
+        session.execute(delete(AgentRun).where(AgentRun.run_id == run_id))
+        session.commit()
+
+
+def test_a_proposal_cannot_point_at_a_run_that_does_not_exist(proposal: int) -> None:
+    with SessionLocal() as session:
+        row = session.get(AgentProposal, proposal)
+        row.run_id = 999_999_999
+        with pytest.raises(IntegrityError):
+            session.commit()
+        session.rollback()
 
 
 def test_an_included_client_needs_no_reason(proposal: int) -> None:

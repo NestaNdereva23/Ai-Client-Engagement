@@ -13,6 +13,9 @@ from fastapi import APIRouter
 from app.api.routers import (
     active_clients,
     admin,
+    agent_insights,
+    agent_proposals,
+    agent_runs,
     audit,
     briefing,
     campaigns,
@@ -30,6 +33,9 @@ from app.api.routers import (
 
 router = APIRouter(prefix="/api/v1")
 router.include_router(review.router)
+router.include_router(agent_proposals.router)
+router.include_router(agent_insights.router)
+router.include_router(agent_runs.router)
 router.include_router(ingestion.router)
 router.include_router(data_quality.router)
 router.include_router(clients.router)

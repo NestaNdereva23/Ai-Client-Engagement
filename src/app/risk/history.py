@@ -16,10 +16,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from sqlalchemy import select, tuple_
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.orm import Session
 
-from app.db.models.risk import RiskSnapshot
+from app.db.models.risk import RiskRun, RiskSnapshot
 from app.risk.routing import RouteResult
 from app.risk.scoring import ScoreResult
 
@@ -133,3 +133,53 @@ def previous_scores(
         )
     )
     return {(row.client_id, row.unit_fund_id): row.risk_score for row in session.execute(latest)}
+
+
+def latest_completed_run_id(session: Session) -> str | None:
+    """The most recent nightly run that finished, or None if none has.
+
+    A run still going never counts, so a caller never compares tonight's
+    half written routes against last night's finished ones.
+    """
+    return session.scalar(
+        select(RiskRun.run_id)
+        .where(RiskRun.state == "completed")
+        .order_by(RiskRun.finished_at.desc(), RiskRun.started_at.desc())
+        .limit(1)
+    )
+
+
+def routes_for_run(session: Session, run_id: str) -> dict[tuple[int, int], str | None]:
+    """Every client fund's queue as this run left it, in one read."""
+    rows = session.execute(
+        select(RiskSnapshot.client_id, RiskSnapshot.unit_fund_id, RiskSnapshot.route).where(
+            RiskSnapshot.run_id == run_id
+        )
+    )
+    return {(row.client_id, row.unit_fund_id): row.route for row in rows}
+
+
+def routes_before_run(session: Session, run_id: str) -> dict[tuple[int, int], str | None]:
+    """Every client fund's queue as the run before this one left it.
+
+    Bounded by the first snapshot this run wrote rather than by run_id
+    alone, so a run that started later can never be mistaken for the one
+    that came before. A client fund with no earlier snapshot is absent, the
+    same "no history yet" previous_scores reports.
+    """
+    first_snapshot = (
+        select(func.min(RiskSnapshot.snapshot_id))
+        .where(RiskSnapshot.run_id == run_id)
+        .scalar_subquery()
+    )
+    rows = session.execute(
+        select(RiskSnapshot.client_id, RiskSnapshot.unit_fund_id, RiskSnapshot.route)
+        .where(RiskSnapshot.snapshot_id < first_snapshot)
+        .distinct(RiskSnapshot.client_id, RiskSnapshot.unit_fund_id)
+        .order_by(
+            RiskSnapshot.client_id,
+            RiskSnapshot.unit_fund_id,
+            RiskSnapshot.snapshot_id.desc(),
+        )
+    )
+    return {(row.client_id, row.unit_fund_id): row.route for row in rows}

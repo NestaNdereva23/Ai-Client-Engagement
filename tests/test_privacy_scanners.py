@@ -155,6 +155,48 @@ def test_outbound_blocks_a_contact_channel(leaked: str) -> None:
         scan_outbound(leaked)
 
 
+def test_outbound_allows_a_plain_calendar_date() -> None:
+    # A date's own digits ("2026-09-08") are seven-plus digits with
+    # separators, the same shape as a phone or account number. A date on its
+    # own is not a leak and must not trip account_or_phone.
+    assert scan_outbound("Today is 2026-09-08. Nothing else to report.") is None
+
+
+def test_outbound_still_blocks_a_phone_number_next_to_a_date() -> None:
+    with pytest.raises(OutboundLeak):
+        scan_outbound("On 2026-09-08 they called 0712345678.")
+
+
 def test_a_placeholder_is_not_a_literal_even_if_it_names_the_value() -> None:
     # The real first name is Jane; the placeholder token is allowed.
     assert scan_outbound("Hi {{first_name}}", identifiers=["Jane"]) is None
+
+
+def test_outbound_allows_a_tool_result_with_a_large_group_total() -> None:
+    # A read tool's own aggregate totals (list_groups' money_total_kes,
+    # client_count) can easily be seven digits or more once rendered as
+    # JSON text, the same shape account_or_phone is meant to catch. They
+    # must still pass, since these are group aggregates, never one client's
+    # own figure.
+    rendered = (
+        '{"client_count": 15009, "fund_count": 3, '
+        '"group_name": "healthy_one_fund", "money_total_kes": 123456789.5}'
+    )
+    assert scan_outbound(rendered) is None
+
+
+def test_outbound_still_blocks_a_quoted_phone_number_in_a_tool_result() -> None:
+    # A quoted string value, unlike a bare JSON number, is exactly the shape
+    # a leaked phone or account number would take if a tool ever returned
+    # one by mistake.
+    with pytest.raises(OutboundLeak):
+        scan_outbound('{"phone": "0712345678"}')
+
+
+def test_outbound_allows_a_tool_result_with_a_full_timestamp() -> None:
+    # get_contact_history renders proposed_at/decided_at with isoformat(),
+    # which includes a time and a timezone offset. Those digits are just as
+    # phone-or-account-shaped as the date's own digits and must be stripped
+    # the same way.
+    rendered = '{"decided_at": null, "proposed_at": "2026-09-08T10:00:33.858921+03:00"}'
+    assert scan_outbound(rendered) is None

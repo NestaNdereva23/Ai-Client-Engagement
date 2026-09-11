@@ -23,6 +23,9 @@ Stages, in order:
     8. Pre-draft the AI narrations for the clients the digest surfaced, when
        that feature is on. Best effort too, and runs last precisely because
        nothing ahead of it depends on it finishing.
+    9. Build tonight's watch list and write a proposed action for each group
+       that has someone in it, using a fixed rule table. No model is
+       involved yet, and nothing sends. Best effort, same as steps 7 and 8.
 
 A completed run is never redone: calling run() again with the same run_id
 just returns its summary. A run that failed partway resumes: ingestion picks
@@ -43,6 +46,7 @@ import structlog
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.agents.agent_loop import AgentRunInProgress, run_nightly_agent
 from app.audit.log import record_audit
 from app.campaigns.nurture_bridge import enroll_auto_checkin_clients
 from app.config import get_settings
@@ -53,7 +57,7 @@ from app.db.session import SessionLocal
 from app.ingestion.complaints_source import ComplaintsSource, get_complaints_source
 from app.ingestion.endpoints import resolve_endpoint
 from app.ingestion.fa_assignment_source import FaAssignmentSource, get_fa_assignment_source
-from app.privacy.llm_client import get_briefing_llm_client
+from app.privacy.llm_client import get_agent_llm_client, get_briefing_llm_client
 from app.risk.fa_allocation import ClientLoad
 from app.risk.history import write_snapshot
 from app.risk.routing import RoutableRow, RouteResult, route_population
@@ -420,6 +424,7 @@ class RiskDetectionWorker:
             self._enroll_auto_checkin(changes)
             self._send_digest_emails(digest_run.digest_run_id, allocation.covering)
             self._warm_narratives(digest_run.digest_run_id)
+            self._run_agent(run.reference_ts.date())
 
             result = RiskRunResult(
                 run_id=run.run_id,
@@ -494,6 +499,37 @@ class RiskDetectionWorker:
                 send_digest_emails(session, digest_run_id, covering=covering)
         except Exception:
             logger.exception("risk_detection.digest_email_failed", digest_run_id=digest_run_id)
+
+    def _run_agent(self, as_of: date) -> None:
+        """Start the agent once this risk run has finished, when the setting
+        allows it.
+
+        Best effort and in its own session, same reason as the digest email
+        and the narration warm up: the run has already committed, and a
+        problem here is not a reason to fail a pass that scored and routed
+        the whole book. Skipped entirely when the setting is off, and skipped
+        without being treated as a failure when a run is already going.
+        """
+        settings = get_settings()
+        if not settings.agent_run_after_risk_detection:
+            return
+        try:
+            with self._session_factory() as session:
+                run = run_nightly_agent(
+                    session,
+                    trigger="nightly",
+                    llm_client=get_agent_llm_client(settings),
+                    as_of=as_of,
+                )
+                logger.info(
+                    "risk_detection.agent_run_started",
+                    agent_run_id=run.run_id,
+                    agent_run_state=run.state,
+                )
+        except AgentRunInProgress as exc:
+            logger.info("risk_detection.agent_run_skipped", reason=str(exc))
+        except Exception:
+            logger.exception("risk_detection.agent_run_failed", as_of=as_of.isoformat())
 
     def _ingest(self, run: RiskRun) -> None:
         """Pull the active-clients feed into raw_staging, keyed by this run's own id."""

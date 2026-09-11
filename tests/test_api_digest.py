@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from app.db.models.active_clients import ActiveClientFund, ActiveClientInteraction
 from app.db.models.digest import DigestLine, DigestRun
@@ -148,6 +148,20 @@ def test_a_group_with_no_lines_today_is_an_empty_list_not_a_404(db, cleanup) -> 
 
 
 def test_no_digest_generated_today_is_a_404(db) -> None:
+    # This checks a global fact (no digest_run row for today, in any group),
+    # so it has to clear any stray one first rather than assume the shared
+    # test database starts empty.
+    with SessionLocal() as session:
+        today_run_ids = session.scalars(
+            select(DigestRun.digest_run_id).where(
+                func.date(DigestRun.generated_at) == func.current_date()
+            )
+        ).all()
+        if today_run_ids:
+            session.execute(delete(DigestLine).where(DigestLine.digest_run_id.in_(today_run_ids)))
+            session.execute(delete(DigestRun).where(DigestRun.digest_run_id.in_(today_run_ids)))
+            session.commit()
+
     response = client.get("/api/v1/digest/fund:1")
     assert response.status_code == 404
 
