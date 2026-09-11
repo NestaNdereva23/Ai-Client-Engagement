@@ -18,7 +18,7 @@ from app.db.models.rules import ClientMessageIndicators
 from app.risk.scoring import band_rank
 from app.rules.engine import resolve
 from app.rules.store import load_active_rules
-from app.transform.features import PRIORITY_TIERS
+from app.transform.features import PRIORITY_TIERS, fund_type_from_name
 from app.transform.load import upsert
 
 AUTO_CHECKIN_CAMPAIGN_TYPE = "auto_checkin_nurture"
@@ -147,16 +147,20 @@ def _priority_tier_for(session: Session, client_id: int) -> str:
     return _RISK_BAND_TIER.get(worst, _DEFAULT_PRIORITY_TIER)
 
 
-def _upsert_client_features(session: Session, client_id: int, priority_tier: str) -> None:
-    rows = [
-        {
-            "client_id": client_id,
-            "active_book_auto_checkin": True,
-            "purchase_depth": _BRIDGE_PURCHASE_DEPTH,
-            "priority_tier": priority_tier,
-        }
-    ]
-    upsert(session, ClientFeatures, rows, "client_id", _CLIENT_FEATURES_UPDATE)
+def _upsert_client_features(
+    session: Session, client_id: int, priority_tier: str, *, fund_type: str | None = None
+) -> None:
+    row = {
+        "client_id": client_id,
+        "active_book_auto_checkin": True,
+        "purchase_depth": _BRIDGE_PURCHASE_DEPTH,
+        "priority_tier": priority_tier,
+    }
+    update = list(_CLIENT_FEATURES_UPDATE)
+    if fund_type is not None:
+        row["fund_type"] = fund_type
+        update.append("fund_type")
+    upsert(session, ClientFeatures, [row], "client_id", update)
 
 
 def _resolve_and_upsert_indicator(
@@ -182,6 +186,51 @@ def _resolve_and_upsert_indicator(
         }
     ]
     upsert(session, ClientMessageIndicators, rows, "client_id", _INDICATOR_UPDATE)
+
+
+def prepare_client_for_drafting(
+    session: Session,
+    client_id: int,
+    *,
+    angle: str,
+    chosen_by: str,
+    catalog_version: int,
+) -> bool:
+    """Make one client of the active book ready to be drafted for, on a set angle.
+
+    The auto check-in path lets the rules pick the angle. Here the angle is
+    already decided by the response a person approved, so it is written
+    straight in, with what chose it recorded in place of a rule.
+
+    False when the client holds nothing in the active book, so there is
+    nothing to write a message about.
+    """
+    aggregate = _aggregate_active_funds(session, client_id)
+    if aggregate is None:
+        return False
+    _ensure_funds(session, aggregate.fund_ids)
+    _insert_client_if_absent(session, aggregate)
+    priority_tier = _priority_tier_for(session, client_id)
+    _upsert_client_features(
+        session,
+        client_id,
+        priority_tier,
+        fund_type=fund_type_from_name(_fund_name(session, aggregate.unit_fund_id)),
+    )
+    rows = [
+        {
+            "client_id": client_id,
+            "message_angle": angle,
+            "urgency": _TIER_URGENCY[priority_tier],
+            "priority_tier": priority_tier,
+            "prompt_variant": angle,
+            "rule_id": None,
+            "rule_name": chosen_by,
+            "rule_version": catalog_version,
+        }
+    ]
+    upsert(session, ClientMessageIndicators, rows, "client_id", _INDICATOR_UPDATE)
+    return True
 
 
 def _find_campaign(session: Session) -> Campaign | None:

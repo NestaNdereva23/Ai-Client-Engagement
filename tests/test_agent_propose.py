@@ -126,7 +126,7 @@ def test_an_eligible_client_is_included_under_the_mapped_action(clean: None) -> 
 
     assert proposal.action_code == "fee_warning"
     assert proposal.status == "proposed"
-    assert proposal.permission_applied == "suggest_only"
+    assert proposal.permission_applied == "approve_each"
     assert proposal.campaign_id is None
     assert _included(proposal_id) == {ELIGIBLE_CLIENT: True}
 

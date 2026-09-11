@@ -18,7 +18,12 @@ from datetime import date
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
-from app.db.models.agent import CONTENT_MIXES, PERMISSION_LEVELS, AgentActionCatalog
+from app.db.models.agent import (
+    CONTENT_MIXES,
+    PERMISSION_LEVELS,
+    RESPONSE_KINDS,
+    AgentActionCatalog,
+)
 
 _REQUIRED_FIELDS = ("action_code", "title", "who", "evidence_required")
 
@@ -40,6 +45,7 @@ class ActionSpec:
     title: str
     who: str
     evidence_required: str
+    response_kind: str
     content_mix: str
     default_permission: str
     message_angle: str | None = None
@@ -64,6 +70,10 @@ def validate_actions(actions: Sequence[ActionSpec]) -> None:
                 raise ActionCatalogValidationError(
                     f"action '{spec.action_code}' has an empty '{field}'"
                 )
+        if spec.response_kind not in RESPONSE_KINDS:
+            raise ActionCatalogValidationError(
+                f"action '{spec.action_code}' has an unknown response kind '{spec.response_kind}'"
+            )
         if spec.content_mix not in CONTENT_MIXES:
             raise ActionCatalogValidationError(
                 f"action '{spec.action_code}' has an unknown content mix '{spec.content_mix}'"
@@ -124,6 +134,7 @@ def save_action_catalog_version(
             title=spec.title,
             who=spec.who,
             evidence_required=spec.evidence_required,
+            response_kind=spec.response_kind,
             message_angle=spec.message_angle,
             channel=spec.channel,
             content_mix=spec.content_mix,

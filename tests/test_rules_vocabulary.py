@@ -35,7 +35,7 @@ _BANDS = [
     (
         "fund_type",
         feat.FUND_TYPES,
-        feat._fund_type,
+        feat.fund_type_from_name,
         [None, "Cytonn Money Market Fund", "Cytonn High Yield Fund", "Something Else"],
     ),
 ]
@@ -81,9 +81,12 @@ def test_the_boolean_fields_are_carried_as_booleans() -> None:
 
 
 def test_every_angle_a_rule_may_resolve_to_has_a_brief(db: None) -> None:
-    """Excludes the two the earlier rule sets use, which predate the catalogue."""
+    """Reads the catalogue in force now, since a new version adds angles.
+
+    Excludes the two the earlier rule sets use, which predate the catalogue.
+    """
     with SessionLocal() as session:
-        catalogued = set(load_active_angles(session, IN_FORCE))
+        catalogued = set(load_active_angles(session, date.today()))
     assert catalogued <= MESSAGE_ANGLES, "the catalogue holds an angle no rule may resolve to"
 
     legacy = {"winback_habit", "winback_flexible"}

@@ -362,10 +362,15 @@ def conditional_prohibitions(facts: Mapping[str, Any] | None) -> list[str]:
     return lines
 
 
-def _prohibitions_block(brief: AngleBrief | None, facts: Mapping[str, Any] | None) -> str:
+def _prohibitions_block(
+    brief: AngleBrief | None,
+    facts: Mapping[str, Any] | None,
+    extra: Sequence[str] = (),
+) -> str:
     lines = [*CAMPAIGN_PROHIBITIONS]
     if brief is not None:
         lines.append(brief.never)
+    lines.extend(extra)
     lines.extend(conditional_prohibitions(facts))
     return "\n".join(f"- {line}" for line in lines)
 
@@ -402,6 +407,7 @@ def build_system_prompt(
     brief: AngleBrief | None = None,
     contract: FormatContract | None = None,
     facts: Mapping[str, Any] | None = None,
+    extra_prohibitions: Sequence[str] = (),
 ) -> str:
     """The full system prompt for one draft.
 
@@ -409,6 +415,8 @@ def build_system_prompt(
     exactly the prompt it always did, so a caller that predates the catalogue
     keeps working. facts is read only to decide which prohibitions apply; the
     figures themselves reach the model as the scanned payload, never here.
+    extra_prohibitions carries what a finding said a message about it must
+    not claim, so an internal label cannot reach a client.
     """
     sections = [template_text(prompt_variant)]
 
@@ -420,7 +428,7 @@ def build_system_prompt(
     if contract is not None:
         sections.append(_contract_block(contract))
 
-    sections.append(f"You must never:\n{_prohibitions_block(brief, facts)}")
+    sections.append(f"You must never:\n{_prohibitions_block(brief, facts, extra_prohibitions)}")
 
     if facts:
         sections.append(
@@ -460,6 +468,7 @@ def build_system_prompt_blocks(
     brief: AngleBrief | None = None,
     contract: FormatContract | None = None,
     facts: Mapping[str, Any] | None = None,
+    extra_prohibitions: Sequence[str] = (),
 ) -> SystemPromptBlocks:
     """build_system_prompt, split for prompt caching rather than joined.
 
@@ -482,10 +491,13 @@ def build_system_prompt_blocks(
     if contract is not None:
         cached_sections.append(_contract_block(contract))
 
-    # facts=None here on purpose: the campaign- and angle-level prohibitions
-    # only, so this block stays identical for every client on this angle
-    # and tier. This client's own conditional prohibitions go in dynamic.
-    cached_sections.append(f"You must never:\n{_prohibitions_block(brief, None)}")
+    # facts=None here on purpose: the campaign, angle and proposal level
+    # prohibitions only, so this block stays identical for every client on
+    # this angle and tier. This client's own conditional prohibitions go in
+    # dynamic.
+    cached_sections.append(
+        f"You must never:\n{_prohibitions_block(brief, None, extra_prohibitions)}"
+    )
     cached_sections.append(f"Facts you may cite (only these, verbatim):\n{_render_facts(chunks)}")
 
     dynamic_sections = []

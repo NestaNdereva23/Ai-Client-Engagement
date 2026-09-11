@@ -48,8 +48,8 @@ RULE_FIELD_DOMAINS: dict[str, set[str]] = {
     "active_book_auto_checkin": _BOOL,
 }
 
-# The twelve angles. Kept in step with message_angle_catalog, which holds
-# the brief behind each one.
+# Every angle a message may be written on. Kept in step with
+# message_angle_catalog, which holds the brief behind each one.
 MESSAGE_ANGLES = {
     "not_a_goodbye",
     "wrong_shelf",
@@ -64,6 +64,8 @@ MESSAGE_ANGLES = {
     "onboarding_retry",
     "pick_up_again",
     "sitting_still",
+    "welcome_and_top_up",
+    "fee_warning",
 }
 URGENCIES = {"low", "medium", "high"}
 # Derived from value and recency rather than set by a rule.

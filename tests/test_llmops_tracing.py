@@ -36,10 +36,15 @@ class FakeObservation:
     def __init__(self) -> None:
         self.updated: dict | None = None
         self.ended = False
+        self.children: list[dict] = []
 
     def update(self, **kwargs):
         self.updated = kwargs
         return self
+
+    def start_observation(self, **kwargs):
+        self.children.append(kwargs)
+        return FakeObservation()
 
     def end(self) -> None:
         self.ended = True
@@ -133,6 +138,8 @@ def test_start_span_and_end_span_reach_the_underlying_client() -> None:
     assert handle.updated == {
         "output": {"draft": "y"},
         "usage_details": {"input": 10, "output": 20},
+        "level": None,
+        "status_message": None,
     }
     assert handle.ended is True
 
@@ -159,3 +166,38 @@ def test_get_trace_url_reaches_the_underlying_client() -> None:
     fake = FakeLangfuseClient()
     tracer = LangfuseTracer(client=fake)
     assert tracer.get_trace_url("d" * 32) == "http://fake-langfuse/trace/" + "d" * 32
+
+
+def test_a_span_with_a_parent_is_opened_inside_that_parent() -> None:
+    fake = FakeLangfuseClient()
+    tracer = LangfuseTracer(client=fake)
+
+    step = tracer.start_span(trace_id="c" * 32, name="investigate", input={})
+    tracer.start_span(
+        trace_id="c" * 32,
+        name="model_call",
+        input={"system": "s"},
+        as_type="generation",
+        model="claude-opus-5",
+        parent=step,
+    )
+
+    assert len(fake.start_calls) == 1
+    assert fake.start_calls[0]["name"] == "investigate"
+    assert len(step.children) == 1
+    assert step.children[0]["name"] == "model_call"
+    assert step.children[0]["as_type"] == "generation"
+    assert step.children[0]["model"] == "claude-opus-5"
+
+
+def test_a_parent_that_raises_degrades_to_a_warning() -> None:
+    class RaisingObservation(FakeObservation):
+        def start_observation(self, **kwargs):
+            raise RuntimeError("boom")
+
+    tracer = LangfuseTracer(client=FakeLangfuseClient())
+
+    assert (
+        tracer.start_span(trace_id="d" * 32, name="child", input={}, parent=RaisingObservation())
+        is None
+    )

@@ -19,7 +19,20 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
-INTERACTION_TYPES = ("call_logged", "snoozed", "dismissed", "email_sent")
+FLAGGED_FOR_ACCOUNT_MANAGER = "flagged_for_account_manager"
+
+INTERACTION_TYPES = (
+    "call_logged",
+    "snoozed",
+    "dismissed",
+    "email_sent",
+    FLAGGED_FOR_ACCOUNT_MANAGER,
+)
+
+# The types that mean a person has already dealt with this client fund. A
+# flag is a note asking someone to look, so it is deliberately not one of
+# them: a flagged client stays where the morning list can see it.
+HANDLED_INTERACTION_TYPES = ("call_logged", "snoozed", "dismissed", "email_sent")
 
 
 class ActiveClientFund(Base):
@@ -74,7 +87,8 @@ class ActiveClientInteraction(Base):
     __tablename__ = "active_client_interaction"
     __table_args__ = (
         CheckConstraint(
-            "type IN ('call_logged', 'snoozed', 'dismissed', 'email_sent')",
+            "type IN ('call_logged', 'snoozed', 'dismissed', 'email_sent', "
+            "'flagged_for_account_manager')",
             name="ck_active_client_interaction_type",
         ),
         Index(

@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete
 
 from app.api.routers import agent_runs as agent_runs_router
-from app.db.models.agent_run import AgentRun
+from app.db.models.agent_run import NIGHTLY_AGENT, AgentRun
 from app.db.session import SessionLocal
 from app.main import app
 
@@ -30,7 +30,11 @@ def _no_real_execution(monkeypatch, db: None):
     monkeypatch.setattr(agent_runs_router, "run_agent_in_background", lambda *a, **k: None)
     yield
     with SessionLocal() as session:
-        session.execute(delete(AgentRun).where(AgentRun.trigger == "manual"))
+        session.execute(
+            delete(AgentRun).where(
+                AgentRun.trigger == "manual", AgentRun.agent_kind == NIGHTLY_AGENT
+            )
+        )
         session.commit()
 
 

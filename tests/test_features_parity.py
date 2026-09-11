@@ -27,7 +27,6 @@ from app.transform.features import (
     LONG_HOLD_DAYS,
     _cadence_band,
     _exit_reason,
-    _fund_type,
     _has_depth,
     _hold_band,
     _in_wave,
@@ -36,6 +35,7 @@ from app.transform.features import (
     _recency_band,
     _trend_band,
     _value_band,
+    fund_type_from_name,
 )
 
 # Inside v3's real window: 2026-08-04 to 2026-08-11, closed by 209a9c997624
@@ -231,7 +231,7 @@ def test_trend_band_is_derivable_for_every_row(rows) -> None:
 
 
 def test_fund_type_covers_every_fund_in_the_source(rows) -> None:
-    types = {_fund_type(r["unit_fund_name"]) for r in rows}
+    types = {fund_type_from_name(r["unit_fund_name"]) for r in rows}
     assert "other" not in types, "a fund in the source maps to no known type"
 
 
@@ -266,7 +266,7 @@ def _routing_features(row: dict[str, str]) -> dict[str, str]:
     drawdown = _int(row["drawdown_days"])
     return {
         "exit_reason": _exit_reason(row["exit_type"] or None),
-        "fund_type": _fund_type(row["unit_fund_name"]),
+        "fund_type": fund_type_from_name(row["unit_fund_name"]),
         "hold_band": _hold_band(_int(row["hold_days"])),
         "in_wave": "true" if _in_wave(_date(row["exit_date"])) else "false",
         "has_depth": "true"

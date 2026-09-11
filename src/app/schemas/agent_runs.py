@@ -17,6 +17,8 @@ class AgentRunOut(BaseModel):
     run_id: int
     state: str
     trigger: str
+    agent_kind: str
+    insight_id: int | None
     risk_run_id: str | None
     started_at: datetime
     finished_at: datetime | None

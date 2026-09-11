@@ -71,13 +71,19 @@ class InsightDecisionRequest(BaseModel):
 
 
 class InsightDecisionResultOut(BaseModel):
-    """The finding's state right after a decision is recorded."""
+    """The finding's state right after a decision is recorded.
+
+    Accepting a finding also starts the run that decides how to answer it,
+    and action_run_id is that run. It is null for a dismissal, and null for
+    an acceptance whose run could not be started.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
     insight_id: int
     state: str
     dismissed_reason: str | None
+    action_run_id: int | None = None
     decided_by: str | None
     decided_at: datetime | None
 

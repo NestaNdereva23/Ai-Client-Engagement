@@ -239,7 +239,7 @@ def _exit_reason(exit_type: str | None) -> str:
     return "unknown"
 
 
-def _fund_type(fund_name: str | None) -> str:
+def fund_type_from_name(fund_name: str | None) -> str:
     name = (fund_name or "").lower()
     if "money market" in name:
         return "money_market"
@@ -392,7 +392,7 @@ def derive_features(
                 purchase_depth=_purchase_depth(primary.n_purchases_returned),
                 trend_band=_trend_band(measure.ticket_trend),
                 exit_reason=_exit_reason(measure.exit_type),
-                fund_type=_fund_type(fund_names.get(primary.unit_fund_id)),
+                fund_type=fund_type_from_name(fund_names.get(primary.unit_fund_id)),
                 in_wave=_in_wave(primary.last_activity_date),
                 has_depth=_has_depth(primary.n_purchases_returned, measure.active_window_days),
                 staged_exit=measure.drawdown_days is not None

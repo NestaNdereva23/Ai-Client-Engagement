@@ -177,7 +177,7 @@ class Settings(BaseSettings):
     agent_awaiting_call_days: int = 2
     agent_contact_cooldown_days: int = 7
 
-    # What one agent run may spend on its own investigation queries.
+    # What one investigation of a group may spend on its own queries.
     agent_query_call_budget: int = 12
     agent_query_timeout_ms: int = 5000
     agent_query_max_conditions: int = 10
@@ -189,6 +189,20 @@ class Settings(BaseSettings):
 
     # How many findings one agent run may write, so a screen cannot be flooded.
     agent_insight_write_cap: int = 8
+
+    # Watching a run as it happens. The open limit is what stops many idle
+    # browsers holding a database connection each; the keep alive is what
+    # stops the proxy in front of this API closing a quiet stream.
+    agent_stream_max_open: int = 20
+    agent_stream_keepalive_seconds: float = 15.0
+    agent_stream_poll_seconds: float = 1.0
+    agent_stream_max_seconds: float = 3600.0
+
+    # What one group's investigation may spend, and how many groups a run
+    # may investigate at the same time, so neither the model provider nor
+    # the database is hit harder than it can take.
+    agent_investigation_max_turns: int = 8
+    agent_investigation_concurrency: int = 3
 
     tier_sampling_enabled: bool = True
 

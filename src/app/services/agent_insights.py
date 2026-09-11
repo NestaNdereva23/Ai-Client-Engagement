@@ -8,10 +8,16 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.agents.action_agent import execute_action_run, start_action_run
 from app.agents.insight_recount import RecountResult, recount_fact
 from app.agents.insight_state import transition_insight
+from app.config import Settings
 from app.db.models.agent_insight import AgentInsight, AgentInsightClient, AgentInsightFact
+from app.db.models.agent_run import AgentRun
+from app.db.session import SessionLocal
+from app.llmops.tracing import get_shared_tracer
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_id_cursor, encode_id_cursor
+from app.privacy.llm_client import get_agent_llm_client
 
 _DECISION_TO_STATE = {"accept": "accepted", "dismiss": "dismissed"}
 
@@ -149,6 +155,32 @@ def decide_insight(
         reason=reason,
         decided_by=decided_by,
     )
+
+
+def start_action_for_insight(session: Session, insight_id: int) -> AgentRun:
+    """Open the run that decides how to answer a finding a person accepted.
+
+    Kept apart from deciding it, so the request that accepted the finding can
+    hand back the run id straight away and the run itself finishes in the
+    background.
+    """
+    return start_action_run(session, insight_id)
+
+
+def run_action_in_background(run_id: int, *, settings: Settings) -> None:
+    """Take a run start_action_for_insight opened the rest of the way, in a
+    session of its own. Meant to be handed to BackgroundTasks.
+    """
+    with SessionLocal() as session:
+        run = session.get(AgentRun, run_id)
+        if run is None:
+            return
+        execute_action_run(
+            session,
+            run,
+            llm_client=get_agent_llm_client(settings),
+            tracer=get_shared_tracer(),
+        )
 
 
 def get_insight_fact(session: Session, insight_id: int, fact_id: int) -> AgentInsightFact:

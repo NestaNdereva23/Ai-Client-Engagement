@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.agents.action_agent import InsightNotActionable
 from app.agents.insight_state import InvalidTransition
 from app.api.reviewer_auth import get_current_reviewer_id
+from app.config import get_settings
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.agent_insights import (
@@ -29,6 +31,8 @@ from app.services.agent_insights import (
     get_insight_facts,
     list_insights,
     recheck_insight_fact,
+    run_action_in_background,
+    start_action_for_insight,
 )
 
 router = APIRouter(
@@ -120,9 +124,16 @@ def get_agent_insight(
 def decide_agent_insight(
     insight_id: int,
     body: InsightDecisionRequest,
+    background_tasks: BackgroundTasks,
     reviewer_id: str = Depends(get_current_reviewer_id),
     session: Session = Depends(get_session),
 ) -> InsightDecisionResultOut:
+    """Accept or dismiss one finding.
+
+    Accepting also starts the run that decides how to answer it, and answers
+    with that run's id straight away: the run itself finishes in the
+    background, since deciding takes longer than a request may.
+    """
     try:
         insight = decide_insight(
             session,
@@ -139,7 +150,18 @@ def decide_agent_insight(
         session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from None
 
-    return InsightDecisionResultOut.model_validate(insight)
+    result = InsightDecisionResultOut.model_validate(insight)
+    if body.decision != "accept":
+        return result
+
+    try:
+        run = start_action_for_insight(session, insight_id)
+    except InsightNotActionable:
+        session.rollback()
+        return result
+
+    background_tasks.add_task(run_action_in_background, run.run_id, settings=get_settings())
+    return result.model_copy(update={"action_run_id": run.run_id})
 
 
 @router.get("/{insight_id}/facts/{fact_id}/recount", response_model=FactRecountOut)

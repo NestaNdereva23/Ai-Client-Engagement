@@ -44,6 +44,7 @@ PERMITTED_KEYS = {
     "invested_every_n_days",
     "days_held_after_last_topup",
     "month_they_left",
+    "month_the_account_empties",
 }
 
 

@@ -19,10 +19,8 @@ win back router.
 from collections.abc import Sequence
 from datetime import date
 
+import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.orm import Session
-
-from app.agents.action_catalog import ActionSpec, save_action_catalog_version
 
 revision: str = "6f3da7fbaf89"
 down_revision: str | Sequence[str] | None = "f198420ccf56"
@@ -32,7 +30,7 @@ depends_on: str | Sequence[str] | None = None
 _VALID_FROM = date(2026, 9, 7)
 
 _ACTIONS = [
-    ActionSpec(
+    dict(
         action_code="welcome_and_top_up",
         title="Welcome and ask for a small top up",
         who=(
@@ -49,7 +47,7 @@ _ACTIONS = [
         default_permission="suggest_only",
         money_ceiling_kes=500000.0,
     ),
-    ActionSpec(
+    dict(
         action_code="fee_warning",
         title="Tell them the fee will empty the account",
         who="Someone whose balance runs out within a few months at the current fee",
@@ -60,7 +58,7 @@ _ACTIONS = [
         default_permission="suggest_only",
         money_ceiling_kes=500000.0,
     ),
-    ActionSpec(
+    dict(
         action_code="start_win_back",
         title="Start the win back sequence",
         who="Someone with a very small balance who has paid nothing in for a long time",
@@ -73,7 +71,7 @@ _ACTIONS = [
         default_permission="suggest_only",
         money_ceiling_kes=1000000.0,
     ),
-    ActionSpec(
+    dict(
         action_code="ask_what_changed",
         title="Ask whether something changed",
         who="Someone whose deposits are getting smaller over time",
@@ -84,7 +82,7 @@ _ACTIONS = [
         default_permission="suggest_only",
         money_ceiling_kes=1000000.0,
     ),
-    ActionSpec(
+    dict(
         action_code="suggest_second_fund",
         title="Suggest a second fund that fits",
         who="Someone healthy who holds one fund only",
@@ -95,7 +93,7 @@ _ACTIONS = [
         default_permission="suggest_only",
         money_ceiling_kes=2000000.0,
     ),
-    ActionSpec(
+    dict(
         action_code="send_learning_note",
         title="Send a short learning note",
         who="Anyone in a quiet period where there is nothing to sell",
@@ -105,7 +103,7 @@ _ACTIONS = [
         content_mix="learning_only",
         default_permission="suggest_only",
     ),
-    ActionSpec(
+    dict(
         action_code="follow_up_when_no_one_called",
         title="Follow up when nobody called",
         who="Someone on the call list for two days with nothing logged against them",
@@ -118,7 +116,7 @@ _ACTIONS = [
         default_permission="suggest_only",
         money_ceiling_kes=1000000.0,
     ),
-    ActionSpec(
+    dict(
         action_code="do_nothing",
         title="Do nothing, and record why",
         who="Anyone the gates rule out",
@@ -126,7 +124,7 @@ _ACTIONS = [
         content_mix="learning_only",
         default_permission="suggest_only",
     ),
-    ActionSpec(
+    dict(
         action_code="check_in_rising_risk",
         title="Check in before it gets worse",
         who=(
@@ -146,10 +144,44 @@ _ACTIONS = [
 ]
 
 
+_COLUMNS = (
+    "version",
+    "action_code",
+    "title",
+    "who",
+    "evidence_required",
+    "message_angle",
+    "channel",
+    "content_mix",
+    "default_permission",
+    "money_ceiling_kes",
+    "paused",
+    "valid_from",
+    "valid_to",
+)
+
+# The columns as they stood when this version shipped. Written out here so a
+# later change to the table never rewrites what this migration inserts.
+_CATALOG_TABLE = sa.table("agent_action_catalog", *(sa.column(name) for name in _COLUMNS))
+
+
+def _rows() -> list[dict]:
+    """Every action of version 2, with the same value in every column."""
+    blank = {name: None for name in _COLUMNS}
+    return [
+        {**blank, **action, "version": 2, "paused": False, "valid_from": _VALID_FROM}
+        for action in _ACTIONS
+    ]
+
+
 def upgrade() -> None:
-    session = Session(bind=op.get_bind())
-    save_action_catalog_version(session, 2, _ACTIONS, valid_from=_VALID_FROM)
-    session.flush()
+    op.execute(
+        sa.text(
+            "UPDATE agent_action_catalog SET valid_to = :valid_from "
+            "WHERE version < 2 AND valid_to IS NULL"
+        ).bindparams(valid_from=_VALID_FROM)
+    )
+    op.bulk_insert(_CATALOG_TABLE, _rows())
 
 
 def downgrade() -> None:

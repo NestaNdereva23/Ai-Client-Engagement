@@ -67,13 +67,24 @@ class FakeTracer:
     def __init__(self) -> None:
         self.spans: list[dict] = []
 
-    def start_span(self, *, trace_id, name, input, metadata=None, as_type="span", model=None):
-        span = {"name": name, "input": input, "output": None}
+    def start_span(
+        self, *, trace_id, name, input, metadata=None, as_type="span", model=None, parent=None
+    ):
+        span = {
+            "name": name,
+            "input": input,
+            "output": None,
+            "as_type": as_type,
+            "model": model,
+            "parent": None if parent is None else parent["name"],
+            "usage_details": None,
+        }
         self.spans.append(span)
         return span
 
-    def end_span(self, handle, *, output, usage_details=None):
+    def end_span(self, handle, *, output, usage_details=None, level=None, status_message=None):
         handle["output"] = output
+        handle["usage_details"] = usage_details
 
     def get_trace_url(self, trace_id):
         return None
@@ -268,15 +279,33 @@ def test_every_step_traces_a_real_input_and_output_without_a_client_id() -> None
             session, trigger="manual", llm_client=llm_client, as_of=AS_OF, tracer=tracer
         )
 
-    traced_names = {span["name"] for span in tracer.spans}
-    assert traced_names == {"gather", "plan", "choose", "check", "propose", "report"}
-    for span in tracer.spans:
+    steps = [span for span in tracer.spans if span["parent"] is None]
+    assert [span["name"] for span in steps] == [
+        "gather",
+        "plan",
+        "choose",
+        "check",
+        "propose",
+        "report",
+    ]
+    for span in steps:
         if span["name"] != "gather":
             assert span["input"], f"{span['name']} span had no input"
         assert span["output"], f"{span['name']} span had no output"
+    for span in tracer.spans:
         rendered = json.dumps(span["input"], default=str) + json.dumps(span["output"], default=str)
         assert str(ELIGIBLE_CLIENT) not in rendered
         assert str(FUND_ID) not in rendered
+
+    model_calls = [span for span in tracer.spans if span["as_type"] == "generation"]
+    assert model_calls
+    assert {span["parent"] for span in model_calls} == {"plan", "choose"}
+    for span in model_calls:
+        assert span["model"] == "fake-agent-model"
+        assert span["usage_details"] == {
+            "input": _USAGE.input_tokens,
+            "output": _USAGE.output_tokens,
+        }
 
 
 def test_a_failing_step_leaves_the_run_failed_and_writes_no_proposal() -> None:

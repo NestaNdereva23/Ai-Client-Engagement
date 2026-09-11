@@ -13,7 +13,9 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
+from app.agents.events import record_event
 from app.audit.log import record_audit
+from app.db.models.agent_event import INSIGHT_DISMISSED, INSIGHT_UPDATED
 from app.db.models.agent_insight import AgentInsight
 
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -44,6 +46,9 @@ def transition_insight(
     decided_by is stamped on the finding itself, with the time, for the move
     where a person makes the actual call. A move to dismissed keeps the
     reason on the row as well as in the audit trail.
+
+    The move also joins the story of the run that wrote the finding, so
+    replaying that run shows what became of what it found.
     """
     from_state = insight.state
     if to_state not in ALLOWED_TRANSITIONS.get(from_state, frozenset()):
@@ -66,4 +71,15 @@ def transition_insight(
         actor_id=decided_by,
         detail={"from": from_state, "to": to_state, "reason": reason},
     )
+    if insight.run_id is not None:
+        record_event(
+            session,
+            run_id=insight.run_id,
+            kind=INSIGHT_DISMISSED if to_state == "dismissed" else INSIGHT_UPDATED,
+            insight_id=insight.insight_id,
+            change="state",
+            from_state=from_state,
+            to_state=to_state,
+            decided_by_a_person=decided_by is not None,
+        )
     return insight

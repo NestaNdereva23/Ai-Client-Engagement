@@ -18,7 +18,6 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.orm import Session
 
-from app.agents.action_catalog import load_active_actions
 from app.agents.permissions import seed_default_permissions
 
 # revision identifiers, used by Alembic.
@@ -30,6 +29,35 @@ depends_on: str | Sequence[str] | None = None
 _SEEDED_ON = date(2026, 9, 7)
 _SEEDED_BY = "system"
 _SEEDED_REASON = "starting setting: nothing runs without a person saying yes"
+
+# The columns as they stood when this migration shipped. Written out here,
+# instead of importing the live agent_action_catalog model, so a column added
+# to that table later never breaks this migration when history is replayed
+# from scratch.
+_CATALOG_COLUMNS = ("catalog_id", "version", "action_code", "valid_from", "valid_to")
+_CATALOG_TABLE = sa.table("agent_action_catalog", *(sa.column(name) for name in _CATALOG_COLUMNS))
+
+
+def _active_action_codes(bind: sa.engine.Connection, at: date) -> list[str]:
+    """Action codes in the catalogue version in force on `at`."""
+    version = bind.execute(
+        sa.select(_CATALOG_TABLE.c.version)
+        .where(
+            _CATALOG_TABLE.c.valid_from <= at,
+            sa.or_(_CATALOG_TABLE.c.valid_to.is_(None), _CATALOG_TABLE.c.valid_to > at),
+        )
+        .order_by(_CATALOG_TABLE.c.valid_from.desc(), _CATALOG_TABLE.c.version.desc())
+        .limit(1)
+    ).scalar()
+    if version is None:
+        return []
+    return list(
+        bind.execute(
+            sa.select(_CATALOG_TABLE.c.action_code)
+            .where(_CATALOG_TABLE.c.version == version)
+            .order_by(_CATALOG_TABLE.c.catalog_id)
+        ).scalars()
+    )
 
 
 def upgrade() -> None:
@@ -78,8 +106,9 @@ def upgrade() -> None:
         unique=False,
     )
 
-    session = Session(bind=op.get_bind())
-    action_codes = list(load_active_actions(session, _SEEDED_ON))
+    bind = op.get_bind()
+    action_codes = _active_action_codes(bind, _SEEDED_ON)
+    session = Session(bind=bind)
     seed_default_permissions(
         session,
         action_codes,

@@ -38,10 +38,10 @@ SEEDED_ANGLES = (
 SEEDED_VERSION = 1
 IN_FORCE = date(2026, 8, 2)
 
-# version 4 superseded version 3 on 2026-09-01 and, unlike the fixtures the
+# version 5 superseded version 4 on 2026-09-09 and, unlike the fixtures the
 # tests below add and remove, has no valid_to: it is the baseline for any
 # date from then on that a test does not give a more specific override.
-ACTIVE_VERSION = 4
+ACTIVE_VERSION = 5
 
 
 def _spec(angle: str = "trial_angle", **overrides: str) -> AngleSpec:
@@ -211,7 +211,7 @@ def test_an_invalid_catalogue_is_not_written(db: None, catalog_versions) -> None
         session.rollback()
 
     with SessionLocal() as session:
-        assert active_catalog_version(session, date(2026, 9, 1)) == ACTIVE_VERSION
+        assert active_catalog_version(session, date(2026, 9, 20)) == ACTIVE_VERSION
 
 
 def test_an_unknown_angle_resolves_to_nothing(db: None) -> None:

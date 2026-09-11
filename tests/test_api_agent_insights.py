@@ -11,7 +11,9 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
 
+from app.api.routers import agent_insights as agent_insights_router
 from app.db.models.agent_insight import AgentInsight, AgentInsightClient, AgentInsightFact
+from app.db.models.agent_run import AgentRun
 from app.db.models.audit import AuditLog
 from app.db.session import SessionLocal
 from app.main import app
@@ -30,6 +32,15 @@ def _authed(configured_reviewers, reviewer_1_headers):
     client.headers.update(reviewer_1_headers)
     yield
     client.headers.pop("Authorization", None)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_execution(monkeypatch, db: None):
+    """Accepting starts an action run. These tests prove the wiring, so the
+    run itself is not carried out and its row is cleared up afterwards.
+    """
+    monkeypatch.setattr(agent_insights_router, "run_action_in_background", lambda *a, **k: None)
+    yield
 
 
 @pytest.fixture
@@ -85,6 +96,7 @@ def insight(db: None):
     yield insight_id
 
     with SessionLocal() as session:
+        session.execute(delete(AgentRun).where(AgentRun.insight_id == insight_id))
         session.execute(delete(AuditLog).where(AuditLog.entity_id == str(insight_id)))
         session.execute(delete(AgentInsightFact).where(AgentInsightFact.insight_id == insight_id))
         session.execute(
@@ -166,6 +178,12 @@ def test_accept_records_who_decided(insight: int) -> None:
     assert body["state"] == "accepted"
     assert body["decided_by"]
     assert body["decided_at"] is not None
+    assert body["action_run_id"] is not None
+
+    with SessionLocal() as session:
+        run = session.get(AgentRun, body["action_run_id"])
+    assert run.agent_kind == "action"
+    assert run.insight_id == insight
 
 
 def test_dismiss_keeps_the_reason(insight: int) -> None:

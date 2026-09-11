@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -57,7 +58,8 @@ def _blocking_body(endpoint: Any) -> str | None:
     except (OSError, TypeError):
         return None
     for name in sorted(BLOCKING_CALLABLES):
-        if f"{name}(" in source:
+        # On a word boundary, so AsyncSessionLocal is not read as SessionLocal.
+        if re.search(rf"\b{name}\(", source):
             return f"calls the blocking {name} in its body"
     return None
 
