@@ -85,6 +85,7 @@ def persist_generation_run(
     settings: Settings,
     *,
     channel: str = EMAIL_CHANNEL,
+    run_kind: str = "production",
 ) -> GenerationRun:
     model_version = get_or_create_model_version(
         session,
@@ -103,7 +104,8 @@ def persist_generation_run(
     run = GenerationRun(
         run_id=state["run_id"],
         trace_id=state.get("trace_id"),
-        client_id=state["client_id"],
+        client_id=state.get("client_id"),
+        run_kind=run_kind,
         product=state.get("product"),
         priority_tier=state.get("priority_tier"),
         data_date=state.get("data_date"),

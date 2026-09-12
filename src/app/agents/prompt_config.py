@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from app.config import Settings, get_settings
 from app.db.models.prompt_config import OutputPolicy, SafetyPolicy, VoiceContract
+from app.personalization.eligibility import resolve_fact_eligibility
 from app.rules import versioning
 
 _VOICE_SECTIONS = (
@@ -91,6 +94,26 @@ class AgentConfiguration:
     safety_phrases: tuple[str, ...] | None
     campaign_prohibitions: tuple[str, ...] | None
     output_rules: str | None
+    default_sign_off: str | None
+    allowed_placeholder_fields: tuple[str, ...] | None
+    fact_eligibility: Mapping[str, str] | None
+
+
+HARDCODED_CONFIGURATION = AgentConfiguration(
+    tier_contract_version=None,
+    voice_contract_version=None,
+    safety_policy_version=None,
+    output_policy_version=None,
+    personalization_policy_version=None,
+    voice_text=None,
+    safety_words=None,
+    safety_phrases=None,
+    campaign_prohibitions=None,
+    output_rules=None,
+    default_sign_off=None,
+    allowed_placeholder_fields=None,
+    fact_eligibility=None,
+)
 
 
 def _resolve_version(
@@ -107,9 +130,65 @@ def _resolve_version(
     return session.scalar(stmt.order_by(spec.model.valid_from.desc(), column.desc()).limit(1))
 
 
-def resolve_active_configuration(
-    session: Session, *, angle: str | None, tier: str | None, at: date | None = None
+def _configuration_from_rows(
+    *,
+    tier_contract_version: int | None,
+    voice_contract_version: int | None,
+    safety_policy_version: int | None,
+    output_policy_version: int | None,
+    personalization_policy_version: int | None,
+    voice_row: VoiceContract | None,
+    safety_row: SafetyPolicy | None,
+    output_row: OutputPolicy | None,
+    fact_eligibility: Mapping[str, str] | None = None,
 ) -> AgentConfiguration:
+    output_rules = None
+    if output_row is not None and voice_row is not None and voice_row.body_markdown is None:
+        output_rules = render_output_rules(output_row)
+
+    allowed_placeholder_fields = None
+    if output_row is not None and output_row.placeholder_rules:
+        fields = output_row.placeholder_rules.get("fields")
+        if fields:
+            allowed_placeholder_fields = tuple(fields)
+
+    return AgentConfiguration(
+        tier_contract_version=tier_contract_version,
+        voice_contract_version=voice_contract_version,
+        safety_policy_version=safety_policy_version,
+        output_policy_version=output_policy_version,
+        personalization_policy_version=personalization_policy_version,
+        voice_text=voice_row.rendered_text if voice_row is not None else None,
+        safety_words=(
+            tuple(safety_row.banned_words) if safety_row and safety_row.banned_words else None
+        ),
+        safety_phrases=(
+            tuple(safety_row.banned_phrases) if safety_row and safety_row.banned_phrases else None
+        ),
+        campaign_prohibitions=(
+            tuple(safety_row.campaign_prohibitions)
+            if safety_row and safety_row.campaign_prohibitions
+            else None
+        ),
+        output_rules=output_rules,
+        default_sign_off=voice_row.default_sign_off if voice_row is not None else None,
+        allowed_placeholder_fields=allowed_placeholder_fields,
+        fact_eligibility=fact_eligibility,
+    )
+
+
+def resolve_active_configuration(
+    session: Session,
+    *,
+    angle: str | None,
+    tier: str | None,
+    at: date | None = None,
+    settings: Settings | None = None,
+) -> AgentConfiguration:
+    settings = settings or get_settings()
+    if settings.prompt_config_source == "hardcoded":
+        return HARDCODED_CONFIGURATION
+
     on = at or date.today()
     default_key = versioning.DEFAULT_COMPONENT_KEY
 
@@ -138,28 +217,64 @@ def resolve_active_configuration(
         if output_policy_version is not None
         else None
     )
+    fact_eligibility = (
+        resolve_fact_eligibility(session, angle, personalization_policy_version)
+        if personalization_policy_version is not None
+        else None
+    )
 
-    output_rules = None
-    if output_row is not None and voice_row is not None and voice_row.body_markdown is None:
-        output_rules = render_output_rules(output_row)
-
-    return AgentConfiguration(
+    return _configuration_from_rows(
         tier_contract_version=tier_contract_version,
         voice_contract_version=voice_contract_version,
         safety_policy_version=safety_policy_version,
         output_policy_version=output_policy_version,
         personalization_policy_version=personalization_policy_version,
-        voice_text=voice_row.rendered_text if voice_row is not None else None,
-        safety_words=(
-            tuple(safety_row.banned_words) if safety_row and safety_row.banned_words else None
-        ),
-        safety_phrases=(
-            tuple(safety_row.banned_phrases) if safety_row and safety_row.banned_phrases else None
-        ),
-        campaign_prohibitions=(
-            tuple(safety_row.campaign_prohibitions)
-            if safety_row and safety_row.campaign_prohibitions
-            else None
-        ),
-        output_rules=output_rules,
+        voice_row=voice_row,
+        safety_row=safety_row,
+        output_row=output_row,
+        fact_eligibility=fact_eligibility,
+    )
+
+
+def resolve_pinned_configuration(
+    session: Session,
+    *,
+    voice_version: int | None,
+    safety_version: int | None,
+    output_version: int | None,
+    personalization_version: int | None,
+    tier_contract_version: int | None = None,
+    angle: str | None = None,
+) -> AgentConfiguration:
+    voice_row = (
+        session.scalar(select(VoiceContract).where(VoiceContract.version == voice_version))
+        if voice_version is not None
+        else None
+    )
+    safety_row = (
+        session.scalar(select(SafetyPolicy).where(SafetyPolicy.version == safety_version))
+        if safety_version is not None
+        else None
+    )
+    output_row = (
+        session.scalar(select(OutputPolicy).where(OutputPolicy.version == output_version))
+        if output_version is not None
+        else None
+    )
+    fact_eligibility = (
+        resolve_fact_eligibility(session, angle, personalization_version)
+        if personalization_version is not None
+        else None
+    )
+
+    return _configuration_from_rows(
+        tier_contract_version=tier_contract_version,
+        voice_contract_version=voice_row.version if voice_row is not None else None,
+        safety_policy_version=safety_row.version if safety_row is not None else None,
+        output_policy_version=output_row.version if output_row is not None else None,
+        personalization_policy_version=personalization_version,
+        voice_row=voice_row,
+        safety_row=safety_row,
+        output_row=output_row,
+        fact_eligibility=fact_eligibility,
     )

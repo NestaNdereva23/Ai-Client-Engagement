@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from pydantic import (
@@ -58,8 +58,9 @@ class EmailDraft(BaseModel):
         if missing:
             raise ValueError(f"missing required placeholders: {missing}")
 
+        allowed = (info.context or {}).get("allowed_placeholders")
         used = set(_PLACEHOLDER.findall(combined))
-        unexpected = sorted(used - set(ALLOWED_PLACEHOLDERS))
+        unexpected = sorted(used - set(allowed if allowed is not None else ALLOWED_PLACEHOLDERS))
         if unexpected:
             raise ValueError(f"unexpected placeholder tokens: {unexpected}")
 
@@ -71,7 +72,12 @@ def _strip_code_fence(raw: str) -> str:
     return _CODE_FENCE.sub("", raw.strip()).strip()
 
 
-def parse_email_draft(raw: str, facts: Mapping[str, Any] | None = None) -> EmailDraft:
+def parse_email_draft(
+    raw: str,
+    facts: Mapping[str, Any] | None = None,
+    *,
+    allowed_placeholders: Sequence[str] | None = None,
+) -> EmailDraft:
     """Parse and validate the model's raw output, raising DraftValidationError on any failure.
 
     Tries the raw string first, a model that already returns clean JSON never
@@ -88,6 +94,8 @@ def parse_email_draft(raw: str, facts: Mapping[str, Any] | None = None) -> Email
             raise DraftValidationError(f"draft was not valid JSON: {exc}") from exc
 
     try:
-        return EmailDraft.model_validate(payload, context={"facts": facts})
+        return EmailDraft.model_validate(
+            payload, context={"facts": facts, "allowed_placeholders": allowed_placeholders}
+        )
     except ValidationError as exc:
         raise DraftValidationError(f"draft failed schema validation: {exc}") from exc

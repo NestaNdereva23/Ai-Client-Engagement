@@ -42,9 +42,10 @@ class GenerationRun(Base):
 
     run_id: Mapped[str] = mapped_column(Text, primary_key=True, autoincrement=False)
     trace_id: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
-    client_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("clients.client_id"), nullable=False, index=True
+    client_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("clients.client_id"), nullable=True, index=True
     )
+    run_kind: Mapped[str] = mapped_column(Text, nullable=False, server_default="production")
     product: Mapped[str | None] = mapped_column(Text, nullable=True)
     priority_tier: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     data_date: Mapped[date | None] = mapped_column(Date, nullable=True)

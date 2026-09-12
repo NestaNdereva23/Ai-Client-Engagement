@@ -6,6 +6,10 @@ Run a fresh pull:
 Resume a run that stopped:
     uv run python scripts/inactive/ingest.py --run-id <id>
 
+Fetch pages concurrently and write once at the end instead of one page at a
+time (faster, but not resumable if it fails partway):
+    uv run python scripts/inactive/ingest.py --fast
+
 The endpoint is fixed to inactive-clients. There is a separate, matching
 script for the active-clients feed at scripts/active/ingest.py, kept apart on
 purpose: a shared script with an --endpoint flag once let a plain, unflagged
@@ -38,7 +42,24 @@ def main(argv: list[str] | None = None) -> int:
         default=1000,
         help="Stop after this many pages (safety cap).",
     )
+    parser.add_argument(
+        "--fast",
+        action="store_true",
+        help=(
+            "Fetch pages concurrently and write once at the end instead of one "
+            "page at a time. Faster, but not resumable and cannot take --run-id."
+        ),
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="Concurrent page fetches to run with --fast (default: 8).",
+    )
     args = parser.parse_args(argv)
+
+    if args.fast and args.run_id:
+        parser.error("--fast always starts a fresh run; it cannot resume --run-id.")
 
     settings = get_settings()
     if not settings.cytonn_api_base_url or not settings.cytonn_api_key:
@@ -58,7 +79,10 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        result = worker.run(run_id=args.run_id)
+        if args.fast:
+            result = worker.run_bulk(max_workers=args.workers)
+        else:
+            result = worker.run(run_id=args.run_id)
     except IngestionAborted as exc:
         print(f"Ingestion aborted: {exc}", file=sys.stderr)
         return 2

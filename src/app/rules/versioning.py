@@ -113,6 +113,14 @@ def _content(spec: ComponentSpec, row: object) -> dict:
     }
 
 
+def get_version_rows(
+    session: Session, component_type: str, component_key: str, version: int
+) -> list[dict]:
+    spec = _spec(component_type)
+    rows = _rows_for(session, spec, component_key, version)
+    return [_content(spec, row) for row in rows]
+
+
 def version_exists(session: Session, component_type: str, version: int) -> bool:
     # Table-wide, matching the check catalog.py/tier_contract.py/store.py
     # each ran on their own before this module existed.

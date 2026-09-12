@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -97,6 +97,40 @@ def save_fact_eligibility_rule(
     session.add(row)
     session.flush()
     return row
+
+
+def list_global_fact_eligibility(
+    session: Session, policy_version: int
+) -> list[FactEligibilityRule]:
+    return list(
+        session.scalars(
+            select(FactEligibilityRule).where(
+                FactEligibilityRule.policy_version == policy_version,
+                FactEligibilityRule.angle.is_(None),
+            )
+        ).all()
+    )
+
+
+def set_global_fact_eligibility(
+    session: Session, policy_version: int, rows: Sequence[Mapping[str, Any]]
+) -> list[FactEligibilityRule]:
+    for existing in list_global_fact_eligibility(session, policy_version):
+        session.delete(existing)
+    session.flush()
+    created = [
+        save_fact_eligibility_rule(
+            session,
+            policy_version,
+            row["fact_field"],
+            row["exposure_mode"],
+            angle=None,
+            condition=row.get("condition"),
+        )
+        for row in rows
+    ]
+    session.flush()
+    return created
 
 
 @dataclass(frozen=True)

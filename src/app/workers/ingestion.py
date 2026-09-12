@@ -9,6 +9,7 @@ ingestion_rejects with a reason instead of stopping the run.
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -131,6 +132,64 @@ class IngestionWorker:
             session.commit()
             result = self._summarize(session, status)
             logger.info("ingestion.completed", **result.__dict__)
+            return result
+        except Exception:
+            session.rollback()
+            self._mark_failed(current_run_id)
+            raise
+        finally:
+            session.close()
+
+    def run_bulk(self, max_workers: int = 8) -> IngestionResult:
+        """Fetch every page concurrently, then write it all in one pass.
+
+        Faster than run() because pages are not fetched one at a time and
+        nothing is committed until every page is in hand. The trade-off is
+        durability: a crash mid-fetch saves nothing and the run has to be
+        started over, unlike run()'s per-page checkpoints. Always starts a
+        fresh run; there is no resuming a bulk run.
+        """
+        if not self._client.probe(self._fetch_path):
+            logger.error("ingestion.aborted", reason="endpoint not live", endpoint=self._endpoint)
+            raise IngestionAborted("endpoint is not live")
+
+        session = self._session_factory()
+        current_run_id: str | None = None
+        try:
+            status = self._open_run(session, None)
+            current_run_id = status.run_id
+
+            first = self._fetch_page(None)
+            pages: dict[int, dict[str, Any]] = {}
+            last_page = 0
+            if first is not None:
+                first_key, first_payload = first
+                pages[int(first_key)] = first_payload
+                last_page = self._known_last_page or 1
+
+            if last_page > 1:
+                remaining = range(2, min(last_page, self._max_pages) + 1)
+                with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    futures = {
+                        pool.submit(
+                            self._client.fetch, self._fetch_path, params={"page": page_num}
+                        ): page_num
+                        for page_num in remaining
+                    }
+                    for future in as_completed(futures):
+                        pages[futures[future]] = future.result()
+
+            for page_num in sorted(pages):
+                payload = pages[page_num]
+                self._store_raw(session, status.run_id, str(page_num), payload)
+                self._process_page(session, status, payload)
+                status.page_cursor = str(page_num)
+
+            status.state = "completed"
+            status.finished_at = func.now()
+            session.commit()
+            result = self._summarize(session, status)
+            logger.info("ingestion.completed", mode="bulk", **result.__dict__)
             return result
         except Exception:
             session.rollback()

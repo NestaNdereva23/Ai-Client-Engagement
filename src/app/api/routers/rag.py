@@ -5,8 +5,20 @@ from sqlalchemy.orm import Session
 
 from app.api.reviewer_auth import get_current_reviewer_id
 from app.db.session import get_session
-from app.schemas.rag import RagIngestOut, RagVersionOut, RetrievedChunkOut
-from app.services.rag import VersionNotFound, activate_version, ingest_uploaded_report
+from app.schemas.rag import (
+    RagIngestOut,
+    RagSettingIn,
+    RagSettingOut,
+    RagVersionOut,
+    RetrievedChunkOut,
+)
+from app.services.rag import (
+    VersionNotFound,
+    activate_version,
+    get_rag_enabled,
+    ingest_uploaded_report,
+    set_rag_enabled,
+)
 from app.services.rag import list_versions as list_rag_versions
 from app.services.rag import search as search_rag
 
@@ -71,6 +83,18 @@ def activate_rag_version(version_id: int, session: Session = Depends(get_session
         is_active=version.is_active,
         ingested_at=version.ingested_at,
     )
+
+
+@router.get("/settings", response_model=RagSettingOut)
+def get_rag_settings(session: Session = Depends(get_session)) -> RagSettingOut:
+    return RagSettingOut(enabled=get_rag_enabled(session))
+
+
+@router.put("/settings", response_model=RagSettingOut)
+def put_rag_settings(body: RagSettingIn, session: Session = Depends(get_session)) -> RagSettingOut:
+    enabled = set_rag_enabled(session, body.enabled)
+    session.commit()
+    return RagSettingOut(enabled=enabled)
 
 
 @router.get("/search", response_model=list[RetrievedChunkOut])

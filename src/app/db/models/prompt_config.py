@@ -57,6 +57,7 @@ class VoiceContract(Base):
     subject_guidance: Mapped[str | None] = mapped_column(Text, nullable=True)
     length_guidance: Mapped[str | None] = mapped_column(Text, nullable=True)
     readability_guidance: Mapped[str | None] = mapped_column(Text, nullable=True)
+    default_sign_off: Mapped[str | None] = mapped_column(Text, nullable=True)
     rendered_text: Mapped[str] = mapped_column(Text, nullable=False)
     valid_from: Mapped[date | None] = mapped_column(Date, nullable=True)
     valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)

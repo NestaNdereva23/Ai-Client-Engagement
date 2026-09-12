@@ -1,15 +1,15 @@
 """prompt config versioning foundation
 
-Adds a draft/published/archived lifecycle to the three existing versioned
-config tables (message_angle_catalog, tier_contract, business_rules) and
-creates active_configuration, the single pointer to what is live right now
-for each versioned component. Also creates voice_contract, safety_policy,
-output_policy, and personalization_policy as empty shells, so the shared
-versioning module has real tables to run against before their own content
-columns land.
+Adds a draft/published/archived lifecycle to tier_contract (the other two
+versioned config tables, message_angle_catalog and business_rules, got this
+same lifecycle earlier in this chain, right after each one was created --
+their own seed migrations call it, and needed it that much sooner). Also
+creates voice_contract, safety_policy, output_policy, and
+personalization_policy as empty shells, so the shared versioning module has
+real tables to run against before their own content columns land.
 
-valid_from becomes nullable on the three existing tables: a draft row has no
-validity window until it is published.
+valid_from becomes nullable on tier_contract: a draft row has no validity
+window until it is published.
 
 Every existing row is backfilled to status='published', matching what it
 already behaves as today.
@@ -30,7 +30,7 @@ down_revision: str | Sequence[str] | None = "f7d2a9c4e1b3"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_LIFECYCLE_TABLES = ("message_angle_catalog", "tier_contract", "business_rules")
+_LIFECYCLE_TABLES = ("tier_contract",)
 _POLICY_SHELLS = ("voice_contract", "safety_policy", "output_policy", "personalization_policy")
 
 
@@ -81,24 +81,6 @@ def upgrade() -> None:
     for table in _LIFECYCLE_TABLES:
         _add_lifecycle_columns(table)
 
-    op.create_table(
-        "active_configuration",
-        sa.Column("config_id", sa.BigInteger(), autoincrement=True, nullable=False),
-        sa.Column("component_type", sa.Text(), nullable=False),
-        sa.Column("component_key", sa.Text(), nullable=False),
-        sa.Column("active_version", sa.Integer(), nullable=False),
-        sa.Column(
-            "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
-        ),
-        sa.PrimaryKeyConstraint("config_id"),
-        sa.UniqueConstraint(
-            "component_type", "component_key", name="uq_active_configuration_component"
-        ),
-    )
-    op.create_index(
-        "ix_active_configuration_component_type", "active_configuration", ["component_type"]
-    )
-
     for table in _POLICY_SHELLS:
         _create_policy_shell(table)
 
@@ -107,9 +89,6 @@ def downgrade() -> None:
     for table in reversed(_POLICY_SHELLS):
         op.drop_index(f"ix_{table}_version", table_name=table)
         op.drop_table(table)
-
-    op.drop_index("ix_active_configuration_component_type", table_name="active_configuration")
-    op.drop_table("active_configuration")
 
     for table in reversed(_LIFECYCLE_TABLES):
         _drop_lifecycle_columns(table)

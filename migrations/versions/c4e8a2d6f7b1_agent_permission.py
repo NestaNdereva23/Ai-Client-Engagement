@@ -18,7 +18,6 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.orm import Session
 
-from app.agents.action_catalog import load_active_actions
 from app.agents.permissions import seed_default_permissions
 
 # revision identifiers, used by Alembic.
@@ -79,7 +78,27 @@ def upgrade() -> None:
     )
 
     session = Session(bind=op.get_bind())
-    action_codes = list(load_active_actions(session, _SEEDED_ON))
+    bind = op.get_bind()
+    version = bind.execute(
+        sa.text(
+            "SELECT version FROM agent_action_catalog "
+            "WHERE valid_from <= :at AND (valid_to IS NULL OR valid_to > :at) "
+            "ORDER BY valid_from DESC, version DESC LIMIT 1"
+        ),
+        {"at": _SEEDED_ON},
+    ).scalar()
+    action_codes = []
+    if version is not None:
+        action_codes = [
+            row[0]
+            for row in bind.execute(
+                sa.text(
+                    "SELECT action_code FROM agent_action_catalog "
+                    "WHERE version = :version ORDER BY catalog_id"
+                ),
+                {"version": version},
+            )
+        ]
     seed_default_permissions(
         session,
         action_codes,

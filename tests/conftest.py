@@ -40,6 +40,14 @@ def _redirect_to_test_database() -> None:
 
 _redirect_to_test_database()
 
+
+def _default_prompt_config_source_to_db() -> None:
+    os.environ.setdefault("PROMPT_CONFIG_SOURCE", "db")
+    get_settings.cache_clear()
+
+
+_default_prompt_config_source_to_db()
+
 import app.db.models  # noqa: E402,F401  (registers models on Base.metadata)
 from app.db.base import Base  # noqa: E402
 from app.db.session import SessionLocal, engine  # noqa: E402

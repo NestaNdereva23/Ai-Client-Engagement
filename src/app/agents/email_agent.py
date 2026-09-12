@@ -30,6 +30,7 @@ class AngleBrief(Protocol):
     ask: str
     never: str
     use: str | None
+    cta: str | None
 
 
 @runtime_checkable
@@ -372,6 +373,8 @@ def _brief_block(brief: AngleBrief) -> str:
     ]
     if brief.use:
         lines.append(f"How retrieved facts may be used for this angle: {brief.use}")
+    if getattr(brief, "cta", None):
+        lines.append(f"The call to action must read, as close to verbatim as natural: {brief.cta}")
     return "\n".join(lines)
 
 
@@ -402,6 +405,7 @@ def build_system_prompt(
     safety_phrases: Sequence[str] | None = None,
     campaign_prohibitions: Sequence[str] | None = None,
     output_rules: str | None = None,
+    default_sign_off: str | None = None,
 ) -> str:
     sections = [
         template_text(
@@ -422,6 +426,8 @@ def build_system_prompt(
 
     if contract is not None:
         sections.append(_contract_block(contract))
+    elif default_sign_off:
+        sections.append(f'Sign every email off as "{default_sign_off}", exactly as given.')
 
     sections.append(
         "You must never:\n"
@@ -514,6 +520,12 @@ def placeholder_token(field: str) -> str:
     if field not in PLACEHOLDER_FACT_FIELDS:
         raise ValueError(f"{field!r} is not a placeholder-filled fact")
     return f"{{{{{field}}}}}"
+
+
+def resolve_allowed_placeholders(fields: Sequence[str] | None) -> tuple[str, ...]:
+    if fields is None:
+        return ALLOWED_PLACEHOLDERS
+    return ("{{first_name}}", "{{fund_name}}", *(f"{{{{{field}}}}}" for field in fields))
 
 
 def required_placeholders(facts: Mapping[str, Any] | None = None) -> tuple[str, ...]:

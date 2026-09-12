@@ -8,7 +8,7 @@ from app.rules.store import RuleSpec, save_version
 
 # revision identifiers, used by Alembic.
 revision: str = "f8b2e4a7c1d9"
-down_revision: str | Sequence[str] | None = "e6a3c8d5f2b1"
+down_revision: str | Sequence[str] | None = "f5b2d8e4a7c3"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

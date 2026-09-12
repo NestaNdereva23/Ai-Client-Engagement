@@ -14,7 +14,7 @@ from pathlib import Path
 from sqlalchemy import Row, select, update
 from sqlalchemy.orm import Session
 
-from app.db.models.rag import RagDocument, RagDocumentVersion
+from app.db.models.rag import RagDocument, RagDocumentVersion, RagSetting
 from app.rag.ingest import IngestResult, ingest_report_pdf
 from app.rag.retrieve import Retrieved, retrieve, retrieve_product_facts, sections_for_product
 
@@ -90,6 +90,25 @@ def activate_version(session: Session, version_id: int) -> tuple[RagDocumentVers
 
     doc = session.get(RagDocument, version.doc_id)
     return version, doc.title
+
+
+_RAG_SETTING_ID = 1
+
+
+def get_rag_enabled(session: Session) -> bool:
+    row = session.get(RagSetting, _RAG_SETTING_ID)
+    return True if row is None else row.enabled
+
+
+def set_rag_enabled(session: Session, enabled: bool) -> bool:
+    row = session.get(RagSetting, _RAG_SETTING_ID)
+    if row is None:
+        row = RagSetting(setting_id=_RAG_SETTING_ID, enabled=enabled)
+        session.add(row)
+    else:
+        row.enabled = enabled
+    session.flush()
+    return row.enabled
 
 
 def search(

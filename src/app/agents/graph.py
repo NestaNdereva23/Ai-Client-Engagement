@@ -13,7 +13,7 @@ from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agents.email_agent import build_system_prompt
+from app.agents.email_agent import build_system_prompt, resolve_allowed_placeholders
 from app.agents.guardrails import DEFAULT_GUARDRAIL_CHECKS, GuardrailFailure
 from app.db.models.rules import ClientMessageIndicators
 from app.db.models.views import (
@@ -22,6 +22,7 @@ from app.db.models.views import (
     llm_client_numeric_facts,
 )
 from app.llmops.tracing import NullTracer, Tracer
+from app.personalization.eligibility import filter_facts_for_prompt
 from app.privacy.boundary import AuditSink, run_model_boundary, to_model_context
 from app.privacy.fact_block import FUND_DISPLAY_NAMES, ModelFactBlock
 from app.privacy.llm_client import LLMClient, as_model_call
@@ -85,7 +86,7 @@ ContextLoader = Callable[[int, str], ClientContext]
 
 
 class GenerationState(TypedDict, total=False):
-    client_id: int
+    client_id: int | None
     product: str
     run_id: str
     trace_id: str
@@ -105,6 +106,7 @@ class GenerationState(TypedDict, total=False):
     brief: Any | None
     contract: Any | None
     facts: Mapping[str, Any] | None
+    allowed_placeholders: tuple[str, ...] | None
     context: dict[str, Any]
     system_prompt: str
     draft: str | None
@@ -123,7 +125,7 @@ class GenerationState(TypedDict, total=False):
 GuardrailCheck = Callable[[GenerationState], None]
 
 
-def new_generation_state(*, client_id: int, product: str) -> GenerationState:
+def new_generation_state(*, client_id: int | None, product: str) -> GenerationState:
     return {
         "client_id": client_id,
         "product": product,
@@ -186,7 +188,12 @@ def _angle_only_facts(session: Session, client_id: int, angle: str) -> dict[str,
 
 
 def load_client_context(
-    session: Session, client_id: int, product: str, *, at: date | None = None
+    session: Session,
+    client_id: int,
+    product: str,
+    *,
+    at: date | None = None,
+    use_rag: bool = True,
 ) -> ClientContext:
     row = (
         session.execute(
@@ -202,7 +209,11 @@ def load_client_context(
     if indicators is None:
         raise ValueError(f"no resolved message indicators for client {client_id!r}")
 
-    chunks = retrieve_product_facts(session, product=product, angle=indicators.message_angle)
+    chunks = (
+        retrieve_product_facts(session, product=product, angle=indicators.message_angle)
+        if use_rag
+        else ()
+    )
     on = at or date.today()
     brief = load_angle(session, indicators.message_angle, on)
     contract = load_tier(session, indicators.priority_tier, on)
@@ -350,18 +361,25 @@ def build_generation_graph(
 
     def assemble_prompt(state: GenerationState) -> dict[str, Any]:
         facts = state.get("facts")
-        context = dict(facts) if facts else to_model_context(state["raw_context"])
 
         extra_kwargs: dict[str, Any] = {}
         version_stamps: dict[str, Any] = {}
+        allowed_placeholders: tuple[str, ...] | None = None
         if config_resolver is not None:
             config = config_resolver(angle=state.get("angle"), tier=state.get("priority_tier"))
+            if facts and config.fact_eligibility is not None:
+                filtered = filter_facts_for_prompt(facts, config.fact_eligibility)
+                allowed_fields = set(filtered.direct) | set(filtered.placeholder)
+                facts = {field: value for field, value in facts.items() if field in allowed_fields}
+                facts = ModelFactBlock(**facts).to_dict()
+            allowed_placeholders = resolve_allowed_placeholders(config.allowed_placeholder_fields)
             extra_kwargs = {
                 "voice_text": config.voice_text,
                 "safety_words": config.safety_words,
                 "safety_phrases": config.safety_phrases,
                 "campaign_prohibitions": config.campaign_prohibitions,
                 "output_rules": config.output_rules,
+                "default_sign_off": config.default_sign_off,
             }
             version_stamps = {
                 "tier_contract_version": config.tier_contract_version,
@@ -370,6 +388,8 @@ def build_generation_graph(
                 "output_policy_version": config.output_policy_version,
                 "personalization_policy_version": config.personalization_policy_version,
             }
+
+        context = dict(facts) if facts else to_model_context(state["raw_context"])
 
         prompt = prompt_builder(
             angle=state.get("angle"),
@@ -380,7 +400,13 @@ def build_generation_graph(
             facts=facts,
             **extra_kwargs,
         )
-        return {"context": context, "system_prompt": prompt, **version_stamps}
+        return {
+            "context": context,
+            "system_prompt": prompt,
+            "facts": facts,
+            "allowed_placeholders": allowed_placeholders,
+            **version_stamps,
+        }
 
     def _call_record(attempt: int, system_prompt: str, raw_output: str | None, latency_ms: int):
         usage = getattr(llm_client, "last_usage", None)
@@ -442,7 +468,11 @@ def build_generation_graph(
         attempts = state.get("attempts", 0)
 
         try:
-            structured = parse_email_draft(state.get("draft") or "", state.get("facts"))
+            structured = parse_email_draft(
+                state.get("draft") or "",
+                state.get("facts"),
+                allowed_placeholders=state.get("allowed_placeholders"),
+            )
         except DraftValidationError as failure:
             return _retry_or_reject(attempts, "structured_output", str(failure))
 
