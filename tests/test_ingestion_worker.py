@@ -306,3 +306,53 @@ def test_dead_probe_aborts_without_writing(db, cleanup_runs):
             text("SELECT count(*) FROM ingestion_status WHERE run_id = :r"), {"r": run_id}
         ).scalar()
     assert rows == 0
+
+
+def test_bulk_walks_every_page_and_writes_all_of_them(db, cleanup_runs):
+    pages = [
+        _paged(10, 1, [_client_row(1)], current_page=1, last_page=3),
+        _paged(20, 1, [_client_row(2)], current_page=2, last_page=3),
+        _paged(30, 1, [_client_row(3)], current_page=3, last_page=3),
+    ]
+    client = PagedClient(pages)
+    worker = IngestionWorker(client)
+
+    result = worker.run_bulk()
+    cleanup_runs.append(result.run_id)
+
+    assert result.state == "completed"
+    assert result.pages == 3
+    assert result.records_written == 3
+    assert sorted(c["page"] for c in client.calls) == [1, 2, 3]
+    assert _counts(result.run_id) == (3, 0)
+
+
+def test_bulk_rejects_malformed_records_like_run(db, cleanup_runs):
+    payload = _paged(10, 2, [_client_row(1), {"client_code": "no-id"}], current_page=1, last_page=1)
+    worker = IngestionWorker(PagedClient([payload]))
+
+    result = worker.run_bulk()
+    cleanup_runs.append(result.run_id)
+
+    assert result.records_written == 1
+    assert result.records_rejected == 1
+
+
+def test_bulk_population_reconciliation_against_meta_total(db, cleanup_runs):
+    pages = [
+        _paged(10, 1, [_client_row(1)], current_page=1, last_page=2, total=3),
+        _paged(20, 1, [_client_row(2)], current_page=2, last_page=2, total=3),
+    ]
+    worker = IngestionWorker(PagedClient(pages))
+
+    result = worker.run_bulk()
+    cleanup_runs.append(result.run_id)
+
+    assert result.records_seen == 2
+    assert result.population_total == 3
+    assert result.population_gap == 1
+
+
+def test_bulk_dead_probe_aborts_without_writing(db):
+    with pytest.raises(IngestionAborted):
+        IngestionWorker(FakeClient(live=False)).run_bulk()

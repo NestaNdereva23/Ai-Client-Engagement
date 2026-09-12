@@ -84,6 +84,15 @@ from app.db.models.outreach import (
     ReviewAction,
     ReviewCohort,
 )
+from app.db.models.prompt_config import (
+    CONFIGURATION_STATUSES,
+    ActiveConfiguration,
+    FactEligibilityRule,
+    OutputPolicy,
+    PersonalizationPolicy,
+    SafetyPolicy,
+    VoiceContract,
+)
 from app.db.models.rag import RagChunk, RagDocument, RagDocumentVersion
 from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion, RiskRun, RiskSnapshot
 from app.db.models.rules import (
@@ -105,6 +114,7 @@ __all__ = [
     "COMPLAINT_CATEGORIES",
     "COMPLAINT_CHANNELS",
     "COMPLAINT_STATUSES",
+    "CONFIGURATION_STATUSES",
     "CONTACT_EVENT_TYPES",
     "CONTENT_MIXES",
     "DEFAULT_PERMISSION",
@@ -126,6 +136,7 @@ __all__ = [
     "TEMPLATE_REVIEW_OUTCOMES",
     "ActiveClientFund",
     "ActiveClientInteraction",
+    "ActiveConfiguration",
     "ActiveTransaction",
     "AgentActionCatalog",
     "AgentEvent",
@@ -155,6 +166,7 @@ __all__ = [
     "DigestRun",
     "Enrollment",
     "FaAssignment",
+    "FactEligibilityRule",
     "Funds",
     "GenerationBatch",
     "GenerationBatchItem",
@@ -167,7 +179,9 @@ __all__ = [
     "MessageAngleCatalog",
     "MessageTemplate",
     "ModelVersion",
+    "OutputPolicy",
     "OutreachMessage",
+    "PersonalizationPolicy",
     "PiiVault",
     "PromptVersion",
     "RagChunk",
@@ -180,6 +194,7 @@ __all__ = [
     "RiskConfigVersion",
     "RiskRun",
     "RiskSnapshot",
+    "SafetyPolicy",
     "Suppression",
     "TemplateGenerationPlan",
     "TemplatePolicyConfigVersion",
@@ -187,4 +202,5 @@ __all__ = [
     "TierContract",
     "TouchLog",
     "Transactions",
+    "VoiceContract",
 ]

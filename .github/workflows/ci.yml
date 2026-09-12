@@ -58,8 +58,21 @@ jobs:
         run: uv run alembic upgrade head
         env:
           DATABASE_URL: postgresql+psycopg://ace:ace@localhost:5432/ace_test
-      - name: Test
+      - name: Test (PROMPT_CONFIG_SOURCE=db, default for the suite)
         run: uv run pytest
+
+      - name: Regression gate (PROMPT_CONFIG_SOURCE=hardcoded)
+        run: >
+          uv run pytest
+          tests/test_prompt_assembly.py
+          tests/test_rules_catalog.py
+          tests/test_priority_tier.py
+          tests/test_privacy_fact_block.py
+          tests/test_campaigns_e2e.py
+          tests/test_campaigns_instantiation.py
+          tests/test_campaigns_touch.py
+        env:
+          PROMPT_CONFIG_SOURCE: hardcoded
 
   # The tests above run against the host's Python, so they say nothing about
   # whether the image the droplet actually runs still builds. This job does.

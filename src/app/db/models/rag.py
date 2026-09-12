@@ -103,3 +103,13 @@ class RagChunk(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class RagSetting(Base):
+    __tablename__ = "rag_settings"
+
+    setting_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )

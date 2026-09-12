@@ -206,6 +206,10 @@ class Settings(BaseSettings):
 
     tier_sampling_enabled: bool = True
 
+    prompt_config_source: Literal["hardcoded", "db"] = "hardcoded"
+
+    rag_enabled: bool = True
+
     cohort_sample_cap: int = 25
 
     require_deliverable_contact: bool = False

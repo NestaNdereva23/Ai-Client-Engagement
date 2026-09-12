@@ -10,12 +10,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.db.models.rules import TierContract
+from app.rules import versioning
 from app.transform.features import PRIORITY_TIERS
 
 
@@ -80,9 +81,10 @@ def save_tier_contract_version(
     """Validate and insert a new tier contract version, returning the row count."""
     validate_tiers(tiers)
 
-    if session.scalar(select(func.count()).where(TierContract.version == version)):
+    if versioning.version_exists(session, "tier_contract", version):
         raise TierContractValidationError(f"version {version} already exists and is immutable")
 
+    published_at = datetime.now(UTC)
     session.add_all(
         TierContract(
             version=version,
@@ -97,10 +99,17 @@ def save_tier_contract_version(
             cohort_sample_rate=spec.cohort_sample_rate,
             valid_from=valid_from,
             valid_to=valid_to,
+            status="published",
+            published_at=published_at,
         )
         for spec in tiers
     )
     session.flush()
+
+    if valid_to is None:
+        for spec in tiers:
+            versioning.record_published_version(session, "tier_contract", spec.tier, version)
+
     return len(tiers)
 
 
