@@ -30,6 +30,35 @@ _SEEDED_ON = date(2026, 9, 7)
 _SEEDED_BY = "system"
 _SEEDED_REASON = "starting setting: nothing runs without a person saying yes"
 
+# The columns as they stood when this migration shipped. Written out here,
+# instead of importing the live agent_action_catalog model, so a column added
+# to that table later never breaks this migration when history is replayed
+# from scratch.
+_CATALOG_COLUMNS = ("catalog_id", "version", "action_code", "valid_from", "valid_to")
+_CATALOG_TABLE = sa.table("agent_action_catalog", *(sa.column(name) for name in _CATALOG_COLUMNS))
+
+
+def _active_action_codes(bind: sa.engine.Connection, at: date) -> list[str]:
+    """Action codes in the catalogue version in force on `at`."""
+    version = bind.execute(
+        sa.select(_CATALOG_TABLE.c.version)
+        .where(
+            _CATALOG_TABLE.c.valid_from <= at,
+            sa.or_(_CATALOG_TABLE.c.valid_to.is_(None), _CATALOG_TABLE.c.valid_to > at),
+        )
+        .order_by(_CATALOG_TABLE.c.valid_from.desc(), _CATALOG_TABLE.c.version.desc())
+        .limit(1)
+    ).scalar()
+    if version is None:
+        return []
+    return list(
+        bind.execute(
+            sa.select(_CATALOG_TABLE.c.action_code)
+            .where(_CATALOG_TABLE.c.version == version)
+            .order_by(_CATALOG_TABLE.c.catalog_id)
+        ).scalars()
+    )
+
 
 def upgrade() -> None:
     op.create_table(
@@ -77,28 +106,9 @@ def upgrade() -> None:
         unique=False,
     )
 
-    session = Session(bind=op.get_bind())
     bind = op.get_bind()
-    version = bind.execute(
-        sa.text(
-            "SELECT version FROM agent_action_catalog "
-            "WHERE valid_from <= :at AND (valid_to IS NULL OR valid_to > :at) "
-            "ORDER BY valid_from DESC, version DESC LIMIT 1"
-        ),
-        {"at": _SEEDED_ON},
-    ).scalar()
-    action_codes = []
-    if version is not None:
-        action_codes = [
-            row[0]
-            for row in bind.execute(
-                sa.text(
-                    "SELECT action_code FROM agent_action_catalog "
-                    "WHERE version = :version ORDER BY catalog_id"
-                ),
-                {"version": version},
-            )
-        ]
+    action_codes = _active_action_codes(bind, _SEEDED_ON)
+    session = Session(bind=bind)
     seed_default_permissions(
         session,
         action_codes,
