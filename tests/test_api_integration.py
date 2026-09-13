@@ -14,6 +14,7 @@ client = TestClient(app)
 
 CONTACTS = "/api/v1/integration/contacts"
 SUPPRESSIONS = "/api/v1/integration/suppressions"
+SMS_REPLIES = "/api/v1/integration/sms/replies"
 TRIGGER = "/api/v1/integration/ingestion/runs"
 
 
@@ -179,6 +180,41 @@ def test_resyncing_a_suppression_updates_the_reason(
             select(func.count()).select_from(Suppression).where(Suppression.client_id == 555556)
         )
     assert count == 1
+
+
+def test_sms_stop_word_suppresses_the_client(
+    configured_reviewers, reviewer_1_headers, cleanup_suppression
+) -> None:
+    cleanup_suppression.append(555557)
+    response = client.post(
+        SMS_REPLIES,
+        json={"client_id": 555557, "body": "STOP"},
+        headers=reviewer_1_headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["suppressed"] is True
+    assert body["reason"] == "sms_stop_word"
+
+    with SessionLocal() as session:
+        row = session.get(Suppression, 555557)
+    assert row is not None
+    assert row.reason == "sms_stop_word"
+
+
+def test_an_ordinary_sms_reply_does_not_suppress_the_client(
+    configured_reviewers, reviewer_1_headers
+) -> None:
+    response = client.post(
+        SMS_REPLIES,
+        json={"client_id": 555558, "body": "thanks, will check my account"},
+        headers=reviewer_1_headers,
+    )
+    assert response.status_code == 200
+    assert response.json()["suppressed"] is False
+
+    with SessionLocal() as session:
+        assert session.get(Suppression, 555558) is None
 
 
 class FakeClient:

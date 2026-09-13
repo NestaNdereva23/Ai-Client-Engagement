@@ -45,3 +45,22 @@ class SuppressionOut(BaseModel):
     reason: str
     source: str | None
     created_at: datetime
+
+
+class SmsReplyRequest(BaseModel):
+    client_id: int | None = None
+    client_code: str | None = None
+    body: str
+    source: str | None = None
+
+    @model_validator(mode="after")
+    def _needs_a_client_identifier(self) -> SmsReplyRequest:
+        if self.client_id is None and self.client_code is None:
+            raise ValueError("either client_id or client_code is required")
+        return self
+
+
+class SmsReplyOut(BaseModel):
+    client_id: int
+    suppressed: bool
+    reason: str | None

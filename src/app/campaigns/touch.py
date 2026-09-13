@@ -218,7 +218,7 @@ def send_touch(session: Session, touch: TouchLog, *, sender: SenderFn = stub_sen
         raise ValueError("only an approved message can be sent")
 
     enrollment = session.get(Enrollment, touch.enrollment_id)
-    recheck = check_stop_conditions(session, enrollment)
+    recheck = check_stop_conditions(session, enrollment, message.channel)
     if not recheck.eligible:
         raise SendBlocked(recheck.reason)
 

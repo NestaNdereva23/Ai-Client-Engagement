@@ -17,6 +17,13 @@ class ClientNotFound(Exception):
     """No clients row exists for the given client_code."""
 
 
+SMS_STOP_WORDS = frozenset({"stop", "unsubscribe", "cancel", "end", "quit"})
+
+
+def is_sms_stop_word(body: str) -> bool:
+    return body.strip().strip(".!").lower() in SMS_STOP_WORDS
+
+
 @dataclass(frozen=True)
 class ContactRecord:
     client_id: int
@@ -118,3 +125,11 @@ def record_suppression(
         return SuppressionRecord(
             client_id=row.client_id, reason=row.reason, source=row.source, created_at=row.created_at
         )
+
+
+def record_sms_reply(
+    *, client_id: int, body: str, source: str | None = None
+) -> SuppressionRecord | None:
+    if not is_sms_stop_word(body):
+        return None
+    return record_suppression(client_id=client_id, reason="sms_stop_word", source=source)

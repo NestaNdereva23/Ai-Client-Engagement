@@ -289,6 +289,7 @@ class PiiVault(Base):
     client_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     contact_email: Mapped[str | None] = mapped_column(Text, nullable=True)
     contact_whatsapp: Mapped[str | None] = mapped_column(Text, nullable=True)
+    contact_phone: Mapped[str | None] = mapped_column(Text, nullable=True)
     opt_out_flag: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )

@@ -11,12 +11,19 @@ from app.schemas.ingestion import IngestionRunAccepted, TriggerIngestionRequest
 from app.schemas.integration import (
     ContactUpsertOut,
     ContactUpsertRequest,
+    SmsReplyOut,
+    SmsReplyRequest,
     SuppressionOut,
     SuppressionRequest,
 )
 from app.services.ingestion import RunNotFound, resolve_trigger_run_id
 from app.services.ingestion import run_in_background as run_ingestion_in_background
-from app.services.integration import ClientNotFound, record_suppression, resolve_client_id
+from app.services.integration import (
+    ClientNotFound,
+    record_sms_reply,
+    record_suppression,
+    resolve_client_id,
+)
 from app.services.integration import upsert_contact as upsert_contact_service
 
 router = APIRouter(
@@ -60,6 +67,21 @@ def add_suppression(body: SuppressionRequest) -> SuppressionOut:
         source=record.source,
         created_at=record.created_at,
     )
+
+
+@router.post("/sms/replies", response_model=SmsReplyOut)
+def add_sms_reply(body: SmsReplyRequest, session: Session = Depends(get_session)) -> SmsReplyOut:
+    try:
+        client_id = resolve_client_id(
+            session, client_id=body.client_id, client_code=body.client_code
+        )
+    except ClientNotFound:
+        raise HTTPException(status_code=404, detail="client_code not found") from None
+
+    record = record_sms_reply(client_id=client_id, body=body.body, source=body.source)
+    if record is None:
+        return SmsReplyOut(client_id=client_id, suppressed=False, reason=None)
+    return SmsReplyOut(client_id=client_id, suppressed=True, reason=record.reason)
 
 
 @router.post("/ingestion/runs", response_model=IngestionRunAccepted, status_code=202)

@@ -87,6 +87,7 @@ def _seed_client(
     rhythm_days: int | None = 30,
     opted_out: bool = False,
     contact_email: str | None = "present@example.com",
+    contact_phone: str | None = None,
     suppressed: bool = False,
 ) -> None:
     session.add(
@@ -116,6 +117,7 @@ def _seed_client(
             client_id=client_id,
             client_name=f"Estimation Test {client_id}",
             contact_email=contact_email,
+            contact_phone=contact_phone,
             opt_out_flag=opted_out,
         )
     )
@@ -317,6 +319,78 @@ def test_reference_and_sql_estimators_agree_on_the_full_cohort(cohort: int) -> N
     assert sql.eligible_clients == reference.eligible_clients
     assert sql.estimated_templates == reference.estimated_templates
     assert sql.buckets == reference.buckets
+
+
+def test_the_two_estimators_agree_on_an_sms_campaign_gated_by_phone_number(
+    db: None, monkeypatch
+) -> None:
+    # An email on file must not count as reachable when the due step is SMS.
+    monkeypatch.setattr(
+        eligibility, "get_settings", lambda: Settings(require_deliverable_contact=True)
+    )
+    monkeypatch.setattr(
+        estimation, "get_settings", lambda: Settings(require_deliverable_contact=True)
+    )
+    has_phone, no_phone = 979820, 979821
+    with SessionLocal() as session:
+        session.add(Funds(unit_fund_id=FUND_ID, unit_fund_name="Estimation SMS Test Fund"))
+        session.commit()
+        _seed_client(
+            session,
+            has_phone,
+            angle="pick_up_again",
+            tier="T3",
+            fund_type="money_market",
+            cadence_band="Regular",
+            contact_email=None,
+            contact_phone="+254700000097",
+        )
+        _seed_client(
+            session,
+            no_phone,
+            angle="pick_up_again",
+            tier="T3",
+            fund_type="money_market",
+            cadence_band="Regular",
+            contact_email="present@example.com",
+            contact_phone=None,
+        )
+        session.commit()
+
+        row = Campaign(name="sms estimation test campaign", default_channel="sms")
+        session.add(row)
+        session.commit()
+        campaign_id = row.campaign_id
+        add_campaign_step(session, campaign_id, offset_days=0, message_angle="pick_up_again")
+        session.commit()
+        enroll_cohort(session, campaign_id=campaign_id, client_ids=[has_phone, no_phone])
+        session.commit()
+
+    try:
+        with SessionLocal() as session:
+            reference = estimate_templates_reference(session, campaign_id, limit=100)
+        with SessionLocal() as session:
+            sql = estimate_templates_sql(session, campaign_id, limit=100)
+
+        assert reference.eligible_clients == 1
+        assert sql.eligible_clients == reference.eligible_clients
+        assert sql.estimated_templates == reference.estimated_templates
+        assert sql.buckets == reference.buckets
+    finally:
+        ids = (has_phone, no_phone)
+        with SessionLocal() as session:
+            session.execute(delete(Enrollment).where(Enrollment.campaign_id == campaign_id))
+            session.execute(delete(CampaignStep).where(CampaignStep.campaign_id == campaign_id))
+            session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
+            session.execute(delete(ClientFund).where(ClientFund.client_id.in_(ids)))
+            session.execute(
+                delete(ClientMessageIndicators).where(ClientMessageIndicators.client_id.in_(ids))
+            )
+            session.execute(delete(PiiVault).where(PiiVault.client_id.in_(ids)))
+            session.execute(delete(ClientFeatures).where(ClientFeatures.client_id.in_(ids)))
+            session.execute(delete(Clients).where(Clients.client_id.in_(ids)))
+            session.execute(delete(Funds).where(Funds.unit_fund_id == FUND_ID))
+            session.commit()
 
 
 def test_sql_estimator_splits_no_fund_row_and_cadence_none_correctly(cohort: int) -> None:

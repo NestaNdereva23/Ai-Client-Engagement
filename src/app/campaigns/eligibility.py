@@ -90,7 +90,8 @@ def check_eligibility(
     if _has_unresolved_touch(session, enrollment.enrollment_id):
         return _skip(session, enrollment, reason="previous_touch_pending", terminal=False)
 
-    stop = _stop_reason(session, enrollment, vault_session=vault_session)
+    channel = step.channel or campaign.default_channel
+    stop = _stop_reason(session, enrollment, channel, vault_session=vault_session)
     if stop is not None:
         reason, terminal_status, detail = stop
         return _skip(
@@ -109,7 +110,9 @@ def check_eligibility(
     return EligibilityResult(eligible=True)
 
 
-def check_stop_conditions(session: Session, enrollment: Enrollment) -> EligibilityResult:
+def check_stop_conditions(
+    session: Session, enrollment: Enrollment, channel: str
+) -> EligibilityResult:
     """The part of the gate worth re-checking right before an approved touch sends.
 
     Idempotency and cooldown are about whether to schedule a new touch, not
@@ -129,7 +132,7 @@ def check_stop_conditions(session: Session, enrollment: Enrollment) -> Eligibili
     if _angle_held(session, enrollment.client_id):
         return _skip(session, enrollment, reason="angle_held", terminal=False)
 
-    stop = _stop_reason(session, enrollment)
+    stop = _stop_reason(session, enrollment, channel)
     if stop is not None:
         reason, terminal_status, detail = stop
         return _skip(
@@ -166,7 +169,7 @@ def _angle_held(session: Session, client_id: int) -> bool:
 
 
 def _stop_reason(
-    session: Session, enrollment: Enrollment, *, vault_session: Session | None = None
+    session: Session, enrollment: Enrollment, channel: str, *, vault_session: Session | None = None
 ) -> tuple[str, str, str | None] | None:
     """(reason, terminal_status, detail) for a permanent stop signal, or None."""
     suppression_reason = session.get(Suppression, enrollment.client_id)
@@ -176,7 +179,9 @@ def _stop_reason(
         )
         return "suppressed", status, suppression_reason.reason
 
-    opted_out, has_contact = _vault_signals(enrollment.client_id, vault_session=vault_session)
+    opted_out, has_contact = _vault_signals(
+        enrollment.client_id, channel, vault_session=vault_session
+    )
     if opted_out:
         return "opted_out", "stopped_optout", None
     if not has_contact and get_settings().require_deliverable_contact:
@@ -249,27 +254,30 @@ def _has_unresolved_touch(session: Session, enrollment_id: int) -> bool:
     return message.status == "approved" and latest.sent_at is None
 
 
-def _vault_signals(client_id: int, *, vault_session: Session | None = None) -> tuple[bool, bool]:
+def _vault_signals(
+    client_id: int, channel: str, *, vault_session: Session | None = None
+) -> tuple[bool, bool]:
     """(opted_out, has_deliverable_contact), read under the restricted role."""
     if vault_session is not None:
-        return _read_vault_signals(vault_session, client_id)
+        return _read_vault_signals(vault_session, client_id, channel)
     with restricted_session() as session:
-        return _read_vault_signals(session, client_id)
+        return _read_vault_signals(session, client_id, channel)
 
 
-def _read_vault_signals(session: Session, client_id: int) -> tuple[bool, bool]:
+def _read_vault_signals(session: Session, client_id: int, channel: str) -> tuple[bool, bool]:
     vault = session.get(PiiVault, client_id)
     record_audit(
         session,
         entity_type="pii_vault",
         action="read",
         entity_id=str(client_id),
-        detail={"purpose": "eligibility_gate"},
+        detail={"purpose": "eligibility_gate", "channel": channel},
     )
     session.commit()
     if vault is None:
         return False, False
-    return vault.opt_out_flag, bool(vault.contact_email or vault.contact_whatsapp)
+    contact = vault.contact_phone if channel == "sms" else vault.contact_email
+    return vault.opt_out_flag, bool(contact)
 
 
 def _within_cooldown(session: Session, client_id: int, cooldown_days: int) -> bool:
