@@ -15,7 +15,7 @@ from datetime import UTC, date, datetime, timedelta
 from sqlalchemy import Row, func, select, tuple_
 from sqlalchemy.orm import Session
 
-from app.agents.orchestrator import ChannelAgent
+from app.agents.orchestrator import Orchestrator
 from app.audit.log import record_audit
 from app.campaigns.batch_generation import BatchIngestResult, BatchNotFound
 from app.campaigns.batch_generation import ingest_batch as ingest_campaign_batch_run
@@ -91,13 +91,23 @@ class InstantiationBatchNotFound(Exception):
     pass
 
 
-class NonIncreasingStepOffset(Exception):
+class DecreasingStepOffset(Exception):
     def __init__(self, offset_days: int, previous_offset_days: int) -> None:
         self.offset_days = offset_days
         self.previous_offset_days = previous_offset_days
         super().__init__(
-            f"offset_days {offset_days} must be greater than the previous "
+            f"offset_days {offset_days} may not fall before the previous "
             f"step's offset_days {previous_offset_days}"
+        )
+
+
+class DuplicateChannelSameDay(Exception):
+    def __init__(self, offset_days: int, channel: str) -> None:
+        self.offset_days = offset_days
+        self.channel = channel
+        super().__init__(
+            f"a {channel!r} touch already falls on offset_days {offset_days}; "
+            "two touches on the same day must use different channels"
         )
 
 
@@ -272,6 +282,7 @@ def list_campaigns(
     purchase_depth: str | None = None,
     newly_dormant: bool | None = None,
     message_angle: str | None = None,
+    channel: str | None = None,
 ) -> tuple[list[Row], str | None]:
     """Campaigns oldest-first, each carrying its own enrollment counts.
 
@@ -287,6 +298,7 @@ def list_campaigns(
             Campaign.campaign_type,
             Campaign.status,
             Campaign.cohort_definition,
+            Campaign.default_channel,
             Campaign.start_date,
             Campaign.end_date,
             Campaign.created_at,
@@ -299,6 +311,8 @@ def list_campaigns(
     )
     if status is not None:
         query = query.where(Campaign.status == status)
+    if channel is not None:
+        query = query.where(Campaign.default_channel == channel)
     cohort_filters = {
         "fund_id": fund_id,
         "value_band": value_band,
@@ -334,6 +348,7 @@ def create_campaign(
     steps: Sequence[Mapping[str, object]] = (),
     start_date=None,
     end_date=None,
+    default_channel: str = "email",
 ) -> tuple[Campaign, int, list[CampaignStep]]:
     campaign = Campaign(
         name=name,
@@ -341,6 +356,7 @@ def create_campaign(
         cohort_definition=cohort_filters,
         start_date=start_date,
         end_date=end_date,
+        default_channel=default_channel,
     )
     session.add(campaign)
     session.flush()
@@ -355,6 +371,7 @@ def create_campaign(
             offset_days=step["offset_days"],
             message_angle=step.get("message_angle"),
             template_ref=step.get("template_ref"),
+            channel=step.get("channel"),
         )
         for step in steps
     ]
@@ -381,8 +398,10 @@ def add_campaign_step(
     offset_days: int,
     message_angle: str | None = None,
     template_ref: str | None = None,
+    channel: str | None = None,
 ) -> CampaignStep:
-    if session.get(Campaign, campaign_id) is None:
+    campaign = session.get(Campaign, campaign_id)
+    if campaign is None:
         raise CampaignNotFound(campaign_id)
 
     previous_step = session.execute(
@@ -391,8 +410,18 @@ def add_campaign_step(
         .order_by(CampaignStep.step_no.desc())
         .limit(1)
     ).scalar_one_or_none()
-    if previous_step is not None and offset_days <= previous_step.offset_days:
-        raise NonIncreasingStepOffset(offset_days, previous_step.offset_days)
+    if previous_step is not None and offset_days < previous_step.offset_days:
+        raise DecreasingStepOffset(offset_days, previous_step.offset_days)
+
+    resolved_channel = channel or campaign.default_channel
+    same_day_steps = session.execute(
+        select(CampaignStep).where(
+            CampaignStep.campaign_id == campaign_id, CampaignStep.offset_days == offset_days
+        )
+    ).scalars()
+    same_day_channels = {step.channel or campaign.default_channel for step in same_day_steps}
+    if resolved_channel in same_day_channels:
+        raise DuplicateChannelSameDay(offset_days, resolved_channel)
 
     next_step_no = (previous_step.step_no if previous_step is not None else 0) + 1
 
@@ -402,6 +431,7 @@ def add_campaign_step(
         offset_days=offset_days,
         message_angle=message_angle,
         template_ref=template_ref,
+        channel=channel,
     )
     session.add(step)
     session.flush()
@@ -410,7 +440,12 @@ def add_campaign_step(
         entity_type="campaign_step",
         action="create",
         entity_id=str(step.step_id),
-        detail={"campaign_id": campaign_id, "step_no": next_step_no, "offset_days": offset_days},
+        detail={
+            "campaign_id": campaign_id,
+            "step_no": next_step_no,
+            "offset_days": offset_days,
+            "channel": resolved_channel,
+        },
     )
     return step
 
@@ -432,7 +467,7 @@ def run_campaign_generation(
     session: Session,
     campaign_id: int,
     *,
-    agent: ChannelAgent,
+    orchestrator: Orchestrator,
     settings: Settings,
     tracer: Tracer | None = None,
     limit: int = DEFAULT_BATCH_LIMIT,
@@ -441,7 +476,10 @@ def run_campaign_generation(
         raise CampaignNotFound(campaign_id)
 
     generate = functools.partial(
-        generate_for_enrollment, agent=agent, settings=settings, tracer=tracer
+        generate_for_enrollment,
+        orchestrator=orchestrator,
+        settings=settings,
+        tracer=tracer,
     )
     return run_due_enrollments(session, campaign_id=campaign_id, generate=generate, limit=limit)
 

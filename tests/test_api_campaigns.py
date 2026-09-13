@@ -581,6 +581,15 @@ def test_list_campaigns_carries_its_own_enrollment_counts(
     assert row["primary_count"] == 1
     assert row["suppressed_count"] == 1
     assert row["name"] == "test summary campaign"
+    assert row["default_channel"] == "email"
+
+
+def test_list_campaigns_filters_by_channel(campaign_with_a_suppressed_row) -> None:
+    campaign_id = campaign_with_a_suppressed_row
+    matched = client.get(CAMPAIGNS, params={"limit": 200, "channel": "email"})
+    unmatched = client.get(CAMPAIGNS, params={"limit": 200, "channel": "sms"})
+    assert campaign_id in {row["campaign_id"] for row in matched.json()["items"]}
+    assert campaign_id not in {row["campaign_id"] for row in unmatched.json()["items"]}
 
 
 def test_get_campaign_enrollments_returns_the_roster(
@@ -739,6 +748,67 @@ def test_create_campaign_422s_for_a_sequence_that_does_not_move_forward(cohort_c
         )
 
 
+def test_create_campaign_puts_an_email_touch_and_an_sms_touch_on_the_same_day(
+    cohort_clients,
+) -> None:
+    fund_id, _matching_a, _matching_b, _non_matching = cohort_clients
+    response = client.post(
+        CAMPAIGNS,
+        json={
+            "name": "cohort test campaign",
+            "cohort": {"fund_id": fund_id, "value_band": "High"},
+            "steps": [
+                {"offset_days": 0, "channel": "email"},
+                {"offset_days": 0, "channel": "sms"},
+            ],
+        },
+    )
+    assert response.status_code == 201
+    steps = response.json()["steps"]
+    assert [s["step_no"] for s in steps] == [1, 2]
+    assert [s["offset_days"] for s in steps] == [0, 0]
+    assert [s["channel"] for s in steps] == ["email", "sms"]
+
+
+def test_create_campaign_422s_for_the_same_channel_twice_on_one_day(cohort_clients) -> None:
+    fund_id, _matching_a, _matching_b, _non_matching = cohort_clients
+    response = client.post(
+        CAMPAIGNS,
+        json={
+            "name": "cohort test campaign",
+            "cohort": {"fund_id": fund_id, "value_band": "High"},
+            "steps": [{"offset_days": 0}, {"offset_days": 0}],
+        },
+    )
+    assert response.status_code == 422
+    with SessionLocal() as session:
+        assert (
+            session.scalars(
+                select(Campaign.campaign_id).where(Campaign.name == "cohort test campaign")
+            ).all()
+            == []
+        )
+
+
+def test_create_campaign_defaults_to_email_and_reads_back_as_email(cohort_clients) -> None:
+    fund_id, _matching_a, _matching_b, _non_matching = cohort_clients
+    response = client.post(
+        CAMPAIGNS,
+        json={
+            "name": "cohort test campaign",
+            "cohort": {"fund_id": fund_id, "value_band": "High"},
+            "steps": [{"offset_days": 0}],
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["default_channel"] == "email"
+    assert body["steps"][0]["channel"] is None
+
+    detail = client.get(f"{CAMPAIGNS}/{body['campaign_id']}")
+    assert detail.json()["default_channel"] == "email"
+
+
 def test_create_campaign_rejects_a_cohort_selected_by_angle(db: None) -> None:
     """The angle is resolved per client at draft time, so it cannot narrow a cohort."""
     response = client.post(
@@ -796,7 +866,7 @@ def test_post_campaign_step_assigns_sequential_step_numbers(bare_campaign: int) 
     assert second.json()["campaign_id"] == bare_campaign
 
 
-def test_post_campaign_step_422s_for_an_offset_equal_to_the_previous_step(
+def test_post_campaign_step_422s_for_the_same_channel_twice_on_the_same_day(
     bare_campaign: int,
 ) -> None:
     first = client.post(
@@ -811,9 +881,26 @@ def test_post_campaign_step_422s_for_an_offset_equal_to_the_previous_step(
     )
     assert second.status_code == 422
 
-    # rejected: it did not get appended
     steps = client.get(f"{CAMPAIGNS}/{bare_campaign}/steps").json()
     assert [s["step_no"] for s in steps] == [1]
+
+
+def test_post_campaign_step_allows_a_different_channel_on_the_same_day(
+    bare_campaign: int,
+) -> None:
+    first = client.post(
+        f"{CAMPAIGNS}/{bare_campaign}/steps",
+        json={"offset_days": 0, "channel": "email"},
+    )
+    assert first.status_code == 201
+
+    second = client.post(
+        f"{CAMPAIGNS}/{bare_campaign}/steps",
+        json={"offset_days": 0, "channel": "sms"},
+    )
+    assert second.status_code == 201
+    assert second.json()["step_no"] == 2
+    assert second.json()["offset_days"] == 0
 
 
 def test_post_campaign_step_422s_for_an_offset_smaller_than_the_previous_step(
@@ -876,11 +963,11 @@ def two_due_enrollments(db: None, monkeypatch):
 
     No steps means the gate skips every enrollment on no_next_step before
     generation is ever reached, so the batch size can be checked without a
-    model call; build_default_agent is stubbed so the endpoint does not need
-    a configured provider either.
+    model call; build_default_orchestrator is stubbed so the endpoint does
+    not need a configured provider either.
     """
     monkeypatch.setattr(
-        "app.api.routers.campaigns.build_default_agent", lambda session, **kwargs: None
+        "app.api.routers.campaigns.build_default_orchestrator", lambda session, **kwargs: None
     )
 
     fund_id = 97703

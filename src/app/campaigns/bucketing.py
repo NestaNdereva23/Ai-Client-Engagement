@@ -7,13 +7,14 @@ Read-only: this groups clients, it never drafts or touches anything.
 from __future__ import annotations
 
 import functools
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session
 
 from app.agents.graph import ClientContext, ContextLoader, load_client_context
 from app.campaigns.eligibility import check_eligibility
-from app.campaigns.generation import resolve_product
+from app.campaigns.generation import resolve_product, resolve_touch_channel
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT, select_due_enrollments
 from app.db.models.campaigns import Enrollment
 from app.db.session import restricted_session
@@ -30,6 +31,7 @@ class ProfileKey:
     stale_contact: bool
     exit_reason_charge_settled: bool
     fund_name_known: bool
+    channel: str = "email"
 
     def as_dict(self) -> dict[str, object]:
         """The JSONB shape message_template.profile_key stores."""
@@ -41,7 +43,13 @@ class ProfileKey:
             "stale_contact": self.stale_contact,
             "exit_reason_charge_settled": self.exit_reason_charge_settled,
             "fund_name_known": self.fund_name_known,
+            "channel": self.channel,
         }
+
+
+def normalize_profile_key(data: Mapping[str, object]) -> dict[str, object]:
+    # A profile_key stored before the channel field existed reads as email.
+    return {"channel": "email", **data}
 
 
 @dataclass(frozen=True)
@@ -79,10 +87,11 @@ def profile_key_sort_key(key: ProfileKey) -> tuple:
         key.stale_contact,
         key.exit_reason_charge_settled,
         key.fund_name_known,
+        key.channel,
     )
 
 
-def profile_key_for(context: ClientContext, *, product: str) -> ProfileKey:
+def profile_key_for(context: ClientContext, *, product: str, channel: str = "email") -> ProfileKey:
     """The bucket one client's own context belongs in."""
     facts = context.facts or {}
     return ProfileKey(
@@ -93,6 +102,7 @@ def profile_key_for(context: ClientContext, *, product: str) -> ProfileKey:
         stale_contact=bool(facts.get("stale_contact")),
         exit_reason_charge_settled=facts.get("exit_reason") == "charge_settled",
         fund_name_known=bool(facts.get("fund_name")),
+        channel=channel,
     )
 
 
@@ -127,7 +137,8 @@ def derive_buckets(
             except ValueError:
                 continue
 
-            key = profile_key_for(context, product=product)
+            channel = resolve_touch_channel(session, campaign_id, enrollment.current_step + 1)
+            key = profile_key_for(context, product=product, channel=channel)
             bucket = buckets.setdefault(key, Bucket(profile_key=key))
             bucket.members.append(BucketMember(enrollment=enrollment, context=context))
 

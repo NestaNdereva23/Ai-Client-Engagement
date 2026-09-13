@@ -192,6 +192,7 @@ def test_profile_key_as_dict_matches_message_template_profile_key_shape() -> Non
         "stale_contact": False,
         "exit_reason_charge_settled": False,
         "fund_name_known": False,
+        "channel": "email",
     }
 
 

@@ -50,6 +50,7 @@ class Campaign(Base):
     # on, not a free-text description, so enrollment can re-derive membership.
     cohort_definition: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="draft")
+    default_channel: Mapped[str] = mapped_column(Text, nullable=False, server_default="email")
     start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

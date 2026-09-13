@@ -8,7 +8,7 @@ import structlog
 from sqlalchemy.orm import Session
 
 from app.agents.graph import ContextLoader, load_client_profile_context
-from app.campaigns.bucketing import Bucket, derive_buckets
+from app.campaigns.bucketing import Bucket, derive_buckets, normalize_profile_key
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT
 from app.campaigns.touch import record_touch
 from app.db.models.message_template import MessageTemplate
@@ -25,7 +25,8 @@ logger = structlog.get_logger(__name__)
 
 
 def _matching_bucket(buckets: Sequence[Bucket], template: MessageTemplate) -> Bucket | None:
-    return next((b for b in buckets if b.profile_key.as_dict() == template.profile_key), None)
+    wanted = normalize_profile_key(template.profile_key)
+    return next((b for b in buckets if b.profile_key.as_dict() == wanted), None)
 
 
 def _instantiate_from_bucket(

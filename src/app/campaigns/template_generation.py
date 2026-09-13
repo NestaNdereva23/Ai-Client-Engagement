@@ -17,6 +17,7 @@ from app.agents.email_agent import (
     build_system_prompt,
     placeholder_token,
 )
+from app.agents.email_channel import CHANNEL
 from app.agents.graph import (
     ClientContext,
     ContextLoader,
@@ -32,6 +33,7 @@ from app.campaigns.bucketing import (
     Bucket,
     BucketMember,
     ProfileKey,
+    normalize_profile_key,
     profile_key_sort_key,
 )
 from app.campaigns.estimation import DEFAULT_ESTIMATE_LIMIT, resolve_due_profile_keys
@@ -236,7 +238,7 @@ def _profile_key_fingerprint(data: Mapping[str, object]) -> str:
     from different places (a live ProfileKey vs. a stored JSONB row) compare
     equal regardless of key order.
     """
-    return json.dumps(data, sort_keys=True, default=str)
+    return json.dumps(normalize_profile_key(data), sort_keys=True, default=str)
 
 
 def _existing_profile_key_fingerprints(session: Session, campaign_id: int) -> set[str]:
@@ -386,6 +388,9 @@ def draft_templates_for_campaign(
     failed_guardrails = 0
     failed_errors = 0
     for group in to_draft:
+        if group.profile_key.channel != CHANNEL:
+            failed_errors += 1
+            continue
         # Committed per bucket rather than once at the end: an unexpected
         # error from one bucket (a provider timeout, a network blip) is
         # caught and counted rather than left to propagate, so it does not

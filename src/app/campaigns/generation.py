@@ -13,13 +13,13 @@ from __future__ import annotations
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.agents.orchestrator import ChannelAgent
+from app.agents.orchestrator import Orchestrator
 from app.audit.log import record_audit
 from app.campaigns.cohorts import CohortSlot
 from app.config import Settings
-from app.db.models.campaigns import Enrollment, TouchLog
+from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
 from app.db.models.models import ClientFeatures
-from app.db.models.outreach import OutreachMessage
+from app.db.models.outreach import Campaign, OutreachMessage
 from app.llmops.telemetry import persist_generation_telemetry
 from app.llmops.tracing import Tracer
 from app.llmops.versions import persist_generation_run
@@ -57,6 +57,20 @@ def resolve_product(session: Session, client_id: int) -> str:
     return (fund_type or "other").replace("_", " ")
 
 
+def resolve_touch_channel(session: Session, campaign_id: int, step_no: int) -> str:
+    # The step's own channel wins; the campaign's default is the fallback.
+    step_channel = session.execute(
+        select(CampaignStep.channel).where(
+            CampaignStep.campaign_id == campaign_id, CampaignStep.step_no == step_no
+        )
+    ).scalar_one_or_none()
+    if step_channel is not None:
+        return step_channel
+    return session.execute(
+        select(Campaign.default_channel).where(Campaign.campaign_id == campaign_id)
+    ).scalar_one()
+
+
 def model_boundary_audit_sink(session: Session) -> AuditSink:
     """A real AuditSink: one audit_log row per model boundary crossing."""
 
@@ -84,7 +98,8 @@ def _generate_and_persist(
     *,
     client_id: int,
     campaign_id: int,
-    agent: ChannelAgent,
+    orchestrator: Orchestrator,
+    channel: str,
     settings: Settings,
     tracer: Tracer | None,
     cohort_slot: CohortSlot | None = None,
@@ -101,9 +116,9 @@ def _generate_and_persist(
     message in the same cohort slot as the one it's replacing.
     """
     product = resolve_product(session, client_id)
-    state = agent.generate(client_id=client_id, product=product)
+    state = orchestrator.generate(channel, client_id=client_id, product=product)
 
-    run = persist_generation_run(session, state, settings)
+    run = persist_generation_run(session, state, settings, channel=channel)
     session.flush()
     persist_generation_telemetry(session, run, state, tracer=tracer)
 
@@ -113,6 +128,7 @@ def _generate_and_persist(
         session,
         run,
         campaign_id=campaign_id,
+        channel=channel,
         call_brief=state.get("call_brief"),
         cohort_slot=cohort_slot,
     )
@@ -123,7 +139,8 @@ def generate_for_enrollment(
     enrollment: Enrollment,
     step_no: int,
     *,
-    agent: ChannelAgent,
+    orchestrator: Orchestrator,
+    channel: str | None = None,
     settings: Settings,
     tracer: Tracer | None = None,
 ) -> OutreachMessage | None:
@@ -132,12 +149,17 @@ def generate_for_enrollment(
     every guardrail retry rejected the draft. campaigns.touch leaves the
     touch's message_id null in that case; see generate_touch's docstring
     for why that does not make the step retryable on its own.
+
+    channel defaults to whatever this step itself resolves to, so a batch
+    run over mixed touches drafts each one on its own channel.
     """
+    channel = channel or resolve_touch_channel(session, enrollment.campaign_id, step_no)
     return _generate_and_persist(
         session,
         client_id=enrollment.client_id,
         campaign_id=enrollment.campaign_id,
-        agent=agent,
+        orchestrator=orchestrator,
+        channel=channel,
         settings=settings,
         tracer=tracer,
     )
@@ -147,7 +169,7 @@ def regenerate_message(
     session: Session,
     message_id: str,
     *,
-    agent: ChannelAgent,
+    orchestrator: Orchestrator,
     settings: Settings,
     tracer: Tracer | None = None,
 ) -> OutreachMessage:
@@ -160,6 +182,9 @@ def regenerate_message(
     original message exactly as it was, when the fresh attempt is itself
     rejected by every guardrail retry -- nothing to replace it with is
     worse than the draft already in review.
+
+    The replacement is drafted on the same channel as the message it
+    replaces; regenerating never changes what channel a message goes out on.
 
     A message reached from a campaign has a touch_log row pointing at it.
     That touch is still the same touch, the same enrollment's same step, so
@@ -176,7 +201,8 @@ def regenerate_message(
         session,
         client_id=message.client_id,
         campaign_id=message.campaign_id,
-        agent=agent,
+        orchestrator=orchestrator,
+        channel=message.channel,
         settings=settings,
         tracer=tracer,
         cohort_slot=CohortSlot(cohort_id=message.cohort_id, is_sample=message.is_sample),

@@ -110,6 +110,7 @@ class GenerationState(TypedDict, total=False):
     context: dict[str, Any]
     system_prompt: str
     draft: str | None
+    content: dict[str, Any]
     subject: str | None
     body: str | None
     raw_structured_output: dict[str, Any] | None
@@ -476,11 +477,8 @@ def build_generation_graph(
         except DraftValidationError as failure:
             return _retry_or_reject(attempts, "structured_output", str(failure))
 
-        updates: dict[str, Any] = {
-            "subject": structured.subject,
-            "body": structured.body,
-            "raw_structured_output": structured.model_dump(),
-        }
+        content = structured.model_dump()
+        updates: dict[str, Any] = {"content": content, "raw_structured_output": content, **content}
         check_state: GenerationState = {**state, **updates}
 
         for check in checks:

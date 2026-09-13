@@ -175,6 +175,14 @@ def test_list_reviews_filters_by_campaign(message) -> None:
     assert message_id not in [row["message_id"] for row in unmatched.json()["items"]]
 
 
+def test_list_reviews_filters_by_channel(message) -> None:
+    message_id, campaign_id = message
+    matched = client.get(REVIEWS, params={"campaign_id": campaign_id, "channel": "email"})
+    unmatched = client.get(REVIEWS, params={"campaign_id": campaign_id, "channel": "sms"})
+    assert message_id in [row["message_id"] for row in matched.json()["items"]]
+    assert unmatched.json()["items"] == []
+
+
 def test_get_review_returns_both_content_versions(message) -> None:
     message_id, _campaign_id = message
     response = client.get(f"{REVIEWS}/{message_id}")

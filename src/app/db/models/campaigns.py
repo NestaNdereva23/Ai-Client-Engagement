@@ -45,6 +45,7 @@ class CampaignStep(Base):
     offset_days: Mapped[int] = mapped_column(Integer, nullable=False)
     message_angle: Mapped[str | None] = mapped_column(Text, nullable=True)
     template_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    channel: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Enrollment(Base):

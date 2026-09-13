@@ -89,13 +89,14 @@ def logout_submit(request: Request) -> RedirectResponse:
 def queue(
     request: Request,
     cursor: str | None = None,
+    channel: str | None = None,
     current_user: ReviewerUser = Depends(_require_queue_role),
     session: Session = Depends(get_session),
 ) -> object:
     items, next_cursor = list_pending_messages_for_queue(
-        session, cursor=cursor, limit=DEFAULT_LIMIT
+        session, cursor=cursor, channel=channel, limit=DEFAULT_LIMIT
     )
-    total_count = count_pending_messages(session)
+    total_count = count_pending_messages(session, channel=channel)
     return templates.TemplateResponse(
         request,
         "queue.html",

@@ -18,6 +18,7 @@ from app.agents.graph import (
     new_generation_state,
 )
 from app.agents.guardrails import DEFAULT_GUARDRAIL_CHECKS
+from app.agents.orchestrator import Orchestrator
 from app.agents.prompt_config import resolve_active_configuration
 from app.config import Settings, get_settings
 from app.llmops.tracing import NullTracer, Tracer
@@ -97,3 +98,20 @@ def build_default_agent(
         prompt_builder=prompt_builder,
         config_resolver=functools.partial(resolve_active_configuration, session),
     )
+
+
+def build_default_orchestrator(
+    session: Session,
+    settings: Settings | None = None,
+    *,
+    audit: AuditSink | None = None,
+    tracer: Tracer | None = None,
+    prompt_builder: PromptBuilder = build_system_prompt,
+) -> Orchestrator:
+    orchestrator = Orchestrator()
+    orchestrator.register(
+        build_default_agent(
+            session, settings, audit=audit, tracer=tracer, prompt_builder=prompt_builder
+        )
+    )
+    return orchestrator

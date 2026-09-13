@@ -151,8 +151,14 @@ def _resolve_eligible_profile_keys(
     client_ids = [e.client_id for e in due]
     enrollment_ids = [e.enrollment_id for e in due]
 
-    existing_steps = set(
-        session.scalars(select(CampaignStep.step_no).where(CampaignStep.campaign_id == campaign_id))
+    steps_by_no = {
+        step.step_no: step
+        for step in session.scalars(
+            select(CampaignStep).where(CampaignStep.campaign_id == campaign_id)
+        )
+    }
+    default_channel = session.scalar(
+        select(Campaign.default_channel).where(Campaign.campaign_id == campaign_id)
     )
     features_by_client = {
         row.client_id: row
@@ -196,7 +202,7 @@ def _resolve_eligible_profile_keys(
     candidates: list[Enrollment] = []
     for enrollment in due:
         step_no = enrollment.current_step + 1
-        if step_no not in existing_steps:
+        if step_no not in steps_by_no:
             continue
         features = features_by_client.get(enrollment.client_id)
         if features is None or features.purchase_depth == "none":
@@ -265,7 +271,11 @@ def _resolve_eligible_profile_keys(
         features = features_by_client[client_id]
         indicator = indicators_by_client[client_id]
         primary = primary_fund_by_client.get(client_id)
-        resolved.append((enrollment, _profile_key_from_columns(features, indicator, primary)))
+        step = steps_by_no[enrollment.current_step + 1]
+        channel = step.channel or default_channel
+        resolved.append(
+            (enrollment, _profile_key_from_columns(features, indicator, primary, channel))
+        )
 
     return resolved
 
@@ -274,6 +284,7 @@ def _profile_key_from_columns(
     features: ClientFeatures,
     indicator: ClientMessageIndicators,
     primary_fund: ClientFund | None,
+    channel: str,
 ) -> ProfileKey:
     has_facts = primary_fund is not None
     has_cadence = (
@@ -290,6 +301,7 @@ def _profile_key_from_columns(
         stale_contact=has_facts and bool(features.stale_contact),
         exit_reason_charge_settled=has_facts and features.exit_reason == "charge_settled",
         fund_name_known=has_facts and features.fund_type in FUND_DISPLAY_NAMES,
+        channel=channel,
     )
 
 

@@ -110,6 +110,7 @@ class CampaignListItemOut(BaseModel):
     campaign_type: str
     status: str
     cohort_definition: dict | None
+    default_channel: str
     start_date: date | None
     end_date: date | None
     created_at: datetime
@@ -124,6 +125,7 @@ class CampaignDetailOut(BaseModel):
     campaign_type: str
     status: str
     cohort_definition: dict | None
+    default_channel: str
     start_date: date | None
     end_date: date | None
     created_at: datetime
@@ -202,6 +204,7 @@ class CampaignStepCreateRequest(BaseModel):
     offset_days: int
     message_angle: str | None = None
     template_ref: str | None = None
+    channel: str | None = None
 
 
 class CampaignStepOut(BaseModel):
@@ -211,6 +214,7 @@ class CampaignStepOut(BaseModel):
     offset_days: int
     message_angle: str | None
     template_ref: str | None
+    channel: str | None
 
 
 class CampaignCreateRequest(BaseModel):
@@ -220,6 +224,7 @@ class CampaignCreateRequest(BaseModel):
     steps: list[CampaignStepCreateRequest] = Field(default_factory=list)
     start_date: date | None = None
     end_date: date | None = None
+    default_channel: str = "email"
 
 
 class CampaignCreateOut(BaseModel):
@@ -230,6 +235,7 @@ class CampaignCreateOut(BaseModel):
     campaign_type: str
     status: str
     cohort_definition: dict | None
+    default_channel: str
     start_date: date | None
     end_date: date | None
     created_at: datetime
