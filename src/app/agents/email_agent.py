@@ -256,7 +256,7 @@ _BASE_INSTRUCTIONS_CORE = (
 )
 
 
-def _banned_words_clause(words: Sequence[str]) -> str:
+def banned_words_clause(words: Sequence[str]) -> str:
     if not words:
         return ""
     return (
@@ -267,7 +267,7 @@ def _banned_words_clause(words: Sequence[str]) -> str:
     )
 
 
-def _banned_phrases_clause(phrases: Sequence[str]) -> str:
+def banned_phrases_clause(phrases: Sequence[str]) -> str:
     if not phrases:
         return ""
     return (
@@ -285,7 +285,7 @@ def _resolved_instructions(
     core = voice_text if voice_text is not None else _BASE_INSTRUCTIONS_CORE
     words = safety_words if safety_words is not None else BANNED_WORDS
     phrases = safety_phrases if safety_phrases is not None else ()
-    return core + _banned_words_clause(words) + _banned_phrases_clause(phrases)
+    return core + banned_words_clause(words) + banned_phrases_clause(phrases)
 
 
 _BASE_INSTRUCTIONS = _resolved_instructions()
@@ -347,7 +347,7 @@ def conditional_prohibitions(facts: Mapping[str, Any] | None) -> list[str]:
     return lines
 
 
-def _prohibitions_block(
+def prohibitions_block(
     brief: AngleBrief | None,
     facts: Mapping[str, Any] | None,
     extra: Sequence[str] = (),
@@ -365,7 +365,7 @@ def _prohibitions_block(
     return "\n".join(f"- {line}" for line in lines)
 
 
-def _brief_block(brief: AngleBrief) -> str:
+def brief_block(brief: AngleBrief) -> str:
     lines = [
         f"Angle: {brief.headline}\n"
         f"What is true about this client: {brief.claim}\n"
@@ -385,7 +385,7 @@ def _contract_block(contract: FormatContract) -> str:
     )
 
 
-def _render_facts(chunks: Sequence[GroundingChunk]) -> str:
+def render_facts(chunks: Sequence[GroundingChunk]) -> str:
     if not chunks:
         return "(no facts retrieved; do not cite a rate or return)"
     return "\n".join(f"- {chunk.text}" for chunk in chunks)
@@ -420,7 +420,7 @@ def build_system_prompt(
         sections.append(output_rules)
 
     if brief is not None:
-        sections.append(_brief_block(brief))
+        sections.append(brief_block(brief))
     else:
         sections.append(f"Angle: {angle or 'winback'}")
 
@@ -431,7 +431,7 @@ def build_system_prompt(
 
     sections.append(
         "You must never:\n"
-        + _prohibitions_block(brief, facts, extra_prohibitions, campaign_prohibitions)
+        + prohibitions_block(brief, facts, extra_prohibitions, campaign_prohibitions)
     )
 
     if facts:
@@ -440,7 +440,7 @@ def build_system_prompt(
             "those, exactly as written, and omit any claim you have no fact for."
         )
 
-    sections.append(f"Facts you may cite (only these, verbatim):\n{_render_facts(chunks)}")
+    sections.append(f"Facts you may cite (only these, verbatim):\n{render_facts(chunks)}")
     return "\n\n".join(sections)
 
 
@@ -463,7 +463,7 @@ def build_system_prompt_blocks(
     cached_sections = [template_text(prompt_variant)]
 
     if brief is not None:
-        cached_sections.append(_brief_block(brief))
+        cached_sections.append(brief_block(brief))
     else:
         cached_sections.append(f"Angle: {angle or 'winback'}")
 
@@ -471,9 +471,9 @@ def build_system_prompt_blocks(
         cached_sections.append(_contract_block(contract))
 
     cached_sections.append(
-        f"You must never:\n{_prohibitions_block(brief, None, extra_prohibitions)}"
+        f"You must never:\n{prohibitions_block(brief, None, extra_prohibitions)}"
     )
-    cached_sections.append(f"Facts you may cite (only these, verbatim):\n{_render_facts(chunks)}")
+    cached_sections.append(f"Facts you may cite (only these, verbatim):\n{render_facts(chunks)}")
 
     dynamic_sections = []
     conditional = conditional_prohibitions(facts)
@@ -506,7 +506,7 @@ def render_call_brief(
         f"What to ask for: {brief.ask}",
         "",
         "What you must never say:",
-        _prohibitions_block(brief, facts),
+        prohibitions_block(brief, facts),
         "",
         "What we know about them:",
     ]

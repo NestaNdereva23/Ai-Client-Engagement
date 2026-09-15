@@ -11,13 +11,12 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agents.channels import channel_spec
 from app.agents.email_agent import (
     AngleBrief,
     FormatContract,
-    build_system_prompt,
     placeholder_token,
 )
-from app.agents.email_channel import CHANNEL
 from app.agents.graph import (
     ClientContext,
     ContextLoader,
@@ -27,7 +26,6 @@ from app.agents.graph import (
     load_client_context,
     new_generation_state,
 )
-from app.agents.guardrails import DEFAULT_GUARDRAIL_CHECKS
 from app.audit.log import record_audit
 from app.campaigns.bucketing import (
     Bucket,
@@ -126,15 +124,16 @@ def bucket_context(bucket: Bucket) -> ClientContext:
 
 
 def _bucket_prompt_builder(profile_key: ProfileKey) -> Callable[..., str]:
-    """Same assembly as build_system_prompt, but the conditional prohibition
-    is decided from the profile's own booleans, not the facts dict the
-    graph passes in.
+    """Same assembly as the profile's own channel would use, but the
+    conditional prohibition is decided from the profile's own booleans,
+    not the facts dict the graph passes in.
     """
     prohibition_facts = {
         "invested_every_n_days": 1 if profile_key.has_cadence else None,
         "stale_contact": profile_key.stale_contact,
         "exit_reason": "charge_settled" if profile_key.exit_reason_charge_settled else None,
     }
+    channel_prompt_builder = channel_spec(profile_key.channel).prompt_builder
 
     def build(
         *,
@@ -145,7 +144,7 @@ def _bucket_prompt_builder(profile_key: ProfileKey) -> Callable[..., str]:
         contract: FormatContract | None = None,
         facts: Any = None,
     ) -> str:
-        return build_system_prompt(
+        return channel_prompt_builder(
             angle=angle,
             prompt_variant=prompt_variant,
             chunks=chunks,
@@ -164,13 +163,15 @@ def draft_template(
     campaign_id: int,
     settings: Settings,
     llm_client: LLMClient,
-    guardrail_checks: Sequence[GuardrailCheck] = DEFAULT_GUARDRAIL_CHECKS,
+    guardrail_checks: Sequence[GuardrailCheck] | None = None,
     audit: AuditSink | None = None,
     tracer: Tracer | None = None,
 ) -> MessageTemplate | None:
     context = bucket_context(bucket)
     representative_client_id = bucket.members[0].enrollment.client_id
     tracer = tracer or NullTracer()
+    spec = channel_spec(bucket.profile_key.channel)
+    checks = guardrail_checks if guardrail_checks is not None else spec.guardrail_checks
 
     def loader(client_id: int, product: str) -> ClientContext:
         return context
@@ -178,8 +179,9 @@ def draft_template(
     graph = build_generation_graph(
         context_loader=loader,
         llm_client=llm_client,
-        guardrail_checks=guardrail_checks,
+        guardrail_checks=checks,
         prompt_builder=_bucket_prompt_builder(bucket.profile_key),
+        draft_parser=spec.draft_parser,
         audit=audit,
         tracer=tracer,
     )
@@ -355,7 +357,7 @@ def draft_templates_for_campaign(
     llm_client: LLMClient,
     discovery_limit: int = DEFAULT_ESTIMATE_LIMIT,
     context_loader: ContextLoader | None = None,
-    guardrail_checks: Sequence[GuardrailCheck] = DEFAULT_GUARDRAIL_CHECKS,
+    guardrail_checks: Sequence[GuardrailCheck] | None = None,
     audit: AuditSink | None = None,
     tracer: Tracer | None = None,
 ) -> TemplateDraftOutcome:
@@ -388,9 +390,6 @@ def draft_templates_for_campaign(
     failed_guardrails = 0
     failed_errors = 0
     for group in to_draft:
-        if group.profile_key.channel != CHANNEL:
-            failed_errors += 1
-            continue
         # Committed per bucket rather than once at the end: an unexpected
         # error from one bucket (a provider timeout, a network blip) is
         # caught and counted rather than left to propagate, so it does not

@@ -20,7 +20,7 @@ delivering anything
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -40,6 +40,7 @@ from app.campaigns.scheduler import (
 )
 from app.db.models.campaigns import Enrollment, TouchLog
 from app.db.models.outreach import OutreachMessage
+from app.delivery.gate import MessageNotApproved, authorize_send
 
 logger = structlog.get_logger(__name__)
 
@@ -58,9 +59,13 @@ class SendBlocked(Exception):
 class SendResult:
     delivery_status: str
     sent_at: datetime
+    provider_status: str | None = None
+    parts: int | None = None
+    cost: float | None = None
 
 
 SenderFn = Callable[[OutreachMessage], SendResult]
+SendersByChannel = Mapping[str, SenderFn]
 
 
 def stub_sender(message: OutreachMessage) -> SendResult:
@@ -214,17 +219,39 @@ def send_touch(session: Session, touch: TouchLog, *, sender: SenderFn = stub_sen
     if touch.message_id is None:
         raise ValueError("touch has no message to send yet")
     message = session.get(OutreachMessage, touch.message_id)
-    if message is None or message.status != "approved":
+    if message is None:
         raise ValueError("only an approved message can be sent")
+
+    # Routes through the send gate so a denial audits the same as an allow.
+    try:
+        authorize_send(session, message)
+    except MessageNotApproved:
+        session.commit()
+        raise
 
     enrollment = session.get(Enrollment, touch.enrollment_id)
     recheck = check_stop_conditions(session, enrollment, message.channel)
     if not recheck.eligible:
         raise SendBlocked(recheck.reason)
 
-    result = sender(message)
+    try:
+        result = sender(message)
+    except SendBlocked as exc:
+        record_audit(
+            session,
+            entity_type="touch_log",
+            action="send_refused",
+            entity_id=str(touch.touch_id),
+            detail={"reason": exc.reason},
+        )
+        session.commit()
+        raise
+
     touch.sent_at = result.sent_at
     touch.delivery_status = result.delivery_status
+    touch.provider_status = result.provider_status
+    touch.parts = result.parts
+    touch.cost = result.cost
     session.flush()
 
     record_audit(
@@ -232,7 +259,12 @@ def send_touch(session: Session, touch: TouchLog, *, sender: SenderFn = stub_sen
         entity_type="touch_log",
         action="send",
         entity_id=str(touch.touch_id),
-        detail={"delivery_status": result.delivery_status},
+        detail={
+            "delivery_status": result.delivery_status,
+            "provider_status": result.provider_status,
+            "parts": result.parts,
+            "cost": result.cost,
+        },
     )
 
     advance_enrollment(session, enrollment, step_no=touch.step_no, sent_at=touch.sent_at)
@@ -255,12 +287,18 @@ def send_due_touches(
     *,
     campaign_id: int,
     sender: SenderFn = stub_sender,
+    senders: SendersByChannel | None = None,
     limit: int = DEFAULT_BATCH_LIMIT,
 ) -> list[SendOutcome]:
-    """Send up to limit approved, not-yet-sent touches in this campaign."""
-    touches = (
-        session.execute(
-            select(TouchLog)
+    # senders picks by each touch's own channel; a channel missing from it falls back to sender.
+    # paged by touch_id so a blocked run can't starve the sendable touches behind it
+    page_size = max(limit, DEFAULT_BATCH_LIMIT)
+    outcomes: list[SendOutcome] = []
+    sent = 0
+    after_touch_id = 0
+    while sent < limit:
+        batch = session.execute(
+            select(TouchLog, OutreachMessage.channel)
             .join(OutreachMessage, OutreachMessage.message_id == TouchLog.message_id)
             .join(Enrollment, Enrollment.enrollment_id == TouchLog.enrollment_id)
             .where(
@@ -268,44 +306,53 @@ def send_due_touches(
                 Enrollment.status.in_(SCHEDULABLE_STATUSES),
                 TouchLog.sent_at.is_(None),
                 OutreachMessage.status == "approved",
+                TouchLog.touch_id > after_touch_id,
             )
             .order_by(TouchLog.touch_id)
-            .limit(limit)
-        )
-        .scalars()
-        .all()
-    )
+            .limit(page_size)
+        ).all()
+        if not batch:
+            break
 
-    outcomes = []
-    for touch in touches:
-        try:
-            send_touch(session, touch, sender=sender)
-        except SendBlocked as exc:
+        for touch, channel in batch:
+            after_touch_id = touch.touch_id
+            send_fn = (senders or {}).get(channel, sender)
+            try:
+                send_touch(session, touch, sender=send_fn)
+            except SendBlocked as exc:
+                outcomes.append(
+                    SendOutcome(touch.touch_id, touch.enrollment_id, sent=False, reason=exc.reason)
+                )
+                session.commit()
+                continue
+            except Exception:
+                session.rollback()
+                logger.exception(
+                    "send_due_touches.send_failed",
+                    touch_id=touch.touch_id,
+                    enrollment_id=touch.enrollment_id,
+                )
+                outcomes.append(
+                    SendOutcome(
+                        touch.touch_id, touch.enrollment_id, sent=False, reason="send_error"
+                    )
+                )
+                continue
             outcomes.append(
-                SendOutcome(touch.touch_id, touch.enrollment_id, sent=False, reason=exc.reason)
+                SendOutcome(
+                    touch.touch_id,
+                    touch.enrollment_id,
+                    sent=True,
+                    delivery_status=touch.delivery_status,
+                )
             )
             session.commit()
-            continue
-        except Exception:
-            session.rollback()
-            logger.exception(
-                "send_due_touches.send_failed",
-                touch_id=touch.touch_id,
-                enrollment_id=touch.enrollment_id,
-            )
-            outcomes.append(
-                SendOutcome(touch.touch_id, touch.enrollment_id, sent=False, reason="send_error")
-            )
-            continue
-        outcomes.append(
-            SendOutcome(
-                touch.touch_id,
-                touch.enrollment_id,
-                sent=True,
-                delivery_status=touch.delivery_status,
-            )
-        )
-        session.commit()
+            sent += 1
+            if sent >= limit:
+                break
+
+        if len(batch) < page_size:
+            break
     return outcomes
 
 

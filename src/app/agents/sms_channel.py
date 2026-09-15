@@ -5,7 +5,7 @@ from collections.abc import Sequence
 
 from sqlalchemy.orm import Session
 
-from app.agents.email_agent import build_system_prompt, render_call_brief
+from app.agents.channels import SMS_CHANNEL
 from app.agents.graph import (
     DEFAULT_MAX_ATTEMPTS,
     ConfigResolver,
@@ -18,35 +18,20 @@ from app.agents.graph import (
     load_client_context,
     new_generation_state,
 )
-from app.agents.guardrails import DEFAULT_GUARDRAIL_CHECKS
-from app.agents.orchestrator import Orchestrator
+from app.agents.guardrails import SMS_GUARDRAIL_CHECKS
 from app.agents.prompt_config import resolve_active_configuration
+from app.agents.sms_agent import build_sms_system_prompt
 from app.config import Settings, get_settings
 from app.llmops.tracing import NullTracer, Tracer
 from app.privacy.boundary import AuditSink
 from app.privacy.llm_client import LLMClient, get_llm_client
-from app.schemas.email_draft import parse_email_draft
+from app.schemas.sms_draft import parse_sms_draft
 from app.services.rag import get_rag_enabled
 
-CHANNEL = "email"
-CALL_BRIEF_CHANNEL = "call_brief"
+CHANNEL = SMS_CHANNEL
 
 
-def attach_call_brief(state: GenerationState) -> GenerationState:
-    contract = state.get("contract")
-    brief = state.get("brief")
-    if state.get("status") != "accepted" or contract is None or brief is None:
-        return state
-    if getattr(contract, "secondary_channel", None) != CALL_BRIEF_CHANNEL:
-        return state
-
-    state["call_brief"] = render_call_brief(
-        brief=brief, facts=state.get("facts") or {}, contract=contract
-    )
-    return state
-
-
-class EmailAgent:
+class SmsAgent:
     channel = CHANNEL
 
     def __init__(
@@ -54,12 +39,12 @@ class EmailAgent:
         *,
         context_loader: ContextLoader,
         llm_client: LLMClient,
-        guardrail_checks: Sequence[GuardrailCheck] = DEFAULT_GUARDRAIL_CHECKS,
+        guardrail_checks: Sequence[GuardrailCheck] = SMS_GUARDRAIL_CHECKS,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         audit: AuditSink | None = None,
         tracer: Tracer | None = None,
-        prompt_builder: PromptBuilder = build_system_prompt,
-        draft_parser: DraftParser = parse_email_draft,
+        prompt_builder: PromptBuilder = build_sms_system_prompt,
+        draft_parser: DraftParser = parse_sms_draft,
         config_resolver: ConfigResolver | None = None,
     ) -> None:
         self._tracer = tracer or NullTracer()
@@ -81,45 +66,22 @@ class EmailAgent:
             final = self._graph.invoke(state)
         finally:
             self._tracer.flush()
-        return attach_call_brief(final)
+        return final
 
 
-def build_default_agent(
+def build_default_sms_agent(
     session: Session,
     settings: Settings | None = None,
     *,
     audit: AuditSink | None = None,
     tracer: Tracer | None = None,
-    prompt_builder: PromptBuilder = build_system_prompt,
-) -> EmailAgent:
+) -> SmsAgent:
     settings = settings or get_settings()
     use_rag = settings.rag_enabled and get_rag_enabled(session)
-    return EmailAgent(
+    return SmsAgent(
         context_loader=functools.partial(load_client_context, session, use_rag=use_rag),
         llm_client=get_llm_client(settings),
         audit=audit,
         tracer=tracer,
-        prompt_builder=prompt_builder,
         config_resolver=functools.partial(resolve_active_configuration, session, channel=CHANNEL),
     )
-
-
-def build_default_orchestrator(
-    session: Session,
-    settings: Settings | None = None,
-    *,
-    audit: AuditSink | None = None,
-    tracer: Tracer | None = None,
-    prompt_builder: PromptBuilder = build_system_prompt,
-) -> Orchestrator:
-    # Local import: keeps this the one place email_channel knows sms_channel exists.
-    from app.agents.sms_channel import build_default_sms_agent
-
-    orchestrator = Orchestrator()
-    orchestrator.register(
-        build_default_agent(
-            session, settings, audit=audit, tracer=tracer, prompt_builder=prompt_builder
-        )
-    )
-    orchestrator.register(build_default_sms_agent(session, settings, audit=audit, tracer=tracer))
-    return orchestrator

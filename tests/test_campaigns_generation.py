@@ -108,6 +108,21 @@ def make_orchestrator(agent: EmailAgent) -> Orchestrator:
     return orchestrator
 
 
+def sms_draft_json(body: str = "") -> str:
+    return json.dumps({"body": body})
+
+
+def make_sms_agent(drafts: list[str]):
+    from app.agents.sms_channel import SmsAgent
+
+    kwargs = {"max_attempts": 1} if len(drafts) == 1 else {}
+    return SmsAgent(
+        context_loader=make_context_loader(),
+        llm_client=ScriptedLLMClient(drafts),
+        **kwargs,
+    )
+
+
 @pytest.fixture
 def client(db: None):
     """One fund (a money market fund, so resolve_product has a real band to
@@ -248,6 +263,30 @@ def test_generate_for_enrollment_creates_a_pending_review_message_on_acceptance(
     assert message.status == "pending_review"
     assert message.campaign_id == campaign
     assert message.client_id == client
+
+
+def test_generate_for_enrollment_on_sms_creates_a_message_with_no_subject(
+    campaign: int, client: int
+) -> None:
+    enrollment = Enrollment(campaign_id=campaign, client_id=client)
+    agent = make_sms_agent(
+        [sms_draft_json("Hi {{first_name}}, {{fund_name}} still fits your plan.")]
+    )
+    settings = make_settings()
+    orchestrator = Orchestrator()
+    orchestrator.register(agent)
+
+    with SessionLocal() as session:
+        message = generate_for_enrollment(
+            session, enrollment, 1, orchestrator=orchestrator, channel="sms", settings=settings
+        )
+        session.commit()
+
+    assert message is not None
+    assert message.channel == "sms"
+    assert message.status == "pending_review"
+    assert "subject" not in message.ai_draft_content
+    assert "subject" not in message.personalized_content
 
 
 def test_generate_for_enrollment_returns_none_and_still_persists_a_rejected_run(

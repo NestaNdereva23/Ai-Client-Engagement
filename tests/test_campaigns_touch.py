@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from uuid import uuid4
 
 import pytest
@@ -22,10 +22,11 @@ from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
 from app.db.models.llmops import GenerationRun
 from app.db.models.models import Clients, Funds, PiiVault
 from app.db.models.outreach import Campaign, OutreachMessage
-from app.db.models.rules import ClientMessageIndicators
+from app.db.models.rules import ClientMessageIndicators, MessageAngleCatalog
 from app.db.models.suppression import Suppression
 from app.db.session import SessionLocal
 from app.llmops.versions import persist_generation_run
+from app.rules.catalog import active_catalog_version
 from app.services.campaigns import campaign_readiness
 
 _FUND_ID = 997
@@ -60,7 +61,12 @@ def accepted_state(client_id: int) -> dict:
 
 
 def _make_message(
-    session, *, campaign_id: int, client_id: int, status: str = "pending_review"
+    session,
+    *,
+    campaign_id: int,
+    client_id: int,
+    status: str = "pending_review",
+    channel: str = "email",
 ) -> OutreachMessage:
     run = persist_generation_run(session, accepted_state(client_id), make_settings())
     message = OutreachMessage(
@@ -68,6 +74,7 @@ def _make_message(
         campaign_id=campaign_id,
         generation_run_id=run.run_id,
         client_id=client_id,
+        channel=channel,
         ai_draft_content={"subject": "s", "body": "b"},
         status=status,
     )
@@ -143,6 +150,9 @@ def client_row(db: None):
         # setup order), so anything still referencing this client (an
         # enrollment, or a touch_log row pointing at one of its messages)
         # must go first or the FKs on clients/outreach_message block it.
+        session.execute(
+            delete(ClientMessageIndicators).where(ClientMessageIndicators.client_id == client_id)
+        )
         session.execute(delete(Suppression).where(Suppression.client_id == client_id))
         enrollment_ids = session.scalars(
             select(Enrollment.enrollment_id).where(Enrollment.client_id == client_id)
@@ -229,6 +239,33 @@ def second_client_row(db: None):
         session.execute(delete(PiiVault).where(PiiVault.client_id == client_id))
         session.execute(delete(Clients).where(Clients.client_id == client_id))
         session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
+        session.commit()
+
+
+@pytest.fixture
+def held_angle(db: None):
+    angle = f"test_held_angle_{uuid4().hex[:8]}"
+    with SessionLocal() as session:
+        version = active_catalog_version(session, date.today())
+        session.add(
+            MessageAngleCatalog(
+                version=version,
+                angle=angle,
+                headline="test",
+                who="test",
+                claim="test",
+                ask="test",
+                never="test",
+                use="test",
+                held=True,
+            )
+        )
+        session.commit()
+
+    yield angle
+
+    with SessionLocal() as session:
+        session.execute(delete(MessageAngleCatalog).where(MessageAngleCatalog.angle == angle))
         session.commit()
 
 
@@ -559,6 +596,17 @@ def test_send_touch_refuses_a_message_that_is_not_approved(
 
         with pytest.raises(ValueError):
             send_touch(session, touch)
+        message_id = message.message_id
+
+    with SessionLocal() as session:
+        row = session.scalar(
+            select(AuditLog).where(
+                AuditLog.entity_type == "outreach_message",
+                AuditLog.action == "send_gate_denied",
+                AuditLog.entity_id == message_id,
+            )
+        )
+        assert row is not None
 
 
 def test_send_touch_is_blocked_by_a_suppression_that_arrived_after_approval(
@@ -599,19 +647,18 @@ def test_send_touch_is_blocked_by_a_suppression_that_arrived_after_approval(
 
 
 def test_a_held_angle_generates_but_does_not_send(
-    campaign_with_steps: int, client_row: int
+    campaign_with_steps: int, client_row: int, held_angle: str
 ) -> None:
-    """see_what_changed is held pending the business decision on its exit
-    window: resolution, generation, and review all proceed as normal, and
-    only the send itself is blocked."""
+    """A held angle: resolution, generation, and review all proceed as
+    normal, and only the send itself is blocked."""
     with SessionLocal() as session:
         session.add(
             ClientMessageIndicators(
                 client_id=client_row,
-                message_angle="see_what_changed",
+                message_angle=held_angle,
                 urgency="low",
                 priority_tier="P3",
-                prompt_variant="see_what_changed_default",
+                prompt_variant="held_angle_default",
                 rule_name="held_angle_test",
                 rule_version=1,
             )
@@ -653,12 +700,6 @@ def test_a_held_angle_generates_but_does_not_send(
         row = session.get(Enrollment, enrollment_id)
         assert row.current_step == 0
         assert row.status == "enrolled"
-
-    with SessionLocal() as session:
-        session.execute(
-            delete(ClientMessageIndicators).where(ClientMessageIndicators.client_id == client_row)
-        )
-        session.commit()
 
 
 def test_reconcile_enrollment_catches_current_step_up_after_a_simulated_crash(
@@ -799,6 +840,182 @@ def test_send_due_touches_limit_sends_a_slice_and_leaves_the_rest_for_next_call(
     with SessionLocal() as session:
         empty_slice = send_due_touches(session, campaign_id=campaign_with_steps, limit=1)
     assert empty_slice == []
+
+
+def test_send_due_touches_pages_past_a_blocked_run_to_reach_a_sendable_touch(
+    campaign_with_steps: int, client_row: int, second_client_row: int, held_angle: str
+) -> None:
+    with SessionLocal() as session:
+        session.add(
+            ClientMessageIndicators(
+                client_id=client_row,
+                message_angle=held_angle,
+                urgency="low",
+                priority_tier="P3",
+                prompt_variant="held_angle_default",
+                rule_name="held_angle_test",
+                rule_version=1,
+            )
+        )
+        session.commit()
+
+        blocked_enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=client_row
+        )
+        sendable_enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=second_client_row
+        )
+        blocked_message = _make_message(
+            session, campaign_id=campaign_with_steps, client_id=client_row, status="approved"
+        )
+        sendable_message = _make_message(
+            session,
+            campaign_id=campaign_with_steps,
+            client_id=second_client_row,
+            status="approved",
+        )
+        blocked_touch = record_touch(session, blocked_enrollment, 1)
+        blocked_touch.message_id = blocked_message.message_id
+        sendable_touch = record_touch(session, sendable_enrollment, 1)
+        sendable_touch.message_id = sendable_message.message_id
+        session.commit()
+
+        outcomes = send_due_touches(session, campaign_id=campaign_with_steps, limit=1)
+        blocked_touch_id = blocked_touch.touch_id
+        sendable_touch_id = sendable_touch.touch_id
+
+    by_touch = {o.touch_id: o for o in outcomes}
+    assert by_touch[blocked_touch_id].sent is False
+    assert by_touch[blocked_touch_id].reason == "angle_held"
+    assert by_touch[sendable_touch_id].sent is True
+
+    with SessionLocal() as session:
+        assert session.get(TouchLog, blocked_touch_id).sent_at is None
+        assert session.get(TouchLog, sendable_touch_id).sent_at is not None
+
+
+def test_send_touch_records_the_provider_result_against_the_touch(
+    campaign_with_steps: int, client_row: int
+) -> None:
+    with SessionLocal() as session:
+        session.get(PiiVault, client_row).contact_phone = "+254700000098"
+        enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=client_row
+        )
+        message = _make_message(
+            session,
+            campaign_id=campaign_with_steps,
+            client_id=client_row,
+            status="approved",
+            channel="sms",
+        )
+        touch = record_touch(session, enrollment, 1)
+        touch.message_id = message.message_id
+        session.commit()
+
+        def sms_sender(message: OutreachMessage) -> SendResult:
+            return SendResult(
+                delivery_status="sent",
+                sent_at=datetime.now(UTC),
+                provider_status="Success",
+                parts=1,
+                cost=0.8,
+            )
+
+        send_touch(session, touch, sender=sms_sender)
+        session.commit()
+        touch_id = touch.touch_id
+
+    with SessionLocal() as session:
+        row = session.get(TouchLog, touch_id)
+        assert row.provider_status == "Success"
+        assert row.parts == 1
+        assert float(row.cost) == 0.8
+
+
+def test_send_touch_audits_a_refusal_when_the_sender_blocks_the_send(
+    campaign_with_steps: int, client_row: int
+) -> None:
+    with SessionLocal() as session:
+        enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=client_row
+        )
+        message = _make_message(
+            session, campaign_id=campaign_with_steps, client_id=client_row, status="approved"
+        )
+        touch = record_touch(session, enrollment, 1)
+        touch.message_id = message.message_id
+        session.commit()
+
+        def refusing_sender(message: OutreachMessage) -> SendResult:
+            raise SendBlocked("no_deliverable_contact")
+
+        with pytest.raises(SendBlocked):
+            send_touch(session, touch, sender=refusing_sender)
+        touch_id = touch.touch_id
+
+    with SessionLocal() as session:
+        row = session.scalar(
+            select(AuditLog).where(
+                AuditLog.entity_type == "touch_log",
+                AuditLog.action == "send_refused",
+                AuditLog.entity_id == str(touch_id),
+            )
+        )
+        assert row is not None
+        assert row.detail["reason"] == "no_deliverable_contact"
+        assert session.get(TouchLog, touch_id).sent_at is None
+
+
+def test_send_due_touches_picks_the_sender_by_each_touchs_own_channel(
+    campaign_with_steps: int, client_row: int, second_client_row: int
+) -> None:
+    with SessionLocal() as session:
+        session.get(PiiVault, second_client_row).contact_phone = "+254700000099"
+        email_enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=client_row
+        )
+        sms_enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=second_client_row
+        )
+        email_message = _make_message(
+            session,
+            campaign_id=campaign_with_steps,
+            client_id=client_row,
+            status="approved",
+            channel="email",
+        )
+        sms_message = _make_message(
+            session,
+            campaign_id=campaign_with_steps,
+            client_id=second_client_row,
+            status="approved",
+            channel="sms",
+        )
+        email_touch = record_touch(session, email_enrollment, 1)
+        email_touch.message_id = email_message.message_id
+        sms_touch = record_touch(session, sms_enrollment, 1)
+        sms_touch.message_id = sms_message.message_id
+        session.commit()
+
+        seen_by_channel: dict[str, list[str]] = {"email": [], "sms": []}
+
+        def make_sender(channel: str):
+            def sender(message: OutreachMessage) -> SendResult:
+                seen_by_channel[channel].append(message.message_id)
+                return SendResult(delivery_status="sent", sent_at=datetime.now(UTC))
+
+            return sender
+
+        outcomes = send_due_touches(
+            session,
+            campaign_id=campaign_with_steps,
+            senders={"email": make_sender("email"), "sms": make_sender("sms")},
+        )
+
+    assert {o.touch_id for o in outcomes} == {email_touch.touch_id, sms_touch.touch_id}
+    assert seen_by_channel["email"] == [email_message.message_id]
+    assert seen_by_channel["sms"] == [sms_message.message_id]
 
 
 def test_readiness_reports_the_next_due_date_once_step_one_is_fully_sent(

@@ -78,7 +78,7 @@ def add_sms_reply(body: SmsReplyRequest, session: Session = Depends(get_session)
     except ClientNotFound:
         raise HTTPException(status_code=404, detail="client_code not found") from None
 
-    record = record_sms_reply(client_id=client_id, body=body.body, source=body.source)
+    record = record_sms_reply(session, client_id=client_id, body=body.body, source=body.source)
     if record is None:
         return SmsReplyOut(client_id=client_id, suppressed=False, reason=None)
     return SmsReplyOut(client_id=client_id, suppressed=True, reason=record.reason)

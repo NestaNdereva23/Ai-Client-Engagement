@@ -26,14 +26,16 @@ def test_get_component_content_returns_draft_rows(
 ) -> None:
     draft = client.post(
         "/api/v1/prompt-config/safety_policy/draft",
-        json={"rows": [{"banned_words": ["park", "guarantee"]}]},
+        json={"component_key": "email", "rows": [{"banned_words": ["park", "guarantee"]}]},
         headers=reviewer_1_headers,
     )
     assert draft.status_code == 200
     version = draft.json()["version"]
 
     content = client.get(
-        f"/api/v1/prompt-config/safety_policy/{version}/content", headers=reviewer_1_headers
+        f"/api/v1/prompt-config/safety_policy/{version}/content",
+        params={"component_key": "email"},
+        headers=reviewer_1_headers,
     )
     assert content.status_code == 200
     body = content.json()
@@ -41,7 +43,11 @@ def test_get_component_content_returns_draft_rows(
     assert body["rows"][0]["banned_words"] == ["park", "guarantee"]
 
     with SessionLocal() as session:
-        session.execute(delete(SafetyPolicy).where(SafetyPolicy.version == version))
+        session.execute(
+            delete(SafetyPolicy).where(
+                SafetyPolicy.channel == "email", SafetyPolicy.version == version
+            )
+        )
         session.commit()
 
 
@@ -51,12 +57,13 @@ def test_voice_draft_computes_rendered_text_from_structured_fields(
     draft = client.post(
         "/api/v1/prompt-config/voice_contract/draft",
         json={
+            "component_key": "email",
             "rows": [
                 {
                     "persona": "A warm relationship manager",
                     "tone": "Warm, low pressure",
                 }
-            ]
+            ],
         },
         headers=reviewer_1_headers,
     )
@@ -64,7 +71,9 @@ def test_voice_draft_computes_rendered_text_from_structured_fields(
     version = draft.json()["version"]
 
     content = client.get(
-        f"/api/v1/prompt-config/voice_contract/{version}/content", headers=reviewer_1_headers
+        f"/api/v1/prompt-config/voice_contract/{version}/content",
+        params={"component_key": "email"},
+        headers=reviewer_1_headers,
     )
     row = content.json()["rows"][0]
     expected = build_voice_block(persona="A warm relationship manager", tone="Warm, low pressure")
@@ -74,7 +83,11 @@ def test_voice_draft_computes_rendered_text_from_structured_fields(
     from app.db.models.prompt_config import VoiceContract
 
     with SessionLocal() as session:
-        session.execute(delete(VoiceContract).where(VoiceContract.version == version))
+        session.execute(
+            delete(VoiceContract).where(
+                VoiceContract.channel == "email", VoiceContract.version == version
+            )
+        )
         session.commit()
 
 

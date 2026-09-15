@@ -5,9 +5,10 @@ campaign's single-generation and template drafting side by side.
 from __future__ import annotations
 
 from datetime import date
+from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.campaigns.generation_cost import (
     GenerationCostConfigMissing,
@@ -16,11 +17,14 @@ from app.campaigns.generation_cost import (
     estimate_generation_cost,
     list_generation_cost_models,
 )
-from app.db.models.campaigns import CampaignStep, Enrollment
+from app.config import Settings
+from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
 from app.db.models.generation_cost import GenerationCostConfigVersion
+from app.db.models.llmops import GenerationRun
 from app.db.models.models import Clients, Funds, PiiVault
-from app.db.models.outreach import Campaign
+from app.db.models.outreach import Campaign, OutreachMessage
 from app.db.session import SessionLocal
+from app.llmops.versions import persist_generation_run
 
 FUND_ID = 97750
 PRIMARY_A, PRIMARY_B, SUPPRESSED = 97751, 97752, 97753
@@ -261,6 +265,9 @@ def test_estimate_prices_enrolled_clients_across_every_step(
     assert templates.total_cost_usd == 0
     assert templates.total_cost_kes == 0
 
+    # No sms touch has sent yet, so actual spend is zero, not an estimate.
+    assert estimate.actual_sms_cost_kes == 0
+
 
 def test_estimate_reprices_the_same_campaign_against_another_model(
     campaign_with_steps: int, cleanup_cost_versions
@@ -289,3 +296,98 @@ def test_estimate_reprices_the_same_campaign_against_another_model(
     assert estimate.rate_per_generation_usd == pytest.approx(0.014375)
     single = estimate.single_generation
     assert single.cost_per_step_usd == pytest.approx(2 * 0.014375)
+
+
+def _settings_for_run() -> Settings:
+    return Settings(
+        llm_provider="anthropic",
+        anthropic_api_key="test-key",
+        llm_model="claude-opus-5",
+        llm_temperature=None,
+        llm_max_tokens=1024,
+    )
+
+
+def _accepted_state(client_id: int) -> dict:
+    return {
+        "run_id": str(uuid4()),
+        "trace_id": uuid4().hex,
+        "client_id": client_id,
+        "product": "money market",
+        "angle": "pick_up_again",
+        "prompt_variant": "pick_up_again_default",
+        "status": "accepted",
+        "attempts": 1,
+        "failed_guardrail": None,
+        "reason": None,
+        "raw_structured_output": {"body": "b"},
+    }
+
+
+def test_actual_sms_cost_sums_real_provider_cost_not_an_estimate(
+    campaign_with_steps: int, cleanup_cost_versions
+) -> None:
+    cleanup_cost_versions.append(90307)
+    with SessionLocal() as session:
+        session.add(
+            GenerationCostConfigVersion(
+                version=90307,
+                model="claude-haiku-4-5-20251001",
+                cost_per_generation_usd=0.002877,
+                cost_per_generation_kes=0.37,
+                valid_from=date(2020, 1, 1),
+                valid_to=None,
+            )
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        no_sms_yet = estimate_generation_cost(session, campaign_with_steps, at=date(2026, 1, 1))
+    assert no_sms_yet.actual_sms_cost_kes == 0
+
+    run_ids = []
+    message_ids = []
+    touch_ids = []
+    with SessionLocal() as session:
+        enrollment = session.scalar(
+            select(Enrollment).where(
+                Enrollment.campaign_id == campaign_with_steps, Enrollment.client_id == PRIMARY_A
+            )
+        )
+        run = persist_generation_run(session, _accepted_state(PRIMARY_A), _settings_for_run())
+        run_ids.append(run.run_id)
+        message = OutreachMessage(
+            message_id=uuid4().hex,
+            campaign_id=campaign_with_steps,
+            generation_run_id=run.run_id,
+            client_id=PRIMARY_A,
+            channel="sms",
+            ai_draft_content={"body": "b"},
+            status="approved",
+        )
+        session.add(message)
+        session.commit()
+        message_ids.append(message.message_id)
+
+        touch = TouchLog(
+            enrollment_id=enrollment.enrollment_id,
+            step_no=1,
+            message_id=message.message_id,
+            cost=0.8,
+        )
+        session.add(touch)
+        session.commit()
+        touch_ids.append(touch.touch_id)
+
+    try:
+        with SessionLocal() as session:
+            estimate = estimate_generation_cost(session, campaign_with_steps, at=date(2026, 1, 1))
+        assert estimate.actual_sms_cost_kes == pytest.approx(0.8)
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(TouchLog).where(TouchLog.touch_id.in_(touch_ids)))
+            session.execute(
+                delete(OutreachMessage).where(OutreachMessage.message_id.in_(message_ids))
+            )
+            session.execute(delete(GenerationRun).where(GenerationRun.run_id.in_(run_ids)))
+            session.commit()

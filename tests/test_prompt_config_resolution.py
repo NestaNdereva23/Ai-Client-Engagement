@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.agents import email_agent
+from app.agents import email_agent, sms_agent
 from app.agents.email_agent import CAMPAIGN_PROHIBITIONS, build_system_prompt
 from app.agents.email_channel import EmailAgent
 from app.agents.graph import ClientContext
@@ -44,15 +44,68 @@ def test_build_voice_block_with_nothing_given_is_empty() -> None:
 
 def test_migration_seed_matches_the_source_it_was_copied_from(db: None) -> None:
     with SessionLocal() as session:
-        voice = session.query(VoiceContract).filter_by(version=POLICY_VERSION).one()
-        safety = session.query(SafetyPolicy).filter_by(version=POLICY_VERSION).one()
-        output = session.query(OutputPolicy).filter_by(version=POLICY_VERSION).one()
+        voice = (
+            session.query(VoiceContract).filter_by(version=POLICY_VERSION, channel="email").one()
+        )
+        safety = (
+            session.query(SafetyPolicy).filter_by(version=POLICY_VERSION, channel="email").one()
+        )
+        output = (
+            session.query(OutputPolicy).filter_by(version=POLICY_VERSION, channel="email").one()
+        )
 
     assert voice.body_markdown == email_agent._BASE_INSTRUCTIONS_CORE
     assert voice.rendered_text == voice.body_markdown
     assert tuple(safety.banned_words) == email_agent.BANNED_WORDS
     assert tuple(safety.campaign_prohibitions) == CAMPAIGN_PROHIBITIONS
     assert output.placeholder_rules["fields"] == list(PLACEHOLDER_FACT_FIELDS)
+
+
+def test_sms_migration_seed_matches_the_source_it_was_copied_from(db: None) -> None:
+    with SessionLocal() as session:
+        voice = session.query(VoiceContract).filter_by(version=POLICY_VERSION, channel="sms").one()
+        safety = session.query(SafetyPolicy).filter_by(version=POLICY_VERSION, channel="sms").one()
+        output = session.query(OutputPolicy).filter_by(version=POLICY_VERSION, channel="sms").one()
+
+    assert voice.body_markdown == sms_agent._BASE_INSTRUCTIONS_CORE
+    assert voice.rendered_text == voice.body_markdown
+    assert tuple(safety.banned_words) == email_agent.BANNED_WORDS
+    assert tuple(safety.campaign_prohibitions) == CAMPAIGN_PROHIBITIONS
+    assert output.placeholder_rules["fields"] == list(PLACEHOLDER_FACT_FIELDS)
+
+
+def test_existing_settings_rows_read_as_the_email_channel(db: None) -> None:
+    with SessionLocal() as session:
+        voice = (
+            session.query(VoiceContract).filter_by(version=POLICY_VERSION, channel="email").one()
+        )
+        safety = (
+            session.query(SafetyPolicy).filter_by(version=POLICY_VERSION, channel="email").one()
+        )
+        output = (
+            session.query(OutputPolicy).filter_by(version=POLICY_VERSION, channel="email").one()
+        )
+
+    assert voice.channel == "email"
+    assert safety.channel == "email"
+    assert output.channel == "email"
+
+
+def test_resolve_active_configuration_is_scoped_per_channel(db: None) -> None:
+    # Both channels have their own version 1, published the same day. A
+    # lookup that only matched on version, not channel, would return
+    # whichever row it found first regardless of which channel asked.
+    with SessionLocal() as session:
+        sms_config = resolve_active_configuration(
+            session, angle="fee_warning", tier=None, channel="sms"
+        )
+        email_config = resolve_active_configuration(
+            session, angle="fee_warning", tier=None, channel="email"
+        )
+
+    assert sms_config.voice_text == sms_agent._BASE_INSTRUCTIONS_CORE
+    assert email_config.voice_text == email_agent._BASE_INSTRUCTIONS_CORE
+    assert sms_config.voice_text != email_config.voice_text
 
 
 def test_resolve_active_configuration_returns_v1_for_now(db: None) -> None:

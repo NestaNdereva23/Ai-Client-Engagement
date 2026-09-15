@@ -93,6 +93,10 @@ def draft_json(subject: str = "Come back to {{fund_name}}", body: str = "") -> s
     return json.dumps({"subject": subject, "body": body})
 
 
+def sms_draft_json(body: str) -> str:
+    return json.dumps({"body": body})
+
+
 def _touch_query(campaign_id: int, client_id: int):
     """The single touch_log row this test's own enrollment produced.
 
@@ -773,3 +777,103 @@ def test_submit_batch_gives_two_clients_on_the_same_angle_an_identical_cached_bl
             session.execute(delete(Clients).where(Clients.client_id == client_id))
         session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
         session.commit()
+
+
+def test_submit_and_ingest_batch_drafts_an_sms_message_with_no_subject(client: int) -> None:
+    settings = make_settings()
+    with SessionLocal() as session:
+        campaign_row = Campaign(name="batch generation sms test campaign", default_channel="sms")
+        session.add(campaign_row)
+        session.commit()
+        campaign_id = campaign_row.campaign_id
+        add_campaign_step(session, campaign_id, offset_days=0, message_angle="winback_habit")
+        session.commit()
+        enroll_cohort(session, campaign_id=campaign_id, client_ids=[client])
+        session.commit()
+
+    try:
+        fake_client = FakeBatchClient()
+        with SessionLocal() as session:
+            batch = submit_batch(
+                session,
+                campaign_id,
+                settings=settings,
+                context_loader=make_context_loader(),
+                client=fake_client,
+            )
+            session.commit()
+            batch_id = batch.generation_batch_id
+            custom_id = session.scalars(
+                select(GenerationBatchItem.custom_id).where(
+                    GenerationBatchItem.generation_batch_id == batch_id
+                )
+            ).one()
+
+        # The sms system prompt never asks for a subject; only one system
+        # block is sent, since sms has no cache/dynamic split to make.
+        requests = fake_client.batches.created_requests
+        assert len(requests) == 1
+        system_blocks = requests[0]["params"]["system"]
+        assert len(system_blocks) == 1
+        assert '"subject"' not in system_blocks[0]["text"]
+
+        good_draft = sms_draft_json("Hi {{first_name}}, your {{fund_name}} option is open again.")
+        ingest_client = FakeBatchClient(results_to_return=[succeeded_result(custom_id, good_draft)])
+
+        with SessionLocal() as session:
+            result = ingest_batch(session, batch_id, settings=settings, client=ingest_client)
+            session.commit()
+
+        assert result.outcomes[0].status == "accepted"
+
+        with SessionLocal() as session:
+            messages = session.scalars(
+                select(OutreachMessage).where(OutreachMessage.campaign_id == campaign_id)
+            ).all()
+            assert len(messages) == 1
+            assert messages[0].channel == "sms"
+            assert "subject" not in messages[0].ai_draft_content
+            assert "subject" not in messages[0].personalized_content
+    finally:
+        with SessionLocal() as session:
+            batch_ids = session.scalars(
+                select(GenerationBatch.generation_batch_id).where(
+                    GenerationBatch.campaign_id == campaign_id
+                )
+            ).all()
+            if batch_ids:
+                session.execute(
+                    delete(GenerationBatchItem).where(
+                        GenerationBatchItem.generation_batch_id.in_(batch_ids)
+                    )
+                )
+                session.execute(
+                    delete(GenerationBatch).where(
+                        GenerationBatch.generation_batch_id.in_(batch_ids)
+                    )
+                )
+            enrollment_ids = session.scalars(
+                select(Enrollment.enrollment_id).where(
+                    Enrollment.campaign_id == campaign_id, Enrollment.client_id == client
+                )
+            ).all()
+            if enrollment_ids:
+                session.execute(delete(TouchLog).where(TouchLog.enrollment_id.in_(enrollment_ids)))
+            session.execute(
+                delete(Enrollment).where(
+                    Enrollment.campaign_id == campaign_id, Enrollment.client_id == client
+                )
+            )
+            session.execute(delete(CampaignStep).where(CampaignStep.campaign_id == campaign_id))
+            message_ids = session.scalars(
+                select(OutreachMessage.message_id).where(OutreachMessage.campaign_id == campaign_id)
+            ).all()
+            if message_ids:
+                session.execute(
+                    delete(ReviewAction).where(ReviewAction.message_id.in_(message_ids))
+                )
+            session.execute(
+                delete(OutreachMessage).where(OutreachMessage.campaign_id == campaign_id)
+            )
+            session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
+            session.commit()

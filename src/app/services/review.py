@@ -227,7 +227,7 @@ def personalize_content(
     month_they_left: str | None = None,
     cadence_interval_days: str | None = None,
 ) -> dict:
-    """The subject/body pair with real values injected in place of placeholders."""
+    """Every field the draft actually has, with real values injected in place of placeholders."""
     kwargs = {
         "first_name": first_name,
         "fund_name": fund_name,
@@ -239,8 +239,7 @@ def personalize_content(
         "cadence_interval_days": cadence_interval_days,
     }
     return {
-        "subject": resolve_placeholders(ai_draft_content["subject"], **kwargs),
-        "body": resolve_placeholders(ai_draft_content["body"], **kwargs),
+        field: resolve_placeholders(value, **kwargs) for field, value in ai_draft_content.items()
     }
 
 
@@ -463,7 +462,7 @@ def instantiate_message_for_template(
     )
 
     try:
-        check_no_unresolved_placeholders(personalized["subject"], personalized["body"])
+        check_no_unresolved_placeholders(personalized.get("subject", ""), personalized["body"])
         instance_numeric_traceability_check(
             template_body=template.ai_draft_content.get("body", ""),
             resolved_body=personalized["body"],
@@ -489,6 +488,7 @@ def instantiate_message_for_template(
         generation_run_id=template.generation_run_id,
         template_id=template.template_id,
         client_id=client_id,
+        channel=(template.profile_key or {}).get("channel", EMAIL_CHANNEL),
         ai_draft_content=template.ai_draft_content,
         personalized_content=personalized,
         call_brief=render_call_brief_for_instance(tier, brief, client_raw_facts),

@@ -1,5 +1,7 @@
-"""Batch generation: draft many clients' emails through the model provider's
+"""Batch generation: draft many clients' messages through the model provider's
 async batch endpoint in one submission, instead of one model call per client.
+Each client's own due touch decides the channel, exactly as the synchronous
+path decides it, so an email cohort and an SMS cohort can share one batch.
 
 An alternative to campaigns.generation, not a replacement for it:
 /campaigns/{id}/generate still drafts one client at a time, synchronously,
@@ -42,12 +44,17 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agents.channels import EMAIL_CHANNEL, ChannelSpec, channel_spec
 from app.agents.email_agent import SystemPromptBlocks, build_system_prompt_blocks
 from app.agents.graph import ClientContext, ContextLoader, load_client_context
-from app.agents.guardrails import DEFAULT_GUARDRAIL_CHECKS, GuardrailFailure
+from app.agents.guardrails import GuardrailFailure
 from app.audit.log import record_audit
 from app.campaigns.eligibility import check_eligibility
-from app.campaigns.generation import model_boundary_audit_sink, resolve_product
+from app.campaigns.generation import (
+    model_boundary_audit_sink,
+    resolve_product,
+    resolve_touch_channel,
+)
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT, select_due_enrollments
 from app.campaigns.touch import record_touch
 from app.config import Settings
@@ -63,7 +70,7 @@ from app.privacy.llm_client import (
     render_model_context,
 )
 from app.privacy.scanners import InboundLeak, OutboundLeak
-from app.schemas.email_draft import DraftValidationError, parse_email_draft
+from app.schemas.email_draft import DraftValidationError
 from app.services.review import create_outreach_message
 
 # Every module outside app.privacy is barred from importing the provider SDK
@@ -121,6 +128,15 @@ class BatchIngestResult:
 
     batch: GenerationBatch
     outcomes: list[BatchIngestOutcome] = field(default_factory=list)
+
+
+def _prompt_blocks_for_channel(
+    channel: str, spec: ChannelSpec, **kwargs: Any
+) -> SystemPromptBlocks:
+    # Only email has a real cache/dynamic split; other channels get one block.
+    if channel == EMAIL_CHANNEL:
+        return build_system_prompt_blocks(**kwargs)
+    return SystemPromptBlocks(cached=spec.prompt_builder(**kwargs), dynamic="")
 
 
 def _context_snapshot(
@@ -206,6 +222,7 @@ def _build_request(
     enrollment: Enrollment,
     step_no: int,
     *,
+    channel: str,
     settings: Settings,
     context_loader: ContextLoader,
     tracer: Tracer,
@@ -251,7 +268,9 @@ def _build_request(
         name="assemble_prompt",
         input={"angle": context.angle, "prompt_variant": context.prompt_variant},
     )
-    prompt_blocks = build_system_prompt_blocks(
+    prompt_blocks = _prompt_blocks_for_channel(
+        channel,
+        channel_spec(channel),
         angle=context.angle,
         prompt_variant=context.prompt_variant,
         chunks=context.chunks,
@@ -289,7 +308,7 @@ def _build_request(
         context_snapshot=_context_snapshot(
             context, system_prompt_blocks=prompt_blocks, model_payload=payload
         )
-        | {"product": product},
+        | {"product": product, "channel": channel},
     )
     session.add(item)
     return build_batch_request(
@@ -358,11 +377,13 @@ def submit_batch(
         if touch.message_id is not None:
             continue
 
+        channel = resolve_touch_channel(session, campaign_id, step_no)
         request = _build_request(
             session,
             batch,
             enrollment,
             step_no,
+            channel=channel,
             settings=settings,
             context_loader=context_loader,
             tracer=tracer,
@@ -407,12 +428,11 @@ def submit_batch(
     return batch
 
 
-def _guardrail_check_state(item: GenerationBatchItem, subject: str, body: str) -> dict[str, Any]:
+def _guardrail_check_state(item: GenerationBatchItem, content: dict[str, Any]) -> dict[str, Any]:
     snapshot = item.context_snapshot
     contract = snapshot.get("contract")
     return {
-        "subject": subject,
-        "body": body,
+        **content,
         "facts": snapshot.get("facts"),
         "chunks": [_SnapshotChunk(**c) for c in snapshot.get("chunks", [])],
         "contract": _SnapshotContract(**contract) if contract else None,
@@ -434,6 +454,7 @@ def _persist_result(
     usage: tuple[int | None, int | None] = (None, None),
 ) -> BatchIngestOutcome:
     snapshot = item.context_snapshot
+    channel = snapshot.get("channel", EMAIL_CHANNEL)
     data_date_raw = snapshot.get("data_date")
     llm_calls = [
         {
@@ -468,12 +489,14 @@ def _persist_result(
         "tool_calls": snapshot.get("tool_calls", []),
     }
 
-    run = persist_generation_run(session, state, settings)
+    run = persist_generation_run(session, state, settings, channel=channel)
     session.flush()
     persist_generation_telemetry(session, run, state, tracer=tracer)
 
     if status == "accepted":
-        message = create_outreach_message(session, run, campaign_id=batch.campaign_id)
+        message = create_outreach_message(
+            session, run, campaign_id=batch.campaign_id, channel=channel
+        )
         touch = session.execute(
             select(TouchLog).where(
                 TouchLog.enrollment_id == item.enrollment_id, TouchLog.step_no == item.step_no
@@ -576,8 +599,9 @@ def _ingest_one(
         )
 
     facts = item.context_snapshot.get("facts")
+    spec = channel_spec(item.context_snapshot.get("channel", EMAIL_CHANNEL))
     try:
-        structured = parse_email_draft(raw_output, facts)
+        structured = spec.draft_parser(raw_output, facts)
     except DraftValidationError as failure:
         return _persist_result(
             session,
@@ -592,13 +616,14 @@ def _ingest_one(
             usage=usage,
         )
 
-    check_state = _guardrail_check_state(item, structured.subject, structured.body)
+    content = structured.model_dump()
+    check_state = _guardrail_check_state(item, content)
     guardrails_span = tracer.start_span(
         trace_id=item.trace_id,
         name="guardrails",
-        input={"subject": structured.subject, "body": structured.body},
+        input=content,
     )
-    for check in DEFAULT_GUARDRAIL_CHECKS:
+    for check in spec.guardrail_checks:
         try:
             check(check_state)
         except GuardrailFailure as failure:
@@ -629,7 +654,7 @@ def _ingest_one(
         status="accepted",
         reason=None,
         raw_output=raw_output,
-        structured=structured.model_dump(),
+        structured=content,
         usage=usage,
     )
 

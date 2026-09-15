@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.audit.log import record_audit
+from app.db.models.campaigns import ContactEvent
 from app.db.models.models import Clients, PiiVault
 from app.db.models.suppression import Suppression
 from app.db.session import restricted_session
@@ -128,8 +129,11 @@ def record_suppression(
 
 
 def record_sms_reply(
-    *, client_id: int, body: str, source: str | None = None
+    session: Session, *, client_id: int, body: str, source: str | None = None
 ) -> SuppressionRecord | None:
+    # Same signal an email reply feeds the gate: a reply pauses this client's enrollments.
+    session.add(ContactEvent(client_id=client_id, type="reply", occurred_at=datetime.now(UTC)))
+    session.commit()
     if not is_sms_stop_word(body):
         return None
     return record_suppression(client_id=client_id, reason="sms_stop_word", source=source)

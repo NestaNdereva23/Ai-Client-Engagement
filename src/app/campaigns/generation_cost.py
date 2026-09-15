@@ -29,8 +29,9 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.campaigns.estimation import DEFAULT_ESTIMATE_LIMIT, estimate_templates_sql
-from app.db.models.campaigns import CampaignStep, Enrollment
+from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
 from app.db.models.generation_cost import GenerationCostConfigVersion
+from app.db.models.outreach import OutreachMessage
 
 # Display label for every model a campaign's generation cost can be priced
 # against, in the order the UI should offer them. The dict's keys are the
@@ -145,6 +146,8 @@ class CampaignCostEstimate:
     estimated_templates: int
     single_generation: CostScenario
     templates: CostScenario
+    # What SMS delivery has actually cost so far, real spend, not an estimate.
+    actual_sms_cost_kes: float
     as_of: datetime
 
 
@@ -157,6 +160,17 @@ def _enrolled_client_count(session: Session, campaign_id: int) -> int:
             Enrollment.is_primary_contact_row.is_(True),
         )
     ).scalar_one()
+
+
+def _actual_sms_cost(session: Session, campaign_id: int) -> float:
+    total = session.execute(
+        select(func.coalesce(func.sum(TouchLog.cost), 0))
+        .select_from(TouchLog)
+        .join(OutreachMessage, OutreachMessage.message_id == TouchLog.message_id)
+        .join(Enrollment, Enrollment.enrollment_id == TouchLog.enrollment_id)
+        .where(Enrollment.campaign_id == campaign_id, OutreachMessage.channel == "sms")
+    ).scalar_one()
+    return float(total)
 
 
 def _step_count(session: Session, campaign_id: int) -> int:
@@ -212,5 +226,6 @@ def estimate_generation_cost(
         estimated_templates=template_estimate.estimated_templates,
         single_generation=scenario(enrolled),
         templates=scenario(template_estimate.estimated_templates),
+        actual_sms_cost_kes=_actual_sms_cost(session, campaign_id),
         as_of=template_estimate.as_of,
     )

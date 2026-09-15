@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete, func, select, text
 
 from app.api.routers import ingestion as ingestion_router
+from app.db.models.campaigns import ContactEvent
 from app.db.models.models import Clients, Funds, PiiVault
 from app.db.models.suppression import Suppression
 from app.db.session import SessionLocal
@@ -140,6 +141,15 @@ def cleanup_suppression(roles):
         session.commit()
 
 
+@pytest.fixture
+def cleanup_contact_events(roles):
+    client_ids: list[int] = []
+    yield client_ids
+    with SessionLocal() as session:
+        session.execute(delete(ContactEvent).where(ContactEvent.client_id.in_(client_ids)))
+        session.commit()
+
+
 def test_add_suppression_creates_a_row(
     configured_reviewers, reviewer_1_headers, cleanup_suppression
 ) -> None:
@@ -183,9 +193,10 @@ def test_resyncing_a_suppression_updates_the_reason(
 
 
 def test_sms_stop_word_suppresses_the_client(
-    configured_reviewers, reviewer_1_headers, cleanup_suppression
+    configured_reviewers, reviewer_1_headers, cleanup_suppression, cleanup_contact_events
 ) -> None:
     cleanup_suppression.append(555557)
+    cleanup_contact_events.append(555557)
     response = client.post(
         SMS_REPLIES,
         json={"client_id": 555557, "body": "STOP"},
@@ -198,13 +209,16 @@ def test_sms_stop_word_suppresses_the_client(
 
     with SessionLocal() as session:
         row = session.get(Suppression, 555557)
-    assert row is not None
-    assert row.reason == "sms_stop_word"
+        assert row is not None
+        assert row.reason == "sms_stop_word"
+        events = session.scalars(select(ContactEvent).where(ContactEvent.client_id == 555557)).all()
+    assert [event.type for event in events] == ["reply"]
 
 
 def test_an_ordinary_sms_reply_does_not_suppress_the_client(
-    configured_reviewers, reviewer_1_headers
+    configured_reviewers, reviewer_1_headers, cleanup_contact_events
 ) -> None:
+    cleanup_contact_events.append(555558)
     response = client.post(
         SMS_REPLIES,
         json={"client_id": 555558, "body": "thanks, will check my account"},
@@ -215,6 +229,8 @@ def test_an_ordinary_sms_reply_does_not_suppress_the_client(
 
     with SessionLocal() as session:
         assert session.get(Suppression, 555558) is None
+        events = session.scalars(select(ContactEvent).where(ContactEvent.client_id == 555558)).all()
+    assert [event.type for event in events] == ["reply"]
 
 
 class FakeClient:

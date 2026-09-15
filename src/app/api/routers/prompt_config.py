@@ -197,6 +197,7 @@ def test_generate(
             n=body.n,
             use_rag=body.use_rag,
             cta_override=body.cta_override,
+            channel=body.channel,
         )
     except (PromptTestingError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from None

@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agents.email_agent import build_system_prompt
+from app.agents.channels import UnknownDraftChannel, channel_spec
 from app.agents.graph import (
     ClientContext,
     GenerationState,
@@ -14,7 +14,6 @@ from app.agents.graph import (
     load_client_facts,
     new_generation_state,
 )
-from app.agents.guardrails import DEFAULT_GUARDRAIL_CHECKS
 from app.agents.prompt_config import resolve_pinned_configuration
 from app.config import Settings, get_settings
 from app.db.models.llmops import GenerationRun
@@ -115,9 +114,14 @@ def generate_test_draft(
     llm_client: LLMClient | None = None,
     use_rag: bool = True,
     cta_override: str | None = None,
+    channel: str = "email",
 ) -> list[GenerationRun]:
     if (client_id is None) == (fact_profile is None):
         raise PromptTestingError("give exactly one of client_id or fact_profile")
+    try:
+        spec = channel_spec(channel)
+    except UnknownDraftChannel:
+        raise PromptTestingError(f"unknown channel {channel!r}") from None
 
     settings = settings or get_settings()
     facts = (
@@ -153,13 +157,15 @@ def generate_test_draft(
         personalization_version=personalization_version,
         tier_contract_version=tier_version,
         angle=angle,
+        channel=channel,
     )
 
     graph = build_generation_graph(
         context_loader=lambda _client_id, _product: context,
         llm_client=llm_client or get_llm_client(settings),
-        guardrail_checks=DEFAULT_GUARDRAIL_CHECKS,
-        prompt_builder=build_system_prompt,
+        guardrail_checks=spec.guardrail_checks,
+        prompt_builder=spec.prompt_builder,
+        draft_parser=spec.draft_parser,
         config_resolver=lambda **_kwargs: config,
     )
 
@@ -167,7 +173,9 @@ def generate_test_draft(
     for _ in range(n):
         state: GenerationState = new_generation_state(client_id=client_id, product=product)
         final = graph.invoke(state)
-        run = persist_generation_run(session, final, settings, run_kind=RUN_KIND_TEST)
+        run = persist_generation_run(
+            session, final, settings, channel=channel, run_kind=RUN_KIND_TEST
+        )
         session.flush()
         runs.append(run)
     return runs

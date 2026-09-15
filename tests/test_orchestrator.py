@@ -139,7 +139,43 @@ def test_email_agent_registered_behind_the_orchestrator_produces_an_accepted_dra
     assert result["client_id"] == 1001
 
 
-def test_build_default_orchestrator_registers_only_email(db: None) -> None:
+def sms_draft_json(body: str = "") -> str:
+    return json.dumps({"body": body})
+
+
+def test_sms_agent_satisfies_the_channel_agent_protocol() -> None:
+    from app.agents.sms_channel import SmsAgent
+
+    agent = SmsAgent(
+        context_loader=make_context_loader(),
+        llm_client=ScriptedLLMClient(
+            [sms_draft_json("Hi {{first_name}}, {{fund_name}} is open again.")]
+        ),
+    )
+    assert isinstance(agent, ChannelAgent)
+    assert agent.channel == "sms"
+
+
+def test_sms_agent_registered_behind_the_orchestrator_produces_an_accepted_draft() -> None:
+    from app.agents.sms_channel import SmsAgent
+
+    agent = SmsAgent(
+        context_loader=make_context_loader(),
+        llm_client=ScriptedLLMClient(
+            [sms_draft_json("Hi {{first_name}}, {{fund_name}} is open again.")]
+        ),
+    )
+    orchestrator = Orchestrator()
+    orchestrator.register(agent)
+
+    result = orchestrator.generate("sms", client_id=1001, product="money market")
+
+    assert result["status"] == "accepted"
+    assert result["body"] == "Hi {{first_name}}, {{fund_name}} is open again."
+    assert "subject" not in result["content"]
+
+
+def test_build_default_orchestrator_registers_email_and_sms(db: None) -> None:
     settings = Settings(
         llm_provider="anthropic",
         anthropic_api_key="test-key",
@@ -150,6 +186,6 @@ def test_build_default_orchestrator_registers_only_email(db: None) -> None:
     with SessionLocal() as session:
         orchestrator = build_default_orchestrator(session, settings)
 
-    assert orchestrator.channels() == ("email",)
-    with pytest.raises(UnknownChannel, match="sms"):
-        orchestrator.generate("sms", client_id=1001, product="money market")
+    assert set(orchestrator.channels()) == {"email", "sms"}
+    with pytest.raises(UnknownChannel, match="whatsapp"):
+        orchestrator.generate("whatsapp", client_id=1001, product="money market")

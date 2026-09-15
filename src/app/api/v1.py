@@ -13,6 +13,7 @@ from app.api.routers import (
     campaigns,
     clients,
     data_quality,
+    delivery,
     digest,
     ingestion,
     integration,
@@ -44,3 +45,4 @@ router.include_router(risk.router)
 router.include_router(digest.router)
 router.include_router(briefing.router)
 router.include_router(active_clients.router)
+router.include_router(delivery.router)

@@ -45,6 +45,7 @@ from app.campaigns.template_policy import (
 )
 from app.campaigns.touch import (
     SenderFn,
+    SendersByChannel,
     SendOutcome,
     TouchRunOutcome,
     run_due_enrollments,
@@ -66,6 +67,7 @@ from app.db.models.models import ClientFeatures, Clients
 from app.db.models.outreach import Campaign, OutreachMessage, ReviewAction
 from app.db.models.rules import ClientMessageIndicators
 from app.delivery.sender import build_email_sender
+from app.delivery.sms_sender import build_sms_sender
 from app.llmops.tracing import Tracer
 from app.pagination import (
     DEFAULT_LIMIT,
@@ -484,26 +486,45 @@ def run_campaign_generation(
     return run_due_enrollments(session, campaign_id=campaign_id, generate=generate, limit=limit)
 
 
+def _close_sender(send_fn: SenderFn) -> None:
+    for attr in ("mailer", "gateway"):
+        close = getattr(getattr(send_fn, attr, None), "close", None)
+        if close is not None:
+            close()
+
+
 def send_campaign(
     session: Session,
     campaign_id: int,
     *,
     sender: SenderFn | None = None,
+    senders: SendersByChannel | None = None,
     limit: int = DEFAULT_BATCH_LIMIT,
 ) -> list[SendOutcome]:
     campaign = session.get(Campaign, campaign_id)
     if campaign is None:
         raise CampaignNotFound(campaign_id)
 
-    send_fn = sender or build_email_sender()
+    email_sender = sender or build_email_sender()
+    channel_senders = (
+        dict(senders)
+        if senders is not None
+        else {
+            "email": email_sender,
+            "sms": build_sms_sender(),
+        }
+    )
     try:
         outcomes = send_due_touches_run(
-            session, campaign_id=campaign_id, sender=send_fn, limit=limit
+            session,
+            campaign_id=campaign_id,
+            sender=email_sender,
+            senders=channel_senders,
+            limit=limit,
         )
     finally:
-        close = getattr(getattr(send_fn, "mailer", None), "close", None)
-        if close is not None:
-            close()
+        for send_fn in channel_senders.values():
+            _close_sender(send_fn)
 
     if campaign.status == "draft" and any(o.sent for o in outcomes):
         campaign.status = "running"

@@ -71,6 +71,10 @@ def draft_json(subject: str = "Come back to {{fund_name}}", body: str = "") -> s
     return json.dumps({"subject": subject, "body": body})
 
 
+def sms_draft_json(body: str = "") -> str:
+    return json.dumps({"body": body})
+
+
 def make_bucket(profile_key: ProfileKey, *, client_id: int = CLIENT_ID) -> Bucket:
     """One bucket with one member, enough for draft_template to run against."""
     context = ClientContext(
@@ -226,6 +230,24 @@ def test_bucket_prompt_builder_reflects_has_cadence_regardless_of_the_facts_it_i
     assert "no measurable cadence" in prompt_without
 
 
+def test_bucket_prompt_builder_uses_the_sms_prompt_for_an_sms_profile() -> None:
+    build = _bucket_prompt_builder(
+        ProfileKey(
+            message_angle="pick_up_again",
+            priority_tier="T3",
+            product="money market",
+            has_cadence=False,
+            stale_contact=False,
+            exit_reason_charge_settled=False,
+            fund_name_known=False,
+            channel="sms",
+        )
+    )
+    prompt = build(angle="pick_up_again", prompt_variant="pick_up_again", facts={})
+    assert "SMS drafting agent" in prompt
+    assert "never include a subject line" in prompt.lower()
+
+
 def test_bucket_context_replaces_facts_and_adds_placeholder_chunks() -> None:
     key = ProfileKey(
         message_angle="pick_up_again",
@@ -346,6 +368,38 @@ def test_draft_template_persists_a_run_and_a_message_template_on_accept(
         assert run.priority_tier == "T3"
         stored = session.get(MessageTemplate, template.template_id)
         assert stored is not None
+
+
+def test_draft_template_drafts_an_sms_profile_with_a_body_only_draft(
+    campaign: int, client: int
+) -> None:
+    key = ProfileKey(
+        message_angle="pick_up_again",
+        priority_tier="T3",
+        product="money market",
+        has_cadence=False,
+        stale_contact=False,
+        exit_reason_charge_settled=False,
+        fund_name_known=False,
+        channel="sms",
+    )
+    bucket = make_bucket(key, client_id=client)
+    body = "Hi {{first_name}}, {{fund_name}} still has room. Come back."
+    llm = ScriptedLLMClient([sms_draft_json(body=body)])
+    settings = make_settings()
+
+    with SessionLocal() as session:
+        template = draft_template(
+            session, bucket, campaign_id=campaign, settings=settings, llm_client=llm
+        )
+        session.commit()
+
+    assert template is not None
+    assert template.profile_key == key.as_dict()
+    assert template.ai_draft_content == {"body": body}
+    assert "subject" not in template.ai_draft_content
+    assert template.status == "pending_review"
+    assert "SMS drafting agent" in llm.calls[0]["system"]
 
 
 def test_draft_template_clears_the_privacy_boundary_with_every_placeholder_fact_in_play(
@@ -915,3 +969,148 @@ def test_a_human_rejected_template_is_redrafted_not_skipped(multi_bucket_cohort:
     fixed_income_rows = [r for r in rows if r.profile_key["product"] == "fixed income"]
     assert len(rows) == 4  # the original three plus the fresh fixed-income redraft
     assert len(fixed_income_rows) == 2  # the rejected one, kept, plus the redraft
+
+
+# ---------------------------------------------------------------------------
+# draft_templates_for_campaign: an SMS-only campaign must not be skipped.
+# ---------------------------------------------------------------------------
+
+SMS_FUND_ID = 9713
+SMS_CLIENT_ID = 971301
+
+
+@pytest.fixture
+def sms_bucket_cohort(db: None):
+    with SessionLocal() as session:
+        exists = session.scalar(text("SELECT 1 FROM pg_roles WHERE rolname = 'ace_restricted'"))
+    if not exists:
+        pytest.skip("boundary roles not present; run alembic upgrade head")
+
+    with SessionLocal() as session:
+        session.add(Funds(unit_fund_id=SMS_FUND_ID, unit_fund_name="SMS Bucket Test Fund"))
+        session.commit()
+        session.add(
+            Clients(
+                client_id=SMS_CLIENT_ID,
+                unit_fund_id=SMS_FUND_ID,
+                n_purchases_returned=1,
+                n_sales_returned=1,
+            )
+        )
+        session.flush()
+        session.add(
+            ClientFeatures(
+                client_id=SMS_CLIENT_ID, fund_type="money_market", purchase_depth="single"
+            )
+        )
+        session.add(
+            ClientMessageIndicators(
+                client_id=SMS_CLIENT_ID,
+                message_angle="pick_up_again",
+                urgency="low",
+                priority_tier="T3",
+                prompt_variant="pick_up_again",
+                rule_name="sms_template_generation_test",
+                rule_version=1,
+            )
+        )
+        session.add(
+            PiiVault(
+                client_id=SMS_CLIENT_ID,
+                client_name="SMS Bucket Test",
+                contact_email="present@example.com",
+                opt_out_flag=False,
+            )
+        )
+        session.add(
+            ClientFund(
+                client_id=SMS_CLIENT_ID,
+                unit_fund_id=SMS_FUND_ID,
+                is_primary_contact_row=True,
+                n_purchases=1,
+                n_sales=0,
+                observed_volume=10,
+            )
+        )
+        session.commit()
+
+        row = Campaign(name="sms bucket template generation test campaign")
+        session.add(row)
+        session.commit()
+        campaign_id = row.campaign_id
+        add_campaign_step(
+            session, campaign_id, offset_days=0, message_angle="pick_up_again", channel="sms"
+        )
+        session.commit()
+        session.add(
+            Enrollment(
+                campaign_id=campaign_id, client_id=SMS_CLIENT_ID, is_primary_contact_row=True
+            )
+        )
+        session.commit()
+
+    yield campaign_id
+
+    with SessionLocal() as session:
+        run_ids = session.scalars(
+            select(GenerationRun.run_id).where(GenerationRun.client_id == SMS_CLIENT_ID)
+        ).all()
+        if run_ids:
+            session.execute(
+                delete(MessageTemplate).where(MessageTemplate.generation_run_id.in_(run_ids))
+            )
+            request_ids = session.scalars(
+                select(LLMRequest.request_id).where(LLMRequest.run_id.in_(run_ids))
+            ).all()
+            if request_ids:
+                session.execute(delete(TokenUsage).where(TokenUsage.request_id.in_(request_ids)))
+                session.execute(delete(LLMResponse).where(LLMResponse.request_id.in_(request_ids)))
+                session.execute(delete(LLMRequest).where(LLMRequest.run_id.in_(run_ids)))
+                session.execute(delete(ToolCall).where(ToolCall.run_id.in_(run_ids)))
+            session.execute(delete(TraceRef).where(TraceRef.run_id.in_(run_ids)))
+            session.execute(delete(Evaluation).where(Evaluation.run_id.in_(run_ids)))
+            session.execute(delete(GenerationRun).where(GenerationRun.run_id.in_(run_ids)))
+        session.execute(
+            delete(TemplateGenerationPlan).where(TemplateGenerationPlan.campaign_id == campaign_id)
+        )
+        session.execute(
+            delete(CampaignTemplatePolicy).where(CampaignTemplatePolicy.campaign_id == campaign_id)
+        )
+        session.execute(delete(Enrollment).where(Enrollment.campaign_id == campaign_id))
+        session.execute(delete(CampaignStep).where(CampaignStep.campaign_id == campaign_id))
+        session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
+        session.execute(delete(ClientFund).where(ClientFund.client_id == SMS_CLIENT_ID))
+        session.execute(
+            delete(ClientMessageIndicators).where(
+                ClientMessageIndicators.client_id == SMS_CLIENT_ID
+            )
+        )
+        session.execute(delete(PiiVault).where(PiiVault.client_id == SMS_CLIENT_ID))
+        session.execute(delete(ClientFeatures).where(ClientFeatures.client_id == SMS_CLIENT_ID))
+        session.execute(delete(Clients).where(Clients.client_id == SMS_CLIENT_ID))
+        session.execute(delete(Funds).where(Funds.unit_fund_id == SMS_FUND_ID))
+        session.commit()
+
+
+def test_draft_templates_for_campaign_no_longer_skips_an_sms_only_campaign(
+    sms_bucket_cohort: int,
+) -> None:
+    body = "Hi {{first_name}}, {{fund_name}} still has room. Come back."
+    llm = ScriptedLLMClient([sms_draft_json(body=body)])
+
+    with SessionLocal() as session:
+        outcome = draft_templates_for_campaign(
+            session,
+            sms_bucket_cohort,
+            settings=make_settings(),
+            llm_client=llm,
+            context_loader=_fixed_context_loader,
+        )
+        session.commit()
+
+    assert outcome.estimated_templates == 1
+    assert outcome.drafted_count == 1
+    assert outcome.failed_errors == 0
+    assert outcome.failed_guardrails == 0
+    assert outcome.templates[0].profile_key["channel"] == "sms"
+    assert outcome.templates[0].ai_draft_content == {"body": body}

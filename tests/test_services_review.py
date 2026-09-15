@@ -73,6 +73,13 @@ def test_personalize_content_applies_to_subject_and_body() -> None:
     assert result == {"subject": "Hi Jane", "body": "About MMF, Jane."}
 
 
+def test_personalize_content_handles_a_body_only_sms_draft() -> None:
+    draft = {"body": "Hi {{first_name}}, {{fund_name}} is open again."}
+    result = personalize_content(draft, first_name="Jane", fund_name="MMF")
+    assert result == {"body": "Hi Jane, MMF is open again."}
+    assert "subject" not in result
+
+
 def test_resolve_placeholders_substitutes_placeholder_filled_facts_when_given() -> None:
     result = resolve_placeholders(
         "Dear {{first_name}}, your typical contribution was {{typical_contribution}} "

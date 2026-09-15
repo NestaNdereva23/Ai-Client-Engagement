@@ -182,6 +182,7 @@ def resolve_active_configuration(
     *,
     angle: str | None,
     tier: str | None,
+    channel: str = "email",
     at: date | None = None,
     settings: Settings | None = None,
 ) -> AgentConfiguration:
@@ -195,25 +196,37 @@ def resolve_active_configuration(
     tier_contract_version = (
         _resolve_version(session, "tier_contract", tier, on) if tier is not None else None
     )
-    voice_contract_version = _resolve_version(session, "voice_contract", default_key, on)
-    safety_policy_version = _resolve_version(session, "safety_policy", default_key, on)
-    output_policy_version = _resolve_version(session, "output_policy", default_key, on)
+    voice_contract_version = _resolve_version(session, "voice_contract", channel, on)
+    safety_policy_version = _resolve_version(session, "safety_policy", channel, on)
+    output_policy_version = _resolve_version(session, "output_policy", channel, on)
     personalization_policy_version = _resolve_version(
         session, "personalization_policy", default_key, on
     )
 
     voice_row = (
-        session.scalar(select(VoiceContract).where(VoiceContract.version == voice_contract_version))
+        session.scalar(
+            select(VoiceContract).where(
+                VoiceContract.version == voice_contract_version, VoiceContract.channel == channel
+            )
+        )
         if voice_contract_version is not None
         else None
     )
     safety_row = (
-        session.scalar(select(SafetyPolicy).where(SafetyPolicy.version == safety_policy_version))
+        session.scalar(
+            select(SafetyPolicy).where(
+                SafetyPolicy.version == safety_policy_version, SafetyPolicy.channel == channel
+            )
+        )
         if safety_policy_version is not None
         else None
     )
     output_row = (
-        session.scalar(select(OutputPolicy).where(OutputPolicy.version == output_policy_version))
+        session.scalar(
+            select(OutputPolicy).where(
+                OutputPolicy.version == output_policy_version, OutputPolicy.channel == channel
+            )
+        )
         if output_policy_version is not None
         else None
     )
@@ -245,19 +258,32 @@ def resolve_pinned_configuration(
     personalization_version: int | None,
     tier_contract_version: int | None = None,
     angle: str | None = None,
+    channel: str = "email",
 ) -> AgentConfiguration:
     voice_row = (
-        session.scalar(select(VoiceContract).where(VoiceContract.version == voice_version))
+        session.scalar(
+            select(VoiceContract).where(
+                VoiceContract.version == voice_version, VoiceContract.channel == channel
+            )
+        )
         if voice_version is not None
         else None
     )
     safety_row = (
-        session.scalar(select(SafetyPolicy).where(SafetyPolicy.version == safety_version))
+        session.scalar(
+            select(SafetyPolicy).where(
+                SafetyPolicy.version == safety_version, SafetyPolicy.channel == channel
+            )
+        )
         if safety_version is not None
         else None
     )
     output_row = (
-        session.scalar(select(OutputPolicy).where(OutputPolicy.version == output_version))
+        session.scalar(
+            select(OutputPolicy).where(
+                OutputPolicy.version == output_version, OutputPolicy.channel == channel
+            )
+        )
         if output_version is not None
         else None
     )

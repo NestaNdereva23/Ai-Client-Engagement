@@ -91,7 +91,13 @@ def check_eligibility(
         return _skip(session, enrollment, reason="previous_touch_pending", terminal=False)
 
     channel = step.channel or campaign.default_channel
-    stop = _stop_reason(session, enrollment, channel, vault_session=vault_session)
+    stop = _stop_reason(
+        session,
+        enrollment,
+        channel,
+        require_contact=get_settings().require_deliverable_contact,
+        vault_session=vault_session,
+    )
     if stop is not None:
         reason, terminal_status, detail = stop
         return _skip(
@@ -132,7 +138,7 @@ def check_stop_conditions(
     if _angle_held(session, enrollment.client_id):
         return _skip(session, enrollment, reason="angle_held", terminal=False)
 
-    stop = _stop_reason(session, enrollment, channel)
+    stop = _stop_reason(session, enrollment, channel, require_contact=True)
     if stop is not None:
         reason, terminal_status, detail = stop
         return _skip(
@@ -169,7 +175,12 @@ def _angle_held(session: Session, client_id: int) -> bool:
 
 
 def _stop_reason(
-    session: Session, enrollment: Enrollment, channel: str, *, vault_session: Session | None = None
+    session: Session,
+    enrollment: Enrollment,
+    channel: str,
+    *,
+    require_contact: bool,
+    vault_session: Session | None = None,
 ) -> tuple[str, str, str | None] | None:
     """(reason, terminal_status, detail) for a permanent stop signal, or None."""
     suppression_reason = session.get(Suppression, enrollment.client_id)
@@ -184,7 +195,7 @@ def _stop_reason(
     )
     if opted_out:
         return "opted_out", "stopped_optout", None
-    if not has_contact and get_settings().require_deliverable_contact:
+    if not has_contact and require_contact:
         return "no_deliverable_contact", "excluded", None
 
     stopping_event = _latest_event_type(session, enrollment.client_id, _STOPPING_EVENT_TYPES)

@@ -204,6 +204,47 @@ def make_template(
     )
 
 
+def make_sms_template(
+    campaign_id: int, run_id: str, *, status: str = "approved", body: str = DRAFT_BODY
+):
+    return MessageTemplate(
+        template_id=uuid.uuid4().hex,
+        campaign_id=campaign_id,
+        generation_run_id=run_id,
+        profile_key={
+            "message_angle": "pick_up_again",
+            "priority_tier": "T3",
+            "product": "money market",
+            "has_cadence": True,
+            "stale_contact": False,
+            "exit_reason_charge_settled": False,
+            "fund_name_known": False,
+            "channel": "sms",
+        },
+        ai_draft_content={"body": body},
+        status=status,
+    )
+
+
+def test_instantiate_message_for_an_sms_template_has_no_subject_and_sets_the_sms_channel(
+    campaign: int, run: str, client: int
+) -> None:
+    with SessionLocal() as session:
+        template = make_sms_template(campaign, run)
+        session.add(template)
+        session.commit()
+
+        message = instantiate_message(session, template, client, campaign_id=campaign)
+        session.commit()
+
+    assert message is not None
+    assert message.channel == "sms"
+    assert "subject" not in message.personalized_content
+    body = message.personalized_content["body"]
+    assert "Dear Jane," in body
+    assert "{{" not in body
+
+
 def test_instantiate_message_raises_when_the_template_is_not_approved(
     campaign: int, run: str, client: int
 ) -> None:

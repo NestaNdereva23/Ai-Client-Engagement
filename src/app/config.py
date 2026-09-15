@@ -222,6 +222,12 @@ class Settings(BaseSettings):
     smtp_timeout_seconds: float = 30.0
     email_sender: str = ""
 
+    sms_provider_api_key: str = ""
+    sms_provider_username: str = ""
+    sms_sender_id: str = ""
+    sms_provider_base_url: str = "https://api.africastalking.com/version1/messaging"
+    sms_timeout_seconds: float = 30.0
+
     console_base_url: str = Field(
         default="", validation_alias=AliasChoices("CONSOLE_BASE_URL", "console_base_url")
     )

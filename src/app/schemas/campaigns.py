@@ -74,6 +74,7 @@ class GenerationCostOut(BaseModel):
     estimated_templates: int
     single_generation: GenerationCostScenarioOut
     templates: GenerationCostScenarioOut
+    actual_sms_cost_kes: float
     as_of: datetime
 
 

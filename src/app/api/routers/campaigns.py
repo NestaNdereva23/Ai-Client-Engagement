@@ -395,6 +395,7 @@ def get_campaign_generation_cost(
             total_cost_usd=estimate.templates.total_cost_usd,
             total_cost_kes=estimate.templates.total_cost_kes,
         ),
+        actual_sms_cost_kes=estimate.actual_sms_cost_kes,
         as_of=estimate.as_of,
     )
 

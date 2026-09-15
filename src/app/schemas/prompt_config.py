@@ -79,6 +79,7 @@ class TestGenerateRequest(BaseModel):
     n: int = 1
     use_rag: bool = True
     cta_override: str | None = None
+    channel: str = "email"
 
 
 class TestGenerateRunOut(BaseModel):

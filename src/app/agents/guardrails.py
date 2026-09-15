@@ -19,6 +19,12 @@ MAX_SUBJECT_LENGTH = 100
 MIN_BODY_LENGTH = 20
 MAX_BODY_LENGTH = 2000
 
+# GSM-7: 160 chars in one segment, 153 per segment once a second is needed.
+SMS_SINGLE_PART_LENGTH = 160
+SMS_MULTI_PART_LENGTH = 153
+MAX_SMS_PARTS = 3
+MIN_SMS_BODY_LENGTH = 10
+
 # Any run of digits, with grouping or a decimal part, as it would be written
 # in a sentence. Trailing sentence punctuation is stripped off the match.
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
@@ -152,6 +158,32 @@ def default_format_check(state: Mapping[str, Any]) -> None:
         )
 
 
+def sms_part_count(body: str) -> int:
+    # How many SMS segments a body would need to send, GSM-7 approximated.
+    length = len(body)
+    if length == 0:
+        return 0
+    if length <= SMS_SINGLE_PART_LENGTH:
+        return 1
+    return -(-length // SMS_MULTI_PART_LENGTH)
+
+
+def default_sms_length_check(state: Mapping[str, Any]) -> None:
+    # Same idea as default_format_check, but in SMS segments, not words.
+    body = _content(state).get("body") or ""
+    if len(body) < MIN_SMS_BODY_LENGTH:
+        raise GuardrailFailure(
+            f"body is {len(body)} characters, under the {MIN_SMS_BODY_LENGTH} minimum",
+            guardrail="format_length",
+        )
+    parts = sms_part_count(body)
+    if parts > MAX_SMS_PARTS:
+        raise GuardrailFailure(
+            f"body runs to {parts} SMS parts, over the {MAX_SMS_PARTS} allowed",
+            guardrail="format_length",
+        )
+
+
 def default_currency_check(state: Mapping[str, Any]) -> None:
     """A draft must never use $ or USD.
 
@@ -221,6 +253,16 @@ DEFAULT_GUARDRAIL_CHECKS: Sequence[Any] = (
     default_currency_check,
     default_banned_words_check,
     default_sign_off_check,
+    default_rate_specificity_check,
+)
+
+# Same checks as email, except the length rule, which is sms's own segment based one.
+SMS_GUARDRAIL_CHECKS: Sequence[Any] = (
+    default_grounding_check,
+    default_numeric_traceability_check,
+    default_sms_length_check,
+    default_currency_check,
+    default_banned_words_check,
     default_rate_specificity_check,
 )
 

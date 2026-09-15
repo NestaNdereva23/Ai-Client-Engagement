@@ -15,7 +15,7 @@ from app.audit.log import record_audit
 from app.db.models.outreach import OutreachMessage
 
 
-class MessageNotApproved(Exception):
+class MessageNotApproved(ValueError):
     """The message is not approved and cannot be authorized for sending."""
 
 
