@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -16,6 +16,7 @@ from app.personalization.eligibility import (
 from app.rules import versioning
 from app.schemas.prompt_config import (
     AngleVersionMetricsOut,
+    BootstrapEntryOut,
     ComponentContentOut,
     DiffOut,
     DiscardRequest,
@@ -31,7 +32,7 @@ from app.schemas.prompt_config import (
     VersionSummaryOut,
 )
 from app.services.prompt_testing import PromptTestingError, generate_test_draft
-from app.services.review_metrics import angle_version_metrics
+from app.services.review_metrics import angle_version_metrics, angle_version_metrics_batch
 
 router = APIRouter(
     prefix="/prompt-config", tags=["prompt-config"], dependencies=[Depends(get_current_reviewer_id)]
@@ -159,6 +160,35 @@ def list_component_versions(
     return [VersionSummaryOut(**summary) for summary in summaries]
 
 
+@router.get("/bootstrap", response_model=dict[str, BootstrapEntryOut])
+def bootstrap_config(
+    pair: str = Query(default=""), session: Session = Depends(get_session)
+) -> dict[str, BootstrapEntryOut]:
+    requests: list[tuple[str, str]] = []
+    for item in pair.split(","):
+        if not item:
+            continue
+        component_type, _, component_key = item.partition(":")
+        if not component_type or not component_key:
+            raise HTTPException(status_code=422, detail=f"invalid pair '{item}'")
+        requests.append((component_type, component_key))
+
+    try:
+        data = versioning.bootstrap(session, requests)
+    except versioning.VersioningError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
+
+    return {
+        scope: BootstrapEntryOut(
+            summaries=[VersionSummaryOut(**s) for s in entry["summaries"]],
+            live_version=entry["live_version"],
+            pending_version=entry["pending_version"],
+            content=entry["content"],
+        )
+        for scope, entry in data.items()
+    }
+
+
 @router.get("/{component_type}/diff", response_model=DiffOut)
 def diff_component_versions(
     component_type: str,
@@ -213,6 +243,25 @@ def test_generate(
             reason=run.reason,
         )
         for run in runs
+    ]
+
+
+@router.get("/angles/metrics", response_model=list[AngleVersionMetricsOut])
+def angle_metrics_batch(
+    angle: str = Query(default=""), session: Session = Depends(get_session)
+) -> list[AngleVersionMetricsOut]:
+    angles = [a for a in angle.split(",") if a]
+    return [
+        AngleVersionMetricsOut(
+            angle=metrics.angle,
+            angle_catalog_version=metrics.angle_catalog_version,
+            review_count=metrics.review_count,
+            approval_rate=metrics.approval_rate,
+            edit_rate=metrics.edit_rate,
+            rejection_rate=metrics.rejection_rate,
+            regeneration_rate=metrics.regeneration_rate,
+        )
+        for metrics in angle_version_metrics_batch(session, angles)
     ]
 
 

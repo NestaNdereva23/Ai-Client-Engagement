@@ -41,6 +41,13 @@ class DiffOut(BaseModel):
     diff: dict[str, Any]
 
 
+class BootstrapEntryOut(BaseModel):
+    summaries: list[VersionSummaryOut]
+    live_version: int | None
+    pending_version: int | None
+    content: dict[str, list[dict[str, Any]]]
+
+
 class ComponentContentOut(BaseModel):
     component_type: str
     component_key: str
