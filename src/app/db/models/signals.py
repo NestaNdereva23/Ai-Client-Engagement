@@ -17,6 +17,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -75,6 +76,55 @@ class ClientSignalState(Base):
     unit_fund_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     signal_code: Mapped[str] = mapped_column(Text, primary_key=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    since: Mapped[date] = mapped_column(Date, nullable=False)
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("signal_run.run_id"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class ClientSituationSnapshot(Base):
+    __tablename__ = "client_situation_snapshot"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "client_id",
+            "unit_fund_id",
+            "situation_code",
+            name="uq_client_situation_snapshot_run_client_fund_situation",
+        ),
+        Index(
+            "ix_client_situation_snapshot_client_fund_situation_run",
+            "client_id",
+            "unit_fund_id",
+            "situation_code",
+            "run_id",
+        ),
+    )
+
+    snapshot_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("signal_run.run_id"), nullable=False)
+    client_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    unit_fund_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    situation_code: Mapped[str] = mapped_column(Text, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    signal_codes: Mapped[list] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ClientSituationState(Base):
+    __tablename__ = "client_situation_state"
+
+    client_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    unit_fund_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    situation_code: Mapped[str] = mapped_column(Text, primary_key=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    signal_codes: Mapped[list] = mapped_column(JSONB, nullable=False)
     since: Mapped[date] = mapped_column(Date, nullable=False)
     run_id: Mapped[str] = mapped_column(String(36), ForeignKey("signal_run.run_id"), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

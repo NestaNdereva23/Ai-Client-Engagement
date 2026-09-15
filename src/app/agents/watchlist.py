@@ -17,10 +17,12 @@ from datetime import date, timedelta
 from sqlalchemy import Select, func, select, tuple_
 from sqlalchemy.orm import Session
 
+from app.agents.situations import NEW_CLIENT_SINGLE_DEPOSIT
 from app.config import get_settings
 from app.db.models.active_clients import ActiveClientFund, ActiveClientInteraction
 from app.db.models.digest import DigestLine, DigestRun
 from app.db.models.risk import ClientRiskFeatures
+from app.db.models.signals import ClientSituationState
 from app.risk.history import latest_completed_run_id, routes_before_run, routes_for_run
 from app.risk.routing import route_direction
 from app.risk.store import load_active_config
@@ -48,7 +50,6 @@ HEALTHY_BANDS = ("None", "Low")
 CALL_LIST_ROUTE = "fa_call_priority"
 MORE_URGENT = "more_urgent"
 
-ONE_DEPOSIT = 1
 ONE_FUND = 1
 
 
@@ -151,16 +152,22 @@ def _build_group(session: Session, name: str, definition: dict, statement: Selec
 def signed_up_recently(
     session: Session, thresholds: WatchlistThresholds, as_of: date
 ) -> WatchGroup:
-    """Clients who paid in once and did so within the last few days."""
-    earliest = as_of - timedelta(days=thresholds.new_client_days)
-    statement = _client_funds().where(
-        ActiveClientFund.n_deposits == ONE_DEPOSIT,
-        ActiveClientFund.first_deposit_date.is_not(None),
-        ActiveClientFund.first_deposit_date >= earliest,
+    """Clients whose new_client_single_deposit situation is active."""
+    statement = (
+        _client_funds()
+        .join(
+            ClientSituationState,
+            (ClientSituationState.client_id == ActiveClientFund.client_id)
+            & (ClientSituationState.unit_fund_id == ActiveClientFund.unit_fund_id),
+        )
+        .where(
+            ClientSituationState.situation_code == NEW_CLIENT_SINGLE_DEPOSIT,
+            ClientSituationState.is_active.is_(True),
+        )
     )
     definition = {
-        "deposits_made": ONE_DEPOSIT,
-        "first_deposit_on_or_after": earliest.isoformat(),
+        "situation_code": NEW_CLIENT_SINGLE_DEPOSIT,
+        "is_active": True,
     }
     return _build_group(session, SIGNED_UP_RECENTLY, definition, statement)
 

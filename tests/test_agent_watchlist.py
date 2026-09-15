@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import delete
 
+from app.agents.situations import NEW_CLIENT_SINGLE_DEPOSIT
 from app.agents.watchlist import (
     FEES_WILL_EMPTY,
     GETTING_SMALLER,
@@ -35,6 +36,7 @@ from app.agents.watchlist import (
 from app.db.models.active_clients import ActiveClientFund, ActiveClientInteraction
 from app.db.models.digest import DigestLine, DigestRun
 from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion, RiskRun, RiskSnapshot
+from app.db.models.signals import ClientSituationState, SignalRun
 from app.db.session import SessionLocal
 
 FUND_ID = 9455
@@ -61,6 +63,7 @@ CLIENT_IDS = (
 
 RISK_RUN_ID = "watchlist-test-run"
 EARLIER_RUN_ID = "watchlist-test-earlier-run"
+SIGNAL_RUN_ID = "watchlist-test-signal-run"
 AS_OF = date(2026, 9, 7)
 CONFIG_VERSION = 1
 REVIEWER = "watchlist-test-reviewer"
@@ -133,6 +136,10 @@ def _purge(session) -> None:
     session.execute(delete(RiskSnapshot).where(RiskSnapshot.client_id.in_(CLIENT_IDS)))
     session.execute(delete(RiskRun).where(RiskRun.run_id.in_((RISK_RUN_ID, EARLIER_RUN_ID))))
     session.execute(delete(ClientRiskFeatures).where(ClientRiskFeatures.client_id.in_(CLIENT_IDS)))
+    session.execute(
+        delete(ClientSituationState).where(ClientSituationState.client_id.in_(CLIENT_IDS))
+    )
+    session.execute(delete(SignalRun).where(SignalRun.run_id == SIGNAL_RUN_ID))
     session.execute(delete(ActiveClientFund).where(ActiveClientFund.client_id.in_(CLIENT_IDS)))
     session.commit()
 
@@ -172,7 +179,19 @@ def book(db: None):
             ]
         )
         session.add(RiskRun(run_id=RISK_RUN_ID, state="completed", config_version=CONFIG_VERSION))
+        session.add(SignalRun(run_id=SIGNAL_RUN_ID, state="completed"))
         session.flush()
+        session.add(
+            ClientSituationState(
+                client_id=NEW_CLIENT,
+                unit_fund_id=FUND_ID,
+                situation_code=NEW_CLIENT_SINGLE_DEPOSIT,
+                is_active=True,
+                signal_codes=["single_deposit", "first_deposit_recent"],
+                since=AS_OF,
+                run_id=SIGNAL_RUN_ID,
+            )
+        )
 
         old_digest = DigestRun(
             risk_run_id=RISK_RUN_ID,
@@ -211,17 +230,17 @@ def _seeded(group) -> set[tuple[int, int]]:
     return {key for key in _keys(group) if key[0] in CLIENT_IDS}
 
 
-def test_signed_up_recently_finds_the_single_deposit_client(book: None) -> None:
+def test_signed_up_recently_finds_a_client_with_the_situation_active(book: None) -> None:
     with SessionLocal() as session:
         group = signed_up_recently(session, THRESHOLDS, AS_OF)
     assert (NEW_CLIENT, FUND_ID) in _keys(group)
     assert (FEE_CLIENT, FUND_ID) not in _keys(group)
 
 
-def test_signed_up_recently_ignores_an_older_first_deposit(book: None) -> None:
+def test_signed_up_recently_ignores_a_client_whose_situation_is_inactive(book: None) -> None:
     with SessionLocal() as session:
-        fund = session.get(ActiveClientFund, (NEW_CLIENT, FUND_ID))
-        fund.first_deposit_date = AS_OF - timedelta(days=THRESHOLDS.new_client_days + 1)
+        state = session.get(ClientSituationState, (NEW_CLIENT, FUND_ID, NEW_CLIENT_SINGLE_DEPOSIT))
+        state.is_active = False
         session.commit()
         group = signed_up_recently(session, THRESHOLDS, AS_OF)
     assert (NEW_CLIENT, FUND_ID) not in _keys(group)
@@ -330,7 +349,7 @@ def test_every_named_group_has_a_written_definition(book: None) -> None:
     for group in groups:
         assert group.definition
     by_name = {group.name: group for group in groups}
-    assert by_name[SIGNED_UP_RECENTLY].definition["deposits_made"] == 1
+    assert by_name[SIGNED_UP_RECENTLY].definition["situation_code"] == NEW_CLIENT_SINGLE_DEPOSIT
     assert by_name[FEES_WILL_EMPTY].definition["months_until_empty_below"] == 6.0
     assert by_name[VERY_SMALL_AND_QUIET].definition["balance_below"] == 100.0
     assert by_name[HEALTHY_ONE_FUND].definition["funds_held"] == 1
