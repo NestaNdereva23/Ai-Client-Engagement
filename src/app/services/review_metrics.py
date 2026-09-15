@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -36,6 +37,51 @@ def angle_version_metrics(session: Session, angle: str) -> list[AngleVersionMetr
     results: list[AngleVersionMetrics] = []
     for version in sorted(by_version, key=lambda v: (v is None, v)):
         entries = by_version[version]
+        total = len(entries)
+        approve = sum(1 for outcome, _ in entries if outcome == "approve")
+        edit = sum(1 for outcome, _ in entries if outcome == "edit_approve")
+        reject = sum(1 for outcome, _ in entries if outcome == "reject")
+        regenerated = sum(1 for _, attempts in entries if attempts and attempts > 1)
+        results.append(
+            AngleVersionMetrics(
+                angle=angle,
+                angle_catalog_version=version,
+                review_count=total,
+                approval_rate=approve / total,
+                edit_rate=edit / total,
+                rejection_rate=reject / total,
+                regeneration_rate=regenerated / total,
+            )
+        )
+    return results
+
+
+def angle_version_metrics_batch(
+    session: Session, angles: Sequence[str]
+) -> list[AngleVersionMetrics]:
+    if not angles:
+        return []
+
+    rows = session.execute(
+        select(
+            ReviewAction.message_angle,
+            GenerationRun.angle_catalog_version,
+            ReviewAction.outcome,
+            GenerationRun.attempts,
+        )
+        .select_from(ReviewAction)
+        .join(OutreachMessage, ReviewAction.message_id == OutreachMessage.message_id)
+        .join(GenerationRun, OutreachMessage.generation_run_id == GenerationRun.run_id)
+        .where(ReviewAction.message_angle.in_(angles))
+    ).all()
+
+    by_key: dict[tuple[str, int | None], list[tuple[str, int]]] = {}
+    for angle, version, outcome, attempts in rows:
+        by_key.setdefault((angle, version), []).append((outcome, attempts))
+
+    results: list[AngleVersionMetrics] = []
+    for angle, version in sorted(by_key, key=lambda k: (k[0], k[1] is None, k[1])):
+        entries = by_key[(angle, version)]
         total = len(entries)
         approve = sum(1 for outcome, _ in entries if outcome == "approve")
         edit = sum(1 for outcome, _ in entries if outcome == "edit_approve")

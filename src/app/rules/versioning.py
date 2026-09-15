@@ -242,6 +242,77 @@ def list_versions(session: Session, component_type: str, component_key: str) -> 
     return summaries
 
 
+def bootstrap(session: Session, requests: Sequence[tuple[str, str]]) -> dict[str, dict]:
+    by_type: dict[str, list[str]] = {}
+    for component_type, component_key in requests:
+        keys = by_type.setdefault(component_type, [])
+        if component_key not in keys:
+            keys.append(component_key)
+
+    result: dict[str, dict] = {}
+    for component_type, keys in by_type.items():
+        spec = _spec(component_type)
+        stmt = select(spec.model)
+        if spec.key_column is not None:
+            stmt = stmt.where(getattr(spec.model, spec.key_column).in_(keys))
+        rows = session.scalars(stmt).all()
+
+        by_key: dict[str, dict[int, list]] = {key: {} for key in keys}
+        for row in rows:
+            key = (
+                getattr(row, spec.key_column)
+                if spec.key_column is not None
+                else DEFAULT_COMPONENT_KEY
+            )
+            if key not in by_key:
+                continue
+            by_key[key].setdefault(getattr(row, spec.version_column), []).append(row)
+
+        for key, by_version in by_key.items():
+            summaries = []
+            for version in sorted(by_version):
+                first = by_version[version][0]
+                summaries.append(
+                    {
+                        "version": version,
+                        "status": first.status,
+                        "valid_from": first.valid_from,
+                        "valid_to": first.valid_to,
+                        "created_by": first.created_by,
+                        "published_by": first.published_by,
+                        "published_at": first.published_at,
+                        "row_count": len(by_version[version]),
+                    }
+                )
+
+            live_version = next(
+                (
+                    version
+                    for version, version_rows in by_version.items()
+                    if version_rows[0].status == "published" and version_rows[0].valid_to is None
+                ),
+                None,
+            )
+            draft_versions = [
+                version
+                for version, version_rows in by_version.items()
+                if version_rows[0].status == "draft"
+            ]
+            pending_version = max(draft_versions) if draft_versions else None
+
+            content = {}
+            for version in {v for v in (live_version, pending_version) if v is not None}:
+                content[str(version)] = [_content(spec, row) for row in by_version[version]]
+
+            result[f"{component_type}:{key}"] = {
+                "summaries": summaries,
+                "live_version": live_version,
+                "pending_version": pending_version,
+                "content": content,
+            }
+    return result
+
+
 def diff_versions(
     session: Session, component_type: str, component_key: str, version_a: int, version_b: int
 ) -> dict:
