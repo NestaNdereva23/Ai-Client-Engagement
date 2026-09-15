@@ -15,6 +15,7 @@ from app.db.models.prompt_config import (
     VoiceContract,
 )
 from app.db.models.rules import BusinessRule, MessageAngleCatalog, TierContract
+from app.db.models.signals import SignalThreshold
 
 DEFAULT_COMPONENT_KEY = "default"
 
@@ -46,6 +47,7 @@ COMPONENTS: dict[str, ComponentSpec] = {
     "safety_policy": ComponentSpec(SafetyPolicy, key_column="channel"),
     "output_policy": ComponentSpec(OutputPolicy, key_column="channel"),
     "personalization_policy": ComponentSpec(PersonalizationPolicy),
+    "signal_threshold": ComponentSpec(SignalThreshold, key_column="signal_code"),
 }
 
 
