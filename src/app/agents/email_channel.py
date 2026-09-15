@@ -10,6 +10,7 @@ from app.agents.graph import (
     DEFAULT_MAX_ATTEMPTS,
     ConfigResolver,
     ContextLoader,
+    DraftParser,
     GenerationState,
     GuardrailCheck,
     PromptBuilder,
@@ -18,11 +19,13 @@ from app.agents.graph import (
     new_generation_state,
 )
 from app.agents.guardrails import DEFAULT_GUARDRAIL_CHECKS
+from app.agents.orchestrator import Orchestrator
 from app.agents.prompt_config import resolve_active_configuration
 from app.config import Settings, get_settings
 from app.llmops.tracing import NullTracer, Tracer
 from app.privacy.boundary import AuditSink
 from app.privacy.llm_client import LLMClient, get_llm_client
+from app.schemas.email_draft import parse_email_draft
 from app.services.rag import get_rag_enabled
 
 CHANNEL = "email"
@@ -56,6 +59,7 @@ class EmailAgent:
         audit: AuditSink | None = None,
         tracer: Tracer | None = None,
         prompt_builder: PromptBuilder = build_system_prompt,
+        draft_parser: DraftParser = parse_email_draft,
         config_resolver: ConfigResolver | None = None,
     ) -> None:
         self._tracer = tracer or NullTracer()
@@ -64,6 +68,7 @@ class EmailAgent:
             llm_client=llm_client,
             guardrail_checks=guardrail_checks,
             prompt_builder=prompt_builder,
+            draft_parser=draft_parser,
             config_resolver=config_resolver,
             max_attempts=max_attempts,
             audit=audit,
@@ -95,5 +100,26 @@ def build_default_agent(
         audit=audit,
         tracer=tracer,
         prompt_builder=prompt_builder,
-        config_resolver=functools.partial(resolve_active_configuration, session),
+        config_resolver=functools.partial(resolve_active_configuration, session, channel=CHANNEL),
     )
+
+
+def build_default_orchestrator(
+    session: Session,
+    settings: Settings | None = None,
+    *,
+    audit: AuditSink | None = None,
+    tracer: Tracer | None = None,
+    prompt_builder: PromptBuilder = build_system_prompt,
+) -> Orchestrator:
+    # Local import: keeps this the one place email_channel knows sms_channel exists.
+    from app.agents.sms_channel import build_default_sms_agent
+
+    orchestrator = Orchestrator()
+    orchestrator.register(
+        build_default_agent(
+            session, settings, audit=audit, tracer=tracer, prompt_builder=prompt_builder
+        )
+    )
+    orchestrator.register(build_default_sms_agent(session, settings, audit=audit, tracer=tracer))
+    return orchestrator

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.audit.log import record_audit
+from app.db.models.campaigns import ContactEvent
 from app.db.models.models import Clients, PiiVault
 from app.db.models.suppression import Suppression
 from app.db.session import restricted_session
@@ -15,6 +16,13 @@ from app.db.session import restricted_session
 
 class ClientNotFound(Exception):
     """No clients row exists for the given client_code."""
+
+
+SMS_STOP_WORDS = frozenset({"stop", "unsubscribe", "cancel", "end", "quit"})
+
+
+def is_sms_stop_word(body: str) -> bool:
+    return body.strip().strip(".!").lower() in SMS_STOP_WORDS
 
 
 @dataclass(frozen=True)
@@ -118,3 +126,14 @@ def record_suppression(
         return SuppressionRecord(
             client_id=row.client_id, reason=row.reason, source=row.source, created_at=row.created_at
         )
+
+
+def record_sms_reply(
+    session: Session, *, client_id: int, body: str, source: str | None = None
+) -> SuppressionRecord | None:
+    # Same signal an email reply feeds the gate: a reply pauses this client's enrollments.
+    session.add(ContactEvent(client_id=client_id, type="reply", occurred_at=datetime.now(UTC)))
+    session.commit()
+    if not is_sms_stop_word(body):
+        return None
+    return record_suppression(client_id=client_id, reason="sms_stop_word", source=source)

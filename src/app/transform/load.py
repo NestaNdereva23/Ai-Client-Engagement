@@ -15,6 +15,7 @@ from app.db.models.models import (
     ClientFund,
     Clients,
     Funds,
+    IngestionReject,
     IngestionStatus,
     PiiVault,
     Transactions,
@@ -120,6 +121,8 @@ class PersistCounts:
     transactions: int = 0
     vault: int = 0
     features: int = 0
+    phone_missing: int = 0
+    phone_rejected: int = 0
 
 
 def _fund_dict(f: FundRow) -> dict[str, Any]:
@@ -214,12 +217,27 @@ def _log_reconciliation(result: FlattenResult, by_client: dict[int, list[ClientR
             )
 
 
-def _vault_dict(c: ClientRow, source: str | None) -> dict[str, Any]:
+def normalize_phone(raw: str | None) -> str | None:
+    # One agreed format: +254 followed by 9 digits. Anything else is unusable.
+    if not raw:
+        return None
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if digits.startswith("0"):
+        digits = "254" + digits[1:]
+    elif len(digits) == 9:
+        digits = "254" + digits
+    if len(digits) == 12 and digits.startswith("254"):
+        return "+" + digits
+    return None
+
+
+def _vault_dict(c: ClientRow, source: str | None, phone: str | None) -> dict[str, Any]:
     return {
         "client_id": c.client_id,
         "client_name": c.client_name,
         "contact_email": c.client_email,
         "contact_whatsapp": c.client_phone,
+        "contact_phone": phone,
         "source": source,
     }
 
@@ -299,6 +317,7 @@ def upsert_vault(session: Session, rows: list[dict[str, Any]]) -> int:
                 "contact_whatsapp": func.coalesce(
                     stmt.excluded.contact_whatsapp, PiiVault.contact_whatsapp
                 ),
+                "contact_phone": func.coalesce(stmt.excluded.contact_phone, PiiVault.contact_phone),
                 "source": stmt.excluded.source,
                 "updated_at": func.now(),
             },
@@ -312,7 +331,7 @@ def upsert_vault(session: Session, rows: list[dict[str, Any]]) -> int:
 
 
 def persist_result(
-    session: Session, result: FlattenResult, source: str | None = None
+    session: Session, result: FlattenResult, source: str | None = None, run_id: str | None = None
 ) -> PersistCounts:
     by_client = relationships_by_client(result)
     measures = derive_relationship_measures(result)
@@ -321,11 +340,29 @@ def persist_result(
     clients: list[dict[str, Any]] = []
     client_funds: list[dict[str, Any]] = []
     vault: list[dict[str, Any]] = []
+    phone_missing = 0
+    phone_rejected = 0
     for rows in by_client.values():
         ordered = largest_first(rows)
         primary = ordered[0]
         clients.append(_client_dict(primary, n_funds=len(ordered)))
-        vault.append(_vault_dict(primary, source))
+        phone = normalize_phone(primary.client_phone)
+        if not primary.client_phone:
+            phone_missing += 1
+        elif phone is None:
+            phone_rejected += 1
+            if run_id is not None:
+                session.add(
+                    IngestionReject(
+                        run_id=run_id,
+                        raw_fragment={
+                            "client_id": primary.client_id,
+                            "client_phone": primary.client_phone,
+                        },
+                        reason="invalid_phone_number",
+                    )
+                )
+        vault.append(_vault_dict(primary, source, phone))
         client_funds.extend(
             _client_fund_dict(
                 row, measures[(row.client_id, row.unit_fund_id)], is_primary=row is primary
@@ -346,7 +383,9 @@ def persist_result(
         features=len(features),
     )
 
-    counts = PersistCounts()
+    counts = PersistCounts(phone_missing=phone_missing, phone_rejected=phone_rejected)
+    if phone_missing or phone_rejected:
+        logger.info("transform_phone_quality", missing=phone_missing, invalid=phone_rejected)
     logger.info("persist_result.upserting", table="funds", rows=len(funds))
     counts.funds = upsert(
         session,
@@ -397,4 +436,4 @@ def transform_run(session: Session, run_id: str) -> PersistCounts:
     source = session.execute(
         select(IngestionStatus.endpoint).where(IngestionStatus.run_id == run_id)
     ).scalar_one_or_none()
-    return persist_result(session, result, source=source)
+    return persist_result(session, result, source=source, run_id=run_id)

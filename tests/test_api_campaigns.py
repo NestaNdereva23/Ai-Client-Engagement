@@ -20,7 +20,9 @@ from app.db.models.outreach import Campaign, OutreachMessage
 from app.db.models.template_generation_plan import TemplateGenerationPlan
 from app.db.session import SessionLocal, restricted_session
 from app.delivery import sender as sender_module
+from app.delivery import sms_sender as sms_sender_module
 from app.delivery.mailer import NullMailer
+from app.delivery.sms_gateway import RecordingSmsGateway
 from app.llmops.versions import persist_generation_run
 from app.main import app
 
@@ -581,6 +583,15 @@ def test_list_campaigns_carries_its_own_enrollment_counts(
     assert row["primary_count"] == 1
     assert row["suppressed_count"] == 1
     assert row["name"] == "test summary campaign"
+    assert row["default_channel"] == "email"
+
+
+def test_list_campaigns_filters_by_channel(campaign_with_a_suppressed_row) -> None:
+    campaign_id = campaign_with_a_suppressed_row
+    matched = client.get(CAMPAIGNS, params={"limit": 200, "channel": "email"})
+    unmatched = client.get(CAMPAIGNS, params={"limit": 200, "channel": "sms"})
+    assert campaign_id in {row["campaign_id"] for row in matched.json()["items"]}
+    assert campaign_id not in {row["campaign_id"] for row in unmatched.json()["items"]}
 
 
 def test_get_campaign_enrollments_returns_the_roster(
@@ -739,6 +750,67 @@ def test_create_campaign_422s_for_a_sequence_that_does_not_move_forward(cohort_c
         )
 
 
+def test_create_campaign_puts_an_email_touch_and_an_sms_touch_on_the_same_day(
+    cohort_clients,
+) -> None:
+    fund_id, _matching_a, _matching_b, _non_matching = cohort_clients
+    response = client.post(
+        CAMPAIGNS,
+        json={
+            "name": "cohort test campaign",
+            "cohort": {"fund_id": fund_id, "value_band": "High"},
+            "steps": [
+                {"offset_days": 0, "channel": "email"},
+                {"offset_days": 0, "channel": "sms"},
+            ],
+        },
+    )
+    assert response.status_code == 201
+    steps = response.json()["steps"]
+    assert [s["step_no"] for s in steps] == [1, 2]
+    assert [s["offset_days"] for s in steps] == [0, 0]
+    assert [s["channel"] for s in steps] == ["email", "sms"]
+
+
+def test_create_campaign_422s_for_the_same_channel_twice_on_one_day(cohort_clients) -> None:
+    fund_id, _matching_a, _matching_b, _non_matching = cohort_clients
+    response = client.post(
+        CAMPAIGNS,
+        json={
+            "name": "cohort test campaign",
+            "cohort": {"fund_id": fund_id, "value_band": "High"},
+            "steps": [{"offset_days": 0}, {"offset_days": 0}],
+        },
+    )
+    assert response.status_code == 422
+    with SessionLocal() as session:
+        assert (
+            session.scalars(
+                select(Campaign.campaign_id).where(Campaign.name == "cohort test campaign")
+            ).all()
+            == []
+        )
+
+
+def test_create_campaign_defaults_to_email_and_reads_back_as_email(cohort_clients) -> None:
+    fund_id, _matching_a, _matching_b, _non_matching = cohort_clients
+    response = client.post(
+        CAMPAIGNS,
+        json={
+            "name": "cohort test campaign",
+            "cohort": {"fund_id": fund_id, "value_band": "High"},
+            "steps": [{"offset_days": 0}],
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["default_channel"] == "email"
+    assert body["steps"][0]["channel"] is None
+
+    detail = client.get(f"{CAMPAIGNS}/{body['campaign_id']}")
+    assert detail.json()["default_channel"] == "email"
+
+
 def test_create_campaign_rejects_a_cohort_selected_by_angle(db: None) -> None:
     """The angle is resolved per client at draft time, so it cannot narrow a cohort."""
     response = client.post(
@@ -796,7 +868,7 @@ def test_post_campaign_step_assigns_sequential_step_numbers(bare_campaign: int) 
     assert second.json()["campaign_id"] == bare_campaign
 
 
-def test_post_campaign_step_422s_for_an_offset_equal_to_the_previous_step(
+def test_post_campaign_step_422s_for_the_same_channel_twice_on_the_same_day(
     bare_campaign: int,
 ) -> None:
     first = client.post(
@@ -811,9 +883,26 @@ def test_post_campaign_step_422s_for_an_offset_equal_to_the_previous_step(
     )
     assert second.status_code == 422
 
-    # rejected: it did not get appended
     steps = client.get(f"{CAMPAIGNS}/{bare_campaign}/steps").json()
     assert [s["step_no"] for s in steps] == [1]
+
+
+def test_post_campaign_step_allows_a_different_channel_on_the_same_day(
+    bare_campaign: int,
+) -> None:
+    first = client.post(
+        f"{CAMPAIGNS}/{bare_campaign}/steps",
+        json={"offset_days": 0, "channel": "email"},
+    )
+    assert first.status_code == 201
+
+    second = client.post(
+        f"{CAMPAIGNS}/{bare_campaign}/steps",
+        json={"offset_days": 0, "channel": "sms"},
+    )
+    assert second.status_code == 201
+    assert second.json()["step_no"] == 2
+    assert second.json()["offset_days"] == 0
 
 
 def test_post_campaign_step_422s_for_an_offset_smaller_than_the_previous_step(
@@ -876,11 +965,11 @@ def two_due_enrollments(db: None, monkeypatch):
 
     No steps means the gate skips every enrollment on no_next_step before
     generation is ever reached, so the batch size can be checked without a
-    model call; build_default_agent is stubbed so the endpoint does not need
-    a configured provider either.
+    model call; build_default_orchestrator is stubbed so the endpoint does
+    not need a configured provider either.
     """
     monkeypatch.setattr(
-        "app.api.routers.campaigns.build_default_agent", lambda session, **kwargs: None
+        "app.api.routers.campaigns.build_default_orchestrator", lambda session, **kwargs: None
     )
 
     fund_id = 97703
@@ -1108,3 +1197,120 @@ def test_send_is_a_no_op_the_second_time(
 def test_send_404s_for_an_unknown_campaign(db: None) -> None:
     response = client.post(f"{CAMPAIGNS}/9999999/send")
     assert response.status_code == 404
+
+
+@pytest.fixture
+def campaign_with_email_and_sms_approved_touches(db: None):
+    """One campaign, one email touch and one sms touch, both approved and unsent."""
+    fund_id = 97705
+    email_client_id = 97741
+    sms_client_id = 97742
+    with SessionLocal() as session:
+        campaign = Campaign(name="test mixed channel send campaign")
+        session.add(campaign)
+        session.add(Funds(unit_fund_id=fund_id, unit_fund_name="Test Fund"))
+        session.commit()
+        campaign_id = campaign.campaign_id
+
+        for client_id in (email_client_id, sms_client_id):
+            session.add(
+                Clients(
+                    client_id=client_id,
+                    unit_fund_id=fund_id,
+                    n_purchases_returned=0,
+                    n_sales_returned=0,
+                )
+            )
+        session.commit()
+
+    with restricted_session() as session:
+        session.add(
+            PiiVault(
+                client_id=email_client_id,
+                client_name="Email Client",
+                contact_email="test@example.com",
+            )
+        )
+        session.add(
+            PiiVault(
+                client_id=sms_client_id, client_name="SMS Client", contact_phone="+254712345678"
+            )
+        )
+        session.commit()
+
+    touch_ids = {}
+    run_ids = []
+    with SessionLocal() as session:
+        for client_id, channel, content in (
+            (email_client_id, "email", {"subject": "Subject", "body": "Body"}),
+            (sms_client_id, "sms", {"body": "Body"}),
+        ):
+            enrollment = Enrollment(campaign_id=campaign_id, client_id=client_id)
+            session.add(enrollment)
+            session.commit()
+
+            message_run = persist_generation_run(
+                session, accepted_state(client_id), make_settings()
+            )
+            run_ids.append(message_run.run_id)
+            message = OutreachMessage(
+                message_id=uuid4().hex,
+                campaign_id=campaign_id,
+                generation_run_id=message_run.run_id,
+                client_id=client_id,
+                channel=channel,
+                ai_draft_content=content,
+                personalized_content=content,
+                status="approved",
+            )
+            session.add(message)
+            session.commit()
+
+            touch = TouchLog(
+                enrollment_id=enrollment.enrollment_id, step_no=1, message_id=message.message_id
+            )
+            session.add(touch)
+            session.commit()
+            touch_ids[channel] = touch.touch_id
+
+    yield campaign_id, touch_ids
+
+    with SessionLocal() as session:
+        client_ids = [email_client_id, sms_client_id]
+        enrollment_ids = session.scalars(
+            select(Enrollment.enrollment_id).where(Enrollment.client_id.in_(client_ids))
+        ).all()
+        if enrollment_ids:
+            session.execute(delete(TouchLog).where(TouchLog.enrollment_id.in_(enrollment_ids)))
+        session.execute(delete(OutreachMessage).where(OutreachMessage.campaign_id == campaign_id))
+        session.execute(delete(Enrollment).where(Enrollment.client_id.in_(client_ids)))
+        session.execute(delete(GenerationRun).where(GenerationRun.run_id.in_(run_ids)))
+        session.execute(delete(Clients).where(Clients.client_id.in_(client_ids)))
+        session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
+        session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
+        session.commit()
+
+    with restricted_session() as session:
+        session.execute(
+            delete(PiiVault).where(PiiVault.client_id.in_([email_client_id, sms_client_id]))
+        )
+        session.commit()
+
+
+def test_send_routes_email_and_sms_touches_to_their_own_sender(
+    campaign_with_email_and_sms_approved_touches, monkeypatch
+) -> None:
+    mailer = NullMailer(sender="ace@example.com")
+    monkeypatch.setattr(sender_module, "get_mailer", lambda *args, **kwargs: mailer)
+    gateway = RecordingSmsGateway(sender="ACE")
+    monkeypatch.setattr(sms_sender_module, "get_sms_gateway", lambda *args, **kwargs: gateway)
+
+    campaign_id, touch_ids = campaign_with_email_and_sms_approved_touches
+    response = client.post(f"{CAMPAIGNS}/{campaign_id}/send")
+
+    assert response.status_code == 200
+    outcomes = {o["touch_id"]: o for o in response.json()}
+    assert outcomes[touch_ids["email"]]["sent"] is True
+    assert outcomes[touch_ids["sms"]]["sent"] is True
+    assert [m.to for m in mailer.sent_messages] == ["test@example.com"]
+    assert [m.to for m in gateway.sent_messages] == ["+254712345678"]

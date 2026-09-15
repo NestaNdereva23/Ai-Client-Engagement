@@ -34,7 +34,8 @@ from sqlalchemy.orm import Session
 from app.agents.action_brief import proposal_prohibitions
 from app.agents.agent_loop import GroupDecision
 from app.agents.email_agent import build_system_prompt
-from app.agents.email_channel import build_default_agent
+from app.agents.email_channel import CHANNEL as EMAIL_CHANNEL
+from app.agents.email_channel import build_default_orchestrator
 from app.agents.events import NO_EVENTS, EventLog
 from app.agents.insight_members import resolve_insight_members
 from app.agents.insight_proposal import ACCEPTED, gate_members, save_insight_proposal
@@ -140,14 +141,16 @@ def draft_into_review_queue(
     cannot travel from the finding to an inbox.
     """
     settings = settings or get_settings()
-    agent = build_default_agent(
+    orchestrator = build_default_orchestrator(
         session,
         settings,
         prompt_builder=functools.partial(
             build_system_prompt, extra_prohibitions=tuple(prohibitions)
         ),
     )
-    generate = functools.partial(generate_for_enrollment, agent=agent, settings=settings)
+    generate = functools.partial(
+        generate_for_enrollment, orchestrator=orchestrator, channel=EMAIL_CHANNEL, settings=settings
+    )
     outcomes = run_due_enrollments(session, campaign_id=campaign_id, generate=generate, limit=limit)
     return sum(1 for outcome in outcomes if outcome.generated)
 

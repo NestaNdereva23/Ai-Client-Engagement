@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agents.email_agent import template_text
+from app.agents import email_agent, sms_agent
 from app.config import Settings
 from app.db.models.llmops import (
     Evaluation,
@@ -21,6 +21,8 @@ from app.privacy.llm_client import resolve_judge_model_config
 from app.schemas.evaluation import EvaluationScores
 
 EMAIL_CHANNEL = "email"
+
+_TEMPLATE_TEXT_BY_CHANNEL = {"email": email_agent.template_text, "sms": sms_agent.template_text}
 
 
 def _hash(text: str) -> str:
@@ -59,7 +61,8 @@ def get_or_create_prompt_version(
     prompt_variant: str,
     angle: str,
 ) -> PromptVersion:
-    text = template_text(prompt_variant or None)
+    render = _TEMPLATE_TEXT_BY_CHANNEL.get(channel, email_agent.template_text)
+    text = render(prompt_variant or None)
     template_hash = _hash(f"{channel}|{prompt_variant}|{angle}|{text}")
     existing = session.scalar(
         select(PromptVersion).where(PromptVersion.template_hash == template_hash)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.agents.email_channel import build_default_agent
+from app.agents.email_channel import build_default_orchestrator
 from app.api.reviewer_auth import get_current_reviewer_id
 from app.campaigns.generation import (
     MessageNotRegenerable,
@@ -54,6 +54,7 @@ def list_reviews(
     status: str = "pending_review",
     campaign_id: int | None = None,
     only_sampled: bool = True,
+    channel: str | None = None,
     order: ReviewOrder = "oldest_first",
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
@@ -65,6 +66,7 @@ def list_reviews(
             status=status,
             campaign_id=campaign_id,
             only_sampled=only_sampled,
+            channel=channel,
             order=order,
             cursor=cursor,
             limit=limit,
@@ -72,7 +74,7 @@ def list_reviews(
     except InvalidCursor:
         raise HTTPException(status_code=400, detail="invalid cursor") from None
     total_count = count_pending_messages(
-        session, status=status, campaign_id=campaign_id, only_sampled=only_sampled
+        session, status=status, campaign_id=campaign_id, only_sampled=only_sampled, channel=channel
     )
     return Page(
         items=[OutreachMessageSummary.model_validate(m) for m in messages],
@@ -195,10 +197,12 @@ def regenerate_review(
     message_id: str, session: Session = Depends(get_session)
 ) -> OutreachMessageDetail:
     tracer = get_shared_tracer()
-    agent = build_default_agent(session, audit=model_boundary_audit_sink(session), tracer=tracer)
+    orchestrator = build_default_orchestrator(
+        session, audit=model_boundary_audit_sink(session), tracer=tracer
+    )
     try:
         fresh = regenerate_message(
-            session, message_id, agent=agent, settings=get_settings(), tracer=tracer
+            session, message_id, orchestrator=orchestrator, settings=get_settings(), tracer=tracer
         )
         session.commit()
     except MessageNotFound:

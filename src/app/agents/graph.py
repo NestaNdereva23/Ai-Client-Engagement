@@ -36,6 +36,7 @@ from app.transform.flatten import latest_reference_date
 
 PromptBuilder = Callable[..., str]
 ConfigResolver = Callable[..., Any]
+DraftParser = Callable[..., Any]
 
 DEFAULT_MAX_ATTEMPTS = 2
 
@@ -110,6 +111,7 @@ class GenerationState(TypedDict, total=False):
     context: dict[str, Any]
     system_prompt: str
     draft: str | None
+    content: dict[str, Any]
     subject: str | None
     body: str | None
     raw_structured_output: dict[str, Any] | None
@@ -309,6 +311,7 @@ def build_generation_graph(
     llm_client: LLMClient,
     guardrail_checks: Sequence[GuardrailCheck] = DEFAULT_GUARDRAIL_CHECKS,
     prompt_builder: PromptBuilder = build_system_prompt,
+    draft_parser: DraftParser = parse_email_draft,
     config_resolver: ConfigResolver | None = None,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     audit: AuditSink | None = None,
@@ -468,7 +471,7 @@ def build_generation_graph(
         attempts = state.get("attempts", 0)
 
         try:
-            structured = parse_email_draft(
+            structured = draft_parser(
                 state.get("draft") or "",
                 state.get("facts"),
                 allowed_placeholders=state.get("allowed_placeholders"),
@@ -476,11 +479,8 @@ def build_generation_graph(
         except DraftValidationError as failure:
             return _retry_or_reject(attempts, "structured_output", str(failure))
 
-        updates: dict[str, Any] = {
-            "subject": structured.subject,
-            "body": structured.body,
-            "raw_structured_output": structured.model_dump(),
-        }
+        content = structured.model_dump()
+        updates: dict[str, Any] = {"content": content, "raw_structured_output": content, **content}
         check_state: GenerationState = {**state, **updates}
 
         for check in checks:

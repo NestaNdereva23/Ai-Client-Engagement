@@ -75,6 +75,24 @@ def test_campaign_carries_cohort_and_scheduling_columns(campaign: int) -> None:
         assert row.end_date == date(2026, 2, 1)
 
 
+def test_campaign_defaults_to_email_channel(campaign: int) -> None:
+    with SessionLocal() as session:
+        row = session.get(Campaign, campaign)
+        assert row.default_channel == "email"
+
+
+def test_campaign_step_channel_may_be_left_empty(campaign: int) -> None:
+    with SessionLocal() as session:
+        session.add(CampaignStep(campaign_id=campaign, step_no=1, offset_days=0))
+        session.commit()
+        step = session.scalar(
+            select(CampaignStep).where(
+                CampaignStep.campaign_id == campaign, CampaignStep.step_no == 1
+            )
+        )
+        assert step.channel is None
+
+
 def test_campaign_step_unique_per_campaign_and_step_no(campaign: int) -> None:
     with SessionLocal() as session:
         session.add(

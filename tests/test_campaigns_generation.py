@@ -19,8 +19,9 @@ from dataclasses import dataclass
 import pytest
 from sqlalchemy import delete, select
 
-from app.agents.email_channel import EmailAgent
+from app.agents.email_channel import CHANNEL, EmailAgent
 from app.agents.graph import ClientContext
+from app.agents.orchestrator import Orchestrator, UnknownChannel
 from app.campaigns.enrollment import enroll_cohort
 from app.campaigns.generation import (
     MessageNotRegenerable,
@@ -95,6 +96,27 @@ class ScriptedLLMClient:
 def make_agent(drafts: list[str]) -> EmailAgent:
     kwargs = {"max_attempts": 1} if len(drafts) == 1 else {}
     return EmailAgent(
+        context_loader=make_context_loader(),
+        llm_client=ScriptedLLMClient(drafts),
+        **kwargs,
+    )
+
+
+def make_orchestrator(agent: EmailAgent) -> Orchestrator:
+    orchestrator = Orchestrator()
+    orchestrator.register(agent)
+    return orchestrator
+
+
+def sms_draft_json(body: str = "") -> str:
+    return json.dumps({"body": body})
+
+
+def make_sms_agent(drafts: list[str]):
+    from app.agents.sms_channel import SmsAgent
+
+    kwargs = {"max_attempts": 1} if len(drafts) == 1 else {}
+    return SmsAgent(
         context_loader=make_context_loader(),
         llm_client=ScriptedLLMClient(drafts),
         **kwargs,
@@ -227,13 +249,44 @@ def test_generate_for_enrollment_creates_a_pending_review_message_on_acceptance(
     settings = make_settings()
 
     with SessionLocal() as session:
-        message = generate_for_enrollment(session, enrollment, 1, agent=agent, settings=settings)
+        message = generate_for_enrollment(
+            session,
+            enrollment,
+            1,
+            orchestrator=make_orchestrator(agent),
+            channel=CHANNEL,
+            settings=settings,
+        )
         session.commit()
 
     assert message is not None
     assert message.status == "pending_review"
     assert message.campaign_id == campaign
     assert message.client_id == client
+
+
+def test_generate_for_enrollment_on_sms_creates_a_message_with_no_subject(
+    campaign: int, client: int
+) -> None:
+    enrollment = Enrollment(campaign_id=campaign, client_id=client)
+    agent = make_sms_agent(
+        [sms_draft_json("Hi {{first_name}}, {{fund_name}} still fits your plan.")]
+    )
+    settings = make_settings()
+    orchestrator = Orchestrator()
+    orchestrator.register(agent)
+
+    with SessionLocal() as session:
+        message = generate_for_enrollment(
+            session, enrollment, 1, orchestrator=orchestrator, channel="sms", settings=settings
+        )
+        session.commit()
+
+    assert message is not None
+    assert message.channel == "sms"
+    assert message.status == "pending_review"
+    assert "subject" not in message.ai_draft_content
+    assert "subject" not in message.personalized_content
 
 
 def test_generate_for_enrollment_returns_none_and_still_persists_a_rejected_run(
@@ -245,7 +298,14 @@ def test_generate_for_enrollment_returns_none_and_still_persists_a_rejected_run(
     settings = make_settings()
 
     with SessionLocal() as session:
-        message = generate_for_enrollment(session, enrollment, 1, agent=agent, settings=settings)
+        message = generate_for_enrollment(
+            session,
+            enrollment,
+            1,
+            orchestrator=make_orchestrator(agent),
+            channel=CHANNEL,
+            settings=settings,
+        )
         session.commit()
 
     assert message is None
@@ -263,7 +323,14 @@ def test_regenerate_message_replaces_the_draft_and_keeps_the_campaign(
     settings = make_settings()
     with SessionLocal() as session:
         enrollment = Enrollment(campaign_id=campaign, client_id=client)
-        original = generate_for_enrollment(session, enrollment, 1, agent=agent, settings=settings)
+        original = generate_for_enrollment(
+            session,
+            enrollment,
+            1,
+            orchestrator=make_orchestrator(agent),
+            channel=CHANNEL,
+            settings=settings,
+        )
         session.commit()
         original_id = original.message_id
 
@@ -271,7 +338,9 @@ def test_regenerate_message_replaces_the_draft_and_keeps_the_campaign(
         [draft_json(body="Dear {{first_name}}, a completely different draft.")]
     )
     with SessionLocal() as session:
-        fresh = regenerate_message(session, original_id, agent=fresh_agent, settings=settings)
+        fresh = regenerate_message(
+            session, original_id, orchestrator=make_orchestrator(fresh_agent), settings=settings
+        )
         session.commit()
         fresh_id = fresh.message_id
 
@@ -291,14 +360,23 @@ def test_regenerate_message_refuses_an_already_decided_message(campaign: int, cl
     settings = make_settings()
     with SessionLocal() as session:
         enrollment = Enrollment(campaign_id=campaign, client_id=client)
-        message = generate_for_enrollment(session, enrollment, 1, agent=agent, settings=settings)
+        message = generate_for_enrollment(
+            session,
+            enrollment,
+            1,
+            orchestrator=make_orchestrator(agent),
+            channel=CHANNEL,
+            settings=settings,
+        )
         session.commit()
         message_id = message.message_id
         decide(session, message_id, outcome="approve", reviewer_id="fa-1")
         session.commit()
 
     with SessionLocal() as session, pytest.raises(MessageNotRegenerable) as excinfo:
-        regenerate_message(session, message_id, agent=agent, settings=settings)
+        regenerate_message(
+            session, message_id, orchestrator=make_orchestrator(agent), settings=settings
+        )
     assert excinfo.value.status == "approved"
 
 
@@ -309,14 +387,26 @@ def test_regenerate_message_leaves_the_original_untouched_when_the_fresh_attempt
     settings = make_settings()
     with SessionLocal() as session:
         enrollment = Enrollment(campaign_id=campaign, client_id=client)
-        message = generate_for_enrollment(session, enrollment, 1, agent=agent, settings=settings)
+        message = generate_for_enrollment(
+            session,
+            enrollment,
+            1,
+            orchestrator=make_orchestrator(agent),
+            channel=CHANNEL,
+            settings=settings,
+        )
         session.commit()
         message_id = message.message_id
 
     failing_agent = make_agent([draft_json(subject="Hi {{first_name}}", body="{{fund_name}}")])
     with SessionLocal() as session:
         with pytest.raises(RegenerationRejected):
-            regenerate_message(session, message_id, agent=failing_agent, settings=settings)
+            regenerate_message(
+                session,
+                message_id,
+                orchestrator=make_orchestrator(failing_agent),
+                settings=settings,
+            )
         session.rollback()
 
     with SessionLocal() as session:
@@ -338,7 +428,12 @@ def test_regenerate_message_repoints_the_touch_that_produced_it(campaign: int, c
         session.commit()
         enroll_cohort(session, campaign_id=campaign, client_ids=[client])
         session.commit()
-        run_campaign_generation(session, campaign, agent=agent, settings=settings)
+        run_campaign_generation(
+            session,
+            campaign,
+            orchestrator=make_orchestrator(agent),
+            settings=settings,
+        )
         session.commit()
         # Scoped to this test's own enrollment: "the one touch_log row in
         # the whole database" is not a safe assumption in a shared,
@@ -360,7 +455,9 @@ def test_regenerate_message_repoints_the_touch_that_produced_it(campaign: int, c
         [draft_json(body="Dear {{first_name}}, a regenerated campaign draft.")]
     )
     with SessionLocal() as session:
-        fresh = regenerate_message(session, original_id, agent=fresh_agent, settings=settings)
+        fresh = regenerate_message(
+            session, original_id, orchestrator=make_orchestrator(fresh_agent), settings=settings
+        )
         session.commit()
         fresh_id = fresh.message_id
 
@@ -379,7 +476,12 @@ def test_run_campaign_generation_generates_the_due_enrollment(campaign: int, cli
         session.commit()
         enroll_cohort(session, campaign_id=campaign, client_ids=[client])
         session.commit()
-        outcomes = run_campaign_generation(session, campaign, agent=agent, settings=settings)
+        outcomes = run_campaign_generation(
+            session,
+            campaign,
+            orchestrator=make_orchestrator(agent),
+            settings=settings,
+        )
         session.commit()
 
     assert len(outcomes) == 1
@@ -391,3 +493,54 @@ def test_run_campaign_generation_generates_the_due_enrollment(campaign: int, cli
         ).all()
     assert len(messages) == 1
     assert messages[0].status == "pending_review"
+    assert messages[0].channel == CHANNEL
+
+
+def test_generate_for_enrollment_stamps_the_message_channel(campaign: int, client: int) -> None:
+    enrollment = Enrollment(campaign_id=campaign, client_id=client)
+    agent = make_agent([draft_json(body="Dear {{first_name}}, we still have your seat.")])
+    settings = make_settings()
+
+    with SessionLocal() as session:
+        message = generate_for_enrollment(
+            session,
+            enrollment,
+            1,
+            orchestrator=make_orchestrator(agent),
+            channel=CHANNEL,
+            settings=settings,
+        )
+        session.commit()
+
+    assert message.channel == CHANNEL
+
+
+def test_generate_for_enrollment_raises_clearly_for_an_unregistered_channel(
+    campaign: int, client: int
+) -> None:
+    enrollment = Enrollment(campaign_id=campaign, client_id=client)
+    orchestrator = Orchestrator()
+    settings = make_settings()
+
+    with SessionLocal() as session, pytest.raises(UnknownChannel, match="sms"):
+        generate_for_enrollment(
+            session, enrollment, 1, orchestrator=orchestrator, channel="sms", settings=settings
+        )
+
+
+def test_generate_for_enrollment_resolves_the_channel_from_the_touch_when_none_is_given(
+    campaign: int, client: int
+) -> None:
+    enrollment = Enrollment(campaign_id=campaign, client_id=client)
+    agent = make_agent([draft_json(body="Dear {{first_name}}, we still have your seat.")])
+    settings = make_settings()
+
+    with SessionLocal() as session:
+        add_campaign_step(session, campaign, offset_days=0, message_angle="winback_habit")
+        session.commit()
+        message = generate_for_enrollment(
+            session, enrollment, 1, orchestrator=make_orchestrator(agent), settings=settings
+        )
+        session.commit()
+
+    assert message.channel == CHANNEL

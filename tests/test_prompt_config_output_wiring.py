@@ -17,7 +17,7 @@ from app.db.models.rag import RagSetting
 from app.db.models.rules import MessageAngleCatalog
 from app.db.session import SessionLocal
 from app.main import app
-from app.services.prompt_testing import generate_test_draft
+from app.services.prompt_testing import PromptTestingError, generate_test_draft
 from app.services.rag import get_rag_enabled, set_rag_enabled
 
 client = TestClient(app)
@@ -96,6 +96,51 @@ def test_default_sign_off_reaches_the_prompt_when_no_tier_is_pinned(voice_row: i
             llm_client=llm_client,
         )
         assert "Warm regards, Cytonn Client Success" in llm_client.last_system
+
+
+def test_generate_test_draft_with_sms_channel_uses_the_sms_prompt_and_parser(db: None) -> None:
+    with SessionLocal() as session:
+        llm_client = ScriptedLLMClient(
+            '{"body": "Hi {{first_name}}, {{fund_name}} is open again."}'
+        )
+        runs = generate_test_draft(
+            session,
+            angle=None,
+            tier=None,
+            angle_version=None,
+            tier_version=None,
+            voice_version=None,
+            safety_version=None,
+            output_version=None,
+            personalization_version=None,
+            fact_profile={"fund_name": "Cytonn Money Market Fund"},
+            settings=make_settings(),
+            llm_client=llm_client,
+            channel="sms",
+        )
+
+    assert '"subject"' not in llm_client.last_system
+    assert runs[0].status == "accepted"
+    assert runs[0].ai_draft_content == {"body": "Hi {{first_name}}, {{fund_name}} is open again."}
+
+
+def test_generate_test_draft_rejects_an_unknown_channel(db: None) -> None:
+    with SessionLocal() as session, pytest.raises(PromptTestingError, match="unknown channel"):
+        generate_test_draft(
+            session,
+            angle=None,
+            tier=None,
+            angle_version=None,
+            tier_version=None,
+            voice_version=None,
+            safety_version=None,
+            output_version=None,
+            personalization_version=None,
+            fact_profile={"fund_name": "Cytonn Money Market Fund"},
+            settings=make_settings(),
+            llm_client=ScriptedLLMClient("{}"),
+            channel="whatsapp",
+        )
 
 
 @pytest.fixture

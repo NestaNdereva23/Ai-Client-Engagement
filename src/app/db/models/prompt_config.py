@@ -40,13 +40,14 @@ class ActiveConfiguration(Base):
 class VoiceContract(Base):
     __tablename__ = "voice_contract"
     __table_args__ = (
-        UniqueConstraint("version", name="uq_voice_contract_version"),
+        UniqueConstraint("channel", "version", name="uq_voice_contract_channel_version"),
         CheckConstraint(
             "status IN ('draft', 'published', 'archived')", name="ck_voice_contract_status"
         ),
     )
 
     voice_contract_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    channel: Mapped[str] = mapped_column(Text, nullable=False, server_default="email", index=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="published")
     body_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -72,13 +73,14 @@ class VoiceContract(Base):
 class SafetyPolicy(Base):
     __tablename__ = "safety_policy"
     __table_args__ = (
-        UniqueConstraint("version", name="uq_safety_policy_version"),
+        UniqueConstraint("channel", "version", name="uq_safety_policy_channel_version"),
         CheckConstraint(
             "status IN ('draft', 'published', 'archived')", name="ck_safety_policy_status"
         ),
     )
 
     safety_policy_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    channel: Mapped[str] = mapped_column(Text, nullable=False, server_default="email", index=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="published")
     banned_words: Mapped[list | None] = mapped_column(JSONB, nullable=True)
@@ -98,13 +100,14 @@ class SafetyPolicy(Base):
 class OutputPolicy(Base):
     __tablename__ = "output_policy"
     __table_args__ = (
-        UniqueConstraint("version", name="uq_output_policy_version"),
+        UniqueConstraint("channel", "version", name="uq_output_policy_channel_version"),
         CheckConstraint(
             "status IN ('draft', 'published', 'archived')", name="ck_output_policy_status"
         ),
     )
 
     output_policy_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    channel: Mapped[str] = mapped_column(Text, nullable=False, server_default="email", index=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="published")
     output_schema_note: Mapped[str | None] = mapped_column(Text, nullable=True)

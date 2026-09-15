@@ -17,6 +17,7 @@ import pytest
 from sqlalchemy import delete, select
 
 from app.agents.email_agent import template_text
+from app.agents.sms_agent import template_text as sms_template_text
 from app.config import Settings
 from app.db.models.llmops import (
     Evaluation,
@@ -203,6 +204,19 @@ def test_get_or_create_prompt_version_registers_a_new_row_per_distinct_variant(d
     assert one.template_text == other.template_text
     assert one.prompt_variant == "back_on_schedule"
     assert other.prompt_variant == "pick_up_again"
+
+
+def test_get_or_create_prompt_version_renders_the_sms_template_for_the_sms_channel(
+    db: None,
+) -> None:
+    with SessionLocal() as session:
+        row = get_or_create_prompt_version(
+            session, channel="sms", prompt_variant="back_on_schedule", angle="back_on_schedule"
+        )
+        session.commit()
+
+    assert row.template_text == sms_template_text("back_on_schedule")
+    assert row.template_text != template_text("back_on_schedule")
 
 
 def test_persist_generation_run_stamps_and_stores_an_accepted_draft(client: int) -> None:

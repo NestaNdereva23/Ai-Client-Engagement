@@ -151,8 +151,14 @@ def _resolve_eligible_profile_keys(
     client_ids = [e.client_id for e in due]
     enrollment_ids = [e.enrollment_id for e in due]
 
-    existing_steps = set(
-        session.scalars(select(CampaignStep.step_no).where(CampaignStep.campaign_id == campaign_id))
+    steps_by_no = {
+        step.step_no: step
+        for step in session.scalars(
+            select(CampaignStep).where(CampaignStep.campaign_id == campaign_id)
+        )
+    }
+    default_channel = session.scalar(
+        select(Campaign.default_channel).where(Campaign.campaign_id == campaign_id)
     )
     features_by_client = {
         row.client_id: row
@@ -196,7 +202,7 @@ def _resolve_eligible_profile_keys(
     candidates: list[Enrollment] = []
     for enrollment in due:
         step_no = enrollment.current_step + 1
-        if step_no not in existing_steps:
+        if step_no not in steps_by_no:
             continue
         features = features_by_client.get(enrollment.client_id)
         if features is None or features.purchase_depth == "none":
@@ -243,7 +249,10 @@ def _resolve_eligible_profile_keys(
     resolved: list[tuple[Enrollment, ProfileKey]] = []
     for enrollment in candidates:
         client_id = enrollment.client_id
-        opted_out, has_contact = vault_signals.get(client_id, (False, False))
+        step = steps_by_no[enrollment.current_step + 1]
+        channel = step.channel or default_channel
+        opted_out, contact_email, contact_phone = vault_signals.get(client_id, (False, None, None))
+        has_contact = bool(contact_phone) if channel == "sms" else bool(contact_email)
         if opted_out:
             continue
         if not has_contact and settings.require_deliverable_contact:
@@ -265,7 +274,9 @@ def _resolve_eligible_profile_keys(
         features = features_by_client[client_id]
         indicator = indicators_by_client[client_id]
         primary = primary_fund_by_client.get(client_id)
-        resolved.append((enrollment, _profile_key_from_columns(features, indicator, primary)))
+        resolved.append(
+            (enrollment, _profile_key_from_columns(features, indicator, primary, channel))
+        )
 
     return resolved
 
@@ -274,6 +285,7 @@ def _profile_key_from_columns(
     features: ClientFeatures,
     indicator: ClientMessageIndicators,
     primary_fund: ClientFund | None,
+    channel: str,
 ) -> ProfileKey:
     has_facts = primary_fund is not None
     has_cadence = (
@@ -290,6 +302,7 @@ def _profile_key_from_columns(
         stale_contact=has_facts and bool(features.stale_contact),
         exit_reason_charge_settled=has_facts and features.exit_reason == "charge_settled",
         fund_name_known=has_facts and features.fund_type in FUND_DISPLAY_NAMES,
+        channel=channel,
     )
 
 
@@ -363,8 +376,10 @@ def _bulk_cooldown(session: Session, client_ids: Sequence[int], cooldown_days: i
     return set(rows)
 
 
-def _bulk_vault_signals(client_ids: Sequence[int]) -> dict[int, tuple[bool, bool]]:
-    """client_id -> (opted_out, has_deliverable_contact), one audited batch read."""
+def _bulk_vault_signals(
+    client_ids: Sequence[int],
+) -> dict[int, tuple[bool, str | None, str | None]]:
+    """client_id -> (opted_out, contact_email, contact_phone), one audited batch read."""
     if not client_ids:
         return {}
     with restricted_session() as session:
@@ -373,7 +388,7 @@ def _bulk_vault_signals(client_ids: Sequence[int]) -> dict[int, tuple[bool, bool
                 PiiVault.client_id,
                 PiiVault.opt_out_flag,
                 PiiVault.contact_email,
-                PiiVault.contact_whatsapp,
+                PiiVault.contact_phone,
             ).where(PiiVault.client_id.in_(client_ids))
         ).all()
         record_audit(
@@ -383,7 +398,4 @@ def _bulk_vault_signals(client_ids: Sequence[int]) -> dict[int, tuple[bool, bool
             detail={"count": len(client_ids), "purpose": "template_estimate"},
         )
         session.commit()
-    return {
-        row.client_id: (row.opt_out_flag, bool(row.contact_email or row.contact_whatsapp))
-        for row in rows
-    }
+    return {row.client_id: (row.opt_out_flag, row.contact_email, row.contact_phone) for row in rows}

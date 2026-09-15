@@ -19,6 +19,12 @@ MAX_SUBJECT_LENGTH = 100
 MIN_BODY_LENGTH = 20
 MAX_BODY_LENGTH = 2000
 
+# GSM-7: 160 chars in one segment, 153 per segment once a second is needed.
+SMS_SINGLE_PART_LENGTH = 160
+SMS_MULTI_PART_LENGTH = 153
+MAX_SMS_PARTS = 3
+MIN_SMS_BODY_LENGTH = 10
+
 # Any run of digits, with grouping or a decimal part, as it would be written
 # in a sentence. Trailing sentence punctuation is stripped off the match.
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
@@ -49,10 +55,16 @@ class GuardrailFailure(Exception):
         self.guardrail = guardrail
 
 
+def _content(state: Mapping[str, Any]) -> Mapping[str, Any]:
+    # Falls back to state itself for a check called by hand with a flat dict.
+    content = state.get("content")
+    return content if isinstance(content, Mapping) else state
+
+
 def default_grounding_check(state: Mapping[str, Any]) -> None:
-    """Every rate or return claim in the email body must trace to a retrieved chunk."""
+    """Every rate or return claim in the message body must trace to a retrieved chunk."""
     try:
-        enforce_grounding(state.get("body") or "", state.get("chunks", []))
+        enforce_grounding(_content(state).get("body") or "", state.get("chunks", []))
     except UngroundedClaim as exc:
         raise GuardrailFailure(str(exc), guardrail="grounding") from exc
 
@@ -92,7 +104,7 @@ def default_numeric_traceability_check(state: Mapping[str, Any]) -> None:
     This is what separates personalising from fabricating: a figure the model
     invented, or derived by combining two it was given, traces to neither.
     """
-    body = _PLACEHOLDER.sub(" ", state.get("body") or "")
+    body = _PLACEHOLDER.sub(" ", _content(state).get("body") or "")
     allowed = traceable_numbers(state.get("facts"), state.get("chunks", []))
     untraceable = sorted({number for number in _numbers_in(body) if number not in allowed})
     if untraceable:
@@ -107,15 +119,18 @@ def _word_count(text: str) -> int:
 
 
 def default_format_check(state: Mapping[str, Any]) -> None:
-    """The subject and body must fit a short win back email, not run on or off.
+    """The message must fit a short win back note, not run on or off.
 
     A message whose tier sets a word cap is held to that; one without falls
     back to the character bounds every draft shared before tiers existed.
+    The subject length check only fires for a channel whose content has a
+    subject at all.
     """
-    subject = state.get("subject") or ""
-    body = state.get("body") or ""
+    content = _content(state)
+    subject = content.get("subject")
+    body = content.get("body") or ""
 
-    if len(subject) > MAX_SUBJECT_LENGTH:
+    if subject is not None and len(subject) > MAX_SUBJECT_LENGTH:
         raise GuardrailFailure(
             f"subject is {len(subject)} characters, over the {MAX_SUBJECT_LENGTH} limit",
             guardrail="format_length",
@@ -143,14 +158,41 @@ def default_format_check(state: Mapping[str, Any]) -> None:
         )
 
 
+def sms_part_count(body: str) -> int:
+    # How many SMS segments a body would need to send, GSM-7 approximated.
+    length = len(body)
+    if length == 0:
+        return 0
+    if length <= SMS_SINGLE_PART_LENGTH:
+        return 1
+    return -(-length // SMS_MULTI_PART_LENGTH)
+
+
+def default_sms_length_check(state: Mapping[str, Any]) -> None:
+    # Same idea as default_format_check, but in SMS segments, not words.
+    body = _content(state).get("body") or ""
+    if len(body) < MIN_SMS_BODY_LENGTH:
+        raise GuardrailFailure(
+            f"body is {len(body)} characters, under the {MIN_SMS_BODY_LENGTH} minimum",
+            guardrail="format_length",
+        )
+    parts = sms_part_count(body)
+    if parts > MAX_SMS_PARTS:
+        raise GuardrailFailure(
+            f"body runs to {parts} SMS parts, over the {MAX_SMS_PARTS} allowed",
+            guardrail="format_length",
+        )
+
+
 def default_currency_check(state: Mapping[str, Any]) -> None:
-    """A draft's subject and body must never use $ or USD.
+    """A draft must never use $ or USD.
 
     Every client money figure the model is given is KES. There is no
     conversion anywhere in the request path, so a dollar sign or "USD"
     in the output is not a formatting choice, it is a wrong currency.
     """
-    text = f"{state.get('subject') or ''}\n{state.get('body') or ''}"
+    content = _content(state)
+    text = f"{content.get('subject') or ''}\n{content.get('body') or ''}"
     if _NON_KES_CURRENCY.search(text):
         raise GuardrailFailure(
             "draft used a non-KES currency ($ or USD); client money is KES only",
@@ -159,8 +201,9 @@ def default_currency_check(state: Mapping[str, Any]) -> None:
 
 
 def default_banned_words_check(state: Mapping[str, Any]) -> None:
-    """A draft's subject and body must never use a word from BANNED_WORDS."""
-    text = f"{state.get('subject') or ''}\n{state.get('body') or ''}"
+    """A draft must never use a word from BANNED_WORDS."""
+    content = _content(state)
+    text = f"{content.get('subject') or ''}\n{content.get('body') or ''}"
     hits = sorted({match.group(0).lower() for match in _BANNED_WORD_PATTERN.finditer(text)})
     if hits:
         raise GuardrailFailure(
@@ -174,7 +217,7 @@ def default_sign_off_check(state: Mapping[str, Any]) -> None:
     contract = state.get("contract")
     if contract is None:
         return
-    body = state.get("body") or ""
+    body = _content(state).get("body") or ""
     if contract.sign_off not in body:
         raise GuardrailFailure(
             f"body is missing the required sign off: {contract.sign_off!r}",
@@ -190,7 +233,7 @@ def default_rate_specificity_check(state: Mapping[str, Any]) -> None:
     citing it; a body that never raises the topic of returns, or one that
     already states a figure, is left alone.
     """
-    body = state.get("body") or ""
+    body = _content(state).get("body") or ""
     if _PERCENT.search(body):
         return
     if not _VAGUE_RETURN.search(body):
@@ -210,6 +253,16 @@ DEFAULT_GUARDRAIL_CHECKS: Sequence[Any] = (
     default_currency_check,
     default_banned_words_check,
     default_sign_off_check,
+    default_rate_specificity_check,
+)
+
+# Same checks as email, except the length rule, which is sms's own segment based one.
+SMS_GUARDRAIL_CHECKS: Sequence[Any] = (
+    default_grounding_check,
+    default_numeric_traceability_check,
+    default_sms_length_check,
+    default_currency_check,
+    default_banned_words_check,
     default_rate_specificity_check,
 )
 

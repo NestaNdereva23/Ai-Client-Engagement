@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.email_agent import render_call_brief
 from app.agents.email_channel import CALL_BRIEF_CHANNEL
+from app.agents.email_channel import CHANNEL as EMAIL_CHANNEL
 from app.agents.graph import load_client_facts
 from app.agents.guardrails import (
     GuardrailFailure,
@@ -226,7 +227,7 @@ def personalize_content(
     month_they_left: str | None = None,
     cadence_interval_days: str | None = None,
 ) -> dict:
-    """The subject/body pair with real values injected in place of placeholders."""
+    """Every field the draft actually has, with real values injected in place of placeholders."""
     kwargs = {
         "first_name": first_name,
         "fund_name": fund_name,
@@ -238,8 +239,7 @@ def personalize_content(
         "cadence_interval_days": cadence_interval_days,
     }
     return {
-        "subject": resolve_placeholders(ai_draft_content["subject"], **kwargs),
-        "body": resolve_placeholders(ai_draft_content["body"], **kwargs),
+        field: resolve_placeholders(value, **kwargs) for field, value in ai_draft_content.items()
     }
 
 
@@ -265,6 +265,7 @@ def create_outreach_message(
     run: GenerationRun,
     *,
     campaign_id: int,
+    channel: str = EMAIL_CHANNEL,
     call_brief: str | None = None,
     cohort_slot: CohortSlot | None = None,
 ) -> OutreachMessage:
@@ -299,6 +300,7 @@ def create_outreach_message(
         campaign_id=campaign_id,
         generation_run_id=run.run_id,
         client_id=run.client_id,
+        channel=channel,
         ai_draft_content=run.ai_draft_content,
         personalized_content=personalized,
         call_brief=call_brief,
@@ -460,7 +462,7 @@ def instantiate_message_for_template(
     )
 
     try:
-        check_no_unresolved_placeholders(personalized["subject"], personalized["body"])
+        check_no_unresolved_placeholders(personalized.get("subject", ""), personalized["body"])
         instance_numeric_traceability_check(
             template_body=template.ai_draft_content.get("body", ""),
             resolved_body=personalized["body"],
@@ -486,6 +488,7 @@ def instantiate_message_for_template(
         generation_run_id=template.generation_run_id,
         template_id=template.template_id,
         client_id=client_id,
+        channel=(template.profile_key or {}).get("channel", EMAIL_CHANNEL),
         ai_draft_content=template.ai_draft_content,
         personalized_content=personalized,
         call_brief=render_call_brief_for_instance(tier, brief, client_raw_facts),
@@ -505,7 +508,7 @@ def instantiate_message_for_template(
 
 
 def _pending_messages_filters(
-    *, status: str, campaign_id: int | None, only_sampled: bool
+    *, status: str, campaign_id: int | None, only_sampled: bool, channel: str | None = None
 ) -> list[Any]:
     """The where-clauses list_pending_messages and count_pending_messages
     both filter on -- kept in one place so a count can never drift from
@@ -514,6 +517,8 @@ def _pending_messages_filters(
     clauses: list[Any] = [OutreachMessage.status == status]
     if campaign_id is not None:
         clauses.append(OutreachMessage.campaign_id == campaign_id)
+    if channel is not None:
+        clauses.append(OutreachMessage.channel == channel)
     if only_sampled:
         clauses.append(
             or_(OutreachMessage.cohort_id.is_(None), OutreachMessage.is_sample.is_(True))
@@ -527,6 +532,7 @@ def list_pending_messages(
     status: str = "pending_review",
     campaign_id: int | None = None,
     only_sampled: bool = True,
+    channel: str | None = None,
     order: ReviewOrder = "oldest_first",
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
@@ -549,7 +555,7 @@ def list_pending_messages(
     """
     limit = clamp_limit(limit)
     filters = _pending_messages_filters(
-        status=status, campaign_id=campaign_id, only_sampled=only_sampled
+        status=status, campaign_id=campaign_id, only_sampled=only_sampled, channel=channel
     )
     query = select(OutreachMessage).where(*filters)
     key = tuple_(OutreachMessage.created_at, OutreachMessage.message_id)
@@ -579,6 +585,7 @@ def list_pending_messages_for_queue(
     *,
     campaign_id: int | None = None,
     only_sampled: bool = True,
+    channel: str | None = None,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> tuple[list[tuple[OutreachMessage, str | None]], str | None]:
@@ -594,7 +601,7 @@ def list_pending_messages_for_queue(
     """
     limit = clamp_limit(limit)
     filters = _pending_messages_filters(
-        status="pending_review", campaign_id=campaign_id, only_sampled=only_sampled
+        status="pending_review", campaign_id=campaign_id, only_sampled=only_sampled, channel=channel
     )
     tier_rank = case(
         {tier: rank for rank, tier in enumerate(_QUEUE_TIER_ORDER)},
@@ -633,6 +640,7 @@ def count_pending_messages(
     status: str = "pending_review",
     campaign_id: int | None = None,
     only_sampled: bool = True,
+    channel: str | None = None,
 ) -> int:
     """How many messages list_pending_messages' filters would return in
     total, across every page -- what a queue badge shows.
@@ -642,7 +650,7 @@ def count_pending_messages(
         .select_from(OutreachMessage)
         .where(
             *_pending_messages_filters(
-                status=status, campaign_id=campaign_id, only_sampled=only_sampled
+                status=status, campaign_id=campaign_id, only_sampled=only_sampled, channel=channel
             )
         )
     )

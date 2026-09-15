@@ -18,7 +18,7 @@ from app.db.models.models import (
     Transactions,
 )
 from app.db.session import SessionLocal
-from app.transform.load import transform_run
+from app.transform.load import normalize_phone, transform_run
 
 EAT = timezone(timedelta(hours=3))
 ANCHOR = datetime(2026, 7, 23, 9, 0, tzinfo=EAT)
@@ -535,3 +535,21 @@ def test_upsert_batches_to_stay_under_the_postgres_bind_param_limit(
 
 def _count(session, model, key_value: int, key_col) -> int:
     return session.scalar(select(func.count()).select_from(model).where(key_col == key_value)) or 0
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("0712345678", "+254712345678"),
+        ("712345678", "+254712345678"),
+        ("254712345678", "+254712345678"),
+        ("+254712345678", "+254712345678"),
+        ("0712 345 678", "+254712345678"),
+        (None, None),
+        ("", None),
+        ("12345", None),
+        ("not a number", None),
+    ],
+)
+def test_normalize_phone(raw: str | None, expected: str | None) -> None:
+    assert normalize_phone(raw) == expected

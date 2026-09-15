@@ -41,9 +41,10 @@ COMPONENTS: dict[str, ComponentSpec] = {
     "message_angle_catalog": ComponentSpec(MessageAngleCatalog, key_column="angle"),
     "tier_contract": ComponentSpec(TierContract, key_column="tier"),
     "business_rules": ComponentSpec(BusinessRule),
-    "voice_contract": ComponentSpec(VoiceContract),
-    "safety_policy": ComponentSpec(SafetyPolicy),
-    "output_policy": ComponentSpec(OutputPolicy),
+    # Keyed by channel: voice, safety and output rules may differ per channel.
+    "voice_contract": ComponentSpec(VoiceContract, key_column="channel"),
+    "safety_policy": ComponentSpec(SafetyPolicy, key_column="channel"),
+    "output_policy": ComponentSpec(OutputPolicy, key_column="channel"),
     "personalization_policy": ComponentSpec(PersonalizationPolicy),
 }
 

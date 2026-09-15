@@ -14,6 +14,7 @@ from app.db.models.models import (
     ClientFund,
     Clients,
     Funds,
+    IngestionReject,
     IngestionStatus,
     PiiVault,
     RawStaging,
@@ -29,7 +30,7 @@ ANCHOR = datetime(2026, 7, 23, 9, 0, tzinfo=EAT)
 
 # Restricted fields that must never leave pii_vault, matched against column
 # names and against persisted string values.
-PII_COLUMNS = {"client_name", "contact_email", "contact_whatsapp", "opt_out_flag"}
+PII_COLUMNS = {"client_name", "contact_email", "contact_whatsapp", "contact_phone", "opt_out_flag"}
 NON_VAULT_MODELS = [Funds, Clients, ClientFund, Transactions, ClientFeatures]
 
 
@@ -327,6 +328,7 @@ def test_client_email_and_phone_land_in_pii_vault(db: None, cleanup_runs: list[s
             vault = session.get(PiiVault, client_id)
             assert vault.contact_email == "wangari@example.com"
             assert vault.contact_whatsapp == "+254700000001"
+            assert vault.contact_phone == "+254700000001"
     finally:
         with SessionLocal() as session:
             session.execute(
@@ -369,6 +371,41 @@ def test_retransform_with_no_contact_keeps_previously_known_contact(
             vault = session.get(PiiVault, client_id)
             assert vault.contact_email == "first@example.com"
             assert vault.contact_whatsapp == "+254700000002"
+            assert vault.contact_phone == "+254700000002"
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                Transactions.__table__.delete().where(Transactions.client_id == client_id)
+            )
+            session.execute(
+                ClientFeatures.__table__.delete().where(ClientFeatures.client_id == client_id)
+            )
+            session.execute(ClientFund.__table__.delete().where(ClientFund.client_id == client_id))
+            session.execute(PiiVault.__table__.delete().where(PiiVault.client_id == client_id))
+            session.execute(Clients.__table__.delete().where(Clients.client_id == client_id))
+            session.execute(Funds.__table__.delete().where(Funds.unit_fund_id == fund_id))
+            session.commit()
+
+
+def test_an_unusable_phone_number_is_rejected_not_stored(db: None, cleanup_runs: list[str]) -> None:
+    from app.transform.load import transform_run
+
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    fund_id, client_id = 920, 92003
+    payload = _client_payload(fund_id, client_id, client_email=None, client_phone="12345")
+
+    try:
+        with SessionLocal() as session:
+            _seed_run(session, run_id, payload)
+            counts = transform_run(session, run_id)
+
+        assert counts.phone_rejected == 1
+        with SessionLocal() as session:
+            vault = session.get(PiiVault, client_id)
+            assert vault.contact_phone is None
+            reject = session.scalar(select(IngestionReject).where(IngestionReject.run_id == run_id))
+            assert reject.reason == "invalid_phone_number"
     finally:
         with SessionLocal() as session:
             session.execute(

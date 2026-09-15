@@ -126,6 +126,7 @@ class ProfileKeyOut(BaseModel):
     stale_contact: bool
     exit_reason_charge_settled: bool
     fund_name_known: bool
+    channel: str = "email"
 
 
 class BucketEstimateOut(BaseModel):

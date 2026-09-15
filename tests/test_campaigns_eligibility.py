@@ -63,6 +63,34 @@ def campaign_with_step(db: None):
 
 
 @pytest.fixture
+def campaign_with_sms_step(db: None):
+    with SessionLocal() as session:
+        campaign = Campaign(name="test sms eligibility campaign", default_channel="sms")
+        session.add(campaign)
+        session.commit()
+        campaign_id = campaign.campaign_id
+        session.add(
+            CampaignStep(
+                campaign_id=campaign_id, step_no=1, offset_days=0, message_angle="winback_habit"
+            )
+        )
+        session.commit()
+
+    yield campaign_id
+
+    with SessionLocal() as session:
+        session.execute(
+            delete(AuditLog).where(
+                AuditLog.entity_type == "enrollment", AuditLog.action == "gate_skip"
+            )
+        )
+        session.execute(delete(Enrollment).where(Enrollment.campaign_id == campaign_id))
+        session.execute(delete(CampaignStep).where(CampaignStep.campaign_id == campaign_id))
+        session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
+        session.commit()
+
+
+@pytest.fixture
 def fund(db: None):
     with SessionLocal() as session:
         session.add(Funds(unit_fund_id=_FUND_ID, unit_fund_name="Test Fund"))
@@ -75,7 +103,13 @@ def fund(db: None):
         session.commit()
 
 
-def _make_client(session, client_id: int, *, contact_email: str | None = "a@example.com") -> None:
+def _make_client(
+    session,
+    client_id: int,
+    *,
+    contact_email: str | None = "a@example.com",
+    contact_phone: str | None = None,
+) -> None:
     session.add(
         Clients(
             client_id=client_id,
@@ -85,7 +119,12 @@ def _make_client(session, client_id: int, *, contact_email: str | None = "a@exam
         )
     )
     session.add(
-        PiiVault(client_id=client_id, client_name="Test Client", contact_email=contact_email)
+        PiiVault(
+            client_id=client_id,
+            client_name="Test Client",
+            contact_email=contact_email,
+            contact_phone=contact_phone,
+        )
     )
 
 
@@ -209,6 +248,29 @@ def test_a_suppressed_client_mid_sequence_lands_on_the_bounce_or_optout_state(
     _cleanup_client(client_id)
 
 
+def test_a_suppressed_client_is_also_blocked_on_the_sms_channel(
+    campaign_with_sms_step: int, fund: int
+) -> None:
+    # The suppression list covers every channel, not just the one that triggered it.
+    client_id = 99514
+    with SessionLocal() as session:
+        _make_client(session, client_id, contact_phone="+254700000098")
+        session.add(Suppression(client_id=client_id, reason="unsubscribe"))
+        session.commit()
+        enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_sms_step, client_id=client_id
+        )
+
+        result = check_eligibility(session, enrollment)
+        session.commit()
+        enrollment_id = enrollment.enrollment_id
+
+    assert result.reason == "suppressed"
+    with SessionLocal() as session:
+        assert session.get(Enrollment, enrollment_id).status == "excluded"
+    _cleanup_client(client_id)
+
+
 def test_an_opted_out_client_is_skipped_and_stopped(campaign_with_step: int, fund: int) -> None:
     client_id = 99504
     with SessionLocal() as session:
@@ -296,6 +358,52 @@ def test_the_deliverable_contact_gate_can_be_bypassed_for_local_testing(
     _cleanup_client(client_id)
 
 
+def test_an_sms_touch_with_no_phone_number_is_skipped_and_excluded(
+    monkeypatch, campaign_with_sms_step: int, fund: int
+) -> None:
+    # An email on file is not enough; the due step's channel decides which field counts.
+    monkeypatch.setattr(
+        eligibility, "get_settings", lambda: Settings(require_deliverable_contact=True)
+    )
+    client_id = 99512
+    with SessionLocal() as session:
+        _make_client(session, client_id, contact_email="a@example.com", contact_phone=None)
+        session.commit()
+        enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_sms_step, client_id=client_id
+        )
+
+        result = check_eligibility(session, enrollment)
+        session.commit()
+        enrollment_id = enrollment.enrollment_id
+
+    assert result.reason == "no_deliverable_contact"
+    with SessionLocal() as session:
+        assert session.get(Enrollment, enrollment_id).status == "excluded"
+    _cleanup_client(client_id)
+
+
+def test_an_sms_touch_with_a_phone_number_is_eligible(
+    monkeypatch, campaign_with_sms_step: int, fund: int
+) -> None:
+    monkeypatch.setattr(
+        eligibility, "get_settings", lambda: Settings(require_deliverable_contact=True)
+    )
+    client_id = 99513
+    with SessionLocal() as session:
+        _make_client(session, client_id, contact_email=None, contact_phone="+254700000099")
+        session.commit()
+        enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_sms_step, client_id=client_id
+        )
+
+        result = check_eligibility(session, enrollment)
+        session.commit()
+
+    assert result.eligible is True
+    _cleanup_client(client_id)
+
+
 def test_a_client_within_the_cooldown_window_is_skipped_without_a_status_change(
     campaign_with_step: int, fund: int
 ) -> None:
@@ -332,6 +440,42 @@ def test_a_client_within_the_cooldown_window_is_skipped_without_a_status_change(
     with SessionLocal() as session:
         assert session.get(Enrollment, enrollment_id).status == "enrolled"
 
+    _cleanup_client(client_id)
+    with SessionLocal() as session:
+        session.execute(delete(Campaign).where(Campaign.campaign_id == other_campaign_id))
+        session.commit()
+
+
+def test_the_cooldown_counts_a_touch_sent_on_a_different_channel(
+    campaign_with_step: int, fund: int
+) -> None:
+    # The contact limit is per client, not per channel.
+    client_id = 99515
+    with SessionLocal() as session:
+        other_campaign = Campaign(name="other channel cooldown campaign", default_channel="sms")
+        session.add(other_campaign)
+        session.commit()
+        other_campaign_id = other_campaign.campaign_id
+
+        _make_client(session, client_id)
+        session.commit()
+        other_enrollment = _make_enrollment(
+            session, campaign_id=other_campaign_id, client_id=client_id
+        )
+        session.add(
+            TouchLog(
+                enrollment_id=other_enrollment.enrollment_id,
+                step_no=1,
+                sent_at=datetime.now(UTC) - timedelta(days=1),
+            )
+        )
+        session.commit()
+
+        enrollment = _make_enrollment(session, campaign_id=campaign_with_step, client_id=client_id)
+        result = check_eligibility(session, enrollment, cooldown_days=7)
+        session.commit()
+
+    assert result.reason == "cooldown"
     _cleanup_client(client_id)
     with SessionLocal() as session:
         session.execute(delete(Campaign).where(Campaign.campaign_id == other_campaign_id))

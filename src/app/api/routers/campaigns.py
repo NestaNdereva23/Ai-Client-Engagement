@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.agents.email_channel import build_default_agent
+from app.agents.email_channel import build_default_orchestrator
 from app.api.reviewer_auth import get_current_reviewer_id
 from app.campaigns.batch_generation import BatchNotFound
 from app.campaigns.estimation import DEFAULT_ESTIMATE_LIMIT, MAX_ESTIMATE_LIMIT
@@ -67,8 +67,9 @@ from app.schemas.templates import (
 )
 from app.services.campaigns import (
     CampaignNotFound,
+    DecreasingStepOffset,
+    DuplicateChannelSameDay,
     InstantiationBatchNotFound,
-    NonIncreasingStepOffset,
     add_campaign_step,
     campaign_readiness,
     campaign_summary,
@@ -119,6 +120,7 @@ def get_campaigns(
     purchase_depth: str | None = None,
     newly_dormant: bool | None = None,
     message_angle: str | None = None,
+    channel: str | None = None,
     session: Session = Depends(get_session),
 ) -> Page[CampaignListItemOut]:
     try:
@@ -133,6 +135,7 @@ def get_campaigns(
             purchase_depth=purchase_depth,
             newly_dormant=newly_dormant,
             message_angle=message_angle,
+            channel=channel,
         )
     except InvalidCursor:
         raise HTTPException(status_code=400, detail="invalid cursor") from None
@@ -143,6 +146,7 @@ def get_campaigns(
             campaign_type=r.campaign_type,
             status=r.status,
             cohort_definition=r.cohort_definition,
+            default_channel=r.default_channel,
             start_date=r.start_date,
             end_date=r.end_date,
             created_at=r.created_at,
@@ -163,6 +167,7 @@ def _step_out(step: CampaignStep) -> CampaignStepOut:
         offset_days=step.offset_days,
         message_angle=step.message_angle,
         template_ref=step.template_ref,
+        channel=step.channel,
     )
 
 
@@ -179,9 +184,13 @@ def post_campaign(
             steps=[step.model_dump() for step in body.steps],
             start_date=body.start_date,
             end_date=body.end_date,
+            default_channel=body.default_channel,
         )
         session.commit()
-    except NonIncreasingStepOffset as exc:
+    except DecreasingStepOffset as exc:
+        session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except DuplicateChannelSameDay as exc:
         session.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from None
     return CampaignCreateOut(
@@ -190,6 +199,7 @@ def post_campaign(
         campaign_type=campaign.campaign_type,
         status=campaign.status,
         cohort_definition=campaign.cohort_definition,
+        default_channel=campaign.default_channel,
         start_date=campaign.start_date,
         end_date=campaign.end_date,
         created_at=campaign.created_at,
@@ -314,6 +324,7 @@ def get_campaign_detail(
         campaign_type=campaign.campaign_type,
         status=campaign.status,
         cohort_definition=campaign.cohort_definition,
+        default_channel=campaign.default_channel,
         start_date=campaign.start_date,
         end_date=campaign.end_date,
         created_at=campaign.created_at,
@@ -384,6 +395,7 @@ def get_campaign_generation_cost(
             total_cost_usd=estimate.templates.total_cost_usd,
             total_cost_kes=estimate.templates.total_cost_kes,
         ),
+        actual_sms_cost_kes=estimate.actual_sms_cost_kes,
         as_of=estimate.as_of,
     )
 
@@ -456,12 +468,16 @@ def post_campaign_step(
             offset_days=body.offset_days,
             message_angle=body.message_angle,
             template_ref=body.template_ref,
+            channel=body.channel,
         )
         session.commit()
     except CampaignNotFound:
         session.rollback()
         raise HTTPException(status_code=404, detail="campaign not found") from None
-    except NonIncreasingStepOffset as exc:
+    except DecreasingStepOffset as exc:
+        session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except DuplicateChannelSameDay as exc:
         session.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from None
     return _step_out(step)
@@ -474,12 +490,14 @@ def post_campaign_generate(
     session: Session = Depends(get_session),
 ) -> list[TouchOutcomeOut]:
     tracer = get_shared_tracer()
-    agent = build_default_agent(session, audit=model_boundary_audit_sink(session), tracer=tracer)
+    orchestrator = build_default_orchestrator(
+        session, audit=model_boundary_audit_sink(session), tracer=tracer
+    )
     try:
         outcomes = run_campaign_generation(
             session,
             campaign_id,
-            agent=agent,
+            orchestrator=orchestrator,
             settings=get_settings(),
             tracer=tracer,
             limit=limit,

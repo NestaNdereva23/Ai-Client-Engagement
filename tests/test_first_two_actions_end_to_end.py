@@ -24,6 +24,7 @@ from app.agents.guardrails import (
     default_sign_off_check,
     traceable_numbers,
 )
+from app.agents.orchestrator import Orchestrator
 from app.agents.permissions import effective_permission
 from app.agents.proposal_state import transition_proposal
 from app.agents.watchlist import FEES_WILL_EMPTY
@@ -249,11 +250,18 @@ def _drafter(model: ScriptedModel):
             llm_client=model,
             max_attempts=1,
         )
+        orchestrator = Orchestrator()
+        orchestrator.register(agent)
         outcomes = run_due_enrollments(
             session,
             campaign_id=campaign_id,
             generate=lambda inner, enrollment, step_no: generate_for_enrollment(
-                inner, enrollment, step_no, agent=agent, settings=settings
+                inner,
+                enrollment,
+                step_no,
+                orchestrator=orchestrator,
+                channel=agent.channel,
+                settings=settings,
             ),
         )
         return sum(1 for outcome in outcomes if outcome.generated)
