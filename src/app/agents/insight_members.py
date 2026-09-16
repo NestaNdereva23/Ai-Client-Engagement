@@ -21,6 +21,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from app.agents.query_fields import FilterRefused, compile_conditions
+from app.agents.situations import SITUATION_CODES
 from app.agents.watchlist import (
     GROUP_NAMES,
     GroupMember,
@@ -34,6 +35,7 @@ from app.db.models.risk import ClientRiskFeatures
 
 FROM_WATCH_LIST = "watch_list_group"
 FROM_FILTER = "stored_filter"
+FROM_SITUATION = "situation_state"
 
 CONDITIONS_KEY = "conditions"
 
@@ -62,6 +64,8 @@ def resolve_insight_members(
     """The client funds one finding covers, or a plain reason there are none."""
     if insight.group_name in GROUP_NAMES:
         return _from_watch_list(session, insight, as_of)
+    if insight.group_name in SITUATION_CODES:
+        return _from_situation(session, insight)
     return _from_filter(session, insight)
 
 
@@ -82,6 +86,36 @@ def _from_watch_list(session: Session, insight: AgentInsight, as_of: date) -> Re
             refusal=f"'{insight.group_name}' is not one of today's groups",
         )
     return ResolvedMembers(members=group.members, source=FROM_WATCH_LIST)
+
+
+def _from_situation(session: Session, insight: AgentInsight) -> ResolvedMembers:
+    from app.db.models.signals import ClientSituationState
+
+    rows = session.execute(
+        select(
+            ClientSituationState.client_id,
+            ClientSituationState.unit_fund_id,
+            ActiveClientFund.balance,
+        )
+        .outerjoin(
+            ActiveClientFund,
+            and_(
+                ClientSituationState.client_id == ActiveClientFund.client_id,
+                ClientSituationState.unit_fund_id == ActiveClientFund.unit_fund_id,
+            ),
+        )
+        .where(
+            ClientSituationState.situation_code == insight.group_name,
+            ClientSituationState.is_active.is_(True),
+        )
+        .order_by(ClientSituationState.client_id, ClientSituationState.unit_fund_id)
+    ).all()
+
+    members = tuple(
+        GroupMember(client_id=client_id, unit_fund_id=unit_fund_id, balance=float(balance or 0.0))
+        for client_id, unit_fund_id, balance in rows
+    )
+    return ResolvedMembers(members=members, source=FROM_SITUATION)
 
 
 def _from_filter(session: Session, insight: AgentInsight) -> ResolvedMembers:

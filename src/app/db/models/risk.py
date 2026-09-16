@@ -41,6 +41,11 @@ class RiskConfigVersion(Base):
     """
 
     __tablename__ = "risk_config_version"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft', 'published', 'archived')", name="ck_risk_config_version_status"
+        ),
+    )
 
     config_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, unique=True, index=True)
@@ -57,8 +62,12 @@ class RiskConfigVersion(Base):
     # falling back to an "and N more" line. A rendering knob, not a signal
     # threshold, so it lives here rather than in the thresholds dict.
     digest_cap_per_group: Mapped[int] = mapped_column(Integer, nullable=False)
-    valid_from: Mapped[date] = mapped_column(Date, nullable=False)
+    valid_from: Mapped[date | None] = mapped_column(Date, nullable=True)
     valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="published")
+    created_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

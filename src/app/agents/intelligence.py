@@ -27,7 +27,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy.orm import Session
 
-from app.agents.agent_loop import start_agent_run
+from app.agents.agent_loop import MissingPromptTemplate, start_agent_run
 from app.agents.events import NO_EVENTS, EventLog, RunEventLog
 from app.agents.group_questions import EVERYTHING_ELSE, question_for
 from app.agents.insight_tools import (
@@ -36,6 +36,7 @@ from app.agents.insight_tools import (
     insight_tool_specs,
     make_insight_tools,
 )
+from app.agents.prompt_versioning import INTELLIGENCE_INVESTIGATION, active_prompt
 from app.agents.query_fields import FIELD_NAMES, MEASURES
 from app.agents.query_tools import QUERY_TOOL_SPECS
 from app.agents.run_cost import run_cost_kes
@@ -121,6 +122,8 @@ class GatheredContext:
     briefs: tuple[GroupBrief, ...]
     past_findings: tuple[PastFinding, ...]
     waiting_on_a_person: int
+    prompt_template: str
+    prompt_version: int
 
 
 @dataclass(frozen=True)
@@ -225,11 +228,18 @@ def gather_context(session: Session, as_of: date) -> GatheredContext:
         for row in rows
     )
     waiting = sum(count_insights(session, state=state) for state in STATES_WAITING_ON_A_PERSON)
+    prompt_row = active_prompt(session, INTELLIGENCE_INVESTIGATION, as_of)
+    if prompt_row is None:
+        raise MissingPromptTemplate(
+            f"no published '{INTELLIGENCE_INVESTIGATION}' prompt as of {as_of}"
+        )
     return GatheredContext(
         as_of=as_of,
         briefs=tuple(briefs),
         past_findings=past_findings,
         waiting_on_a_person=waiting,
+        prompt_template=prompt_row.template,
+        prompt_version=prompt_row.version,
     )
 
 
@@ -277,40 +287,16 @@ def _size_lines(brief: GroupBrief, context: GatheredContext) -> str:
 
 
 def build_investigation_system_prompt(*, brief: GroupBrief, context: GatheredContext) -> str:
-    """The instructions for one group's investigation.
-
-    The question comes from one place and is handed over whole. Nothing
-    here offers a list of actions to pick from: the agent is asked to find
-    out whether there is anything worth a person's attention, and to say so
-    plainly either way.
-    """
-    return (
-        "You look for things worth acting on in a wealth manager's client book.\n"
-        f"Today is {context.as_of.isoformat()}.\n"
-        "You never send anything and you never propose a message. You write down "
-        "what you found, and a person decides what happens next.\n\n"
-        f"Tonight you are looking at one group: {brief.name}.\n"
-        f"The question to answer about it: {brief.question}\n\n"
-        f"{_size_lines(brief, context)}\n"
-        f"{_last_contact_line(brief)}\n\n"
-        f"What earlier runs already wrote down:\n{_past_findings_lines(context)}\n"
-        f"{context.waiting_on_a_person} of those findings are still waiting on a person, "
-        "so do not write the same thing again.\n\n"
-        "You may ask your own questions of the data with measure_slice, "
-        "compare_slices, distribution and trend. You send a filter, never SQL: a "
-        "list of conditions, each a field, an operator and a value.\n"
-        f"Fields you may filter on: {', '.join(FIELD_NAMES)}.\n"
-        f"Measures you may ask for: {', '.join(MEASURES)}.\n"
-        "Answers come back as counts and rounded money. You will never see a row, "
-        "a name, an exact balance or an exact date, and you must never ask for one.\n\n"
-        "When you have found something worth a person's attention, call "
-        "write_insight, then call add_fact for every number you want to stand "
-        "behind, each with the filter it came from. A finding may cover more than "
-        "this one group, and one group may be worth several findings or none.\n"
-        "If this group holds nothing worth raising, call dismiss_group and say why. "
-        "That is a real answer, not a failure.\n"
-        "When you are done, reply with one short line of plain text and no further "
-        "tool call."
+    return context.prompt_template.format(
+        as_of=context.as_of.isoformat(),
+        group_name=brief.name,
+        question=brief.question,
+        size_lines=_size_lines(brief, context),
+        last_contact_line=_last_contact_line(brief),
+        past_findings_lines=_past_findings_lines(context),
+        waiting_on_a_person=context.waiting_on_a_person,
+        field_names=", ".join(FIELD_NAMES),
+        measures=", ".join(MEASURES),
     )
 
 
@@ -683,6 +669,10 @@ def build_intelligence_graph(
         run_row = session.get(AgentRun, run_id)
         run_row.summary = summary
         run_row.cost_kes = cost
+        run_row.prompt_versions = {
+            **(run_row.prompt_versions or {}),
+            INTELLIGENCE_INVESTIGATION: state["context"].prompt_version,
+        }
         session.commit()
         logger.info(
             "intelligence.report",

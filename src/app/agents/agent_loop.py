@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.agents.action_catalog import selectable_actions
 from app.agents.events import NO_EVENTS, EventLog, RunEventLog
 from app.agents.permissions import effective_permission
+from app.agents.prompt_versioning import AGENT_LOOP_CHOOSE, AGENT_LOOP_PLAN, active_prompt
 from app.agents.propose import (
     DO_NOTHING_ACTION,
     group_evidence,
@@ -187,60 +188,42 @@ class AgentLoopState(TypedDict, total=False):
     output_tokens: int
 
 
-def build_plan_system_prompt(as_of: date) -> str:
-    """The instructions for the plan step: look around, then write in plain words."""
-    return (
-        "You help run outreach for a wealth manager, one night at a time.\n"
-        f"Today is {as_of.isoformat()}.\n"
-        "Use the tools you are given to look at tonight's groups of clients, "
-        "what has been sent to each group recently, and how much of today's "
-        "sending allowance is left.\n"
-        "You may only ever look at groups. Never ask for one client by name.\n"
-        "Once you have looked, write a short plan in plain, everyday words.\n"
-        "Say which groups matter tonight and which ones can be left alone, and why.\n"
-        "Do not choose an action yet, that comes later.\n"
-        "When you are ready, reply with only the plan, in a few short sentences, "
-        "and no further tool call."
-    )
+class MissingPromptTemplate(RuntimeError):
+    pass
+
+
+def build_plan_system_prompt(session: Session, as_of: date) -> tuple[str, int]:
+    row = active_prompt(session, AGENT_LOOP_PLAN, as_of)
+    if row is None:
+        raise MissingPromptTemplate(f"no published '{AGENT_LOOP_PLAN}' prompt as of {as_of}")
+    return row.template.format(as_of=as_of.isoformat()), row.version
 
 
 def build_choose_system_prompt(
+    session: Session,
     *,
     actions: Mapping[str, AgentActionCatalog],
     candidate_group_names: Sequence[str],
     plan_text: str,
     as_of: date,
-) -> str:
-    """The instructions for the choose step: pick from a fixed menu, or leave a
-    group alone, one choose_action call per group.
-    """
+) -> tuple[str, int]:
     menu = "\n".join(
         f"- {code}: {row.title}. Who it is for: {row.who}. "
         + (f"Uses the angle '{row.message_angle}'." if row.message_angle else "Sends nothing.")
         for code, row in sorted(actions.items())
     )
     groups = ", ".join(sorted(candidate_group_names))
-    return (
-        "You choose tonight's outreach action for a wealth manager, one group at a time.\n"
-        f"Today is {as_of.isoformat()}.\n"
-        f"Tonight's plan:\n{plan_text}\n\n"
-        f"These groups need a decision tonight: {groups}\n"
-        "You may call a tool to look closer at a group, or check the allowance "
-        "left, before you decide.\n"
-        "Choose only from this list of actions, written exactly as shown:\n"
-        f"{menu}\n\n"
-        f"Call {CHOOSE_ACTION_TOOL_NAME} once for every group listed above: either a "
-        "real action code, or 'do_nothing' to leave that group alone tonight.\n"
-        "Use the exact angle written above for the action you chose, or leave angle "
-        "out for an action that sends nothing.\n"
-        "If a call comes back with an error, read why and call it again for that "
-        "group with a corrected answer.\n"
-        "Never invent an action code or an angle that is not in the list above.\n"
-        "Write the reason in plain, everyday words that explain why this group "
-        "matters tonight.\n"
-        f"Once you have called {CHOOSE_ACTION_TOOL_NAME} for every group, reply with "
-        "a short line of plain text and no further tool call."
+    row = active_prompt(session, AGENT_LOOP_CHOOSE, as_of)
+    if row is None:
+        raise MissingPromptTemplate(f"no published '{AGENT_LOOP_CHOOSE}' prompt as of {as_of}")
+    prompt = row.template.format(
+        as_of=as_of.isoformat(),
+        plan_text=plan_text,
+        groups=groups,
+        menu=menu,
+        tool_name=CHOOSE_ACTION_TOOL_NAME,
     )
+    return prompt, row.version
 
 
 def build_choose_action_tool_spec(
@@ -424,7 +407,7 @@ def build_agent_loop_graph(
         return {"groups": groups, "actions": actions, "thresholds": thresholds}
 
     def plan(state: AgentLoopState, span: Any) -> dict[str, Any]:
-        system_prompt = build_plan_system_prompt(as_of)
+        system_prompt, prompt_version = build_plan_system_prompt(session, as_of)
         tally = ModelCallTally()
         call_tool = traced_tool_call(
             make_tool_executor(session, run_id, events=events),
@@ -477,6 +460,10 @@ def build_agent_loop_graph(
         )
         run_row = session.get(AgentRun, run_id)
         run_row.plan_text = plan_text
+        run_row.prompt_versions = {
+            **(run_row.prompt_versions or {}),
+            AGENT_LOOP_PLAN: prompt_version,
+        }
         session.commit()
         return {
             "plan_text": plan_text,
@@ -494,11 +481,13 @@ def build_agent_loop_graph(
         fell_back = False
         last_error: str | None = None
         attempts = 0
+        prompt_version: int | None = None
         tally = ModelCallTally()
 
         if candidate_names:
             fell_back = True
-            system_prompt = build_choose_system_prompt(
+            system_prompt, prompt_version = build_choose_system_prompt(
+                session,
                 actions=actions,
                 candidate_group_names=candidate_names,
                 plan_text=state["plan_text"],
@@ -593,6 +582,12 @@ def build_agent_loop_graph(
                 **tally.as_detail(),
             },
         )
+        if prompt_version is not None:
+            run_row = session.get(AgentRun, run_id)
+            run_row.prompt_versions = {
+                **(run_row.prompt_versions or {}),
+                AGENT_LOOP_CHOOSE: prompt_version,
+            }
         session.commit()
         events.record(
             RUN_STATUS,
@@ -688,6 +683,7 @@ def build_agent_loop_graph(
             if decision is None:
                 continue
 
+            money_total_kes = sum(member.balance for member in decision.included)
             proposal = AgentProposal(
                 run_id=run_id,
                 action_code=decision.action.action_code,
@@ -695,12 +691,18 @@ def build_agent_loop_graph(
                 group_name=group.name,
                 group_definition=dict(group.definition),
                 client_count=group.client_count,
-                money_total_kes=sum(member.balance for member in decision.included),
+                money_total_kes=money_total_kes,
                 evidence=group_evidence(group, state["thresholds"]),
                 reason=decision.reason,
                 angle=decision.action.message_angle,
                 content_mix=decision.action.content_mix,
-                permission_applied=effective_permission(session, decision.action.action_code),
+                response_kind=decision.action.response_kind,
+                permission_applied=effective_permission(
+                    session,
+                    decision.action.action_code,
+                    money_total_kes=money_total_kes,
+                    money_ceiling_kes=decision.action.money_ceiling_kes,
+                ),
                 skip_reason_counts=skip_reason_counts(decision.skip_reasons),
                 status="proposed",
             )

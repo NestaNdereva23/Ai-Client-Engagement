@@ -90,8 +90,9 @@ def _resolved_instructions(
     voice_text: str | None = None,
     safety_words: Sequence[str] | None = None,
     safety_phrases: Sequence[str] | None = None,
+    base_instructions: str | None = None,
 ) -> str:
-    core = voice_text if voice_text is not None else _BASE_INSTRUCTIONS_CORE
+    core = voice_text if voice_text is not None else base_instructions or _BASE_INSTRUCTIONS_CORE
     words = safety_words if safety_words is not None else BANNED_WORDS
     phrases = safety_phrases if safety_phrases is not None else ()
     return core + banned_words_clause(words) + banned_phrases_clause(phrases)
@@ -105,8 +106,9 @@ def template_text(
     voice_text: str | None = None,
     safety_words: Sequence[str] | None = None,
     safety_phrases: Sequence[str] | None = None,
+    base_instructions: str | None = None,
 ) -> str:
-    base = _resolved_instructions(voice_text, safety_words, safety_phrases)
+    base = _resolved_instructions(voice_text, safety_words, safety_phrases, base_instructions)
     return f"{base}\n\n{variant_guidance(prompt_variant, session=session, at=at)}"
 
 
@@ -125,9 +127,9 @@ def build_sms_system_prompt(
     campaign_prohibitions: Sequence[str] | None = None,
     output_rules: str | None = None,
     default_sign_off: str | None = None,
+    base_instructions: str | None = None,
 ) -> str:
-    # default_sign_off exists only for a uniform call signature; sms has no sign off.
-    sections = [_resolved_instructions(voice_text, safety_words, safety_phrases)]
+    sections = [_resolved_instructions(voice_text, safety_words, safety_phrases, base_instructions)]
 
     if output_rules is not None:
         sections.append(output_rules)

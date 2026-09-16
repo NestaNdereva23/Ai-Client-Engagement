@@ -49,7 +49,7 @@ def insight(db: None):
         row = AgentInsight(
             kind="risk",
             title="fees will empty a group of small accounts",
-            group_name="fees_will_empty",
+            group_name="fee_pressure_gone_quiet",
             group_definition={"months_until_empty_below": 6.0},
             client_count=2,
             money_total_kes=4_500.0,
@@ -68,7 +68,7 @@ def insight(db: None):
                     insight_id=insight_id,
                     fact_text="client funds the fee will empty soon",
                     fact_value="2",
-                    source_filter={"group_name": "fees_will_empty"},
+                    source_filter={"group_name": "fee_pressure_gone_quiet"},
                     source_table="active_client_fund",
                 ),
                 AgentInsightFact(
@@ -160,7 +160,7 @@ def test_get_insight_separates_facts_from_the_reading(insight: int) -> None:
     assert body["confidence_reason"]
     assert body["listed_client_count"] == 2
     assert [fact["fact_value"] for fact in body["facts"]] == ["2", "4500", "0"]
-    assert body["facts"][0]["source_filter"] == {"group_name": "fees_will_empty"}
+    assert body["facts"][0]["source_filter"] == {"group_name": "fee_pressure_gone_quiet"}
     assert body["facts"][0]["source_table"] == "active_client_fund"
 
 
@@ -225,7 +225,7 @@ def test_recount_runs_a_group_filter_again(insight: int) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["stored_value"] == "2"
-    assert body["group_name"] == "fees_will_empty"
+    assert body["group_name"] == "fee_pressure_gone_quiet"
     if body["can_recount"]:
         assert body["client_count"] is not None
     else:

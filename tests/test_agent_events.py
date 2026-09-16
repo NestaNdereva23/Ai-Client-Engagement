@@ -19,7 +19,7 @@ from app.agents import intelligence as intelligence_module
 from app.agents.events import NO_EVENTS, RunEventLog, stored_detail
 from app.agents.insight_state import transition_insight
 from app.agents.intelligence import run_intelligence_agent
-from app.agents.watchlist import FEES_WILL_EMPTY, VERY_SMALL_AND_QUIET, WatchlistThresholds
+from app.agents.watchlist import FEE_PRESSURE_GONE_QUIET, VERY_SMALL_AND_QUIET, WatchlistThresholds
 from app.db.async_session import dispose_async_engine
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.agent_event import (
@@ -303,8 +303,8 @@ def test_the_log_that_throws_events_away_accepts_anything() -> None:
 
 
 def test_a_detail_carrying_a_contact_channel_is_withheld() -> None:
-    kept = stored_detail(RUN_STATUS, {"group_name": FEES_WILL_EMPTY, "client_count": 4})
-    assert kept == {"group_name": FEES_WILL_EMPTY, "client_count": 4}
+    kept = stored_detail(RUN_STATUS, {"group_name": FEE_PRESSURE_GONE_QUIET, "client_count": 4})
+    assert kept == {"group_name": FEE_PRESSURE_GONE_QUIET, "client_count": 4}
 
     withheld = stored_detail(RUN_STATUS, {"note": "write to grace.wanjiru@example.com"})
     assert withheld == {"withheld": True}
@@ -312,8 +312,8 @@ def test_a_detail_carrying_a_contact_channel_is_withheld() -> None:
 
 async def test_a_finished_run_replays_from_the_event_table_alone(book: None) -> None:
     scripts = {
-        FEES_WILL_EMPTY: [
-            _calls(_write("The fee will empty these accounts", FEES_WILL_EMPTY)),
+        FEE_PRESSURE_GONE_QUIET: [
+            _calls(_write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET)),
             _final_answer("One finding written."),
         ],
         VERY_SMALL_AND_QUIET: [
@@ -338,7 +338,7 @@ async def test_a_finished_run_replays_from_the_event_table_alone(book: None) -> 
 
     created = [row for row in events if row.kind == INSIGHT_CREATED]
     assert len(created) == 1
-    assert created[0].detail["group_name"] == FEES_WILL_EMPTY
+    assert created[0].detail["group_name"] == FEE_PRESSURE_GONE_QUIET
 
     assert kinds.count(TOOL_STARTED) == kinds.count(TOOL_COMPLETED) == 2
     assert ERROR not in kinds
@@ -346,8 +346,8 @@ async def test_a_finished_run_replays_from_the_event_table_alone(book: None) -> 
 
 async def test_groups_worked_side_by_side_still_leave_one_clean_order(book: None) -> None:
     scripts = {
-        FEES_WILL_EMPTY: [
-            _calls(_write("The fee will empty these accounts", FEES_WILL_EMPTY)),
+        FEE_PRESSURE_GONE_QUIET: [
+            _calls(_write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET)),
             _final_answer("One finding written."),
         ],
         VERY_SMALL_AND_QUIET: [
@@ -411,8 +411,8 @@ async def test_a_run_can_be_asked_to_keep_no_events_at_all(book: None) -> None:
 async def test_a_person_dismissing_a_finding_joins_that_run_s_story(book: None) -> None:
     run_id = await _run(
         {
-            FEES_WILL_EMPTY: [
-                _calls(_write("The fee will empty these accounts", FEES_WILL_EMPTY)),
+            FEE_PRESSURE_GONE_QUIET: [
+                _calls(_write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET)),
                 _final_answer("One finding written."),
             ]
         },
@@ -455,8 +455,8 @@ def test_every_kind_the_agents_write_is_one_the_table_allows() -> None:
 async def test_events_from_a_run_carry_no_client_ids(book: None) -> None:
     run_id = await _run(
         {
-            FEES_WILL_EMPTY: [
-                _calls(_write("The fee will empty these accounts", FEES_WILL_EMPTY)),
+            FEE_PRESSURE_GONE_QUIET: [
+                _calls(_write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET)),
                 _final_answer("One finding written."),
             ]
         },

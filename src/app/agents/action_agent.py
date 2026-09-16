@@ -30,7 +30,7 @@ from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy.orm import Session
 
 from app.agents.action_catalog import selectable_actions
-from app.agents.agent_loop import GroupDecision, start_agent_run
+from app.agents.agent_loop import GroupDecision, MissingPromptTemplate, start_agent_run
 from app.agents.events import NO_EVENTS, EventLog, RunEventLog
 from app.agents.insight_members import ResolvedMembers, resolve_insight_members
 from app.agents.insight_proposal import (
@@ -40,6 +40,7 @@ from app.agents.insight_proposal import (
     gate_members,
     save_insight_proposal,
 )
+from app.agents.prompt_versioning import ACTION_AGENT_CHOOSE, active_prompt
 from app.agents.propose import (
     DO_NOTHING_ACTION,
     load_action_or_raise,
@@ -171,9 +172,12 @@ def _span_values(values: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def build_choose_system_prompt(
-    *, brief: InsightBrief, actions: Mapping[str, AgentActionCatalog], as_of: date
-) -> str:
-    """The instructions for the choose step: one finding, one response."""
+    session: Session,
+    *,
+    brief: InsightBrief,
+    actions: Mapping[str, AgentActionCatalog],
+    as_of: date,
+) -> tuple[str, int]:
     menu = "\n".join(
         f"- {code}: {row.title}. Who it is for: {row.who}. "
         + (
@@ -189,35 +193,25 @@ def build_choose_system_prompt(
         else "an amount that was not recorded"
     )
     avoid = brief.avoid_saying or "nothing in particular was named."
-    return (
-        "You decide how a wealth manager should answer one thing that was "
-        "found in the client book.\n"
-        f"Today is {as_of.isoformat()}.\n"
-        "A person has already read this finding and agreed it is worth acting on. "
-        "Your job is only to pick the response.\n\n"
-        f"What was found: {brief.title}\n"
-        f"The sort of finding: {brief.kind}\n"
-        f"Who it is about: {brief.group_name}, {brief.client_count} clients holding {money}\n"
-        f"Why it matters now: {brief.why_now}\n"
-        f"What the finding suggests: {brief.suggestion}\n"
-        f"How sure the finding is: {brief.confidence}, because {brief.confidence_reason}\n"
-        f"What a message about this must not claim: {avoid}\n\n"
-        "You may call a tool to look closer at the group, at what was proposed "
-        "for it before, or at how much of today's allowance is left, before you "
-        "decide. You may only ever look at groups. Never ask for one client by name.\n\n"
-        "Choose one response from this list, written exactly as shown:\n"
-        f"{menu}\n\n"
-        f"Record your decision by calling {CHOOSE_RESPONSE_TOOL_NAME} exactly once. "
-        "Use the exact angle written above for the response you chose, or leave "
-        "angle out for a response that sends nothing.\n"
-        "If the call comes back with an error, read why and call it again with a "
-        "corrected answer.\n"
-        "Never invent a response code or an angle that is not in the list above.\n"
-        "Write the reason in plain, everyday words that say why this response fits "
-        "this finding.\n"
-        f"Once you have called {CHOOSE_RESPONSE_TOOL_NAME}, reply with a short line "
-        "of plain text and no further tool call."
+    row = active_prompt(session, ACTION_AGENT_CHOOSE, as_of)
+    if row is None:
+        raise MissingPromptTemplate(f"no published '{ACTION_AGENT_CHOOSE}' prompt as of {as_of}")
+    prompt = row.template.format(
+        as_of=as_of.isoformat(),
+        title=brief.title,
+        kind=brief.kind,
+        group_name=brief.group_name,
+        client_count=brief.client_count,
+        money=money,
+        why_now=brief.why_now,
+        suggestion=brief.suggestion,
+        confidence=brief.confidence,
+        confidence_reason=brief.confidence_reason,
+        avoid=avoid,
+        menu=menu,
+        tool_name=CHOOSE_RESPONSE_TOOL_NAME,
     )
+    return prompt, row.version
 
 
 def build_choose_response_tool_spec(*, actions: Mapping[str, AgentActionCatalog]) -> ToolSpec:
@@ -403,7 +397,9 @@ def build_action_agent_graph(
         attempts = 0
         tally = ModelCallTally()
 
-        system_prompt = build_choose_system_prompt(brief=brief, actions=actions, as_of=as_of)
+        system_prompt, prompt_version = build_choose_system_prompt(
+            session, brief=brief, actions=actions, as_of=as_of
+        )
         tools = (*TOOL_SPECS, build_choose_response_tool_spec(actions=actions))
         converse = traced_converse(
             counting_converse(
@@ -482,6 +478,11 @@ def build_action_agent_graph(
                 **tally.as_detail(),
             },
         )
+        run_row = session.get(AgentRun, run_id)
+        run_row.prompt_versions = {
+            **(run_row.prompt_versions or {}),
+            ACTION_AGENT_CHOOSE: prompt_version,
+        }
         session.commit()
         events.record(
             RUN_STATUS,

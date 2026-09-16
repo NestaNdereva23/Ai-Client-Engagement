@@ -84,6 +84,10 @@ class AgentActionCatalog(Base):
             "'change_client_state', 'ask_a_person_first')",
             name="ck_agent_action_catalog_response_kind",
         ),
+        CheckConstraint(
+            "status IN ('draft', 'published', 'archived')",
+            name="ck_agent_action_catalog_status",
+        ),
     )
 
     catalog_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -109,8 +113,47 @@ class AgentActionCatalog(Base):
     money_ceiling_kes: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Stops one action without a release. Everything else in the version stays live.
     paused: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
-    valid_from: Mapped[date] = mapped_column(Date, nullable=False)
+    valid_from: Mapped[date | None] = mapped_column(Date, nullable=True)
     valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="published")
+    created_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class SituationActionMapping(Base):
+    __tablename__ = "situation_action_mapping"
+    __table_args__ = (
+        UniqueConstraint(
+            "version",
+            "situation",
+            "action_code",
+            name="uq_situation_action_mapping_version_situation_action",
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'published', 'archived')",
+            name="ck_situation_action_mapping_status",
+        ),
+    )
+
+    mapping_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    situation: Mapped[str] = mapped_column(Text, nullable=False)
+    action_code: Mapped[str] = mapped_column(Text, nullable=False)
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    angle: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_required: Mapped[str] = mapped_column(Text, nullable=False)
+    channel: Mapped[str] = mapped_column(Text, nullable=False)
+    priority: Mapped[str | None] = mapped_column(Text, nullable=True)
+    valid_from: Mapped[date | None] = mapped_column(Date, nullable=True)
+    valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="published")
+    created_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

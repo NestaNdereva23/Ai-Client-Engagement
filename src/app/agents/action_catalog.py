@@ -13,9 +13,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from app.db.models.agent import (
@@ -24,6 +24,7 @@ from app.db.models.agent import (
     RESPONSE_KINDS,
     AgentActionCatalog,
 )
+from app.rules import versioning
 
 _REQUIRED_FIELDS = ("action_code", "title", "who", "evidence_required")
 
@@ -112,7 +113,7 @@ def save_action_catalog_version(
     """
     validate_actions(actions)
 
-    if session.scalar(select(func.count()).where(AgentActionCatalog.version == version)):
+    if versioning.version_exists(session, "agent_action_catalog", version):
         raise ActionCatalogValidationError(
             f"version {version} already exists and may not be changed"
         )
@@ -122,11 +123,13 @@ def save_action_catalog_version(
             update(AgentActionCatalog)
             .where(
                 AgentActionCatalog.version < version,
+                AgentActionCatalog.status == "published",
                 AgentActionCatalog.valid_to.is_(None),
             )
             .values(valid_to=valid_from)
         )
 
+    published_at = datetime.now(UTC)
     session.add_all(
         AgentActionCatalog(
             version=version,
@@ -143,10 +146,18 @@ def save_action_catalog_version(
             paused=spec.paused,
             valid_from=valid_from,
             valid_to=valid_to,
+            status="published",
+            published_at=published_at,
         )
         for spec in actions
     )
     session.flush()
+
+    if valid_to is None:
+        versioning.record_published_version(
+            session, "agent_action_catalog", versioning.DEFAULT_COMPONENT_KEY, version
+        )
+
     return len(actions)
 
 

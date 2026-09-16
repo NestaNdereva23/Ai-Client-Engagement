@@ -19,7 +19,9 @@ from app.agents.action_catalog import (
     validate_actions,
 )
 from app.db.models.agent import AgentActionCatalog
+from app.db.models.prompt_config import ActiveConfiguration
 from app.db.session import SessionLocal
+from app.rules.versioning import DEFAULT_COMPONENT_KEY
 
 SEEDED_ACTIONS = (
     "welcome_and_top_up",
@@ -61,7 +63,8 @@ def _next_version(session) -> int:
 @pytest.fixture
 def catalog_versions():
     """Remove any versions a test writes and restore the valid_to values it
-    closed on the versions that were already there.
+    closed on the versions that were already there, plus the active
+    configuration pointer a publish through it moves.
     """
     versions: list[int] = []
     with SessionLocal() as session:
@@ -69,6 +72,12 @@ def catalog_versions():
             session.execute(
                 select(AgentActionCatalog.version, AgentActionCatalog.valid_to).distinct()
             ).all()
+        )
+        before_pointer = session.scalar(
+            select(ActiveConfiguration.active_version).where(
+                ActiveConfiguration.component_type == "agent_action_catalog",
+                ActiveConfiguration.component_key == DEFAULT_COMPONENT_KEY,
+            )
         )
 
     yield versions
@@ -82,6 +91,22 @@ def catalog_versions():
                 update(AgentActionCatalog)
                 .where(AgentActionCatalog.version == version)
                 .values(valid_to=valid_to)
+            )
+        if before_pointer is None:
+            session.execute(
+                delete(ActiveConfiguration).where(
+                    ActiveConfiguration.component_type == "agent_action_catalog",
+                    ActiveConfiguration.component_key == DEFAULT_COMPONENT_KEY,
+                )
+            )
+        else:
+            session.execute(
+                update(ActiveConfiguration)
+                .where(
+                    ActiveConfiguration.component_type == "agent_action_catalog",
+                    ActiveConfiguration.component_key == DEFAULT_COMPONENT_KEY,
+                )
+                .values(active_version=before_pointer)
             )
         session.commit()
 

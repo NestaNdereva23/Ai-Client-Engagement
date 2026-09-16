@@ -17,7 +17,7 @@ from sqlalchemy import delete, select
 from app.agents import insight_members as insight_members_module
 from app.agents.proposal_state import transition_proposal
 from app.agents.propose import ON_DO_NOT_CONTACT_LIST
-from app.agents.watchlist import FEES_WILL_EMPTY, WatchlistThresholds
+from app.agents.watchlist import FEE_PRESSURE_GONE_QUIET, WatchlistThresholds
 from app.agents.write_tools import (
     FLAG_FOR_ACCOUNT_MANAGER,
     RECORD_NO_ACTION,
@@ -36,7 +36,9 @@ from app.db.models.audit import AuditLog
 from app.db.models.campaigns import CampaignStep, Enrollment
 from app.db.models.models import ClientFeatures, Clients, Funds
 from app.db.models.outreach import Campaign
+from app.db.models.risk import ClientRiskFeatures
 from app.db.models.rules import ClientMessageIndicators
+from app.db.models.signals import ClientSituationState, SignalRun
 from app.db.models.suppression import Suppression
 from app.db.session import SessionLocal
 from app.digest.build import is_deprioritized, latest_interactions_for
@@ -46,6 +48,7 @@ ELIGIBLE_CLIENT = 974501
 SUPPRESSED_CLIENT = 974502
 
 AS_OF = date(2026, 9, 9)
+SIGNAL_RUN_ID = "write-tools-test-signal-run"
 
 RUN_ID = None
 
@@ -113,6 +116,11 @@ def _purge(session) -> None:
     session.execute(delete(ClientFeatures).where(ClientFeatures.client_id.in_(client_ids)))
     session.execute(delete(Clients).where(Clients.client_id.in_(client_ids)))
     session.execute(delete(Funds).where(Funds.unit_fund_id == FUND_ID))
+    session.execute(
+        delete(ClientSituationState).where(ClientSituationState.client_id.in_(client_ids))
+    )
+    session.execute(delete(ClientRiskFeatures).where(ClientRiskFeatures.client_id.in_(client_ids)))
+    session.execute(delete(SignalRun).where(SignalRun.run_id == SIGNAL_RUN_ID))
     session.commit()
 
 
@@ -174,6 +182,37 @@ def _seed_client(client_id: int) -> None:
                 months_until_empty=2.0,
             )
         )
+        session.add(
+            ClientRiskFeatures(
+                client_id=client_id,
+                unit_fund_id=FUND_ID,
+                sig_heavy_withdrawal=False,
+                sig_dormant=True,
+                sig_broken_pattern=False,
+                sig_shrinking=False,
+                sig_going_dormant=False,
+                sig_never_repeated=False,
+                risk_score=70,
+                risk_band="Watch",
+                risk_reasons="dormant",
+                fund_at_risk=1_000.0,
+                config_version=1,
+            )
+        )
+        if session.get(SignalRun, SIGNAL_RUN_ID) is None:
+            session.add(SignalRun(run_id=SIGNAL_RUN_ID, state="completed"))
+            session.flush()
+        session.add(
+            ClientSituationState(
+                client_id=client_id,
+                unit_fund_id=FUND_ID,
+                situation_code=FEE_PRESSURE_GONE_QUIET,
+                is_active=True,
+                signal_codes=["fee_pressure_close"],
+                since=AS_OF,
+                run_id=SIGNAL_RUN_ID,
+            )
+        )
         session.commit()
 
 
@@ -182,7 +221,7 @@ def _write_insight(*, state: str = "accepted") -> int:
         insight = AgentInsight(
             kind="risk",
             title=INSIGHT_TITLE,
-            group_name=FEES_WILL_EMPTY,
+            group_name=FEE_PRESSURE_GONE_QUIET,
             client_count=1,
             money_total_kes=200_000.0,
             confidence="high",
@@ -414,7 +453,7 @@ def test_record_no_action_keeps_the_group_the_count_and_the_reason() -> None:
         session.commit()
 
     assert result["status"] == "recorded"
-    assert result["group_name"] == FEES_WILL_EMPTY
+    assert result["group_name"] == FEE_PRESSURE_GONE_QUIET
     assert result["client_count"] == 1
 
     with SessionLocal() as session:

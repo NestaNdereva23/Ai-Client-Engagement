@@ -17,7 +17,15 @@ from datetime import date, timedelta
 from sqlalchemy import Select, func, select, tuple_
 from sqlalchemy.orm import Session
 
-from app.agents.situations import NEW_CLIENT_SINGLE_DEPOSIT
+from app.agents.situations import (
+    CONTRIBUTION_DECLINE,
+    FOLLOW_UP_OVERDUE,
+    HEALTHY_BANDS,
+    NEW_CLIENT_SINGLE_DEPOSIT,
+    RISK_ACTION_GAP,
+    SINGLE_FUND_HEALTHY,
+    SMALL_BALANCE_INACTIVE,
+)
 from app.config import get_settings
 from app.db.models.active_clients import ActiveClientFund, ActiveClientInteraction
 from app.db.models.digest import DigestLine, DigestRun
@@ -28,7 +36,8 @@ from app.risk.routing import route_direction
 from app.risk.store import load_active_config
 
 SIGNED_UP_RECENTLY = "signed_up_recently"
-FEES_WILL_EMPTY = "fees_will_empty"
+FEE_PRESSURE_GONE_QUIET = "fee_pressure_gone_quiet"
+FEE_PRESSURE_ACTIVE_CONTRIBUTOR = "fee_pressure_active_contributor"
 VERY_SMALL_AND_QUIET = "very_small_and_quiet"
 GETTING_SMALLER = "getting_smaller"
 HEALTHY_ONE_FUND = "healthy_one_fund"
@@ -37,7 +46,8 @@ MORE_URGENT_BUT_NOT_CALLED = "more_urgent_but_not_called"
 
 GROUP_NAMES = (
     SIGNED_UP_RECENTLY,
-    FEES_WILL_EMPTY,
+    FEE_PRESSURE_GONE_QUIET,
+    FEE_PRESSURE_ACTIVE_CONTRIBUTOR,
     VERY_SMALL_AND_QUIET,
     GETTING_SMALLER,
     HEALTHY_ONE_FUND,
@@ -45,7 +55,16 @@ GROUP_NAMES = (
     MORE_URGENT_BUT_NOT_CALLED,
 )
 
-HEALTHY_BANDS = ("None", "Low")
+GROUP_TO_SITUATION: dict[str, str] = {
+    SIGNED_UP_RECENTLY: NEW_CLIENT_SINGLE_DEPOSIT,
+    FEE_PRESSURE_GONE_QUIET: FEE_PRESSURE_GONE_QUIET,
+    FEE_PRESSURE_ACTIVE_CONTRIBUTOR: FEE_PRESSURE_ACTIVE_CONTRIBUTOR,
+    VERY_SMALL_AND_QUIET: SMALL_BALANCE_INACTIVE,
+    GETTING_SMALLER: CONTRIBUTION_DECLINE,
+    HEALTHY_ONE_FUND: SINGLE_FUND_HEALTHY,
+    WAITING_ON_A_CALL: FOLLOW_UP_OVERDUE,
+    MORE_URGENT_BUT_NOT_CALLED: RISK_ACTION_GAP,
+}
 
 CALL_LIST_ROUTE = "fa_call_priority"
 MORE_URGENT = "more_urgent"
@@ -149,10 +168,25 @@ def _build_group(session: Session, name: str, definition: dict, statement: Selec
     return WatchGroup(name=name, definition=definition, members=members)
 
 
-def signed_up_recently(
+def _signed_up_recently_legacy(
     session: Session, thresholds: WatchlistThresholds, as_of: date
 ) -> WatchGroup:
-    """Clients whose new_client_single_deposit situation is active."""
+    earliest = as_of - timedelta(days=thresholds.new_client_days)
+    statement = _client_funds().where(
+        ActiveClientFund.n_deposits == 1,
+        ActiveClientFund.first_deposit_date.is_not(None),
+        ActiveClientFund.first_deposit_date >= earliest,
+    )
+    definition = {
+        "situation_code": NEW_CLIENT_SINGLE_DEPOSIT,
+        "is_active": True,
+    }
+    return _build_group(session, SIGNED_UP_RECENTLY, definition, statement)
+
+
+def _signed_up_recently_from_situations(
+    session: Session, thresholds: WatchlistThresholds, as_of: date
+) -> WatchGroup:
     statement = (
         _client_funds()
         .join(
@@ -172,24 +206,59 @@ def signed_up_recently(
     return _build_group(session, SIGNED_UP_RECENTLY, definition, statement)
 
 
-def fees_will_empty(session: Session, thresholds: WatchlistThresholds, as_of: date) -> WatchGroup:
-    """Accounts with money left that the monthly fee will run down soon."""
-    statement = _client_funds().where(
-        ActiveClientFund.months_until_empty.is_not(None),
-        ActiveClientFund.months_until_empty < thresholds.months_until_empty,
-        ActiveClientFund.balance > 0,
-    )
-    definition = {
-        "months_until_empty_below": thresholds.months_until_empty,
-        "balance_above": 0,
-    }
-    return _build_group(session, FEES_WILL_EMPTY, definition, statement)
-
-
-def very_small_and_quiet(
+def signed_up_recently(
     session: Session, thresholds: WatchlistThresholds, as_of: date
 ) -> WatchGroup:
-    """Very small balances that have also stopped moving."""
+    """Clients whose new_client_single_deposit situation is active."""
+    if get_settings().signal_situation_source == "situations":
+        return _signed_up_recently_from_situations(session, thresholds, as_of)
+    return _signed_up_recently_legacy(session, thresholds, as_of)
+
+
+def _situation_statement(situation_code: str) -> Select:
+    return (
+        _client_funds()
+        .join(
+            ClientSituationState,
+            (ClientSituationState.client_id == ActiveClientFund.client_id)
+            & (ClientSituationState.unit_fund_id == ActiveClientFund.unit_fund_id),
+        )
+        .where(
+            ClientSituationState.situation_code == situation_code,
+            ClientSituationState.is_active.is_(True),
+        )
+    )
+
+
+def fee_pressure_gone_quiet(
+    session: Session, thresholds: WatchlistThresholds, as_of: date
+) -> WatchGroup:
+    """Clients under fee pressure whose deposits have gone quiet."""
+    definition = {"situation_code": FEE_PRESSURE_GONE_QUIET, "is_active": True}
+    return _build_group(
+        session,
+        FEE_PRESSURE_GONE_QUIET,
+        definition,
+        _situation_statement(FEE_PRESSURE_GONE_QUIET),
+    )
+
+
+def fee_pressure_active_contributor(
+    session: Session, thresholds: WatchlistThresholds, as_of: date
+) -> WatchGroup:
+    """Clients under fee pressure who are still paying in."""
+    definition = {"situation_code": FEE_PRESSURE_ACTIVE_CONTRIBUTOR, "is_active": True}
+    return _build_group(
+        session,
+        FEE_PRESSURE_ACTIVE_CONTRIBUTOR,
+        definition,
+        _situation_statement(FEE_PRESSURE_ACTIVE_CONTRIBUTOR),
+    )
+
+
+def _very_small_and_quiet_legacy(
+    session: Session, thresholds: WatchlistThresholds, as_of: date
+) -> WatchGroup:
     statement = _risk_features_join(_client_funds()).where(
         ActiveClientFund.balance.is_not(None),
         ActiveClientFund.balance < thresholds.small_balance,
@@ -202,16 +271,52 @@ def very_small_and_quiet(
     return _build_group(session, VERY_SMALL_AND_QUIET, definition, statement)
 
 
-def getting_smaller(session: Session, thresholds: WatchlistThresholds, as_of: date) -> WatchGroup:
-    """Clients whose payments in are going down over time."""
+def _very_small_and_quiet_from_situations(
+    session: Session, thresholds: WatchlistThresholds, as_of: date
+) -> WatchGroup:
+    definition = {"situation_code": SMALL_BALANCE_INACTIVE, "is_active": True}
+    return _build_group(
+        session, VERY_SMALL_AND_QUIET, definition, _situation_statement(SMALL_BALANCE_INACTIVE)
+    )
+
+
+def very_small_and_quiet(
+    session: Session, thresholds: WatchlistThresholds, as_of: date
+) -> WatchGroup:
+    """Very small balances that have also stopped moving."""
+    if get_settings().signal_situation_source == "situations":
+        return _very_small_and_quiet_from_situations(session, thresholds, as_of)
+    return _very_small_and_quiet_legacy(session, thresholds, as_of)
+
+
+def _getting_smaller_legacy(
+    session: Session, thresholds: WatchlistThresholds, as_of: date
+) -> WatchGroup:
     statement = _risk_features_join(_client_funds()).where(
         ClientRiskFeatures.sig_shrinking.is_(True)
     )
     return _build_group(session, GETTING_SMALLER, {"sig_shrinking": True}, statement)
 
 
-def healthy_one_fund(session: Session, thresholds: WatchlistThresholds, as_of: date) -> WatchGroup:
-    """Clients in good shape who hold only one fund."""
+def _getting_smaller_from_situations(
+    session: Session, thresholds: WatchlistThresholds, as_of: date
+) -> WatchGroup:
+    definition = {"situation_code": CONTRIBUTION_DECLINE, "is_active": True}
+    return _build_group(
+        session, GETTING_SMALLER, definition, _situation_statement(CONTRIBUTION_DECLINE)
+    )
+
+
+def getting_smaller(session: Session, thresholds: WatchlistThresholds, as_of: date) -> WatchGroup:
+    """Clients whose payments in are going down over time."""
+    if get_settings().signal_situation_source == "situations":
+        return _getting_smaller_from_situations(session, thresholds, as_of)
+    return _getting_smaller_legacy(session, thresholds, as_of)
+
+
+def _healthy_one_fund_legacy(
+    session: Session, thresholds: WatchlistThresholds, as_of: date
+) -> WatchGroup:
     funds_held = (
         select(ActiveClientFund.client_id, func.count().label("funds_held"))
         .group_by(ActiveClientFund.client_id)
@@ -229,8 +334,25 @@ def healthy_one_fund(session: Session, thresholds: WatchlistThresholds, as_of: d
     return _build_group(session, HEALTHY_ONE_FUND, definition, statement)
 
 
-def waiting_on_a_call(session: Session, thresholds: WatchlistThresholds, as_of: date) -> WatchGroup:
-    """Clients put on a call list a while back that nobody has touched since."""
+def _healthy_one_fund_from_situations(
+    session: Session, thresholds: WatchlistThresholds, as_of: date
+) -> WatchGroup:
+    definition = {"situation_code": SINGLE_FUND_HEALTHY, "is_active": True}
+    return _build_group(
+        session, HEALTHY_ONE_FUND, definition, _situation_statement(SINGLE_FUND_HEALTHY)
+    )
+
+
+def healthy_one_fund(session: Session, thresholds: WatchlistThresholds, as_of: date) -> WatchGroup:
+    """Clients in good shape who hold only one fund."""
+    if get_settings().signal_situation_source == "situations":
+        return _healthy_one_fund_from_situations(session, thresholds, as_of)
+    return _healthy_one_fund_legacy(session, thresholds, as_of)
+
+
+def _waiting_on_a_call_legacy(
+    session: Session, thresholds: WatchlistThresholds, as_of: date
+) -> WatchGroup:
     cutoff = as_of - timedelta(days=thresholds.awaiting_call_days)
     something_logged_since = (
         select(ActiveClientInteraction.id)
@@ -264,19 +386,28 @@ def waiting_on_a_call(session: Session, thresholds: WatchlistThresholds, as_of: 
     return _build_group(session, WAITING_ON_A_CALL, definition, statement)
 
 
-def more_urgent_but_not_called(
+def _waiting_on_a_call_from_situations(
+    session: Session, thresholds: WatchlistThresholds, as_of: date
+) -> WatchGroup:
+    definition = {"situation_code": FOLLOW_UP_OVERDUE, "is_active": True}
+    return _build_group(
+        session, WAITING_ON_A_CALL, definition, _situation_statement(FOLLOW_UP_OVERDUE)
+    )
+
+
+def waiting_on_a_call(session: Session, thresholds: WatchlistThresholds, as_of: date) -> WatchGroup:
+    """Clients put on a call list a while back that nobody has touched since."""
+    if get_settings().signal_situation_source == "situations":
+        return _waiting_on_a_call_from_situations(session, thresholds, as_of)
+    return _waiting_on_a_call_legacy(session, thresholds, as_of)
+
+
+def _more_urgent_but_not_called_legacy(
     session: Session,
     thresholds: WatchlistThresholds,
     as_of: date,
     run_id: str | None = None,
 ) -> WatchGroup:
-    """Clients the last run moved to a more urgent queue who still did not
-    make that morning's call list.
-
-    These are the ones a person would otherwise never hear about: their
-    situation got worse overnight, but there was no room for them on the
-    call list, so nobody rings them and nothing else picks them up.
-    """
     definition = {"queue_moved": MORE_URGENT, "on_the_call_list": False}
     if run_id is None:
         run_id = latest_completed_run_id(session)
@@ -301,9 +432,37 @@ def more_urgent_but_not_called(
     return _build_group(session, MORE_URGENT_BUT_NOT_CALLED, definition, statement)
 
 
+def _more_urgent_but_not_called_from_situations(
+    session: Session, thresholds: WatchlistThresholds, as_of: date
+) -> WatchGroup:
+    definition = {"situation_code": RISK_ACTION_GAP, "is_active": True}
+    return _build_group(
+        session, MORE_URGENT_BUT_NOT_CALLED, definition, _situation_statement(RISK_ACTION_GAP)
+    )
+
+
+def more_urgent_but_not_called(
+    session: Session,
+    thresholds: WatchlistThresholds,
+    as_of: date,
+    run_id: str | None = None,
+) -> WatchGroup:
+    """Clients the last run moved to a more urgent queue who still did not
+    make that morning's call list.
+
+    These are the ones a person would otherwise never hear about: their
+    situation got worse overnight, but there was no room for them on the
+    call list, so nobody rings them and nothing else picks them up.
+    """
+    if get_settings().signal_situation_source == "situations":
+        return _more_urgent_but_not_called_from_situations(session, thresholds, as_of)
+    return _more_urgent_but_not_called_legacy(session, thresholds, as_of, run_id)
+
+
 GROUP_FILTERS = (
     signed_up_recently,
-    fees_will_empty,
+    fee_pressure_gone_quiet,
+    fee_pressure_active_contributor,
     very_small_and_quiet,
     getting_smaller,
     healthy_one_fund,

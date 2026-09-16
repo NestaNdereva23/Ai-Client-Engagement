@@ -101,6 +101,7 @@ class GenerationState(TypedDict, total=False):
     safety_policy_version: int | None
     output_policy_version: int | None
     personalization_policy_version: int | None
+    base_instructions_version: int | None
     data_date: date | None
     raw_context: Mapping[str, Any]
     chunks: Sequence[GroundingChunk]
@@ -383,6 +384,7 @@ def build_generation_graph(
                 "campaign_prohibitions": config.campaign_prohibitions,
                 "output_rules": config.output_rules,
                 "default_sign_off": config.default_sign_off,
+                "base_instructions": config.base_instructions,
             }
             version_stamps = {
                 "tier_contract_version": config.tier_contract_version,
@@ -390,6 +392,7 @@ def build_generation_graph(
                 "safety_policy_version": config.safety_policy_version,
                 "output_policy_version": config.output_policy_version,
                 "personalization_policy_version": config.personalization_policy_version,
+                "base_instructions_version": config.base_instructions_version,
             }
 
         context = dict(facts) if facts else to_model_context(state["raw_context"])

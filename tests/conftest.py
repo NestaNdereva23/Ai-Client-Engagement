@@ -79,6 +79,62 @@ def _ensure_tables() -> None:
         Base.metadata.create_all(engine)
 
 
+def _seed_agent_prompts() -> None:
+    """Publish every known agent prompt once, so any test's as_of finds one.
+
+    Individual tests don't manage prompt versioning; they just need a
+    published row to exist for whatever as_of they use, from the earliest
+    date any test picks onward.
+    """
+    from datetime import date as _date
+
+    from sqlalchemy import delete
+
+    from app.agents.prompt_versioning import FORMATTED_PROMPTS, PROMPT_KEYS, PROMPT_PLACEHOLDERS
+    from app.db.models.agent_prompt import AgentPrompt
+    from app.rules import versioning
+
+    # Some tests' fake model clients read the group name back out of the
+    # rendered system prompt by splitting on this exact marker text, so the
+    # intelligence prompt template must contain it literally. Another test
+    # checks the rendered prompt starts with this exact sentence.
+    intelligence_preamble = "You look for things worth acting on. "
+    group_marker = "Tonight you are looking at one group: "
+
+    valid_from = _date(2020, 1, 1)
+    with SessionLocal() as session:
+        # Reseed every run: an earlier test run may have left rows behind
+        # with a stale template shape, and there's no other real user of
+        # this table yet.
+        session.execute(delete(AgentPrompt).where(AgentPrompt.prompt_name.in_(PROMPT_KEYS)))
+        session.commit()
+        for key in PROMPT_KEYS:
+            placeholders = PROMPT_PLACEHOLDERS[key] if key in FORMATTED_PROMPTS else frozenset()
+            if key == "intelligence_investigation":
+                template = (
+                    intelligence_preamble
+                    + group_marker
+                    + "{group_name}. "
+                    + " ".join(
+                        f"{{{name}}}" for name in sorted(placeholders) if name != "group_name"
+                    )
+                )
+            else:
+                template = " ".join(f"{{{name}}}" for name in sorted(placeholders))
+            template = template or "Prompt body."
+            version = versioning.save_draft(
+                session, "agent_prompt", key, [{"template": template}], by="test"
+            )
+            versioning.publish(session, "agent_prompt", key, version, at=valid_from)
+        session.commit()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _ensure_agent_prompts(_ensure_tables: None) -> None:
+    if DB_AVAILABLE:
+        _seed_agent_prompts()
+
+
 # A small fixed pair of reviewer identities shared by every test that needs
 # the Authorization: Bearer gate (app.api.reviewer_auth). Two reviewers, so
 # tests that check "this action recorded which reviewer did it" have two

@@ -7,6 +7,7 @@ from datetime import date
 import pytest
 from sqlalchemy import delete
 
+from app.db.models.prompt_config import ActiveConfiguration
 from app.db.models.risk import RiskConfigVersion
 from app.db.session import SessionLocal
 from app.risk.store import (
@@ -45,6 +46,12 @@ def cleanup_versions():
     yield versions
     with SessionLocal() as session:
         session.execute(delete(RiskConfigVersion).where(RiskConfigVersion.version.in_(versions)))
+        session.execute(
+            delete(ActiveConfiguration).where(
+                ActiveConfiguration.component_type == "risk_config_version",
+                ActiveConfiguration.active_version.in_(versions),
+            )
+        )
         session.commit()
 
 

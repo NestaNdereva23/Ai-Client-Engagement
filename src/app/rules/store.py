@@ -68,6 +68,8 @@ MESSAGE_ANGLES = {
     "sitting_still",
     "welcome_and_top_up",
     "fee_warning",
+    "fee_pressure_warning_dormant",
+    "fee_pressure_encourage_active",
 }
 URGENCIES = {"low", "medium", "high"}
 # Derived from value and recency rather than set by a rule.

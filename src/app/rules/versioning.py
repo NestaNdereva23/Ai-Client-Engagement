@@ -7,6 +7,8 @@ from datetime import UTC, date, datetime
 from sqlalchemy import func, inspect, select
 from sqlalchemy.orm import Session
 
+from app.db.models.agent import AgentActionCatalog, SituationActionMapping
+from app.db.models.agent_prompt import AgentPrompt
 from app.db.models.prompt_config import (
     ActiveConfiguration,
     OutputPolicy,
@@ -14,6 +16,7 @@ from app.db.models.prompt_config import (
     SafetyPolicy,
     VoiceContract,
 )
+from app.db.models.risk import RiskConfigVersion
 from app.db.models.rules import BusinessRule, MessageAngleCatalog, TierContract
 from app.db.models.signals import SignalThreshold
 
@@ -48,6 +51,10 @@ COMPONENTS: dict[str, ComponentSpec] = {
     "output_policy": ComponentSpec(OutputPolicy, key_column="channel"),
     "personalization_policy": ComponentSpec(PersonalizationPolicy),
     "signal_threshold": ComponentSpec(SignalThreshold, key_column="signal_code"),
+    "risk_config_version": ComponentSpec(RiskConfigVersion),
+    "agent_action_catalog": ComponentSpec(AgentActionCatalog),
+    "situation_action_mapping": ComponentSpec(SituationActionMapping),
+    "agent_prompt": ComponentSpec(AgentPrompt, key_column="prompt_name"),
 }
 
 

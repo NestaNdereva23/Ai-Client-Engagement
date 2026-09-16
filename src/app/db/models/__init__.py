@@ -25,6 +25,7 @@ from app.db.models.agent_insight import (
     AgentInsightFact,
 )
 from app.db.models.agent_permission import DEFAULT_PERMISSION, AgentPermission
+from app.db.models.agent_prompt import AgentPrompt
 from app.db.models.agent_proposal import PROPOSAL_STATUSES, AgentProposal, AgentProposalClient
 from app.db.models.agent_run import AGENT_RUN_STATES, AGENT_RUN_TRIGGERS, AgentRun, AgentToolCall
 from app.db.models.api import IdempotencyKey
@@ -152,6 +153,7 @@ __all__ = [
     "AgentInsightClient",
     "AgentInsightFact",
     "AgentPermission",
+    "AgentPrompt",
     "AgentProposal",
     "AgentProposalClient",
     "AgentRun",

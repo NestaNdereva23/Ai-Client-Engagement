@@ -14,7 +14,6 @@ from sqlalchemy import delete
 
 from app.agents.situations import NEW_CLIENT_SINGLE_DEPOSIT
 from app.agents.watchlist import (
-    FEES_WILL_EMPTY,
     GETTING_SMALLER,
     GROUP_NAMES,
     HEALTHY_ONE_FUND,
@@ -25,7 +24,8 @@ from app.agents.watchlist import (
     WatchlistConfigMissing,
     WatchlistThresholds,
     build_watchlist,
-    fees_will_empty,
+    fee_pressure_active_contributor,
+    fee_pressure_gone_quiet,
     getting_smaller,
     healthy_one_fund,
     more_urgent_but_not_called,
@@ -230,14 +230,28 @@ def _seeded(group) -> set[tuple[int, int]]:
     return {key for key in _keys(group) if key[0] in CLIENT_IDS}
 
 
-def test_signed_up_recently_finds_a_client_with_the_situation_active(book: None) -> None:
+def test_signed_up_recently_finds_a_client_with_the_situation_active(
+    book: None, monkeypatch
+) -> None:
+    from app.agents import watchlist
+
+    monkeypatch.setattr(
+        watchlist, "get_settings", lambda: SimpleNamespace(signal_situation_source="situations")
+    )
     with SessionLocal() as session:
         group = signed_up_recently(session, THRESHOLDS, AS_OF)
     assert (NEW_CLIENT, FUND_ID) in _keys(group)
     assert (FEE_CLIENT, FUND_ID) not in _keys(group)
 
 
-def test_signed_up_recently_ignores_a_client_whose_situation_is_inactive(book: None) -> None:
+def test_signed_up_recently_ignores_a_client_whose_situation_is_inactive(
+    book: None, monkeypatch
+) -> None:
+    from app.agents import watchlist
+
+    monkeypatch.setattr(
+        watchlist, "get_settings", lambda: SimpleNamespace(signal_situation_source="situations")
+    )
     with SessionLocal() as session:
         state = session.get(ClientSituationState, (NEW_CLIENT, FUND_ID, NEW_CLIENT_SINGLE_DEPOSIT))
         state.is_active = False
@@ -246,29 +260,45 @@ def test_signed_up_recently_ignores_a_client_whose_situation_is_inactive(book: N
     assert (NEW_CLIENT, FUND_ID) not in _keys(group)
 
 
-def test_fees_will_empty_finds_the_short_runway_client(book: None) -> None:
+def test_signed_up_recently_runs_the_old_query_when_the_source_is_legacy(book: None) -> None:
     with SessionLocal() as session:
-        group = fees_will_empty(session, THRESHOLDS, AS_OF)
-    assert _seeded(group) == {(FEE_CLIENT, FUND_ID)}
-    assert group.money_total == 4_000.0
+        group = signed_up_recently(session, THRESHOLDS, AS_OF)
+    assert (NEW_CLIENT, FUND_ID) in _keys(group)
+    assert (FEE_CLIENT, FUND_ID) not in _keys(group)
 
 
-def test_fees_will_empty_skips_an_empty_account(book: None) -> None:
+def test_fee_pressure_groups_have_no_legacy_fallback(book: None) -> None:
+    """Neither fee pressure group reads the situation table under legacy, so
+    with nothing recomputed today both come back empty rather than guessing.
+    """
     with SessionLocal() as session:
-        fund = session.get(ActiveClientFund, (FEE_CLIENT, FUND_ID))
-        fund.balance = 0.0
-        session.commit()
-        group = fees_will_empty(session, THRESHOLDS, AS_OF)
-    assert _seeded(group) == set()
+        gone_quiet = fee_pressure_gone_quiet(session, THRESHOLDS, AS_OF)
+        active_contributor = fee_pressure_active_contributor(session, THRESHOLDS, AS_OF)
+    assert _seeded(gone_quiet) == set()
+    assert _seeded(active_contributor) == set()
 
 
-def test_very_small_and_quiet_needs_both_a_small_balance_and_no_movement(book: None) -> None:
+def _force_legacy(monkeypatch) -> None:
+    from app.agents import watchlist
+
+    monkeypatch.setattr(
+        watchlist, "get_settings", lambda: SimpleNamespace(signal_situation_source="legacy")
+    )
+
+
+def test_very_small_and_quiet_needs_both_a_small_balance_and_no_movement(
+    book: None, monkeypatch
+) -> None:
+    _force_legacy(monkeypatch)
     with SessionLocal() as session:
         group = very_small_and_quiet(session, THRESHOLDS, AS_OF)
     assert _seeded(group) == {(QUIET_CLIENT, FUND_ID)}
 
 
-def test_very_small_and_quiet_skips_a_small_balance_that_still_moves(book: None) -> None:
+def test_very_small_and_quiet_skips_a_small_balance_that_still_moves(
+    book: None, monkeypatch
+) -> None:
+    _force_legacy(monkeypatch)
     with SessionLocal() as session:
         row = session.get(ClientRiskFeatures, (QUIET_CLIENT, FUND_ID))
         row.sig_dormant = False
@@ -277,13 +307,15 @@ def test_very_small_and_quiet_skips_a_small_balance_that_still_moves(book: None)
     assert _seeded(group) == set()
 
 
-def test_getting_smaller_finds_the_falling_deposits_client(book: None) -> None:
+def test_getting_smaller_finds_the_falling_deposits_client(book: None, monkeypatch) -> None:
+    _force_legacy(monkeypatch)
     with SessionLocal() as session:
         group = getting_smaller(session, THRESHOLDS, AS_OF)
     assert _seeded(group) == {(SHRINKING_CLIENT, FUND_ID)}
 
 
-def test_healthy_one_fund_leaves_out_a_client_holding_two_funds(book: None) -> None:
+def test_healthy_one_fund_leaves_out_a_client_holding_two_funds(book: None, monkeypatch) -> None:
+    _force_legacy(monkeypatch)
     with SessionLocal() as session:
         group = healthy_one_fund(session, THRESHOLDS, AS_OF)
     assert (HEALTHY_CLIENT, FUND_ID) in _keys(group)
@@ -291,13 +323,15 @@ def test_healthy_one_fund_leaves_out_a_client_holding_two_funds(book: None) -> N
     assert (TWO_FUND_CLIENT, SECOND_FUND_ID) not in _keys(group)
 
 
-def test_waiting_on_a_call_finds_the_client_nobody_rang(book: None) -> None:
+def test_waiting_on_a_call_finds_the_client_nobody_rang(book: None, monkeypatch) -> None:
+    _force_legacy(monkeypatch)
     with SessionLocal() as session:
         group = waiting_on_a_call(session, THRESHOLDS, AS_OF)
     assert _seeded(group) == {(UNCALLED_CLIENT, FUND_ID)}
 
 
-def test_waiting_on_a_call_skips_a_digest_that_is_still_fresh(book: None) -> None:
+def test_waiting_on_a_call_skips_a_digest_that_is_still_fresh(book: None, monkeypatch) -> None:
+    _force_legacy(monkeypatch)
     fresh = WatchlistThresholds(
         new_client_days=THRESHOLDS.new_client_days,
         months_until_empty=THRESHOLDS.months_until_empty,
@@ -311,15 +345,15 @@ def test_waiting_on_a_call_skips_a_digest_that_is_still_fresh(book: None) -> Non
 
 def test_a_group_counts_clients_funds_and_money(book: None) -> None:
     with SessionLocal() as session:
-        group = fees_will_empty(session, THRESHOLDS, AS_OF)
+        group = signed_up_recently(session, THRESHOLDS, AS_OF)
     assert group.client_count == 1
     assert group.fund_count == 1
-    assert group.money_total == 4_000.0
+    assert group.money_total == 500_000.0
 
 
 def test_a_group_carries_no_client_name(book: None) -> None:
     with SessionLocal() as session:
-        group = fees_will_empty(session, THRESHOLDS, AS_OF)
+        group = signed_up_recently(session, THRESHOLDS, AS_OF)
     member_fields = set(vars(group.members[0]))
     assert member_fields == {"client_id", "unit_fund_id", "balance"}
 
@@ -343,14 +377,14 @@ def test_a_group_with_nobody_in_it_is_still_returned(book: None) -> None:
     assert by_name[GETTING_SMALLER].client_count >= 0
 
 
-def test_every_named_group_has_a_written_definition(book: None) -> None:
+def test_every_named_group_has_a_written_definition(book: None, monkeypatch) -> None:
+    _force_legacy(monkeypatch)
     with SessionLocal() as session:
         groups = build_watchlist(session, AS_OF, THRESHOLDS)
     for group in groups:
         assert group.definition
     by_name = {group.name: group for group in groups}
     assert by_name[SIGNED_UP_RECENTLY].definition["situation_code"] == NEW_CLIENT_SINGLE_DEPOSIT
-    assert by_name[FEES_WILL_EMPTY].definition["months_until_empty_below"] == 6.0
     assert by_name[VERY_SMALL_AND_QUIET].definition["balance_below"] == 100.0
     assert by_name[HEALTHY_ONE_FUND].definition["funds_held"] == 1
     assert by_name[WAITING_ON_A_CALL].definition["in_call_queue"] is True
@@ -417,38 +451,45 @@ def two_nights(book: None):
 
 
 def test_more_urgent_but_not_called_finds_the_client_who_missed_the_list(
-    two_nights: None,
+    two_nights: None, monkeypatch
 ) -> None:
+    _force_legacy(monkeypatch)
     with SessionLocal() as session:
         group = more_urgent_but_not_called(session, THRESHOLDS, AS_OF, run_id=RISK_RUN_ID)
     assert _seeded(group) == {(QUIET_CLIENT, FUND_ID)}
 
 
 def test_more_urgent_but_not_called_leaves_out_a_client_on_the_call_list(
-    two_nights: None,
+    two_nights: None, monkeypatch
 ) -> None:
+    _force_legacy(monkeypatch)
     with SessionLocal() as session:
         group = more_urgent_but_not_called(session, THRESHOLDS, AS_OF, run_id=RISK_RUN_ID)
     assert (SHRINKING_CLIENT, FUND_ID) not in _keys(group)
 
 
 def test_more_urgent_but_not_called_leaves_out_a_client_who_moved_down(
-    two_nights: None,
+    two_nights: None, monkeypatch
 ) -> None:
+    _force_legacy(monkeypatch)
     with SessionLocal() as session:
         group = more_urgent_but_not_called(session, THRESHOLDS, AS_OF, run_id=RISK_RUN_ID)
     assert (HEALTHY_CLIENT, FUND_ID) not in _keys(group)
 
 
 def test_more_urgent_but_not_called_leaves_out_a_client_who_did_not_move(
-    two_nights: None,
+    two_nights: None, monkeypatch
 ) -> None:
+    _force_legacy(monkeypatch)
     with SessionLocal() as session:
         group = more_urgent_but_not_called(session, THRESHOLDS, AS_OF, run_id=RISK_RUN_ID)
     assert (TWO_FUND_CLIENT, FUND_ID) not in _keys(group)
 
 
-def test_more_urgent_but_not_called_leaves_out_a_first_ever_run(two_nights: None) -> None:
+def test_more_urgent_but_not_called_leaves_out_a_first_ever_run(
+    two_nights: None, monkeypatch
+) -> None:
+    _force_legacy(monkeypatch)
     with SessionLocal() as session:
         group = more_urgent_but_not_called(session, THRESHOLDS, AS_OF, run_id=RISK_RUN_ID)
     assert (UNCALLED_CLIENT, FUND_ID) not in _keys(group)
@@ -457,6 +498,7 @@ def test_more_urgent_but_not_called_leaves_out_a_first_ever_run(two_nights: None
 def test_more_urgent_but_not_called_is_empty_with_no_finished_run(monkeypatch) -> None:
     from app.agents import watchlist
 
+    _force_legacy(monkeypatch)
     monkeypatch.setattr(watchlist, "latest_completed_run_id", lambda session: None)
     group = watchlist.more_urgent_but_not_called(None, THRESHOLDS, AS_OF)
 

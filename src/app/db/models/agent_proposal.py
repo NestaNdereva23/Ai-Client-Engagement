@@ -62,6 +62,13 @@ class AgentProposal(Base):
             "('learning_only', 'mostly_learning', 'balanced', 'mostly_ask')",
             name="ck_agent_proposal_content_mix",
         ),
+        CheckConstraint(
+            "response_kind IS NULL OR response_kind IN "
+            "('automated_email', 'advisor_task', 'phone_call', 'campaign_enrolment', "
+            "'product_teaching', 'monitor_only', 'escalate', 'change_client_state', "
+            "'ask_a_person_first')",
+            name="ck_agent_proposal_response_kind",
+        ),
         CheckConstraint("client_count >= 0", name="ck_agent_proposal_client_count_not_negative"),
         CheckConstraint(
             "money_total_kes IS NULL OR money_total_kes >= 0",
@@ -88,6 +95,7 @@ class AgentProposal(Base):
     # Null for an action that sends no message.
     angle: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_mix: Mapped[str | None] = mapped_column(Text, nullable=True)
+    response_kind: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Which version of the message this group got, once a two version test is running.
     variant: Mapped[str | None] = mapped_column(Text, nullable=True)
     permission_applied: Mapped[str] = mapped_column(Text, nullable=False)

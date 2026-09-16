@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.proposal_state import transition_proposal
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
+from app.db.models.outreach import Campaign
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_id_cursor, encode_id_cursor
 
 _DECISION_TO_STATUS = {"approve": "approved", "reject": "rejected"}
@@ -180,6 +181,37 @@ def daily_usage(session: Session, *, action_code: str, as_of: date) -> DailyUsag
     return DailyUsage(used_clients=used_clients or 0, used_money_kes=float(used_money or 0.0))
 
 
+def overall_daily_usage(session: Session, *, as_of: date) -> DailyUsage:
+    matches = [
+        func.date(AgentProposal.created_at) == as_of,
+        AgentProposal.status.not_in(ALLOWANCE_EXCLUDED_STATUSES),
+    ]
+    used_money = session.scalar(
+        select(func.coalesce(func.sum(AgentProposal.money_total_kes), 0.0)).where(*matches)
+    )
+    used_clients = session.scalar(
+        select(func.count(func.distinct(AgentProposalClient.client_id)))
+        .select_from(AgentProposal)
+        .join(AgentProposalClient, AgentProposalClient.proposal_id == AgentProposal.proposal_id)
+        .where(*matches, AgentProposalClient.included.is_(True))
+    )
+    return DailyUsage(used_clients=used_clients or 0, used_money_kes=float(used_money or 0.0))
+
+
+def action_has_run_before(session: Session, action_code: str) -> bool:
+    return (
+        session.scalar(
+            select(AgentProposal.proposal_id)
+            .where(
+                AgentProposal.action_code == action_code,
+                AgentProposal.campaign_id.is_not(None),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
 def decide_proposal(
     session: Session,
     proposal_id: int,
@@ -197,3 +229,26 @@ def decide_proposal(
         reason=reason,
         decided_by=decided_by,
     )
+
+
+def stop_proposal(
+    session: Session,
+    proposal_id: int,
+    *,
+    reason: str,
+    decided_by: str,
+) -> AgentProposal:
+    proposal = get_proposal(session, proposal_id)
+    proposal = transition_proposal(
+        session,
+        proposal,
+        to_status="stopped",
+        reason=reason,
+        decided_by=decided_by,
+    )
+    if proposal.campaign_id is not None:
+        campaign = session.get(Campaign, proposal.campaign_id)
+        if campaign is not None and campaign.status not in ("paused", "completed"):
+            campaign.status = "paused"
+            session.flush()
+    return proposal

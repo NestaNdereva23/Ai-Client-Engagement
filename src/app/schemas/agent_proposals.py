@@ -29,6 +29,10 @@ class AgentProposalSummaryOut(BaseModel):
     permission_applied: str
     created_at: datetime
     decided_at: datetime | None
+    card_title: str
+    screen_label: str
+    why_now: str
+    suggested_owner: str | None
 
 
 class AgentProposalClientOut(BaseModel):
@@ -59,6 +63,12 @@ class ProposalDecisionRequest(BaseModel):
     """A person's approve or reject call on one proposal."""
 
     decision: ProposalDecision
+    reason: str = Field(min_length=1)
+
+
+class ProposalStopRequest(BaseModel):
+    """A person's call to stop a proposal that has drafted but not sent."""
+
     reason: str = Field(min_length=1)
 
 

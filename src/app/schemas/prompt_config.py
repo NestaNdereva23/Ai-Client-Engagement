@@ -80,6 +80,7 @@ class TestGenerateRequest(BaseModel):
     safety_version: int | None = None
     output_version: int | None = None
     personalization_version: int | None = None
+    base_instructions_version: int | None = None
     client_id: int | None = None
     fact_profile: dict[str, Any] | None = None
     product: str = "money market"
@@ -127,6 +128,7 @@ class ExplainOut(BaseModel):
     safety_policy_version: int | None
     output_policy_version: int | None
     personalization_policy_version: int | None
+    base_instructions_version: int | None
     status: str
     attempts: int
     failed_guardrail: str | None

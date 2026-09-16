@@ -5,6 +5,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.agents import card_copy
 from app.agents.proposal_state import InvalidTransition
 from app.api.reviewer_auth import get_current_reviewer_id
 from app.db.session import get_session
@@ -15,6 +16,7 @@ from app.schemas.agent_proposals import (
     AgentProposalSummaryOut,
     ProposalDecisionRequest,
     ProposalDecisionResultOut,
+    ProposalStopRequest,
 )
 from app.services.agent_proposals import (
     ProposalNotFound,
@@ -23,6 +25,7 @@ from app.services.agent_proposals import (
     get_proposal,
     get_proposal_clients,
     list_proposals,
+    stop_proposal,
 )
 
 router = APIRouter(
@@ -61,8 +64,10 @@ def list_agent_proposals(
         action_code=action_code,
         exclude_action_code=exclude_action_code,
     )
-    return Page(
-        items=[
+    items = []
+    for p, included_count in proposals:
+        copy = card_copy.copy_for(p.group_name)
+        items.append(
             AgentProposalSummaryOut(
                 proposal_id=p.proposal_id,
                 action_code=p.action_code,
@@ -75,9 +80,14 @@ def list_agent_proposals(
                 permission_applied=p.permission_applied,
                 created_at=p.created_at,
                 decided_at=p.decided_at,
+                card_title=copy.card_title,
+                screen_label=copy.screen_label,
+                why_now=copy.why_now,
+                suggested_owner=card_copy.suggested_owner_for(p.response_kind),
             )
-            for p, included_count in proposals
-        ],
+        )
+    return Page(
+        items=items,
         next_cursor=next_cursor,
         total_count=total_count,
     )
@@ -94,6 +104,7 @@ def get_agent_proposal(
 
     clients = get_proposal_clients(session, proposal_id)
     included_count = sum(1 for c in clients if c.included) if clients else None
+    copy = card_copy.copy_for(proposal.group_name)
     return AgentProposalDetailOut(
         proposal_id=proposal.proposal_id,
         action_code=proposal.action_code,
@@ -106,6 +117,10 @@ def get_agent_proposal(
         permission_applied=proposal.permission_applied,
         created_at=proposal.created_at,
         decided_at=proposal.decided_at,
+        card_title=copy.card_title,
+        screen_label=copy.screen_label,
+        why_now=copy.why_now,
+        suggested_owner=card_copy.suggested_owner_for(proposal.response_kind),
         group_definition=proposal.group_definition,
         evidence=proposal.evidence,
         reason=proposal.reason,
@@ -129,6 +144,31 @@ def decide_agent_proposal(
             session,
             proposal_id,
             decision=body.decision,
+            reason=body.reason,
+            decided_by=reviewer_id,
+        )
+        session.commit()
+    except ProposalNotFound:
+        session.rollback()
+        raise HTTPException(status_code=404, detail="proposal not found") from None
+    except InvalidTransition as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+    return ProposalDecisionResultOut.model_validate(proposal)
+
+
+@router.post("/{proposal_id}/stop", response_model=ProposalDecisionResultOut)
+def stop_agent_proposal(
+    proposal_id: int,
+    body: ProposalStopRequest,
+    reviewer_id: str = Depends(get_current_reviewer_id),
+    session: Session = Depends(get_session),
+) -> ProposalDecisionResultOut:
+    try:
+        proposal = stop_proposal(
+            session,
+            proposal_id,
             reason=body.reason,
             decided_by=reviewer_id,
         )

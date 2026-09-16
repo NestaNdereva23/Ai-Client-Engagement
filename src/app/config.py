@@ -177,6 +177,12 @@ class Settings(BaseSettings):
     agent_awaiting_call_days: int = 2
     agent_contact_cooldown_days: int = 7
 
+    agent_daily_send_limit: int | None = None
+    agent_first_run_limit: int = 25
+    agent_force_approve_each: bool = False
+
+    signal_situation_source: Literal["legacy", "situations"] = "legacy"
+
     # What one investigation of a group may spend on its own queries.
     agent_query_call_budget: int = 12
     agent_query_timeout_ms: int = 5000
