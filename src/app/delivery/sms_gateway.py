@@ -8,6 +8,7 @@ import structlog
 
 from app.agents.guardrails import sms_part_count
 from app.config import Settings, get_settings
+from app.delivery.mailer import TicketingSendError, ticketing_send_token
 
 logger = structlog.get_logger(__name__)
 
@@ -109,6 +110,60 @@ class AfricasTalkingGateway:
             self._client = None
 
 
+TICKETING_SMS_PATH = "/api/ai-outreach/send-sms"
+
+
+class TicketingSmsGateway:
+    # Sends through the Ticketing app, which hands the text to its own SMS provider.
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        secret: str,
+        timeout: float = 30.0,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.secret = secret
+        self.timeout = timeout
+        self.transport = transport
+        self._client: httpx.Client | None = None
+
+    def _http(self) -> httpx.Client:
+        if self._client is None:
+            self._client = httpx.Client(
+                base_url=self.base_url, timeout=self.timeout, transport=self.transport
+            )
+        return self._client
+
+    def send(self, message: SmsMessage) -> SmsSendResult:
+        token = ticketing_send_token(self.secret, "send_sms")
+        try:
+            response = self._http().post(
+                TICKETING_SMS_PATH,
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                json={"to": message.to, "message": message.body},
+            )
+        except httpx.HTTPError as exc:
+            raise TicketingSendError(f"ticketing unreachable: {exc}") from exc
+        if response.status_code != 200:
+            raise TicketingSendError(f"ticketing refused the sms: {response.status_code}")
+        logger.info("sms_sent", recipient=message.to, via="ticketing")
+        return SmsSendResult(
+            sent=True,
+            sender="ticketing",
+            recipient=message.to,
+            body=message.body,
+            parts=sms_part_count(message.body),
+        )
+
+    def close(self) -> None:
+        client, self._client = self._client, None
+        if client is not None:
+            client.close()
+
+
 @dataclass
 class RecordingSmsGateway:
     reason: str = "no sms provider configured"
@@ -133,6 +188,8 @@ class RecordingSmsGateway:
 
 def get_sms_gateway(settings: Settings | None = None) -> SmsGateway:
     settings = settings or get_settings()
+    if settings.sms_transport == "ticketing":
+        return _ticketing_gateway(settings)
     if not settings.sms_provider_api_key or not settings.sms_provider_username:
         return RecordingSmsGateway(sender=settings.sms_sender_id)
     if not settings.sms_sender_id:
@@ -143,4 +200,16 @@ def get_sms_gateway(settings: Settings | None = None) -> SmsGateway:
         sender_id=settings.sms_sender_id,
         base_url=settings.sms_provider_base_url,
         timeout=settings.sms_timeout_seconds,
+    )
+
+
+def _ticketing_gateway(settings: Settings) -> SmsGateway:
+    if not settings.ticketing_base_url:
+        return RecordingSmsGateway(reason="no ticketing url configured")
+    if not settings.ai_outreach_jwt_secret:
+        return RecordingSmsGateway(reason="no ticketing secret configured")
+    return TicketingSmsGateway(
+        base_url=settings.ticketing_base_url,
+        secret=settings.ai_outreach_jwt_secret,
+        timeout=settings.ticketing_timeout_seconds,
     )

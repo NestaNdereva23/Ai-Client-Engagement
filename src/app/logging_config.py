@@ -21,7 +21,9 @@ def configure_logging(level: str = "INFO", json_logs: bool = False) -> None:
         cache_logger_on_first_use=True,
     )
 
-    renderer = structlog.processors.JSONRenderer() if json_logs else structlog.dev.ConsoleRenderer()
+    # Plain tracebacks keep errors short and never print local values such as settings and keys.
+    console = structlog.dev.ConsoleRenderer(exception_formatter=structlog.dev.plain_traceback)
+    renderer = structlog.processors.JSONRenderer() if json_logs else console
     formatter = structlog.stdlib.ProcessorFormatter(
         foreign_pre_chain=shared_processors,
         processors=[structlog.stdlib.ProcessorFormatter.remove_processors_meta, renderer],

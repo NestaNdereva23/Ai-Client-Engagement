@@ -13,10 +13,13 @@ a half-configured environment should go quiet, not crash.
 from __future__ import annotations
 
 import smtplib
+import time
 from dataclasses import dataclass, field
 from email.message import EmailMessage as MimeMessage
 from typing import Protocol, runtime_checkable
 
+import httpx
+import jwt
 import structlog
 
 from app.config import Settings, get_settings
@@ -50,6 +53,7 @@ class SendResult:
     recipient: str
     subject: str
     reason: str = ""
+    provider_message_id: str | None = None
 
 
 @runtime_checkable
@@ -154,6 +158,80 @@ class SmtpMailer:
                 pass
 
 
+class TicketingSendError(RuntimeError):
+    pass
+
+
+TICKETING_SEND_AUDIENCE = "ticketing-send"
+TICKETING_EMAIL_PATH = "/api/ai-outreach/send-email"
+TICKETING_TOKEN_TTL_SECONDS = 60
+
+
+def ticketing_send_token(secret: str, purpose: str) -> str:
+    """A short lived token that lets Ticketing send one kind of message for ACE."""
+    now = int(time.time())
+    claims = {
+        "iss": "ace",
+        "aud": TICKETING_SEND_AUDIENCE,
+        "purpose": purpose,
+        "iat": now,
+        "exp": now + TICKETING_TOKEN_TTL_SECONDS,
+    }
+    return jwt.encode(claims, secret, algorithm="HS256")
+
+
+class TicketingMailer:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        secret: str,
+        timeout: float = 30.0,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.secret = secret
+        self.timeout = timeout
+        self.transport = transport
+        self._client: httpx.Client | None = None
+
+    def _http(self) -> httpx.Client:
+        if self._client is None:
+            self._client = httpx.Client(
+                base_url=self.base_url, timeout=self.timeout, transport=self.transport
+            )
+        return self._client
+
+    def send(self, message: EmailMessage) -> SendResult:
+        try:
+            response = self._http().post(
+                TICKETING_EMAIL_PATH,
+                headers={
+                    "Authorization": f"Bearer {ticketing_send_token(self.secret, 'send_email')}",
+                    "Accept": "application/json",
+                },
+                json={"to": message.to, "subject": message.subject, "body": message.text_body},
+            )
+        except httpx.HTTPError as exc:
+            raise TicketingSendError(f"ticketing unreachable: {exc}") from exc
+        if response.status_code != 200:
+            raise TicketingSendError(f"ticketing refused the email: {response.status_code}")
+        thread_id = response.json().get("thread_id")
+        logger.info("email_sent", recipient=message.to, subject=message.subject, via="ticketing")
+        return SendResult(
+            sent=True,
+            sender="ticketing",
+            recipient=message.to,
+            subject=message.subject,
+            provider_message_id=thread_id,
+        )
+
+    def close(self) -> None:
+        client, self._client = self._client, None
+        if client is not None:
+            client.close()
+
+
 @dataclass
 class NullMailer:
     """Records every message and sends none.
@@ -197,6 +275,8 @@ def get_mailer(settings: Settings | None = None) -> Mailer:
     raise in the middle of a scheduled run.
     """
     settings = settings or get_settings()
+    if settings.mail_transport == "ticketing":
+        return _ticketing_mailer(settings)
     if not settings.smtp_host:
         return NullMailer(sender=settings.email_sender)
     if not settings.email_sender:
@@ -212,4 +292,16 @@ def get_mailer(settings: Settings | None = None) -> Mailer:
         password=settings.smtp_password,
         starttls=settings.smtp_starttls,
         timeout=settings.smtp_timeout_seconds,
+    )
+
+
+def _ticketing_mailer(settings: Settings) -> Mailer:
+    if not settings.ticketing_base_url:
+        return NullMailer(reason="no ticketing url configured")
+    if not settings.ai_outreach_jwt_secret:
+        return NullMailer(reason="no ticketing secret configured")
+    return TicketingMailer(
+        base_url=settings.ticketing_base_url,
+        secret=settings.ai_outreach_jwt_secret,
+        timeout=settings.ticketing_timeout_seconds,
     )

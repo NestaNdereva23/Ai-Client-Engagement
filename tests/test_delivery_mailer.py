@@ -77,12 +77,14 @@ def a_message() -> EmailMessage:
 
 
 def test_factory_returns_null_mailer_without_a_host():
-    built = get_mailer(Settings(smtp_host="", email_sender="ace@example.com"))
+    built = get_mailer(
+        Settings(mail_transport="smtp", smtp_host="", email_sender="ace@example.com")
+    )
     assert isinstance(built, NullMailer)
 
 
 def test_factory_returns_null_mailer_without_a_sender():
-    built = get_mailer(Settings(smtp_host="localhost", email_sender=""))
+    built = get_mailer(Settings(mail_transport="smtp", smtp_host="localhost", email_sender=""))
     assert isinstance(built, NullMailer)
     assert built.reason == "no sender address configured"
 
@@ -90,6 +92,7 @@ def test_factory_returns_null_mailer_without_a_sender():
 def test_factory_returns_smtp_mailer_when_configured():
     built = get_mailer(
         Settings(
+            mail_transport="smtp",
             smtp_host="localhost",
             smtp_port=1025,
             email_sender="ace@example.com",
@@ -131,7 +134,7 @@ def test_null_mailer_close_is_a_harmless_no_op():
 
 def test_a_misconfigured_environment_sends_nothing_and_still_records():
     """An unset SMTP_HOST must not raise on a scheduled run; it records."""
-    built = get_mailer(Settings(smtp_host=""))
+    built = get_mailer(Settings(mail_transport="smtp", smtp_host=""))
     result = built.send(a_message())
 
     assert result.sent is False
