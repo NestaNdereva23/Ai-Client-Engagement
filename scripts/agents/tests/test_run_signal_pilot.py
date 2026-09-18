@@ -59,9 +59,10 @@ AS_OF = date(2026, 9, 15)
 
 @pytest.fixture(autouse=True)
 def fixed_window(monkeypatch):
-    from app.agents import signals, situation_action_mapping
+    from app.agents import signals, situation_action_mapping, write_tools
 
     monkeypatch.setattr(signals, "active_threshold", lambda *args, **kwargs: 30)
+    monkeypatch.setattr(write_tools, "draft_into_review_queue", lambda *args, **kwargs: 0)
     monkeypatch.setattr(
         situation_action_mapping,
         "action_code_for_situation",

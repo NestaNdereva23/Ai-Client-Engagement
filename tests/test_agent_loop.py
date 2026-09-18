@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import delete, select
 
 from app.agents import agent_loop as agent_loop_module
+from app.agents import watchlist
 from app.agents.action_catalog import load_action
 from app.agents.agent_loop import (
     CHOOSE_ACTION_TOOL_NAME,
@@ -328,7 +330,10 @@ def test_a_full_run_produces_a_proposal_chosen_by_the_model() -> None:
     assert clients[0].skip_reason is None
 
 
-def test_a_must_reach_out_group_is_not_left_on_watch_for_now() -> None:
+def test_a_must_reach_out_group_is_not_left_on_watch_for_now(monkeypatch) -> None:
+    monkeypatch.setattr(
+        watchlist, "get_settings", lambda: SimpleNamespace(signal_situation_source="situations")
+    )
     _seed_very_small_and_quiet_client(MUST_REACH_CLIENT)
     llm_client = FakeConversingLLMClient(
         [
