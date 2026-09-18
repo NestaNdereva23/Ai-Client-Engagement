@@ -20,6 +20,9 @@ from app.services.agent_proposals import (
     decide_proposal,
     get_proposal,
     get_proposal_clients,
+    get_proposal_included_count,
+    list_client_proposals,
+    list_proposal_clients,
     list_proposals,
 )
 
@@ -221,6 +224,44 @@ def test_get_proposal_clients_returns_the_full_breakdown(proposal_with_clients: 
     assert by_client[INCLUDED_CLIENT].skip_reason is None
     assert by_client[SKIPPED_CLIENT].included is False
     assert by_client[SKIPPED_CLIENT].skip_reason == "on_do_not_contact_list"
+
+
+def test_get_proposal_included_count(proposal_with_clients: int) -> None:
+    with SessionLocal() as session:
+        assert get_proposal_included_count(session, proposal_with_clients) == 1
+
+
+def test_get_proposal_included_count_none_with_no_client_rows(proposals: list[int]) -> None:
+    earlier_id, _later_id = proposals
+    with SessionLocal() as session:
+        assert get_proposal_included_count(session, earlier_id) is None
+
+
+def test_list_proposal_clients_paginates_with_a_cursor(proposal_with_clients: int) -> None:
+    with SessionLocal() as session:
+        first_page, cursor = list_proposal_clients(session, proposal_with_clients, limit=1)
+        second_page, next_cursor = list_proposal_clients(
+            session, proposal_with_clients, limit=1, cursor=cursor
+        )
+    assert [row.client_id for row in first_page] == [INCLUDED_CLIENT]
+    assert cursor is not None
+    assert [row.client_id for row in second_page] == [SKIPPED_CLIENT]
+    assert next_cursor is None
+
+
+def test_list_proposal_clients_filters_by_included(proposal_with_clients: int) -> None:
+    with SessionLocal() as session:
+        rows, _ = list_proposal_clients(session, proposal_with_clients, included=False)
+    assert [row.client_id for row in rows] == [SKIPPED_CLIENT]
+
+
+def test_list_client_proposals_returns_the_clients_history(proposal_with_clients: int) -> None:
+    with SessionLocal() as session:
+        rows = list_client_proposals(session, INCLUDED_CLIENT)
+    assert [proposal.proposal_id for proposal, _ in rows] == [proposal_with_clients]
+    proposal, proposal_client = rows[0]
+    assert proposal_client.included is True
+    assert proposal.group_name == "very small and quiet"
 
 
 def test_decide_proposal_approves_and_records_who(proposal_with_clients: int) -> None:

@@ -123,6 +123,7 @@ def save_insight_proposal(
     finding is not worked twice.
     """
     brief = brief_for(insight)
+    money_total_kes = sum(member.balance for member in decision.included)
     proposal = AgentProposal(
         run_id=run_id,
         insight_id=insight.insight_id,
@@ -133,12 +134,18 @@ def save_insight_proposal(
             None if insight.group_definition is None else dict(insight.group_definition)
         ),
         client_count=len({member.client_id for member in members}),
-        money_total_kes=sum(member.balance for member in decision.included),
+        money_total_kes=money_total_kes,
         evidence=insight_evidence(brief),
         reason=decision.reason,
         angle=decision.action.message_angle,
         content_mix=decision.action.content_mix,
-        permission_applied=effective_permission(session, decision.action.action_code),
+        response_kind=decision.action.response_kind,
+        permission_applied=effective_permission(
+            session,
+            decision.action.action_code,
+            money_total_kes=money_total_kes,
+            money_ceiling_kes=decision.action.money_ceiling_kes,
+        ),
         skip_reason_counts=skip_reason_counts(decision.skip_reasons),
         status="proposed",
     )

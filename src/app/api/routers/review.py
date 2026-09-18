@@ -53,6 +53,7 @@ router = APIRouter(
 def list_reviews(
     status: str = "pending_review",
     campaign_id: int | None = None,
+    campaign_type: str | None = None,
     only_sampled: bool = True,
     channel: str | None = None,
     order: ReviewOrder = "oldest_first",
@@ -65,6 +66,7 @@ def list_reviews(
             session,
             status=status,
             campaign_id=campaign_id,
+            campaign_type=campaign_type,
             only_sampled=only_sampled,
             channel=channel,
             order=order,
@@ -74,7 +76,12 @@ def list_reviews(
     except InvalidCursor:
         raise HTTPException(status_code=400, detail="invalid cursor") from None
     total_count = count_pending_messages(
-        session, status=status, campaign_id=campaign_id, only_sampled=only_sampled, channel=channel
+        session,
+        status=status,
+        campaign_id=campaign_id,
+        campaign_type=campaign_type,
+        only_sampled=only_sampled,
+        channel=channel,
     )
     return Page(
         items=[OutreachMessageSummary.model_validate(m) for m in messages],

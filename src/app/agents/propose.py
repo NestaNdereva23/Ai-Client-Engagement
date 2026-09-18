@@ -14,9 +14,12 @@ from sqlalchemy.orm import Session
 
 from app.agents.action_catalog import action_is_paused, load_action
 from app.agents.permissions import effective_permission
+from app.agents.situation_action_mapping import action_code_for_situation
 from app.agents.watchlist import (
-    FEES_WILL_EMPTY,
+    FEE_PRESSURE_ACTIVE_CONTRIBUTOR,
+    FEE_PRESSURE_GONE_QUIET,
     GETTING_SMALLER,
+    GROUP_TO_SITUATION,
     HEALTHY_ONE_FUND,
     MORE_URGENT_BUT_NOT_CALLED,
     SIGNED_UP_RECENTLY,
@@ -38,10 +41,12 @@ from app.db.models.suppression import Suppression
 from app.rules.catalog import angle_is_held
 
 DO_NOTHING_ACTION = "do_nothing"
+WATCH_FOR_NOW_ACTION = "watch_for_now"
 
 GROUP_ACTIONS: dict[str, str] = {
     SIGNED_UP_RECENTLY: "welcome_and_top_up",
-    FEES_WILL_EMPTY: "fee_warning",
+    FEE_PRESSURE_GONE_QUIET: "fee_pressure_warning_dormant",
+    FEE_PRESSURE_ACTIVE_CONTRIBUTOR: "fee_pressure_encourage_active",
     VERY_SMALL_AND_QUIET: "start_win_back",
     GETTING_SMALLER: "ask_what_changed",
     HEALTHY_ONE_FUND: "suggest_second_fund",
@@ -56,6 +61,18 @@ OPEN_COMPLAINT = "open_complaint"
 CONTACTED_RECENTLY = "contacted_recently"
 ANGLE_PAUSED = "angle_paused"
 ACTION_PAUSED = "action_paused"
+CONSOLIDATED_INTO_ANOTHER_SITUATION = "consolidated_into_another_situation"
+
+SITUATION_PRIORITY: tuple[str, ...] = (
+    MORE_URGENT_BUT_NOT_CALLED,
+    WAITING_ON_A_CALL,
+    FEE_PRESSURE_GONE_QUIET,
+    FEE_PRESSURE_ACTIVE_CONTRIBUTOR,
+    GETTING_SMALLER,
+    VERY_SMALL_AND_QUIET,
+    SIGNED_UP_RECENTLY,
+    HEALTHY_ONE_FUND,
+)
 
 
 class ProposalActionMissing(LookupError):
@@ -76,14 +93,53 @@ def propose_watchlist(
     """
     if thresholds is None:
         thresholds = load_thresholds(session, as_of)
+    groups = build_watchlist(session, as_of, thresholds)
+    winners = situation_winners(groups)
     proposals = []
-    for group in build_watchlist(session, as_of, thresholds):
+    for group in groups:
         proposal = propose_group(
-            session, group, thresholds, as_of, run_id=run_id, cooldown_days=cooldown_days
+            session,
+            group,
+            thresholds,
+            as_of,
+            run_id=run_id,
+            cooldown_days=cooldown_days,
+            winners=winners,
         )
         if proposal is not None:
             proposals.append(proposal)
     return proposals
+
+
+def situation_winners(groups: Sequence[WatchGroup]) -> dict[tuple[int, int], str]:
+    """Which one situation wins for each client fund carrying more than one.
+
+    A client fund sitting in several groups on the same night gets exactly
+    one action, the most urgent situation's, rather than one action per
+    situation it happens to qualify for.
+    """
+    by_name = {group.name: group for group in groups}
+    winners: dict[tuple[int, int], str] = {}
+    for group_name in SITUATION_PRIORITY:
+        group = by_name.get(group_name)
+        if group is None:
+            continue
+        for member in group.members:
+            winners.setdefault(member_key(member), group_name)
+    return winners
+
+
+def default_action_code_for_group(session: Session, group_name: str, as_of: date) -> str | None:
+    """The action a group falls back to when nothing else picks one for it.
+
+    Checked first against the situation/action mapping table, since that is
+    the live, editable source; GROUP_ACTIONS is the fixed fallback for a
+    group with no mapping published for its situation.
+    """
+    situation_code = GROUP_TO_SITUATION.get(group_name, group_name)
+    return action_code_for_situation(session, situation_code, as_of) or GROUP_ACTIONS.get(
+        group_name
+    )
 
 
 def propose_group(
@@ -94,17 +150,23 @@ def propose_group(
     *,
     run_id: str | None = None,
     cooldown_days: int | None = None,
+    winners: dict[tuple[int, int], str] | None = None,
 ) -> AgentProposal | None:
     """Write one proposal for one group, or None if the group is empty."""
     if not group.members:
         return None
 
-    mapped_code = GROUP_ACTIONS.get(group.name)
+    mapped_code = default_action_code_for_group(session, group.name, as_of)
     if mapped_code is None:
         raise ProposalActionMissing(f"the group '{group.name}' has no action in the rule table")
     mapped_action = load_action_or_raise(session, mapped_code, as_of)
 
     skip_reasons = group_skip_reasons(session, group.members, mapped_action, as_of, cooldown_days)
+    if winners is not None:
+        for member in group.members:
+            key = member_key(member)
+            if winners.get(key) != group.name:
+                skip_reasons[key] = CONSOLIDATED_INTO_ANOTHER_SITUATION
     included = [member for member in group.members if skip_reasons[member_key(member)] is None]
 
     if included:
@@ -255,7 +317,13 @@ def _save_proposal(
         reason=_reason(action, group, included_count=included_count, total_count=total_count),
         angle=action.message_angle,
         content_mix=action.content_mix,
-        permission_applied=effective_permission(session, action.action_code),
+        response_kind=action.response_kind,
+        permission_applied=effective_permission(
+            session,
+            action.action_code,
+            money_total_kes=money_total,
+            money_ceiling_kes=action.money_ceiling_kes,
+        ),
         skip_reason_counts=skip_reason_counts(skip_reasons),
         status="proposed",
     )
@@ -298,10 +366,15 @@ def group_evidence(group: WatchGroup, thresholds: WatchlistThresholds) -> str:
             f"{count} clients made exactly one deposit, within the last "
             f"{thresholds.new_client_days} days."
         )
-    if group.name == FEES_WILL_EMPTY:
+    if group.name == FEE_PRESSURE_GONE_QUIET:
         return (
-            f"{count} clients have a balance above zero that the monthly fee will "
-            f"empty in under {thresholds.months_until_empty:.1f} months."
+            f"{count} clients have a balance the monthly fee will empty in under "
+            f"{thresholds.months_until_empty:.1f} months, and have gone quiet."
+        )
+    if group.name == FEE_PRESSURE_ACTIVE_CONTRIBUTOR:
+        return (
+            f"{count} clients have a balance the monthly fee will empty in under "
+            f"{thresholds.months_until_empty:.1f} months, and are still paying in."
         )
     if group.name == VERY_SMALL_AND_QUIET:
         return (

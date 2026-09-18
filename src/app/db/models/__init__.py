@@ -25,6 +25,7 @@ from app.db.models.agent_insight import (
     AgentInsightFact,
 )
 from app.db.models.agent_permission import DEFAULT_PERMISSION, AgentPermission
+from app.db.models.agent_prompt import AgentPrompt
 from app.db.models.agent_proposal import PROPOSAL_STATUSES, AgentProposal, AgentProposalClient
 from app.db.models.agent_run import AGENT_RUN_STATES, AGENT_RUN_TRIGGERS, AgentRun, AgentToolCall
 from app.db.models.api import IdempotencyKey
@@ -101,6 +102,13 @@ from app.db.models.rules import (
     MessageAngleCatalog,
     TierContract,
 )
+from app.db.models.signals import (
+    SIGNAL_RUN_STATES,
+    ClientSignalSnapshot,
+    ClientSignalState,
+    SignalRun,
+    SignalThreshold,
+)
 from app.db.models.suppression import Suppression
 from app.db.models.template_generation_plan import TemplateGenerationPlan
 from app.db.models.template_policy import CampaignTemplatePolicy, TemplatePolicyConfigVersion
@@ -133,6 +141,7 @@ __all__ = [
     "PROPOSAL_STATUSES",
     "REVIEWER_ROLES",
     "REVIEW_OUTCOMES",
+    "SIGNAL_RUN_STATES",
     "TEMPLATE_REVIEW_OUTCOMES",
     "ActiveClientFund",
     "ActiveClientInteraction",
@@ -144,6 +153,7 @@ __all__ = [
     "AgentInsightClient",
     "AgentInsightFact",
     "AgentPermission",
+    "AgentPrompt",
     "AgentProposal",
     "AgentProposalClient",
     "AgentRun",
@@ -159,6 +169,8 @@ __all__ = [
     "ClientFund",
     "ClientMessageIndicators",
     "ClientRiskFeatures",
+    "ClientSignalSnapshot",
+    "ClientSignalState",
     "Clients",
     "ContactEvent",
     "DigestEmailSend",
@@ -195,6 +207,8 @@ __all__ = [
     "RiskRun",
     "RiskSnapshot",
     "SafetyPolicy",
+    "SignalRun",
+    "SignalThreshold",
     "Suppression",
     "TemplateGenerationPlan",
     "TemplatePolicyConfigVersion",

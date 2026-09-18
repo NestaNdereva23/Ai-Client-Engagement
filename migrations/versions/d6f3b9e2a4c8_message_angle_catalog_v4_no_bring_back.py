@@ -6,13 +6,12 @@ Create Date: 2026-09-01 09:00:00.000000
 """
 
 from collections.abc import Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.orm import Session
 
-from app.rules.catalog import AngleSpec, save_catalog_version
+from app.rules.catalog import AngleSpec
 
 revision: str = "d6f3b9e2a4c8"
 down_revision: str | Sequence[str] | None = "a7f2c4b9e1d6"
@@ -302,17 +301,53 @@ _ANGLES = [
     ),
 ]
 
+# family and tone are not yet columns on message_angle_catalog at this point
+# in the migration chain (they are added by later migrations), so this
+# writes against a table snapshot frozen to what exists here rather than the
+# live ORM model, which always reflects every column added since. Inserting
+# through the live model would ask for columns that do not exist yet on a
+# database built from scratch.
 message_angle_catalog = sa.table(
     "message_angle_catalog",
     sa.column("version", sa.Integer),
+    sa.column("angle", sa.Text),
+    sa.column("headline", sa.Text),
+    sa.column("who", sa.Text),
+    sa.column("claim", sa.Text),
+    sa.column("ask", sa.Text),
+    sa.column("never", sa.Text),
+    sa.column("use", sa.Text),
+    sa.column("held", sa.Boolean),
+    sa.column("valid_from", sa.Date),
     sa.column("valid_to", sa.Date),
+    sa.column("status", sa.Text),
+    sa.column("published_at", sa.DateTime(timezone=True)),
 )
 
 
 def upgrade() -> None:
-    session = Session(bind=op.get_bind())
-    save_catalog_version(session, 4, _ANGLES, valid_from=_VALID_FROM)
-    session.flush()
+    published_at = datetime.now(UTC)
+    op.bulk_insert(
+        message_angle_catalog,
+        [
+            {
+                "version": 4,
+                "angle": spec.angle,
+                "headline": spec.headline,
+                "who": spec.who,
+                "claim": spec.claim,
+                "ask": spec.ask,
+                "never": spec.never,
+                "use": spec.use,
+                "held": spec.held,
+                "valid_from": _VALID_FROM,
+                "valid_to": None,
+                "status": "published",
+                "published_at": published_at,
+            }
+            for spec in _ANGLES
+        ],
+    )
     op.execute(
         message_angle_catalog.update()
         .where(message_angle_catalog.c.version == 3)

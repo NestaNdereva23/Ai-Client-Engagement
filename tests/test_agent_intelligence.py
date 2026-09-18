@@ -29,7 +29,7 @@ from app.agents.intelligence import (
     run_intelligence_agent,
 )
 from app.agents.watchlist import (
-    FEES_WILL_EMPTY,
+    FEE_PRESSURE_GONE_QUIET,
     GROUP_NAMES,
     VERY_SMALL_AND_QUIET,
     WatchlistThresholds,
@@ -298,10 +298,10 @@ def test_every_group_has_a_question_and_the_last_one_has_no_filter() -> None:
 
 async def test_a_run_writes_several_findings_and_hangs_a_fact_on_one(book: None) -> None:
     scripts = {
-        FEES_WILL_EMPTY: [
+        FEE_PRESSURE_GONE_QUIET: [
             _calls(
-                _write("The fee will empty these accounts", FEES_WILL_EMPTY),
-                _write("A few of them still pay in", FEES_WILL_EMPTY, kind="opportunity"),
+                _write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET),
+                _write("A few of them still pay in", FEE_PRESSURE_GONE_QUIET, kind="opportunity"),
             ),
             _final_answer("Two findings written."),
         ],
@@ -326,7 +326,7 @@ async def test_a_run_writes_several_findings_and_hangs_a_fact_on_one(book: None)
 
     assert run.state == "completed"
     assert len(insights) == 3
-    assert outcomes[FEES_WILL_EMPTY] == WROTE_SOMETHING
+    assert outcomes[FEE_PRESSURE_GONE_QUIET] == WROTE_SOMETHING
     assert outcomes[VERY_SMALL_AND_QUIET] == WROTE_SOMETHING
     assert len(facts) == 1
     assert facts[0].source_filter == {"conditions": HIGH_RISK_FILTER}
@@ -335,11 +335,11 @@ async def test_a_run_writes_several_findings_and_hangs_a_fact_on_one(book: None)
 
 async def test_a_group_may_produce_several_findings_and_another_none(book: None) -> None:
     scripts = {
-        FEES_WILL_EMPTY: [
+        FEE_PRESSURE_GONE_QUIET: [
             _calls(
-                _write("One", FEES_WILL_EMPTY),
-                _write("Two", FEES_WILL_EMPTY),
-                _write("Three", FEES_WILL_EMPTY),
+                _write("One", FEE_PRESSURE_GONE_QUIET),
+                _write("Two", FEE_PRESSURE_GONE_QUIET),
+                _write("Three", FEE_PRESSURE_GONE_QUIET),
             ),
             _final_answer("Three findings written."),
         ],
@@ -356,7 +356,7 @@ async def test_a_group_may_produce_several_findings_and_another_none(book: None)
         outcomes = _outcome_names(session, run_id)
 
     assert len(insights) == 3
-    assert outcomes[FEES_WILL_EMPTY] == WROTE_SOMETHING
+    assert outcomes[FEE_PRESSURE_GONE_QUIET] == WROTE_SOMETHING
     assert outcomes[VERY_SMALL_AND_QUIET] == FOUND_NOTHING
 
 
@@ -384,7 +384,7 @@ async def test_a_run_that_finds_nothing_says_so(book: None) -> None:
 
 async def test_a_group_that_runs_out_of_turns_does_not_stop_the_rest(book: None) -> None:
     scripts = {
-        FEES_WILL_EMPTY: [
+        FEE_PRESSURE_GONE_QUIET: [
             _calls(("list_groups", {"as_of": AS_OF.isoformat()})),
             _calls(("list_groups", {"as_of": AS_OF.isoformat()})),
         ],
@@ -402,7 +402,7 @@ async def test_a_group_that_runs_out_of_turns_does_not_stop_the_rest(book: None)
         outcomes = _outcome_names(session, run_id)
 
     assert run.state == "completed"
-    assert outcomes[FEES_WILL_EMPTY] == RAN_OUT_OF_TURNS
+    assert outcomes[FEE_PRESSURE_GONE_QUIET] == RAN_OUT_OF_TURNS
     assert outcomes[VERY_SMALL_AND_QUIET] == WROTE_SOMETHING
     assert len(insights) == 1
     assert "1 ran out of turns before finishing." in run.summary
@@ -410,9 +410,9 @@ async def test_a_group_that_runs_out_of_turns_does_not_stop_the_rest(book: None)
 
 async def test_a_write_tool_refusing_is_recorded_and_the_group_carries_on(book: None) -> None:
     scripts = {
-        FEES_WILL_EMPTY: [
-            _calls(_write("A finding of an unknown kind", FEES_WILL_EMPTY, kind="hunch")),
-            _calls(_write("The same finding, written properly", FEES_WILL_EMPTY)),
+        FEE_PRESSURE_GONE_QUIET: [
+            _calls(_write("A finding of an unknown kind", FEE_PRESSURE_GONE_QUIET, kind="hunch")),
+            _calls(_write("The same finding, written properly", FEE_PRESSURE_GONE_QUIET)),
             _final_answer("Corrected and written."),
         ],
     }
@@ -436,7 +436,7 @@ async def test_a_write_tool_refusing_is_recorded_and_the_group_carries_on(book: 
 
 async def test_one_group_failing_leaves_the_others_finished(book: None) -> None:
     scripts = {
-        FEES_WILL_EMPTY: [_raising_turn],
+        FEE_PRESSURE_GONE_QUIET: [_raising_turn],
         VERY_SMALL_AND_QUIET: [
             _calls(_write("Found while another group failed", VERY_SMALL_AND_QUIET)),
             _final_answer("One finding written."),
@@ -455,17 +455,17 @@ async def test_one_group_failing_leaves_the_others_finished(book: None) -> None:
 
     assert run.state == "completed"
     assert run.failure_reason is None
-    assert outcomes[FEES_WILL_EMPTY] == FAILED
+    assert outcomes[FEE_PRESSURE_GONE_QUIET] == FAILED
     assert outcomes[VERY_SMALL_AND_QUIET] == WROTE_SOMETHING
     assert len(insights) == 1
     assert {"gather", "investigate_group", "report"} <= actions
-    assert f"could not be looked at at all: {FEES_WILL_EMPTY}" in run.summary
+    assert f"could not be looked at at all: {FEE_PRESSURE_GONE_QUIET}" in run.summary
 
 
 async def test_a_failing_group_never_leaves_a_half_written_finding(book: None) -> None:
     scripts = {
-        FEES_WILL_EMPTY: [
-            _calls(_write("Written just before the model died", FEES_WILL_EMPTY)),
+        FEE_PRESSURE_GONE_QUIET: [
+            _calls(_write("Written just before the model died", FEE_PRESSURE_GONE_QUIET)),
             _raising_turn,
         ],
     }
@@ -477,15 +477,15 @@ async def test_a_failing_group_never_leaves_a_half_written_finding(book: None) -
         outcomes = _outcome_names(session, run_id)
 
     assert insights == []
-    assert outcomes[FEES_WILL_EMPTY] == FAILED
+    assert outcomes[FEE_PRESSURE_GONE_QUIET] == FAILED
 
 
 def _side_by_side_scripts() -> dict[str, list]:
     return {
-        FEES_WILL_EMPTY: [
+        FEE_PRESSURE_GONE_QUIET: [
             _calls(
-                _write("The fee will empty these accounts", FEES_WILL_EMPTY),
-                _write("Some still pay in", FEES_WILL_EMPTY, kind="opportunity"),
+                _write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET),
+                _write("Some still pay in", FEE_PRESSURE_GONE_QUIET, kind="opportunity"),
             ),
             _final_answer("Two findings written."),
         ],
@@ -538,8 +538,8 @@ async def _traced_run(scripts: dict[str, list], **kwargs) -> tuple[int, FakeTrac
 
 async def test_every_step_traces_without_a_client_id(book: None) -> None:
     scripts = {
-        FEES_WILL_EMPTY: [
-            _calls(_write("The fee will empty these accounts", FEES_WILL_EMPTY)),
+        FEE_PRESSURE_GONE_QUIET: [
+            _calls(_write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET)),
             _final_answer("One finding written."),
         ],
     }
@@ -556,8 +556,8 @@ async def test_every_step_traces_without_a_client_id(book: None) -> None:
 
 async def test_each_group_is_a_span_of_its_own_under_the_investigate_step(book: None) -> None:
     scripts = {
-        FEES_WILL_EMPTY: [
-            _calls(_write("The fee will empty these accounts", FEES_WILL_EMPTY)),
+        FEE_PRESSURE_GONE_QUIET: [
+            _calls(_write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET)),
             _final_answer("One finding written."),
         ],
     }
@@ -567,8 +567,8 @@ async def test_each_group_is_a_span_of_its_own_under_the_investigate_step(book: 
     groups = tracer.of_type("agent")
     assert {span["name"] for span in groups} == set(GROUP_QUESTIONS)
     assert {span["parent"] for span in groups} == {"investigate"}
-    fees = tracer.named(FEES_WILL_EMPTY)[0]
-    assert fees["input"]["question"] == question_for(FEES_WILL_EMPTY)
+    fees = tracer.named(FEE_PRESSURE_GONE_QUIET)[0]
+    assert fees["input"]["question"] == question_for(FEE_PRESSURE_GONE_QUIET)
     assert fees["output"]["outcome"] == WROTE_SOMETHING
     assert fees["output"]["insight_titles"] == ["The fee will empty these accounts"]
 
@@ -577,15 +577,17 @@ async def test_every_model_call_is_a_generation_span_with_its_model_and_tokens(
     book: None,
 ) -> None:
     scripts = {
-        FEES_WILL_EMPTY: [
-            _calls(_write("The fee will empty these accounts", FEES_WILL_EMPTY)),
+        FEE_PRESSURE_GONE_QUIET: [
+            _calls(_write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET)),
             _final_answer("One finding written."),
         ],
     }
 
     _run_id, tracer = await _traced_run(scripts)
 
-    calls = [span for span in tracer.of_type("generation") if span["parent"] == FEES_WILL_EMPTY]
+    calls = [
+        span for span in tracer.of_type("generation") if span["parent"] == FEE_PRESSURE_GONE_QUIET
+    ]
     assert len(calls) == 2
     for span in calls:
         assert span["model"] == ScriptedAsyncClient.model
@@ -602,8 +604,11 @@ async def test_every_model_call_is_a_generation_span_with_its_model_and_tokens(
 async def test_every_tool_call_is_a_span_carrying_what_was_asked_and_answered(book: None) -> None:
     measure = ("measure_slice", {"conditions": HIGH_RISK_FILTER, "measures": ["client_count"]})
     scripts = {
-        FEES_WILL_EMPTY: [
-            _calls(measure, _write("A finding of an unknown kind", FEES_WILL_EMPTY, kind="hunch")),
+        FEE_PRESSURE_GONE_QUIET: [
+            _calls(
+                measure,
+                _write("A finding of an unknown kind", FEE_PRESSURE_GONE_QUIET, kind="hunch"),
+            ),
             _final_answer("Looked and got one refusal."),
         ],
     }
@@ -612,7 +617,7 @@ async def test_every_tool_call_is_a_span_carrying_what_was_asked_and_answered(bo
 
     asked = tracer.named("measure_slice")[0]
     assert asked["as_type"] == "tool"
-    assert asked["parent"] == FEES_WILL_EMPTY
+    assert asked["parent"] == FEE_PRESSURE_GONE_QUIET
     assert asked["input"] == {"conditions": HIGH_RISK_FILTER, "measures": ["client_count"]}
     assert "measures" in asked["output"]
     assert asked["level"] is None
@@ -625,11 +630,11 @@ async def test_every_tool_call_is_a_span_carrying_what_was_asked_and_answered(bo
 async def test_a_failing_group_is_marked_on_the_trace_and_the_run_still_flushes(
     book: None,
 ) -> None:
-    scripts = {FEES_WILL_EMPTY: [_raising_turn]}
+    scripts = {FEE_PRESSURE_GONE_QUIET: [_raising_turn]}
 
     _run_id, tracer = await _traced_run(scripts)
 
-    failed = tracer.named(FEES_WILL_EMPTY)[0]
+    failed = tracer.named(FEE_PRESSURE_GONE_QUIET)[0]
     assert failed["level"] == "ERROR"
     assert failed["output"]["outcome"] == FAILED
     assert tracer.flushes == 1
@@ -637,8 +642,8 @@ async def test_a_failing_group_is_marked_on_the_trace_and_the_run_still_flushes(
 
 async def test_the_run_records_its_tokens_and_where_to_read_the_trace(book: None) -> None:
     scripts = {
-        FEES_WILL_EMPTY: [
-            _calls(_write("The fee will empty these accounts", FEES_WILL_EMPTY)),
+        FEE_PRESSURE_GONE_QUIET: [
+            _calls(_write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET)),
             _final_answer("One finding written."),
         ],
     }
@@ -713,7 +718,7 @@ async def test_one_group_spending_its_queries_does_not_starve_another(book: None
     measure = ("measure_slice", {"conditions": HIGH_RISK_FILTER, "measures": ["client_count"]})
     scripts = {
         name: [_calls(measure), _calls(measure), _final_answer("Counted what I could.")]
-        for name in (FEES_WILL_EMPTY, VERY_SMALL_AND_QUIET)
+        for name in (FEE_PRESSURE_GONE_QUIET, VERY_SMALL_AND_QUIET)
     }
 
     run_id = await _run(scripts, query_budget=1)

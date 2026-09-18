@@ -120,6 +120,17 @@ class ClientSuppressionOut(BaseModel):
     created_at: datetime | None
 
 
+class ClientAgentActivityOut(BaseModel):
+    proposal_id: int
+    action_code: str
+    card_title: str
+    included: bool
+    skip_reason: str | None
+    status: str
+    created_at: datetime
+    decided_at: datetime | None
+
+
 class ClientProfileOut(BaseModel):
     identity: ClientIdentityOut
     bands: ClientBandsOut
@@ -131,6 +142,7 @@ class ClientProfileOut(BaseModel):
     outreach_messages: list[ClientOutreachMessageOut]
     contact_events: list[ClientContactEventOut]
     suppression: ClientSuppressionOut
+    agent_activity: list[ClientAgentActivityOut]
     call_brief: str | None
 
 

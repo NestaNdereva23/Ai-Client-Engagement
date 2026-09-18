@@ -48,6 +48,9 @@ class AngleSpec:
     never: str
     use: str
     held: bool = False
+    cta: str | None = None
+    family: str | None = None
+    tone: str | None = None
 
 
 def validate_angles(angles: Sequence[AngleSpec]) -> None:
@@ -96,6 +99,9 @@ def save_catalog_version(
             never=spec.never,
             use=spec.use,
             held=spec.held,
+            cta=spec.cta,
+            family=spec.family,
+            tone=spec.tone,
             valid_from=valid_from,
             valid_to=valid_to,
             status="published",

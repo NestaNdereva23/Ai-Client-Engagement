@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.audit.log import record_audit
+from app.config import get_settings
 from app.db.models.agent import PERMISSION_LEVELS
 from app.db.models.agent_permission import DEFAULT_PERMISSION, AgentPermission
 
@@ -55,14 +56,27 @@ def resolve_permission(
     return None
 
 
+APPROVE_EACH = "approve_each"
+
+
 def effective_permission(
     session: Session,
     action_code: str,
     *,
     priority_tier: str | None = None,
     risk_band: str | None = None,
+    money_total_kes: float | None = None,
+    money_ceiling_kes: float | None = None,
 ) -> str:
     """The level in force, falling back to the safest one when nothing is set."""
+    if get_settings().agent_force_approve_each:
+        return APPROVE_EACH
+    if (
+        money_ceiling_kes is not None
+        and money_total_kes is not None
+        and money_total_kes > money_ceiling_kes
+    ):
+        return APPROVE_EACH
     row = resolve_permission(session, action_code, priority_tier=priority_tier, risk_band=risk_band)
     return DEFAULT_PERMISSION if row is None else row.permission
 

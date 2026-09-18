@@ -94,6 +94,8 @@ class MessageAngleCatalog(Base):
     # Nullable: version 1 predates this field and is never rewritten to add it.
     use: Mapped[str | None] = mapped_column(Text, nullable=True)
     cta: Mapped[str | None] = mapped_column(Text, nullable=True)
+    family: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tone: Mapped[str | None] = mapped_column(Text, nullable=True)
     # A client still resolves, generates, and reviews normally; only the
     # final send is held. Lifted by a catalogue change, not a deploy.
     held: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))

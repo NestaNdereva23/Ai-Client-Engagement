@@ -14,13 +14,12 @@ back, so this version only adds.
 """
 
 from collections.abc import Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.orm import Session
 
-from app.rules.catalog import AngleSpec, load_active_angles, save_catalog_version
+from app.rules.catalog import AngleSpec
 
 revision: str = "b7c4e1d9f2a3"
 down_revision: str | Sequence[str] | None = "a1f5c60d28b7"
@@ -83,15 +82,56 @@ _NEW_ANGLES = [
     ),
 ]
 
+# family and tone are not yet columns on message_angle_catalog at this point
+# in the migration chain (they are added by later migrations), so both the
+# read and the write below go against a table snapshot frozen to what exists
+# here rather than the live ORM model, which always reflects every column
+# added since. Reading or inserting through the live model would ask for
+# columns that do not exist yet on a database built from scratch.
 message_angle_catalog = sa.table(
     "message_angle_catalog",
     sa.column("version", sa.Integer),
+    sa.column("angle", sa.Text),
+    sa.column("headline", sa.Text),
+    sa.column("who", sa.Text),
+    sa.column("claim", sa.Text),
+    sa.column("ask", sa.Text),
+    sa.column("never", sa.Text),
+    sa.column("use", sa.Text),
+    sa.column("held", sa.Boolean),
+    sa.column("valid_from", sa.Date),
     sa.column("valid_to", sa.Date),
+    sa.column("status", sa.Text),
+    sa.column("published_at", sa.DateTime(timezone=True)),
 )
 
 
-def _carried_over(session: Session) -> list[AngleSpec]:
-    """Every angle in force today, exactly as it reads now."""
+def _carried_over(bind) -> list[AngleSpec]:
+    """Every angle in force today, exactly as it reads now.
+
+    Mirrors active_catalog_version's own selection: the single version with
+    the latest valid_from that has started and not ended, not every row that
+    happens to still be open, since an earlier version's rows are often left
+    open rather than explicitly closed.
+    """
+    active_version = bind.execute(
+        sa.select(message_angle_catalog.c.version)
+        .where(
+            message_angle_catalog.c.valid_from <= _VALID_FROM,
+            sa.or_(
+                message_angle_catalog.c.valid_to.is_(None),
+                message_angle_catalog.c.valid_to > _VALID_FROM,
+            ),
+        )
+        .order_by(message_angle_catalog.c.valid_from.desc(), message_angle_catalog.c.version.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if active_version is None:
+        return []
+
+    rows = bind.execute(
+        sa.select(message_angle_catalog).where(message_angle_catalog.c.version == active_version)
+    ).all()
     return [
         AngleSpec(
             angle=row.angle,
@@ -103,16 +143,34 @@ def _carried_over(session: Session) -> list[AngleSpec]:
             use=row.use,
             held=row.held,
         )
-        for row in load_active_angles(session, _VALID_FROM).values()
+        for row in rows
     ]
 
 
 def upgrade() -> None:
-    session = Session(bind=op.get_bind())
-    save_catalog_version(
-        session, _VERSION, [*_carried_over(session), *_NEW_ANGLES], valid_from=_VALID_FROM
+    bind = op.get_bind()
+    published_at = datetime.now(UTC)
+    op.bulk_insert(
+        message_angle_catalog,
+        [
+            {
+                "version": _VERSION,
+                "angle": spec.angle,
+                "headline": spec.headline,
+                "who": spec.who,
+                "claim": spec.claim,
+                "ask": spec.ask,
+                "never": spec.never,
+                "use": spec.use,
+                "held": spec.held,
+                "valid_from": _VALID_FROM,
+                "valid_to": None,
+                "status": "published",
+                "published_at": published_at,
+            }
+            for spec in [*_carried_over(bind), *_NEW_ANGLES]
+        ],
     )
-    session.flush()
     op.execute(
         message_angle_catalog.update()
         .where(message_angle_catalog.c.version == _PREVIOUS)

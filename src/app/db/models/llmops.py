@@ -56,6 +56,7 @@ class GenerationRun(Base):
     safety_policy_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_policy_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     personalization_policy_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    base_instructions_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     prompt_version_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("prompt_versions.prompt_version_id"), nullable=False
     )

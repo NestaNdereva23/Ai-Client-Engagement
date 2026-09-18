@@ -11,7 +11,9 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select, text
 
+from app.agents.watchlist import VERY_SMALL_AND_QUIET
 from app.config import Settings
+from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.audit import AuditLog
 from app.db.models.campaigns import CampaignStep, ContactEvent, Enrollment, TouchLog
 from app.db.models.llmops import GenerationRun
@@ -300,6 +302,7 @@ def test_get_client_profile_empty_history_is_empty_lists_not_missing_keys(two_cl
     assert body["touch_log"] == []
     assert body["outreach_messages"] == []
     assert body["contact_events"] == []
+    assert body["agent_activity"] == []
     assert body["suppression"] == {
         "is_suppressed": False,
         "reason": None,
@@ -337,6 +340,55 @@ def test_get_client_profile_reports_suppression_reason(profile_client) -> None:
     suppression = response.json()["suppression"]
     assert suppression["is_suppressed"] is True
     assert suppression["reason"] == "test_suppressed"
+
+
+@pytest.fixture
+def client_with_agent_activity(two_clients):
+    first_id, _second_id, fund_id = two_clients
+    with SessionLocal() as session:
+        proposal = AgentProposal(
+            action_code="start_win_back",
+            catalog_version=1,
+            group_name=VERY_SMALL_AND_QUIET,
+            client_count=1,
+            evidence="one dormant client with a small, quiet balance",
+            reason="win back before they close the account",
+            permission_applied="suggest_only",
+        )
+        session.add(proposal)
+        session.flush()
+        session.add(
+            AgentProposalClient(
+                proposal_id=proposal.proposal_id,
+                client_id=first_id,
+                unit_fund_id=fund_id,
+                included=True,
+            )
+        )
+        session.commit()
+        proposal_id = proposal.proposal_id
+
+    yield first_id, proposal_id
+
+    with SessionLocal() as session:
+        session.execute(
+            delete(AgentProposalClient).where(AgentProposalClient.proposal_id == proposal_id)
+        )
+        session.execute(delete(AgentProposal).where(AgentProposal.proposal_id == proposal_id))
+        session.commit()
+
+
+def test_get_client_profile_includes_agent_activity(client_with_agent_activity) -> None:
+    first_id, proposal_id = client_with_agent_activity
+    response = client.get(f"{CLIENTS}/{first_id}/profile")
+    assert response.status_code == 200
+    activity = response.json()["agent_activity"]
+    assert len(activity) == 1
+    assert activity[0]["proposal_id"] == proposal_id
+    assert activity[0]["action_code"] == "start_win_back"
+    assert activity[0]["card_title"] == "Reconnect with clients who have gone quiet"
+    assert activity[0]["included"] is True
+    assert activity[0]["skip_reason"] is None
 
 
 def test_get_client_profile_returns_the_latest_approved_call_brief(approved_call_brief) -> None:

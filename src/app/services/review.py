@@ -42,7 +42,13 @@ from app.campaigns.cohorts import CohortSlot, resolve_cohort_slot
 from app.db.models.llmops import Evaluation, GenerationRun, PromptVersion
 from app.db.models.message_template import MessageTemplate
 from app.db.models.models import Clients, Funds, PiiVault
-from app.db.models.outreach import REVIEW_OUTCOMES, OutreachMessage, ReviewAction, ReviewCohort
+from app.db.models.outreach import (
+    REVIEW_OUTCOMES,
+    Campaign,
+    OutreachMessage,
+    ReviewAction,
+    ReviewCohort,
+)
 from app.db.models.rules import MessageAngleCatalog, TierContract
 from app.db.models.views import llm_client_context
 from app.db.session import restricted_session
@@ -508,7 +514,12 @@ def instantiate_message_for_template(
 
 
 def _pending_messages_filters(
-    *, status: str, campaign_id: int | None, only_sampled: bool, channel: str | None = None
+    *,
+    status: str,
+    campaign_id: int | None,
+    only_sampled: bool,
+    channel: str | None = None,
+    campaign_type: str | None = None,
 ) -> list[Any]:
     """The where-clauses list_pending_messages and count_pending_messages
     both filter on -- kept in one place so a count can never drift from
@@ -517,6 +528,12 @@ def _pending_messages_filters(
     clauses: list[Any] = [OutreachMessage.status == status]
     if campaign_id is not None:
         clauses.append(OutreachMessage.campaign_id == campaign_id)
+    if campaign_type is not None:
+        clauses.append(
+            OutreachMessage.campaign_id.in_(
+                select(Campaign.campaign_id).where(Campaign.campaign_type == campaign_type)
+            )
+        )
     if channel is not None:
         clauses.append(OutreachMessage.channel == channel)
     if only_sampled:
@@ -533,6 +550,7 @@ def list_pending_messages(
     campaign_id: int | None = None,
     only_sampled: bool = True,
     channel: str | None = None,
+    campaign_type: str | None = None,
     order: ReviewOrder = "oldest_first",
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
@@ -555,7 +573,11 @@ def list_pending_messages(
     """
     limit = clamp_limit(limit)
     filters = _pending_messages_filters(
-        status=status, campaign_id=campaign_id, only_sampled=only_sampled, channel=channel
+        status=status,
+        campaign_id=campaign_id,
+        only_sampled=only_sampled,
+        channel=channel,
+        campaign_type=campaign_type,
     )
     query = select(OutreachMessage).where(*filters)
     key = tuple_(OutreachMessage.created_at, OutreachMessage.message_id)
@@ -641,6 +663,7 @@ def count_pending_messages(
     campaign_id: int | None = None,
     only_sampled: bool = True,
     channel: str | None = None,
+    campaign_type: str | None = None,
 ) -> int:
     """How many messages list_pending_messages' filters would return in
     total, across every page -- what a queue badge shows.
@@ -650,7 +673,11 @@ def count_pending_messages(
         .select_from(OutreachMessage)
         .where(
             *_pending_messages_filters(
-                status=status, campaign_id=campaign_id, only_sampled=only_sampled, channel=channel
+                status=status,
+                campaign_id=campaign_id,
+                only_sampled=only_sampled,
+                channel=channel,
+                campaign_type=campaign_type,
             )
         )
     )

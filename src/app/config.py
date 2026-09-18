@@ -173,9 +173,15 @@ class Settings(BaseSettings):
 
     campaign_cooldown_days: int = 7
 
-    agent_new_client_days: int = 30
+    agent_new_client_days: int = 7
     agent_awaiting_call_days: int = 2
-    agent_contact_cooldown_days: int = 7
+    agent_contact_cooldown_days: int = 1
+
+    agent_daily_send_limit: int | None = None
+    agent_first_run_limit: int = 5
+    agent_force_approve_each: bool = False
+
+    signal_situation_source: Literal["legacy", "situations"] = "legacy"
 
     # What one investigation of a group may spend on its own queries.
     agent_query_call_budget: int = 12
@@ -188,7 +194,7 @@ class Settings(BaseSettings):
     agent_query_min_group_size: int = 5
 
     # How many findings one agent run may write, so a screen cannot be flooded.
-    agent_insight_write_cap: int = 8
+    agent_insight_write_cap: int = 20
 
     # Watching a run as it happens. The open limit is what stops many idle
     # browsers holding a database connection each; the keep alive is what

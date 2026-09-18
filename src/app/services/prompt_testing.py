@@ -106,6 +106,7 @@ def generate_test_draft(
     safety_version: int | None,
     output_version: int | None,
     personalization_version: int | None,
+    base_instructions_version: int | None = None,
     client_id: int | None = None,
     fact_profile: dict[str, Any] | None = None,
     product: str = "money market",
@@ -158,6 +159,7 @@ def generate_test_draft(
         tier_contract_version=tier_version,
         angle=angle,
         channel=channel,
+        base_instructions_version=base_instructions_version,
     )
 
     graph = build_generation_graph(

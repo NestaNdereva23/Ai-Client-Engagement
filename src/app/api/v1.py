@@ -8,6 +8,7 @@ from app.api.routers import (
     agent_insights,
     agent_proposals,
     agent_runs,
+    agent_studio,
     audit,
     briefing,
     campaigns,
@@ -22,6 +23,7 @@ from app.api.routers import (
     review,
     risk,
     rules,
+    situations,
     templates,
 )
 
@@ -46,3 +48,5 @@ router.include_router(digest.router)
 router.include_router(briefing.router)
 router.include_router(active_clients.router)
 router.include_router(delivery.router)
+router.include_router(situations.router)
+router.include_router(agent_studio.router)

@@ -119,6 +119,7 @@ def persist_generation_run(
         safety_policy_version=state.get("safety_policy_version"),
         output_policy_version=state.get("output_policy_version"),
         personalization_policy_version=state.get("personalization_policy_version"),
+        base_instructions_version=state.get("base_instructions_version"),
         prompt_version_id=prompt_version.prompt_version_id,
         model_version_id=model_version.model_version_id,
         status=state["status"],

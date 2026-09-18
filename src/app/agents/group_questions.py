@@ -13,7 +13,8 @@ place in the system it is allowed to find something nobody asked about.
 from __future__ import annotations
 
 from app.agents.watchlist import (
-    FEES_WILL_EMPTY,
+    FEE_PRESSURE_ACTIVE_CONTRIBUTOR,
+    FEE_PRESSURE_GONE_QUIET,
     GETTING_SMALLER,
     HEALTHY_ONE_FUND,
     MORE_URGENT_BUT_NOT_CALLED,
@@ -28,7 +29,10 @@ GROUP_QUESTIONS: dict[str, str] = {
     SIGNED_UP_RECENTLY: (
         "Who has not built a habit of paying in, and who is doing fine on their own?"
     ),
-    FEES_WILL_EMPTY: "Which of these can still be saved, and which are already gone?",
+    FEE_PRESSURE_GONE_QUIET: "Which of these can still be saved, and which are already gone?",
+    FEE_PRESSURE_ACTIVE_CONTRIBUTOR: (
+        "Which of these are worth a nudge to keep going, and which are fine as they are?"
+    ),
     VERY_SMALL_AND_QUIET: (
         "Which of these are worth winning back, and which are too small to chase?"
     ),

@@ -47,6 +47,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.agents.agent_loop import AgentRunInProgress, run_nightly_agent
+from app.agents.signals import recompute_all_signals
+from app.agents.situations import recompute_all_situations
+from app.agents.watchlist import load_thresholds
 from app.audit.log import record_audit
 from app.campaigns.nurture_bridge import enroll_auto_checkin_clients
 from app.config import get_settings
@@ -424,6 +427,7 @@ class RiskDetectionWorker:
             self._enroll_auto_checkin(changes)
             self._send_digest_emails(digest_run.digest_run_id, allocation.covering)
             self._warm_narratives(digest_run.digest_run_id)
+            self._recompute_signals_and_situations(run.reference_ts.date(), run.run_id)
             self._run_agent(run.reference_ts.date())
 
             result = RiskRunResult(
@@ -499,6 +503,27 @@ class RiskDetectionWorker:
                 send_digest_emails(session, digest_run_id, covering=covering)
         except Exception:
             logger.exception("risk_detection.digest_email_failed", digest_run_id=digest_run_id)
+
+    def _recompute_signals_and_situations(self, as_of: date, risk_run_id: str) -> None:
+        try:
+            with self._session_factory() as session:
+                thresholds = load_thresholds(session, as_of)
+                signal_run = recompute_all_signals(
+                    session,
+                    as_of,
+                    months_until_empty_threshold=thresholds.months_until_empty,
+                    small_balance_threshold=thresholds.small_balance,
+                    awaiting_call_days=thresholds.awaiting_call_days,
+                    risk_run_id=risk_run_id,
+                )
+                recompute_all_situations(session, as_of, signal_run.run_id)
+                logger.info(
+                    "risk_detection.signals_recomputed",
+                    signal_run_id=signal_run.run_id,
+                    risk_run_id=risk_run_id,
+                )
+        except Exception:
+            logger.exception("risk_detection.signal_recompute_failed", risk_run_id=risk_run_id)
 
     def _run_agent(self, as_of: date) -> None:
         """Start the agent once this risk run has finished, when the setting

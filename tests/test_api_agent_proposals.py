@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 
+from app.agents.watchlist import VERY_SMALL_AND_QUIET
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.audit import AuditLog
 from app.db.session import SessionLocal
@@ -38,7 +39,7 @@ def proposal(db: None):
         row = AgentProposal(
             action_code="start_win_back",
             catalog_version=1,
-            group_name="very small and quiet",
+            group_name=VERY_SMALL_AND_QUIET,
             client_count=2,
             money_total_kes=4_500.0,
             evidence="two dormant clients with a small, quiet balance",
@@ -86,7 +87,7 @@ def test_list_proposals_returns_counts_and_money_never_names(proposal: int) -> N
     assert row["client_count"] == 2
     assert row["included_count"] == 1
     assert row["money_total_kes"] == 4_500.0
-    assert row["group_name"] == "very small and quiet"
+    assert row["group_name"] == VERY_SMALL_AND_QUIET
     assert "client_id" not in row
     assert body["total_count"] >= 1
 
@@ -119,14 +120,51 @@ def test_get_proposal_returns_the_breakdown_of_who_was_left_out(proposal: int) -
     assert body["evidence"]
     assert body["reason"]
     assert body["included_count"] == 1
-    by_client = {row["client_id"]: row for row in body["clients"]}
+    assert "clients" not in body
+
+
+def test_get_proposal_404_when_missing(db: None) -> None:
+    response = client.get(f"{PROPOSALS}/0")
+    assert response.status_code == 404
+
+
+def test_list_proposal_clients_returns_who_was_in_and_out(proposal: int) -> None:
+    response = client.get(f"{PROPOSALS}/{proposal}/clients")
+    assert response.status_code == 200
+    body = response.json()
+    by_client = {row["client_id"]: row for row in body["items"]}
     assert by_client[INCLUDED_CLIENT]["included"] is True
     assert by_client[SKIPPED_CLIENT]["included"] is False
     assert by_client[SKIPPED_CLIENT]["skip_reason"] == "open_complaint"
 
 
-def test_get_proposal_404_when_missing(db: None) -> None:
-    response = client.get(f"{PROPOSALS}/0")
+def test_list_proposal_clients_filters_by_included(proposal: int) -> None:
+    response = client.get(f"{PROPOSALS}/{proposal}/clients", params={"included": "false"})
+    assert response.status_code == 200
+    ids = [row["client_id"] for row in response.json()["items"]]
+    assert ids == [SKIPPED_CLIENT]
+
+
+def test_list_proposal_clients_paginates_with_a_cursor(proposal: int) -> None:
+    first = client.get(f"{PROPOSALS}/{proposal}/clients", params={"limit": 1})
+    assert first.status_code == 200
+    first_body = first.json()
+    assert len(first_body["items"]) == 1
+    assert first_body["next_cursor"] is not None
+
+    second = client.get(
+        f"{PROPOSALS}/{proposal}/clients",
+        params={"limit": 1, "cursor": first_body["next_cursor"]},
+    )
+    assert second.status_code == 200
+    second_body = second.json()
+    assert len(second_body["items"]) == 1
+    assert second_body["next_cursor"] is None
+    assert first_body["items"][0]["client_id"] != second_body["items"][0]["client_id"]
+
+
+def test_list_proposal_clients_404_when_missing(db: None) -> None:
+    response = client.get(f"{PROPOSALS}/0/clients")
     assert response.status_code == 404
 
 

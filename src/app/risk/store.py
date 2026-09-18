@@ -10,13 +10,14 @@ not ended.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.db.models.risk import RiskConfigVersion
 from app.risk.signals import SIGNAL_FUNCS
+from app.rules import versioning
 
 # Every threshold a signal or a downstream stage reads by name; a config
 # missing one of these can't be saved.
@@ -82,7 +83,7 @@ def save_config_version(
     """
     validate_config(weights, thresholds)
 
-    if session.scalar(select(func.count()).where(RiskConfigVersion.version == version)):
+    if versioning.version_exists(session, "risk_config_version", version):
         raise RiskConfigValidationError(f"version {version} already exists and may not be mutated")
 
     row = RiskConfigVersion(
@@ -94,9 +95,17 @@ def save_config_version(
         digest_cap_per_group=digest_cap_per_group,
         valid_from=valid_from,
         valid_to=valid_to,
+        status="published",
+        published_at=datetime.now(UTC),
     )
     session.add(row)
     session.flush()
+
+    if valid_to is None:
+        versioning.record_published_version(
+            session, "risk_config_version", versioning.DEFAULT_COMPONENT_KEY, version
+        )
+
     return row
 
 

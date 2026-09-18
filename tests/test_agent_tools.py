@@ -26,7 +26,7 @@ from app.agents.tools import (
     search_knowledge,
 )
 from app.agents.watchlist import (
-    FEES_WILL_EMPTY,
+    FEE_PRESSURE_GONE_QUIET,
     GroupMember,
     WatchGroup,
     WatchlistConfigMissing,
@@ -58,7 +58,7 @@ def _member(client_id: int, unit_fund_id: int = FUND_ID, balance: float = 100_00
 
 
 def _stub_watchlist(monkeypatch, members: tuple[GroupMember, ...]) -> None:
-    group = WatchGroup(name=FEES_WILL_EMPTY, definition={}, members=members)
+    group = WatchGroup(name=FEE_PRESSURE_GONE_QUIET, definition={}, members=members)
     monkeypatch.setattr(tools_module, "load_thresholds", lambda session, as_of: THRESHOLDS)
     monkeypatch.setattr(
         tools_module, "build_watchlist", lambda session, as_of, thresholds: (group,)
@@ -76,7 +76,7 @@ def test_list_groups_reports_counts_and_money(db: None, monkeypatch) -> None:
         result = list_groups(session, as_of=AS_OF.isoformat())
     assert result["as_of"] == AS_OF.isoformat()
     [group] = result["groups"]
-    assert group["group_name"] == FEES_WILL_EMPTY
+    assert group["group_name"] == FEE_PRESSURE_GONE_QUIET
     assert group["client_count"] == 2
     assert group["fund_count"] == 2
     assert group["money_total_kes"] == 500_000.0
@@ -181,7 +181,9 @@ def test_describe_group_reports_bands_and_fund_spread(risk_book: None, monkeypat
         ),
     )
     with SessionLocal() as session:
-        result = describe_group(session, group_name=FEES_WILL_EMPTY, as_of=AS_OF.isoformat())
+        result = describe_group(
+            session, group_name=FEE_PRESSURE_GONE_QUIET, as_of=AS_OF.isoformat()
+        )
 
     assert result["client_count"] == 3
     assert result["risk_bands"] == {"Watch": 1, "High": 1}
@@ -193,7 +195,9 @@ def test_describe_group_reports_bands_and_fund_spread(risk_book: None, monkeypat
 def test_describe_group_is_empty_when_nobody_is_in_it(db: None, monkeypatch) -> None:
     _stub_watchlist(monkeypatch, ())
     with SessionLocal() as session:
-        result = describe_group(session, group_name=FEES_WILL_EMPTY, as_of=AS_OF.isoformat())
+        result = describe_group(
+            session, group_name=FEE_PRESSURE_GONE_QUIET, as_of=AS_OF.isoformat()
+        )
     assert result["client_count"] == 0
     assert result["risk_bands"] == {}
     assert result["fund_spread"] == {}
@@ -334,7 +338,7 @@ def contact_history_proposal(db: None):
         proposal = AgentProposal(
             action_code="fee_warning",
             catalog_version=1,
-            group_name=FEES_WILL_EMPTY,
+            group_name=FEE_PRESSURE_GONE_QUIET,
             client_count=1,
             money_total_kes=250_000.0,
             evidence="one client fits the fee warning group",
@@ -369,7 +373,7 @@ def test_get_contact_history_reports_the_most_recent_proposal(
     contact_history_proposal: int,
 ) -> None:
     with SessionLocal() as session:
-        result = get_contact_history(session, group_name=FEES_WILL_EMPTY)
+        result = get_contact_history(session, group_name=FEE_PRESSURE_GONE_QUIET)
     assert result["ever_proposed"] is True
     assert result["action_code"] == "fee_warning"
     assert result["status"] == "proposed"
@@ -466,7 +470,7 @@ def test_estimate_cost_prices_the_whole_group(db: None, monkeypatch) -> None:
     _stub_watchlist(monkeypatch, (_member(CLIENT_A), _member(CLIENT_B), _member(CLIENT_C)))
     with SessionLocal() as session:
         config = active_generation_cost_config(session, DEFAULT_MODEL, AS_OF)
-        result = estimate_cost(session, group_name=FEES_WILL_EMPTY, as_of=AS_OF.isoformat())
+        result = estimate_cost(session, group_name=FEE_PRESSURE_GONE_QUIET, as_of=AS_OF.isoformat())
 
     assert result["client_count"] == 3
     assert result["model"] == DEFAULT_MODEL
@@ -476,7 +480,7 @@ def test_estimate_cost_prices_the_whole_group(db: None, monkeypatch) -> None:
 def test_estimate_cost_is_zero_for_an_empty_group(db: None, monkeypatch) -> None:
     _stub_watchlist(monkeypatch, ())
     with SessionLocal() as session:
-        result = estimate_cost(session, group_name=FEES_WILL_EMPTY, as_of=AS_OF.isoformat())
+        result = estimate_cost(session, group_name=FEE_PRESSURE_GONE_QUIET, as_of=AS_OF.isoformat())
     assert result["client_count"] == 0
     assert result["total_cost_kes"] == 0
 
@@ -491,7 +495,10 @@ def test_estimate_cost_refuses_an_unpriced_model(db: None, monkeypatch) -> None:
     _stub_watchlist(monkeypatch, (_member(CLIENT_A),))
     with SessionLocal() as session:
         result = estimate_cost(
-            session, group_name=FEES_WILL_EMPTY, model="claude-mythos-5", as_of=AS_OF.isoformat()
+            session,
+            group_name=FEE_PRESSURE_GONE_QUIET,
+            model="claude-mythos-5",
+            as_of=AS_OF.isoformat(),
         )
     assert result["error"] == "unknown_model"
 

@@ -77,6 +77,7 @@ class AgentRun(Base):
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     cost_kes: Mapped[float | None] = mapped_column(Float, nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_versions: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class AgentToolCall(Base):

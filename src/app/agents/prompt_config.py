@@ -7,7 +7,13 @@ from datetime import date
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from app.agents.prompt_versioning import (
+    EMAIL_BASE_INSTRUCTIONS,
+    SMS_BASE_INSTRUCTIONS,
+    active_prompt,
+)
 from app.config import Settings, get_settings
+from app.db.models.agent_prompt import AgentPrompt
 from app.db.models.prompt_config import OutputPolicy, SafetyPolicy, VoiceContract
 from app.personalization.eligibility import resolve_fact_eligibility
 from app.rules import versioning
@@ -97,6 +103,8 @@ class AgentConfiguration:
     default_sign_off: str | None
     allowed_placeholder_fields: tuple[str, ...] | None
     fact_eligibility: Mapping[str, str] | None
+    base_instructions: str | None
+    base_instructions_version: int | None
 
 
 HARDCODED_CONFIGURATION = AgentConfiguration(
@@ -113,6 +121,8 @@ HARDCODED_CONFIGURATION = AgentConfiguration(
     default_sign_off=None,
     allowed_placeholder_fields=None,
     fact_eligibility=None,
+    base_instructions=None,
+    base_instructions_version=None,
 )
 
 
@@ -141,6 +151,8 @@ def _configuration_from_rows(
     safety_row: SafetyPolicy | None,
     output_row: OutputPolicy | None,
     fact_eligibility: Mapping[str, str] | None = None,
+    base_instructions: str | None = None,
+    base_instructions_version: int | None = None,
 ) -> AgentConfiguration:
     output_rules = None
     if output_row is not None and voice_row is not None and voice_row.body_markdown is None:
@@ -174,6 +186,8 @@ def _configuration_from_rows(
         default_sign_off=voice_row.default_sign_off if voice_row is not None else None,
         allowed_placeholder_fields=allowed_placeholder_fields,
         fact_eligibility=fact_eligibility,
+        base_instructions=base_instructions,
+        base_instructions_version=base_instructions_version,
     )
 
 
@@ -236,6 +250,9 @@ def resolve_active_configuration(
         else None
     )
 
+    base_instructions_key = EMAIL_BASE_INSTRUCTIONS if channel == "email" else SMS_BASE_INSTRUCTIONS
+    base_instructions_row = active_prompt(session, base_instructions_key, on)
+
     return _configuration_from_rows(
         tier_contract_version=tier_contract_version,
         voice_contract_version=voice_contract_version,
@@ -246,6 +263,8 @@ def resolve_active_configuration(
         safety_row=safety_row,
         output_row=output_row,
         fact_eligibility=fact_eligibility,
+        base_instructions=base_instructions_row.template if base_instructions_row else None,
+        base_instructions_version=base_instructions_row.version if base_instructions_row else None,
     )
 
 
@@ -259,7 +278,19 @@ def resolve_pinned_configuration(
     tier_contract_version: int | None = None,
     angle: str | None = None,
     channel: str = "email",
+    base_instructions_version: int | None = None,
 ) -> AgentConfiguration:
+    base_instructions_key = EMAIL_BASE_INSTRUCTIONS if channel == "email" else SMS_BASE_INSTRUCTIONS
+    base_instructions_row = (
+        session.scalar(
+            select(AgentPrompt).where(
+                AgentPrompt.version == base_instructions_version,
+                AgentPrompt.prompt_name == base_instructions_key,
+            )
+        )
+        if base_instructions_version is not None
+        else None
+    )
     voice_row = (
         session.scalar(
             select(VoiceContract).where(
@@ -303,4 +334,8 @@ def resolve_pinned_configuration(
         safety_row=safety_row,
         output_row=output_row,
         fact_eligibility=fact_eligibility,
+        base_instructions=base_instructions_row.template if base_instructions_row else None,
+        base_instructions_version=(
+            base_instructions_row.version if base_instructions_row else None
+        ),
     )

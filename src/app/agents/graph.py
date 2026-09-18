@@ -64,8 +64,6 @@ _NUMERIC_FACT_KEYS = (
     "month_they_left",
 )
 
-FEE_WARNING_ANGLE = "fee_warning"
-
 
 @dataclass(frozen=True)
 class ClientContext:
@@ -101,6 +99,7 @@ class GenerationState(TypedDict, total=False):
     safety_policy_version: int | None
     output_policy_version: int | None
     personalization_policy_version: int | None
+    base_instructions_version: int | None
     data_date: date | None
     raw_context: Mapping[str, Any]
     chunks: Sequence[GroundingChunk]
@@ -182,9 +181,14 @@ def month_the_account_empties(session: Session, client_id: int) -> str | None:
     )
 
 
-def _angle_only_facts(session: Session, client_id: int, angle: str) -> dict[str, Any]:
-    if angle != FEE_WARNING_ANGLE:
-        return {}
+def _active_book_extra_facts(session: Session, client_id: int) -> dict[str, Any]:
+    """The active book's own figures, fetched for every angle.
+
+    Whether an angle may actually cite one of these is fact_eligibility's
+    call, not this function's: it is looked up per angle in
+    resolve_fact_eligibility and defaults to prohibited for any angle with
+    no rule naming the field.
+    """
     month = month_the_account_empties(session, client_id)
     return {} if month is None else {"month_the_account_empties": month}
 
@@ -230,7 +234,7 @@ def load_client_context(
             session,
             client_id,
             dict(row),
-            extra=_angle_only_facts(session, client_id, indicators.message_angle),
+            extra=_active_book_extra_facts(session, client_id),
         ),
         priority_tier=indicators.priority_tier,
         rule_version=indicators.rule_version,
@@ -383,6 +387,7 @@ def build_generation_graph(
                 "campaign_prohibitions": config.campaign_prohibitions,
                 "output_rules": config.output_rules,
                 "default_sign_off": config.default_sign_off,
+                "base_instructions": config.base_instructions,
             }
             version_stamps = {
                 "tier_contract_version": config.tier_contract_version,
@@ -390,6 +395,7 @@ def build_generation_graph(
                 "safety_policy_version": config.safety_policy_version,
                 "output_policy_version": config.output_policy_version,
                 "personalization_policy_version": config.personalization_policy_version,
+                "base_instructions_version": config.base_instructions_version,
             }
 
         context = dict(facts) if facts else to_model_context(state["raw_context"])

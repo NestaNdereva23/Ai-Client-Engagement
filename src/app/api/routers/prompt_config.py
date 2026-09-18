@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.prompt_config import build_voice_block
+from app.agents.prompt_versioning import PromptValidationError, validate_prompt_placeholders
 from app.api.reviewer_auth import get_current_reviewer_id
 from app.db.models.llmops import GenerationRun, PromptVersion
 from app.db.session import get_session
@@ -127,6 +128,13 @@ def put_personalization_facts(
 def publish_component(
     component_type: str, version: int, body: PublishRequest, session: Session = Depends(get_session)
 ) -> None:
+    if component_type == "agent_prompt":
+        rows = versioning.get_version_rows(session, component_type, body.component_key, version)
+        try:
+            for row in rows:
+                validate_prompt_placeholders(body.component_key, row["template"])
+        except PromptValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
     try:
         versioning.publish(
             session, component_type, body.component_key, version, by=body.by, at=body.at
@@ -221,6 +229,7 @@ def test_generate(
             safety_version=body.safety_version,
             output_version=body.output_version,
             personalization_version=body.personalization_version,
+            base_instructions_version=body.base_instructions_version,
             client_id=body.client_id,
             fact_profile=body.fact_profile,
             product=body.product,
@@ -314,6 +323,7 @@ def explain_generation(run_id: str, session: Session = Depends(get_session)) -> 
         safety_policy_version=run.safety_policy_version,
         output_policy_version=run.output_policy_version,
         personalization_policy_version=run.personalization_policy_version,
+        base_instructions_version=run.base_instructions_version,
         status=run.status,
         attempts=run.attempts,
         failed_guardrail=run.failed_guardrail,

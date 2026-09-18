@@ -27,7 +27,7 @@ from app.agents.guardrails import (
 from app.agents.orchestrator import Orchestrator
 from app.agents.permissions import effective_permission
 from app.agents.proposal_state import transition_proposal
-from app.agents.watchlist import FEES_WILL_EMPTY
+from app.agents.watchlist import FEE_PRESSURE_GONE_QUIET
 from app.agents.write_tools import RUN_PROPOSAL, WRITE_PROPOSAL, make_write_tools
 from app.campaigns.generation import generate_for_enrollment
 from app.campaigns.touch import SendResult, run_due_enrollments, send_due_touches
@@ -48,7 +48,9 @@ from app.db.models.llmops import (
 )
 from app.db.models.models import ClientFeatures, Clients, Funds, PiiVault
 from app.db.models.outreach import Campaign, OutreachMessage, ReviewAction
+from app.db.models.risk import ClientRiskFeatures
 from app.db.models.rules import ClientMessageIndicators
+from app.db.models.signals import ClientSituationState, SignalRun
 from app.db.session import SessionLocal
 from app.rules.catalog import load_active_angles
 from app.rules.tier_contract import load_tier
@@ -56,10 +58,12 @@ from app.services.review import decide
 
 FUND_ID = 9746
 CLIENT_ID = 974601
+SIGNAL_RUN_ID = "first-two-actions-signal-run"
 
 INSIGHT_TITLE = "A group the first two actions were run against"
 
 LIVE_ACTIONS = ("welcome_and_top_up", "fee_warning")
+ALL_LIVE_ACTIONS = LIVE_ACTIONS + ("fee_pressure_warning_dormant", "fee_pressure_encourage_active")
 
 # The tier a client with no risk history behind them falls to.
 TIER = "T3"
@@ -156,6 +160,9 @@ def _purge(session) -> None:
     session.execute(delete(PiiVault).where(PiiVault.client_id == CLIENT_ID))
     session.execute(delete(Clients).where(Clients.client_id == CLIENT_ID))
     session.execute(delete(Funds).where(Funds.unit_fund_id == FUND_ID))
+    session.execute(delete(ClientSituationState).where(ClientSituationState.client_id == CLIENT_ID))
+    session.execute(delete(ClientRiskFeatures).where(ClientRiskFeatures.client_id == CLIENT_ID))
+    session.execute(delete(SignalRun).where(SignalRun.run_id == SIGNAL_RUN_ID))
     session.commit()
 
 
@@ -194,6 +201,36 @@ def client_fund(clean: None) -> int:
                 months_until_empty=3.0,
             )
         )
+        session.add(
+            ClientRiskFeatures(
+                client_id=CLIENT_ID,
+                unit_fund_id=FUND_ID,
+                sig_heavy_withdrawal=False,
+                sig_dormant=True,
+                sig_broken_pattern=False,
+                sig_shrinking=False,
+                sig_going_dormant=False,
+                sig_never_repeated=False,
+                risk_score=70,
+                risk_band="Watch",
+                risk_reasons="dormant",
+                fund_at_risk=1_000.0,
+                config_version=1,
+            )
+        )
+        session.add(SignalRun(run_id=SIGNAL_RUN_ID, state="completed"))
+        session.flush()
+        session.add(
+            ClientSituationState(
+                client_id=CLIENT_ID,
+                unit_fund_id=FUND_ID,
+                situation_code=FEE_PRESSURE_GONE_QUIET,
+                is_active=True,
+                signal_codes=["fee_pressure_close"],
+                since=TODAY,
+                run_id=SIGNAL_RUN_ID,
+            )
+        )
         session.commit()
         session.add(
             PiiVault(
@@ -211,7 +248,7 @@ def _accepted_insight() -> int:
         insight = AgentInsight(
             kind="risk",
             title=INSIGHT_TITLE,
-            group_name=FEES_WILL_EMPTY,
+            group_name=FEE_PRESSURE_GONE_QUIET,
             client_count=1,
             money_total_kes=8_000.0,
             confidence="high",
@@ -353,18 +390,18 @@ def _recording_sender(sent: list[str]):
     return send
 
 
-def test_only_the_two_first_actions_are_switched_on(db: None) -> None:
+def test_no_action_beyond_the_known_live_ones_is_switched_on(db: None) -> None:
     with SessionLocal() as session:
         actions = load_active_actions(session, TODAY)
 
     running = {code for code, row in actions.items() if not row.paused}
     assert set(LIVE_ACTIONS) <= running
-    assert {code for code in running if actions[code].channel is not None} == set(LIVE_ACTIONS)
+    assert {code for code in running if actions[code].channel is not None} == set(ALL_LIVE_ACTIONS)
 
 
-def test_both_live_actions_need_every_message_reviewed(db: None) -> None:
+def test_every_live_action_needs_every_message_reviewed(db: None) -> None:
     with SessionLocal() as session:
-        for action_code in LIVE_ACTIONS:
+        for action_code in ALL_LIVE_ACTIONS:
             assert effective_permission(session, action_code) == "approve_each"
 
 
@@ -373,7 +410,7 @@ def test_each_live_action_has_a_brief_written_for_it(db: None) -> None:
         actions = load_active_actions(session, TODAY)
         angles = load_active_angles(session, TODAY)
 
-    for action_code in LIVE_ACTIONS:
+    for action_code in ALL_LIVE_ACTIONS:
         angle = actions[action_code].message_angle
         assert angle == action_code
         brief = angles[angle]

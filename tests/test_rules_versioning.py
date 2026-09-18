@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models.prompt_config import ActiveConfiguration
 from app.db.models.rules import BusinessRule, MessageAngleCatalog, TierContract
+from app.db.models.signals import SignalThreshold
 from app.db.session import SessionLocal
 from app.rules import versioning
 from app.rules.catalog import AngleSpec, save_catalog_version
@@ -21,6 +22,7 @@ from app.rules.versioning import DEFAULT_COMPONENT_KEY, VersioningError
 
 ANGLE = "versioning_test_angle"
 TIER = "T4"
+SIGNAL_CODE = "versioning_test_signal"
 
 
 def _angle_values(**overrides: object) -> dict:
@@ -106,6 +108,20 @@ def tier_bulk_versions():
             delete(ActiveConfiguration).where(
                 ActiveConfiguration.component_type == "tier_contract",
                 ActiveConfiguration.active_version.in_(versions),
+            )
+        )
+        session.commit()
+
+
+@pytest.fixture
+def cleanup_signal_threshold():
+    yield SIGNAL_CODE
+    with SessionLocal() as session:
+        session.execute(delete(SignalThreshold).where(SignalThreshold.signal_code == SIGNAL_CODE))
+        session.execute(
+            delete(ActiveConfiguration).where(
+                ActiveConfiguration.component_type == "signal_threshold",
+                ActiveConfiguration.component_key == SIGNAL_CODE,
             )
         )
         session.commit()
@@ -287,6 +303,65 @@ def test_save_tier_contract_version_with_valid_to_does_not_activate(
         pointer = _pointer(session, "tier_contract", TIER)
         current_version = pointer.active_version if pointer is not None else None
         assert current_version == before_version
+
+
+def test_signal_threshold_draft_publish_discard_and_diff(
+    db: None, cleanup_signal_threshold: str
+) -> None:
+    with SessionLocal() as session:
+        v1 = versioning.save_draft(
+            session,
+            "signal_threshold",
+            SIGNAL_CODE,
+            [{"threshold_name": "window_days", "value": 30}],
+            by="tester",
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        row = session.scalar(
+            select(SignalThreshold).where(
+                SignalThreshold.signal_code == SIGNAL_CODE, SignalThreshold.version == v1
+            )
+        )
+        assert row is not None
+        assert row.status == "draft"
+        assert row.valid_from is None
+
+    with SessionLocal() as session:
+        versioning.publish(
+            session, "signal_threshold", SIGNAL_CODE, v1, by="tester", at=date(2026, 9, 1)
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        pointer = _pointer(session, "signal_threshold", SIGNAL_CODE)
+        assert pointer is not None
+        assert pointer.active_version == v1
+
+        v2 = versioning.save_draft(
+            session,
+            "signal_threshold",
+            SIGNAL_CODE,
+            [{"threshold_name": "window_days", "value": 45}],
+        )
+        versioning.publish(session, "signal_threshold", SIGNAL_CODE, v2, at=date(2026, 9, 10))
+        session.commit()
+
+    with SessionLocal() as session:
+        pointer = _pointer(session, "signal_threshold", SIGNAL_CODE)
+        assert pointer.active_version == v2
+
+        versions = versioning.list_versions(session, "signal_threshold", SIGNAL_CODE)
+        assert [v["version"] for v in versions] == [v1, v2]
+        assert versions[0]["valid_to"] == date(2026, 9, 10)
+        assert versions[1]["valid_to"] is None
+
+        diff = versioning.diff_versions(session, "signal_threshold", SIGNAL_CODE, v1, v2)
+        assert diff == {"value": (30.0, 45.0)}
+
+    with SessionLocal() as session, pytest.raises(VersioningError, match="may not be discarded"):
+        versioning.discard_draft(session, "signal_threshold", SIGNAL_CODE, v1)
 
 
 def test_save_version_still_publishes_directly(db: None, rule_bulk_versions: list[int]) -> None:
