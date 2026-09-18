@@ -147,6 +147,7 @@ def get_campaigns(
             status=r.status,
             cohort_definition=r.cohort_definition,
             default_channel=r.default_channel,
+            is_test=r.is_test,
             start_date=r.start_date,
             end_date=r.end_date,
             created_at=r.created_at,
@@ -185,6 +186,7 @@ def post_campaign(
             start_date=body.start_date,
             end_date=body.end_date,
             default_channel=body.default_channel,
+            is_test=body.is_test,
         )
         session.commit()
     except DecreasingStepOffset as exc:
@@ -200,6 +202,7 @@ def post_campaign(
         status=campaign.status,
         cohort_definition=campaign.cohort_definition,
         default_channel=campaign.default_channel,
+        is_test=campaign.is_test,
         start_date=campaign.start_date,
         end_date=campaign.end_date,
         created_at=campaign.created_at,
@@ -325,6 +328,7 @@ def get_campaign_detail(
         status=campaign.status,
         cohort_definition=campaign.cohort_definition,
         default_channel=campaign.default_channel,
+        is_test=campaign.is_test,
         start_date=campaign.start_date,
         end_date=campaign.end_date,
         created_at=campaign.created_at,

@@ -29,6 +29,7 @@ from app.db.models.models import PiiVault
 from app.db.models.outreach import OutreachMessage
 from app.db.session import restricted_session
 from app.delivery.mailer import EmailMessage, Mailer, get_mailer
+from app.delivery.test_recipients import ensure_test_recipient, pick_test_recipient
 
 logger = structlog.get_logger(__name__)
 
@@ -62,23 +63,40 @@ def build_email_sender(
     whole batch through this SenderFn (send_campaign, for one) can close()
     it once the batch is done instead of leaving a connection open.
     """
-    mailer = mailer if mailer is not None else get_mailer(settings or get_settings())
+    settings = settings or get_settings()
+    mailer = mailer if mailer is not None else get_mailer(settings)
+    test_mode = settings.delivery_mode == "test"
 
     def send(message: OutreachMessage) -> SendResult:
         content = message.personalized_content
         if not content:
             raise SendBlocked("no_personalized_content")
 
-        to = _contact_email(message.client_id)
+        subject = content["subject"]
+        body = content["body"]
+        if test_mode:
+            to = pick_test_recipient(message.client_id, "email")
+            subject = f"{settings.test_subject_prefix}{subject}"
+            body = (
+                f"{body}\n\n--\nTest send for client {message.client_id}, "
+                f"campaign {message.campaign_id}."
+            )
+        else:
+            to = _contact_email(message.client_id)
         if not to:
             raise SendBlocked("no_deliverable_contact")
+        # Checked again right before sending, whatever picked the address.
+        if test_mode:
+            ensure_test_recipient(to, "email")
 
-        result = mailer.send(
-            EmailMessage(to=to, subject=content["subject"], text_body=content["body"])
-        )
+        result = mailer.send(EmailMessage(to=to, subject=subject, text_body=body))
         status = "sent" if result.sent else "recorded"
         logger.info("outreach_message.send", message_id=message.message_id, status=status)
-        return SendResult(delivery_status=status, sent_at=datetime.now(UTC))
+        return SendResult(
+            delivery_status=status,
+            sent_at=datetime.now(UTC),
+            recipient=to if test_mode else None,
+        )
 
     send.mailer = mailer
     return send

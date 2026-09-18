@@ -20,6 +20,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     Text,
+    false,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -51,6 +52,7 @@ class Campaign(Base):
     cohort_definition: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="draft")
     default_channel: Mapped[str] = mapped_column(Text, nullable=False, server_default="email")
+    is_test: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
     start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

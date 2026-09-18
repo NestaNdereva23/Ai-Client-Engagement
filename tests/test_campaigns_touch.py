@@ -16,7 +16,7 @@ from app.campaigns.touch import (
     send_due_touches,
     send_touch,
 )
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.db.models.audit import AuditLog
 from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
 from app.db.models.llmops import GenerationRun
@@ -24,7 +24,10 @@ from app.db.models.models import Clients, Funds, PiiVault
 from app.db.models.outreach import Campaign, OutreachMessage
 from app.db.models.rules import ClientMessageIndicators, MessageAngleCatalog
 from app.db.models.suppression import Suppression
-from app.db.session import SessionLocal
+from app.db.models.test_recipient import TestRecipient
+from app.db.session import SessionLocal, restricted_session
+from app.delivery.mailer import NullMailer
+from app.delivery.sender import build_email_sender
 from app.llmops.versions import persist_generation_run
 from app.rules.catalog import active_catalog_version
 from app.services.campaigns import campaign_readiness
@@ -1043,3 +1046,131 @@ def test_readiness_reports_the_next_due_date_once_step_one_is_fully_sent(
         assert after["sendable_now"] == 0
         assert after["sent_count"] == 1
         assert after["next_due_at"] is not None
+
+
+@pytest.fixture
+def delivery_mode(monkeypatch):
+    def set_mode(mode: str) -> None:
+        monkeypatch.setenv("DELIVERY_MODE", mode)
+        get_settings.cache_clear()
+
+    yield set_mode
+    get_settings.cache_clear()
+
+
+@pytest.fixture
+def tester_on_list(db: None):
+    with restricted_session() as session:
+        session.execute(delete(TestRecipient))
+        session.add(TestRecipient(name="Tester", email="tester@example.com"))
+        session.commit()
+    yield "tester@example.com"
+    with restricted_session() as session:
+        session.execute(delete(TestRecipient))
+        session.commit()
+
+
+def _approved_touch(session, *, campaign_id: int, client_id: int, is_test: bool) -> TouchLog:
+    session.get(Campaign, campaign_id).is_test = is_test
+    enrollment = _make_enrollment(session, campaign_id=campaign_id, client_id=client_id)
+    message = _make_message(
+        session, campaign_id=campaign_id, client_id=client_id, status="approved"
+    )
+    message.personalized_content = {"subject": "Hello", "body": "Body"}
+    touch = record_touch(session, enrollment, 1)
+    touch.message_id = message.message_id
+    session.commit()
+    return touch
+
+
+def _refusal_reasons(touch_id: int) -> list[str]:
+    with SessionLocal() as session:
+        rows = session.scalars(
+            select(AuditLog).where(
+                AuditLog.entity_type == "touch_log",
+                AuditLog.action == "send_refused",
+                AuditLog.entity_id == str(touch_id),
+            )
+        )
+        return [row.detail["reason"] for row in rows]
+
+
+@pytest.mark.parametrize(("mode", "is_test"), [("live", True), ("test", False)])
+def test_send_touch_refuses_a_campaign_that_does_not_match_the_mode(
+    campaign_with_steps: int, client_row: int, delivery_mode, mode: str, is_test: bool
+) -> None:
+    delivery_mode(mode)
+    sent: list[OutreachMessage] = []
+
+    def recording_sender(message: OutreachMessage) -> SendResult:
+        sent.append(message)
+        return SendResult(delivery_status="sent", sent_at=datetime.now(UTC))
+
+    with SessionLocal() as session:
+        touch = _approved_touch(
+            session, campaign_id=campaign_with_steps, client_id=client_row, is_test=is_test
+        )
+        with pytest.raises(SendBlocked, match="campaign_mode_mismatch"):
+            send_touch(session, touch, sender=recording_sender)
+        touch_id = touch.touch_id
+
+    assert sent == []
+    assert _refusal_reasons(touch_id) == ["campaign_mode_mismatch"]
+
+
+def test_a_test_campaign_sends_to_the_tester_and_audits_mode_and_address(
+    campaign_with_steps: int, client_row: int, delivery_mode, tester_on_list: str, monkeypatch
+) -> None:
+    delivery_mode("test")
+
+    def no_vault_contact(client_id: int):
+        raise AssertionError("test mode read a real contact from the vault")
+
+    monkeypatch.setattr("app.delivery.sender._contact_email", no_vault_contact)
+    mailer = NullMailer(sender="ace@example.com")
+
+    with SessionLocal() as session:
+        touch = _approved_touch(
+            session, campaign_id=campaign_with_steps, client_id=client_row, is_test=True
+        )
+        send_touch(session, touch, sender=build_email_sender(mailer, settings=get_settings()))
+        session.commit()
+        touch_id = touch.touch_id
+
+    assert [m.to for m in mailer.sent_messages] == [tester_on_list]
+    assert mailer.sent_messages[0].subject == "[TEST] Hello"
+    assert f"Test send for client {client_row}" in mailer.sent_messages[0].text_body
+    with SessionLocal() as session:
+        audit = session.scalar(
+            select(AuditLog).where(
+                AuditLog.entity_type == "touch_log",
+                AuditLog.action == "send",
+                AuditLog.entity_id == str(touch_id),
+            )
+        )
+    assert audit.detail["delivery_mode"] == "test"
+    assert audit.detail["recipient"] == tester_on_list
+
+
+def test_a_live_send_audits_a_marker_not_the_client_address(
+    campaign_with_steps: int, client_row: int, delivery_mode
+) -> None:
+    delivery_mode("live")
+    with SessionLocal() as session:
+        touch = _approved_touch(
+            session, campaign_id=campaign_with_steps, client_id=client_row, is_test=False
+        )
+        send_touch(session, touch, sender=build_email_sender(NullMailer(sender="a@b.c")))
+        session.commit()
+        touch_id = touch.touch_id
+
+    with SessionLocal() as session:
+        audit = session.scalar(
+            select(AuditLog).where(
+                AuditLog.entity_type == "touch_log",
+                AuditLog.action == "send",
+                AuditLog.entity_id == str(touch_id),
+            )
+        )
+    assert audit.detail["delivery_mode"] == "live"
+    assert audit.detail["recipient"] == "client_contact"

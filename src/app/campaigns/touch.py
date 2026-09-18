@@ -38,8 +38,9 @@ from app.campaigns.scheduler import (
     count_stale_contacts,
     select_due_enrollments,
 )
+from app.config import get_settings
 from app.db.models.campaigns import Enrollment, TouchLog
-from app.db.models.outreach import OutreachMessage
+from app.db.models.outreach import Campaign, OutreachMessage
 from app.delivery.gate import MessageNotApproved, authorize_send
 
 logger = structlog.get_logger(__name__)
@@ -62,6 +63,7 @@ class SendResult:
     provider_status: str | None = None
     parts: int | None = None
     cost: float | None = None
+    recipient: str | None = None
 
 
 SenderFn = Callable[[OutreachMessage], SendResult]
@@ -229,6 +231,21 @@ def send_touch(session: Session, touch: TouchLog, *, sender: SenderFn = stub_sen
         session.commit()
         raise
 
+    mode = get_settings().delivery_mode
+    campaign = session.get(Campaign, message.campaign_id)
+    is_test = campaign.is_test if campaign is not None else False
+    # A test campaign sends only in test mode, and a real one only in live mode.
+    if is_test != (mode == "test"):
+        record_audit(
+            session,
+            entity_type="touch_log",
+            action="send_refused",
+            entity_id=str(touch.touch_id),
+            detail={"reason": "campaign_mode_mismatch", "delivery_mode": mode, "is_test": is_test},
+        )
+        session.commit()
+        raise SendBlocked("campaign_mode_mismatch")
+
     enrollment = session.get(Enrollment, touch.enrollment_id)
     recheck = check_stop_conditions(session, enrollment, message.channel)
     if not recheck.eligible:
@@ -264,6 +281,9 @@ def send_touch(session: Session, touch: TouchLog, *, sender: SenderFn = stub_sen
             "provider_status": result.provider_status,
             "parts": result.parts,
             "cost": result.cost,
+            "delivery_mode": mode,
+            # Live sends log a marker, never the client's own address.
+            "recipient": result.recipient if mode == "test" else "client_contact",
         },
     )
 
