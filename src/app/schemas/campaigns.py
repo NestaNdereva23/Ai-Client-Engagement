@@ -112,6 +112,7 @@ class CampaignListItemOut(BaseModel):
     status: str
     cohort_definition: dict | None
     default_channel: str
+    is_test: bool
     start_date: date | None
     end_date: date | None
     created_at: datetime
@@ -127,6 +128,7 @@ class CampaignDetailOut(BaseModel):
     status: str
     cohort_definition: dict | None
     default_channel: str
+    is_test: bool
     start_date: date | None
     end_date: date | None
     created_at: datetime
@@ -226,6 +228,7 @@ class CampaignCreateRequest(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     default_channel: str = "email"
+    is_test: bool = False
 
 
 class CampaignCreateOut(BaseModel):
@@ -237,6 +240,7 @@ class CampaignCreateOut(BaseModel):
     status: str
     cohort_definition: dict | None
     default_channel: str
+    is_test: bool
     start_date: date | None
     end_date: date | None
     created_at: datetime

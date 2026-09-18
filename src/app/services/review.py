@@ -39,6 +39,7 @@ from app.agents.guardrails import (
 )
 from app.audit.log import record_audit
 from app.campaigns.cohorts import CohortSlot, resolve_cohort_slot
+from app.config import get_settings
 from app.db.models.llmops import Evaluation, GenerationRun, PromptVersion
 from app.db.models.message_template import MessageTemplate
 from app.db.models.models import Clients, Funds, PiiVault
@@ -259,6 +260,10 @@ def _resolve_fund_name(session: Session, client_id: int) -> str:
 
 
 def _resolve_first_name(client_id: int, *, vault_session: Session | None = None) -> str:
+    settings = get_settings()
+    # Test sends go to staff inboxes, so the real name is never read or shown.
+    if settings.delivery_mode == "test":
+        return settings.test_client_first_name
     full_name = _fetch_client_name(client_id, vault_session=vault_session)
     first_name = _first_name_from_full_name(full_name)
     if full_name is None:

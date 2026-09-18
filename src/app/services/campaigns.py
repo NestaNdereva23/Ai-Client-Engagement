@@ -51,7 +51,7 @@ from app.campaigns.touch import (
     run_due_enrollments,
 )
 from app.campaigns.touch import send_due_touches as send_due_touches_run
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.db.models.campaigns import (
     CONTACT_EVENT_TYPES,
     CampaignStep,
@@ -301,6 +301,7 @@ def list_campaigns(
             Campaign.status,
             Campaign.cohort_definition,
             Campaign.default_channel,
+            Campaign.is_test,
             Campaign.start_date,
             Campaign.end_date,
             Campaign.created_at,
@@ -351,6 +352,7 @@ def create_campaign(
     start_date=None,
     end_date=None,
     default_channel: str = "email",
+    is_test: bool = False,
 ) -> tuple[Campaign, int, list[CampaignStep]]:
     campaign = Campaign(
         name=name,
@@ -359,11 +361,14 @@ def create_campaign(
         start_date=start_date,
         end_date=end_date,
         default_channel=default_channel,
+        is_test=is_test,
     )
     session.add(campaign)
     session.flush()
 
     client_ids = resolve_cohort_client_ids(session, **cohort_filters)
+    if is_test:
+        client_ids = sorted(client_ids)[: get_settings().test_campaign_max_clients]
     enroll_cohort(session, campaign_id=campaign.campaign_id, client_ids=client_ids)
 
     created_steps = [
@@ -387,6 +392,7 @@ def create_campaign(
             "cohort_filters": cohort_filters,
             "matched_count": len(client_ids),
             "step_count": len(created_steps),
+            "is_test": is_test,
         },
     )
     session.flush()

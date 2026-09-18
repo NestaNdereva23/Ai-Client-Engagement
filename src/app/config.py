@@ -220,6 +220,12 @@ class Settings(BaseSettings):
 
     require_deliverable_contact: bool = False
 
+    # Test mode sends only to the test_recipient list and hides real client names.
+    delivery_mode: Literal["test", "live"] = "test"
+    test_client_first_name: str = "Test Client"
+    test_subject_prefix: str = "[TEST] "
+    test_campaign_max_clients: int = 20
+
     smtp_host: str = ""
     smtp_port: int = 1025
     smtp_username: str = ""

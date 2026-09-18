@@ -35,6 +35,7 @@ from app.db.models.outreach import Campaign, OutreachMessage
 from app.db.models.rules import ClientMessageIndicators
 from app.db.models.suppression import Suppression
 from app.db.session import restricted_session
+from app.delivery.test_list import active_test_contacts
 from app.rules.catalog import angle_is_held
 
 _UNRESOLVED_MESSAGE_STATUSES = ("pending_review", "escalated", "held")
@@ -276,6 +277,8 @@ def _vault_signals(
 
 
 def _read_vault_signals(session: Session, client_id: int, channel: str) -> tuple[bool, bool]:
+    if get_settings().delivery_mode == "test":
+        return _read_test_mode_signals(session, client_id, channel)
     vault = session.get(PiiVault, client_id)
     record_audit(
         session,
@@ -289,6 +292,20 @@ def _read_vault_signals(session: Session, client_id: int, channel: str) -> tuple
         return False, False
     contact = vault.contact_phone if channel == "sms" else vault.contact_email
     return vault.opt_out_flag, bool(contact)
+
+
+def _read_test_mode_signals(session: Session, client_id: int, channel: str) -> tuple[bool, bool]:
+    # Test sends go to the team list, so only the opt out is read from the vault.
+    opted_out = session.scalar(select(PiiVault.opt_out_flag).where(PiiVault.client_id == client_id))
+    record_audit(
+        session,
+        entity_type="pii_vault",
+        action="read",
+        entity_id=str(client_id),
+        detail={"purpose": "eligibility_gate", "channel": channel, "fields": "opt_out"},
+    )
+    session.commit()
+    return bool(opted_out), bool(active_test_contacts(session, channel))
 
 
 def _within_cooldown(session: Session, client_id: int, cooldown_days: int) -> bool:

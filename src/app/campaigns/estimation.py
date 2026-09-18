@@ -48,6 +48,7 @@ from app.db.models.outreach import Campaign, OutreachMessage
 from app.db.models.rules import ClientMessageIndicators
 from app.db.models.suppression import Suppression
 from app.db.session import restricted_session
+from app.delivery.test_list import active_test_contacts
 from app.privacy.fact_block import FUND_DISPLAY_NAMES
 
 _UNRESOLVED_MESSAGE_STATUSES = ("pending_review", "escalated", "held")
@@ -382,6 +383,8 @@ def _bulk_vault_signals(
     """client_id -> (opted_out, contact_email, contact_phone), one audited batch read."""
     if not client_ids:
         return {}
+    if get_settings().delivery_mode == "test":
+        return _bulk_test_mode_signals(client_ids)
     with restricted_session() as session:
         rows = session.execute(
             select(
@@ -399,3 +402,26 @@ def _bulk_vault_signals(
         )
         session.commit()
     return {row.client_id: (row.opt_out_flag, row.contact_email, row.contact_phone) for row in rows}
+
+
+def _bulk_test_mode_signals(
+    client_ids: Sequence[int],
+) -> dict[int, tuple[bool, str | None, str | None]]:
+    # Test sends go to the team list, so only the opt out is read from the vault.
+    with restricted_session() as session:
+        rows = session.execute(
+            select(PiiVault.client_id, PiiVault.opt_out_flag).where(
+                PiiVault.client_id.in_(client_ids)
+            )
+        ).all()
+        email = next(iter(active_test_contacts(session, "email")), None)
+        phone = next(iter(active_test_contacts(session, "sms")), None)
+        record_audit(
+            session,
+            entity_type="pii_vault",
+            action="read_batch",
+            detail={"count": len(client_ids), "purpose": "template_estimate", "fields": "opt_out"},
+        )
+        session.commit()
+    opted_out = {row.client_id: row.opt_out_flag for row in rows}
+    return {client_id: (opted_out.get(client_id, False), email, phone) for client_id in client_ids}

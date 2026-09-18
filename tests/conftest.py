@@ -48,6 +48,15 @@ def _default_prompt_config_source_to_db() -> None:
 
 _default_prompt_config_source_to_db()
 
+
+def _default_delivery_mode_to_live() -> None:
+    # Most tests check real addressing; the test mode tests opt in themselves.
+    os.environ.setdefault("DELIVERY_MODE", "live")
+    get_settings.cache_clear()
+
+
+_default_delivery_mode_to_live()
+
 import app.db.models  # noqa: E402,F401  (registers models on Base.metadata)
 from app.db.base import Base  # noqa: E402
 from app.db.session import SessionLocal, engine  # noqa: E402
