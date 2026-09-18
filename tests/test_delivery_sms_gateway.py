@@ -18,13 +18,20 @@ def a_message() -> SmsMessage:
 
 
 def test_factory_returns_recording_gateway_without_credentials():
-    built = get_sms_gateway(Settings(sms_provider_api_key="", sms_provider_username=""))
+    built = get_sms_gateway(
+        Settings(sms_transport="africastalking", sms_provider_api_key="", sms_provider_username="")
+    )
     assert isinstance(built, RecordingSmsGateway)
 
 
 def test_factory_returns_recording_gateway_without_a_sender_id():
     built = get_sms_gateway(
-        Settings(sms_provider_api_key="key", sms_provider_username="user", sms_sender_id="")
+        Settings(
+            sms_transport="africastalking",
+            sms_provider_api_key="key",
+            sms_provider_username="user",
+            sms_sender_id="",
+        )
     )
     assert isinstance(built, RecordingSmsGateway)
     assert built.reason == "no sender id configured"
@@ -33,6 +40,7 @@ def test_factory_returns_recording_gateway_without_a_sender_id():
 def test_factory_returns_africas_talking_gateway_when_configured():
     built = get_sms_gateway(
         Settings(
+            sms_transport="africastalking",
             sms_provider_api_key="key",
             sms_provider_username="user",
             sms_sender_id="ACE",

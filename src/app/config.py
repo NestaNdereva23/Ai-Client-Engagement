@@ -224,7 +224,7 @@ class Settings(BaseSettings):
     delivery_mode: Literal["test", "live"] = "test"
     test_client_first_name: str = "Test Client"
     test_subject_prefix: str = "[TEST] "
-    test_campaign_max_clients: int = 20
+    test_campaign_max_clients: int = 1
 
     smtp_host: str = ""
     smtp_port: int = 1025
@@ -234,6 +234,13 @@ class Settings(BaseSettings):
     smtp_timeout_seconds: float = 30.0
     email_sender: str = ""
 
+    # smtp sends directly; ticketing sends through the Ticketing app's Gmail mailbox.
+    mail_transport: Literal["smtp", "ticketing"] = "smtp"
+    ticketing_base_url: str = ""
+    ticketing_timeout_seconds: float = 30.0
+
+    # africastalking sends directly; ticketing sends through the Ticketing app's sendSMS helper.
+    sms_transport: Literal["africastalking", "ticketing"] = "ticketing"
     sms_provider_api_key: str = ""
     sms_provider_username: str = ""
     sms_sender_id: str = ""
