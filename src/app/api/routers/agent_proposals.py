@@ -23,7 +23,8 @@ from app.services.agent_proposals import (
     count_proposals,
     decide_proposal,
     get_proposal,
-    get_proposal_clients,
+    get_proposal_included_count,
+    list_proposal_clients,
     list_proposals,
     stop_proposal,
 )
@@ -102,8 +103,7 @@ def get_agent_proposal(
     except ProposalNotFound:
         raise HTTPException(status_code=404, detail="proposal not found") from None
 
-    clients = get_proposal_clients(session, proposal_id)
-    included_count = sum(1 for c in clients if c.included) if clients else None
+    included_count = get_proposal_included_count(session, proposal_id)
     copy = card_copy.copy_for(proposal.group_name)
     return AgentProposalDetailOut(
         proposal_id=proposal.proposal_id,
@@ -128,7 +128,32 @@ def get_agent_proposal(
         content_mix=proposal.content_mix,
         campaign_id=proposal.campaign_id,
         decided_by=proposal.decided_by,
-        clients=[AgentProposalClientOut.model_validate(c) for c in clients],
+    )
+
+
+@router.get("/{proposal_id}/clients", response_model=Page[AgentProposalClientOut])
+def list_agent_proposal_clients(
+    proposal_id: int,
+    included: bool | None = None,
+    cursor: str | None = None,
+    limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    session: Session = Depends(get_session),
+) -> Page[AgentProposalClientOut]:
+    try:
+        get_proposal(session, proposal_id)
+    except ProposalNotFound:
+        raise HTTPException(status_code=404, detail="proposal not found") from None
+
+    try:
+        clients, next_cursor = list_proposal_clients(
+            session, proposal_id, included=included, cursor=cursor, limit=limit
+        )
+    except InvalidCursor:
+        raise HTTPException(status_code=400, detail="invalid cursor") from None
+
+    return Page(
+        items=[AgentProposalClientOut.model_validate(c) for c in clients],
+        next_cursor=next_cursor,
     )
 
 

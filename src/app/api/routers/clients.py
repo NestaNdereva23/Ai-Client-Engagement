@@ -3,11 +3,14 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.agents import card_copy
 from app.api.reviewer_auth import get_current_reviewer_id
+from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.clients import (
     ClientActivityOut,
+    ClientAgentActivityOut,
     ClientBandsOut,
     ClientBookSummaryOut,
     ClientContactEventOut,
@@ -31,6 +34,7 @@ from app.schemas.clients import (
     ValueRecencyBucketOut,
 )
 from app.schemas.rules import AngleStatusOut
+from app.services.agent_proposals import list_client_proposals
 from app.services.clients import (
     ClientNotFound,
     ClientProfile,
@@ -204,7 +208,24 @@ def get_client_detail(client_id: int, session: Session = Depends(get_session)) -
     return _to_summary(row, call_brief=latest_call_brief(session, client_id))
 
 
-def _to_profile_out(profile: ClientProfile) -> ClientProfileOut:
+def _to_agent_activity(
+    proposal: AgentProposal, proposal_client: AgentProposalClient
+) -> ClientAgentActivityOut:
+    return ClientAgentActivityOut(
+        proposal_id=proposal.proposal_id,
+        action_code=proposal.action_code,
+        card_title=card_copy.copy_for(proposal.group_name).card_title,
+        included=proposal_client.included,
+        skip_reason=proposal_client.skip_reason,
+        status=proposal.status,
+        created_at=proposal.created_at,
+        decided_at=proposal.decided_at,
+    )
+
+
+def _to_profile_out(
+    profile: ClientProfile, agent_activity: list[ClientAgentActivityOut]
+) -> ClientProfileOut:
     core = profile.core
     suppression = profile.suppression
     return ClientProfileOut(
@@ -300,6 +321,7 @@ def _to_profile_out(profile: ClientProfile) -> ClientProfileOut:
             source=suppression.source if suppression else None,
             created_at=suppression.created_at if suppression else None,
         ),
+        agent_activity=agent_activity,
         call_brief=profile.call_brief,
     )
 
@@ -312,7 +334,11 @@ def get_client_profile_detail(
         profile = get_client_profile(session, client_id)
     except ClientNotFound:
         raise HTTPException(status_code=404, detail="client not found") from None
-    return _to_profile_out(profile)
+    agent_activity = [
+        _to_agent_activity(proposal, proposal_client)
+        for proposal, proposal_client in list_client_proposals(session, client_id)
+    ]
+    return _to_profile_out(profile, agent_activity)
 
 
 @router.get("/clients/{client_id}/name", response_model=ClientNameOut)

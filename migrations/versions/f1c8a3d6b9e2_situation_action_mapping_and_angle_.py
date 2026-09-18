@@ -18,13 +18,12 @@ Create Date: 2026-09-15 15:00:00.000000
 """
 
 from collections.abc import Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.orm import Session
 
-from app.agents.situation_action_mapping import MappingSpec, save_situation_action_mapping_version
+from app.agents.situation_action_mapping import MappingSpec
 
 revision: str = "f1c8a3d6b9e2"
 down_revision: str | Sequence[str] | None = "24e8030b3e05"
@@ -172,9 +171,43 @@ def upgrade() -> None:
         op.f("ix_situation_action_mapping_version"), "situation_action_mapping", ["version"]
     )
 
-    session = Session(bind=op.get_bind())
-    save_situation_action_mapping_version(session, 1, _MAPPINGS, valid_from=_VALID_FROM)
-    session.flush()
+    # priority is not a column here yet (a later migration adds it), so this
+    # seeds against a table snapshot matching exactly what create_table just
+    # built above, rather than the live ORM model, which already carries it.
+    situation_action_mapping = sa.table(
+        "situation_action_mapping",
+        sa.column("version", sa.Integer),
+        sa.column("situation", sa.Text),
+        sa.column("action_code", sa.Text),
+        sa.column("objective", sa.Text),
+        sa.column("angle", sa.Text),
+        sa.column("evidence_required", sa.Text),
+        sa.column("channel", sa.Text),
+        sa.column("valid_from", sa.Date),
+        sa.column("valid_to", sa.Date),
+        sa.column("status", sa.Text),
+        sa.column("published_at", sa.DateTime(timezone=True)),
+    )
+    published_at = datetime.now(UTC)
+    op.bulk_insert(
+        situation_action_mapping,
+        [
+            {
+                "version": 1,
+                "situation": spec.situation,
+                "action_code": spec.action_code,
+                "objective": spec.objective,
+                "angle": spec.angle,
+                "evidence_required": spec.evidence_required,
+                "channel": spec.channel,
+                "valid_from": _VALID_FROM,
+                "valid_to": None,
+                "status": "published",
+                "published_at": published_at,
+            }
+            for spec in _MAPPINGS
+        ],
+    )
 
 
 def downgrade() -> None:

@@ -21,6 +21,9 @@ from app.llmops.versions import persist_generation_run
 from app.personalization.eligibility import PLACEHOLDER_FACT_FIELDS
 
 POLICY_VERSION = 1
+# personalization_policy moved to v2 when fee_pressure_warning_dormant got its
+# own fact eligibility rule; voice/safety/output are still at v1.
+PERSONALIZATION_POLICY_VERSION = 2
 IN_FORCE = date(2026, 9, 11)
 
 
@@ -115,7 +118,7 @@ def test_resolve_active_configuration_returns_v1_for_now(db: None) -> None:
     assert config.voice_contract_version == POLICY_VERSION
     assert config.safety_policy_version == POLICY_VERSION
     assert config.output_policy_version == POLICY_VERSION
-    assert config.personalization_policy_version == POLICY_VERSION
+    assert config.personalization_policy_version == PERSONALIZATION_POLICY_VERSION
     assert config.tier_contract_version is None
     assert config.voice_text == email_agent._BASE_INSTRUCTIONS_CORE
     assert config.safety_words == email_agent.BANNED_WORDS
@@ -324,5 +327,5 @@ def test_the_live_graph_stamps_the_resolved_versions_via_config_resolver(db: Non
     assert state["voice_contract_version"] == POLICY_VERSION
     assert state["safety_policy_version"] == POLICY_VERSION
     assert state["output_policy_version"] == POLICY_VERSION
-    assert state["personalization_policy_version"] == POLICY_VERSION
+    assert state["personalization_policy_version"] == PERSONALIZATION_POLICY_VERSION
     assert email_agent._BASE_INSTRUCTIONS_CORE in state["system_prompt"]

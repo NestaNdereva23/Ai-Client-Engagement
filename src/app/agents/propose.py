@@ -41,6 +41,7 @@ from app.db.models.suppression import Suppression
 from app.rules.catalog import angle_is_held
 
 DO_NOTHING_ACTION = "do_nothing"
+WATCH_FOR_NOW_ACTION = "watch_for_now"
 
 GROUP_ACTIONS: dict[str, str] = {
     SIGNED_UP_RECENTLY: "welcome_and_top_up",
@@ -128,6 +129,19 @@ def situation_winners(groups: Sequence[WatchGroup]) -> dict[tuple[int, int], str
     return winners
 
 
+def default_action_code_for_group(session: Session, group_name: str, as_of: date) -> str | None:
+    """The action a group falls back to when nothing else picks one for it.
+
+    Checked first against the situation/action mapping table, since that is
+    the live, editable source; GROUP_ACTIONS is the fixed fallback for a
+    group with no mapping published for its situation.
+    """
+    situation_code = GROUP_TO_SITUATION.get(group_name, group_name)
+    return action_code_for_situation(session, situation_code, as_of) or GROUP_ACTIONS.get(
+        group_name
+    )
+
+
 def propose_group(
     session: Session,
     group: WatchGroup,
@@ -142,10 +156,7 @@ def propose_group(
     if not group.members:
         return None
 
-    situation_code = GROUP_TO_SITUATION.get(group.name, group.name)
-    mapped_code = action_code_for_situation(session, situation_code, as_of) or GROUP_ACTIONS.get(
-        group.name
-    )
+    mapped_code = default_action_code_for_group(session, group.name, as_of)
     if mapped_code is None:
         raise ProposalActionMissing(f"the group '{group.name}' has no action in the rule table")
     mapped_action = load_action_or_raise(session, mapped_code, as_of)

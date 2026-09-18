@@ -72,6 +72,8 @@ def _purge(session, client_ids: tuple[int, ...]) -> None:
     )
     session.execute(delete(ClientRiskFeatures).where(ClientRiskFeatures.client_id.in_(client_ids)))
     session.execute(delete(ActiveClientFund).where(ActiveClientFund.client_id.in_(client_ids)))
+    session.execute(delete(ClientSituationState).where(ClientSituationState.run_id == RUN_ID))
+    session.execute(delete(ClientSituationSnapshot).where(ClientSituationSnapshot.run_id == RUN_ID))
     session.execute(delete(SignalRun).where(SignalRun.run_id == RUN_ID))
     session.commit()
 

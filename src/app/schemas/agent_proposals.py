@@ -56,7 +56,6 @@ class AgentProposalDetailOut(AgentProposalSummaryOut):
     content_mix: str | None
     campaign_id: int | None
     decided_by: str | None
-    clients: list[AgentProposalClientOut]
 
 
 class ProposalDecisionRequest(BaseModel):

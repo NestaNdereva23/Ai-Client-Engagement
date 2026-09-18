@@ -158,6 +158,204 @@ def draft_into_review_queue(
     return sum(1 for outcome in outcomes if outcome.generated)
 
 
+def run_proposal(
+    session: Session,
+    proposal_id: int,
+    *,
+    run_id: int | None = None,
+    as_of: date | None = None,
+    cooldown_days: int | None = None,
+    draft: Drafter = draft_into_review_queue,
+) -> dict[str, Any]:
+    day = as_of or date.today()
+    audit_run_id = None if run_id is None else str(run_id)
+    proposal = session.get(AgentProposal, proposal_id)
+    if proposal is None:
+        return _refuse("unknown_proposal", f"there is no proposal {proposal_id}")
+    if proposal.status != APPROVED:
+        return _refuse(
+            "proposal_not_approved",
+            f"proposal {proposal_id} is {proposal.status}, and only an approved "
+            "proposal may be started",
+        )
+    if proposal.action_code == DO_NOTHING_ACTION:
+        return _refuse("nothing_to_run", f"proposal {proposal_id} is a decision to do nothing")
+    if proposal.angle is None:
+        return _refuse(
+            "no_message_to_draft",
+            f"proposal {proposal_id} answers '{proposal.action_code}', which has no "
+            "message angle to draft",
+        )
+
+    try:
+        action = load_action_or_raise(session, proposal.action_code, day)
+    except ProposalActionMissing as exc:
+        return _refuse("unknown_action", str(exc))
+
+    members = _members_of(session, proposal_id)
+    if not members:
+        return _refuse("no_clients_left", f"proposal {proposal_id} has nobody included on it")
+
+    settings = get_settings()
+    cooldown = settings.agent_contact_cooldown_days if cooldown_days is None else cooldown_days
+    blocked = {
+        member_key(member): member_skip_reason(session, member, action, day, cooldown)
+        for member in members
+    }
+    still_allowed = [member for member in members if blocked[member_key(member)] is None]
+    dropped = {
+        reason: sum(1 for value in blocked.values() if value == reason)
+        for reason in {value for value in blocked.values() if value is not None}
+    }
+    if not still_allowed:
+        record_audit(
+            session,
+            entity_type="agent_proposal",
+            action="run_refused",
+            entity_id=str(proposal_id),
+            run_id=audit_run_id,
+            detail={"reason": "every client was left out by a check", "dropped": dropped},
+        )
+        return _refuse(
+            "every_client_was_left_out",
+            "every client on this proposal was left out by a check since it was "
+            f"written: {dropped}",
+        )
+
+    permission_row = resolve_permission(session, action.action_code)
+    caps = []
+    if settings.agent_daily_send_limit is not None:
+        used_overall = overall_daily_usage(session, as_of=day).used_clients
+        caps.append(max(settings.agent_daily_send_limit - used_overall, 0))
+    if permission_row is not None and permission_row.max_clients_per_day is not None:
+        used_action = daily_usage(session, action_code=action.action_code, as_of=day).used_clients
+        caps.append(max(permission_row.max_clients_per_day - used_action, 0))
+    if not action_has_run_before(session, action.action_code):
+        caps.append(settings.agent_first_run_limit)
+
+    if caps:
+        remaining_capacity = min(caps)
+        if len(still_allowed) > remaining_capacity:
+            over_capacity = still_allowed[remaining_capacity:]
+            still_allowed = still_allowed[:remaining_capacity]
+            for member in over_capacity:
+                blocked[member_key(member)] = DAILY_LIMIT_REACHED
+            dropped[DAILY_LIMIT_REACHED] = dropped.get(DAILY_LIMIT_REACHED, 0) + len(over_capacity)
+
+    if not still_allowed:
+        record_audit(
+            session,
+            entity_type="agent_proposal",
+            action="run_refused",
+            entity_id=str(proposal_id),
+            run_id=audit_run_id,
+            detail={"reason": "today's send limit is already used up", "dropped": dropped},
+        )
+        return _refuse(
+            "daily_limit_reached",
+            f"today's send limit for '{action.action_code}' is already used up: {dropped}",
+        )
+
+    for member in members:
+        reason = blocked[member_key(member)]
+        if reason is None:
+            continue
+        row = session.scalar(
+            select(AgentProposalClient).where(
+                AgentProposalClient.proposal_id == proposal_id,
+                AgentProposalClient.client_id == member.client_id,
+                AgentProposalClient.unit_fund_id == member.unit_fund_id,
+            )
+        )
+        row.included = False
+        row.skip_reason = reason
+
+    ready = [
+        member.client_id
+        for member in still_allowed
+        if prepare_client_for_drafting(
+            session,
+            member.client_id,
+            angle=proposal.angle,
+            chosen_by=proposal.action_code,
+            catalog_version=proposal.catalog_version,
+        )
+    ]
+    if not ready:
+        return _refuse(
+            "no_clients_left",
+            f"nobody on proposal {proposal_id} still holds anything in the active book",
+        )
+
+    campaign = Campaign(
+        name=f"{action.title} for {proposal.group_name}",
+        campaign_type=CAMPAIGN_TYPE,
+        cohort_definition=proposal.group_definition,
+        status=RUNNING,
+        start_date=day,
+    )
+    session.add(campaign)
+    session.flush()
+    session.add(
+        CampaignStep(
+            campaign_id=campaign.campaign_id,
+            step_no=1,
+            offset_days=0,
+            message_angle=proposal.angle,
+        )
+    )
+    session.flush()
+
+    enrollments = enroll_cohort(
+        session,
+        campaign_id=campaign.campaign_id,
+        client_ids=ready,
+    )
+    proposal.campaign_id = campaign.campaign_id
+    transition_proposal(
+        session,
+        proposal,
+        to_status=RUNNING,
+        reason=f"campaign {campaign.campaign_id} was created and the group enrolled",
+    )
+    record_audit(
+        session,
+        entity_type="agent_proposal",
+        action="run",
+        entity_id=str(proposal_id),
+        run_id=audit_run_id,
+        detail={
+            "campaign_id": campaign.campaign_id,
+            "enrolled_count": len(enrollments),
+            "dropped": dropped,
+        },
+    )
+    session.commit()
+
+    drafted = draft(
+        session,
+        campaign_id=campaign.campaign_id,
+        prohibitions=proposal_prohibitions(session, proposal),
+    )
+    logger.info(
+        "agent_write_tool.run_proposal",
+        run_id=run_id,
+        proposal_id=proposal_id,
+        campaign_id=campaign.campaign_id,
+        enrolled_count=len(enrollments),
+        drafted_count=drafted,
+    )
+    return {
+        "status": RUNNING,
+        "proposal_id": proposal_id,
+        "campaign_id": campaign.campaign_id,
+        "enrolled_count": len(enrollments),
+        "dropped_since_proposed": dropped,
+        "drafted_count": drafted,
+        "note": "the drafts are waiting in the review queue and nothing has been sent",
+    }
+
+
 def make_write_tools(
     *,
     run_id: int | None = None,
@@ -277,191 +475,15 @@ def make_write_tools(
             "permission_applied": proposal.permission_applied,
         }
 
-    def run_proposal(session: Session, *, proposal_id: int) -> dict[str, Any]:
-        proposal = session.get(AgentProposal, proposal_id)
-        if proposal is None:
-            return _refuse("unknown_proposal", f"there is no proposal {proposal_id}")
-        if proposal.status != APPROVED:
-            return _refuse(
-                "proposal_not_approved",
-                f"proposal {proposal_id} is {proposal.status}, and only an approved "
-                "proposal may be started",
-            )
-        if proposal.action_code == DO_NOTHING_ACTION:
-            return _refuse("nothing_to_run", f"proposal {proposal_id} is a decision to do nothing")
-
-        try:
-            action = load_action_or_raise(session, proposal.action_code, day)
-        except ProposalActionMissing as exc:
-            return _refuse("unknown_action", str(exc))
-
-        members = _members_of(session, proposal_id)
-        if not members:
-            return _refuse("no_clients_left", f"proposal {proposal_id} has nobody included on it")
-
-        settings = get_settings()
-        cooldown = settings.agent_contact_cooldown_days if cooldown_days is None else cooldown_days
-        blocked = {
-            member_key(member): member_skip_reason(session, member, action, day, cooldown)
-            for member in members
-        }
-        still_allowed = [member for member in members if blocked[member_key(member)] is None]
-        dropped = {
-            reason: sum(1 for value in blocked.values() if value == reason)
-            for reason in {value for value in blocked.values() if value is not None}
-        }
-        if not still_allowed:
-            record_audit(
-                session,
-                entity_type="agent_proposal",
-                action="run_refused",
-                entity_id=str(proposal_id),
-                run_id=audit_run_id,
-                detail={"reason": "every client was left out by a check", "dropped": dropped},
-            )
-            return _refuse(
-                "every_client_was_left_out",
-                "every client on this proposal was left out by a check since it was "
-                f"written: {dropped}",
-            )
-
-        permission_row = resolve_permission(session, action.action_code)
-        caps = []
-        if settings.agent_daily_send_limit is not None:
-            used_overall = overall_daily_usage(session, as_of=day).used_clients
-            caps.append(max(settings.agent_daily_send_limit - used_overall, 0))
-        if permission_row is not None and permission_row.max_clients_per_day is not None:
-            used_action = daily_usage(
-                session, action_code=action.action_code, as_of=day
-            ).used_clients
-            caps.append(max(permission_row.max_clients_per_day - used_action, 0))
-        if not action_has_run_before(session, action.action_code):
-            caps.append(settings.agent_first_run_limit)
-
-        if caps:
-            remaining_capacity = min(caps)
-            if len(still_allowed) > remaining_capacity:
-                over_capacity = still_allowed[remaining_capacity:]
-                still_allowed = still_allowed[:remaining_capacity]
-                for member in over_capacity:
-                    blocked[member_key(member)] = DAILY_LIMIT_REACHED
-                dropped[DAILY_LIMIT_REACHED] = dropped.get(DAILY_LIMIT_REACHED, 0) + len(
-                    over_capacity
-                )
-
-        if not still_allowed:
-            record_audit(
-                session,
-                entity_type="agent_proposal",
-                action="run_refused",
-                entity_id=str(proposal_id),
-                run_id=audit_run_id,
-                detail={"reason": "today's send limit is already used up", "dropped": dropped},
-            )
-            return _refuse(
-                "daily_limit_reached",
-                f"today's send limit for '{action.action_code}' is already used up: {dropped}",
-            )
-
-        for member in members:
-            reason = blocked[member_key(member)]
-            if reason is None:
-                continue
-            row = session.scalar(
-                select(AgentProposalClient).where(
-                    AgentProposalClient.proposal_id == proposal_id,
-                    AgentProposalClient.client_id == member.client_id,
-                    AgentProposalClient.unit_fund_id == member.unit_fund_id,
-                )
-            )
-            row.included = False
-            row.skip_reason = reason
-
-        ready = [
-            member.client_id
-            for member in still_allowed
-            if proposal.angle is None
-            or prepare_client_for_drafting(
-                session,
-                member.client_id,
-                angle=proposal.angle,
-                chosen_by=proposal.action_code,
-                catalog_version=proposal.catalog_version,
-            )
-        ]
-        if not ready:
-            return _refuse(
-                "no_clients_left",
-                f"nobody on proposal {proposal_id} still holds anything in the active book",
-            )
-
-        campaign = Campaign(
-            name=f"{action.title} for {proposal.group_name}",
-            campaign_type=CAMPAIGN_TYPE,
-            cohort_definition=proposal.group_definition,
-            status=RUNNING,
-            start_date=day,
-        )
-        session.add(campaign)
-        session.flush()
-        session.add(
-            CampaignStep(
-                campaign_id=campaign.campaign_id,
-                step_no=1,
-                offset_days=0,
-                message_angle=proposal.angle,
-            )
-        )
-        session.flush()
-
-        enrollments = enroll_cohort(
+    def _run_proposal(session: Session, *, proposal_id: int) -> dict[str, Any]:
+        return run_proposal(
             session,
-            campaign_id=campaign.campaign_id,
-            client_ids=ready,
-        )
-        proposal.campaign_id = campaign.campaign_id
-        transition_proposal(
-            session,
-            proposal,
-            to_status=RUNNING,
-            reason=f"campaign {campaign.campaign_id} was created and the group enrolled",
-        )
-        record_audit(
-            session,
-            entity_type="agent_proposal",
-            action="run",
-            entity_id=str(proposal_id),
-            run_id=audit_run_id,
-            detail={
-                "campaign_id": campaign.campaign_id,
-                "enrolled_count": len(enrollments),
-                "dropped": dropped,
-            },
-        )
-        session.commit()
-
-        drafted = draft(
-            session,
-            campaign_id=campaign.campaign_id,
-            prohibitions=proposal_prohibitions(session, proposal),
-        )
-        logger.info(
-            "agent_write_tool.run_proposal",
+            proposal_id,
             run_id=run_id,
-            proposal_id=proposal_id,
-            campaign_id=campaign.campaign_id,
-            enrolled_count=len(enrollments),
-            drafted_count=drafted,
+            as_of=day,
+            cooldown_days=cooldown_days,
+            draft=draft,
         )
-        return {
-            "status": RUNNING,
-            "proposal_id": proposal_id,
-            "campaign_id": campaign.campaign_id,
-            "enrolled_count": len(enrollments),
-            "dropped_since_proposed": dropped,
-            "drafted_count": drafted,
-            "note": "the drafts are waiting in the review queue and nothing has been sent",
-        }
 
     def record_no_action(session: Session, *, insight_id: int, reason: str) -> dict[str, Any]:
         insight = _accepted_insight(session, insight_id)
@@ -552,7 +574,7 @@ def make_write_tools(
 
     return {
         WRITE_PROPOSAL: write_proposal,
-        RUN_PROPOSAL: run_proposal,
+        RUN_PROPOSAL: _run_proposal,
         RECORD_NO_ACTION: record_no_action,
         FLAG_FOR_ACCOUNT_MANAGER: flag_for_account_manager,
     }

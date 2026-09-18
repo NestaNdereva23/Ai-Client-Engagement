@@ -18,12 +18,15 @@ from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agents.action_catalog import selectable_actions
+from app.agents.action_catalog import load_action, selectable_actions
 from app.agents.events import NO_EVENTS, EventLog, RunEventLog
 from app.agents.permissions import effective_permission
 from app.agents.prompt_versioning import AGENT_LOOP_CHOOSE, AGENT_LOOP_PLAN, active_prompt
+from app.agents.proposal_state import transition_proposal
 from app.agents.propose import (
     DO_NOTHING_ACTION,
+    WATCH_FOR_NOW_ACTION,
+    default_action_code_for_group,
     group_evidence,
     group_skip_reasons,
     load_action_or_raise,
@@ -34,6 +37,12 @@ from app.agents.run_cost import run_cost_kes
 from app.agents.tool_runtime import make_tool_executor
 from app.agents.tools import TOOL_SPECS
 from app.agents.watchlist import (
+    FEE_PRESSURE_ACTIVE_CONTRIBUTOR,
+    FEE_PRESSURE_GONE_QUIET,
+    GETTING_SMALLER,
+    HEALTHY_ONE_FUND,
+    MORE_URGENT_BUT_NOT_CALLED,
+    VERY_SMALL_AND_QUIET,
     GroupMember,
     WatchGroup,
     WatchlistThresholds,
@@ -43,6 +52,9 @@ from app.agents.watchlist import (
 from app.audit.log import record_audit
 from app.db.models.agent import AgentActionCatalog
 from app.db.models.agent_event import (
+    ACTION_COMPLETED,
+    ACTION_STARTED,
+    APPROVAL_GIVEN,
     APPROVAL_NEEDED,
     ERROR,
     PROPOSAL_CREATED,
@@ -85,6 +97,26 @@ NOT_SELECTED_TONIGHT = "not_selected_tonight"
 CHOOSE_ACTION_TOOL_NAME = "choose_action"
 
 ACTS_ALONE = "act_alone"
+
+# These groups always get an outreach attempt: the model may still pick
+# which action and angle fits best, but it may not leave the group with
+# no message at all. A member is only left out by an actual contact gate
+# (suppression, complaint, cooldown, angle paused), never by the model's
+# own judgement call to wait. Both fee pressure groups are in this set for
+# the same reason: a client whose balance the fee is about to empty needs
+# to hear about it, not be skipped because the model thought another
+# proposal already covered them.
+MUST_REACH_OUT_GROUPS = frozenset(
+    {
+        VERY_SMALL_AND_QUIET,
+        GETTING_SMALLER,
+        HEALTHY_ONE_FUND,
+        MORE_URGENT_BUT_NOT_CALLED,
+        FEE_PRESSURE_GONE_QUIET,
+        FEE_PRESSURE_ACTIVE_CONTRIBUTOR,
+    }
+)
+NO_MESSAGE_ACTIONS = (DO_NOTHING_ACTION, WATCH_FOR_NOW_ACTION)
 
 
 class AgentRunInProgress(RuntimeError):
@@ -611,8 +643,22 @@ def build_agent_loop_graph(
             if not group.members:
                 continue
             choice = state["choices"].get(group.name)
+            chosen_code = choice.action_code if choice is not None else None
 
-            if choice is None or choice.action_code == DO_NOTHING_ACTION:
+            overridden = False
+            if group.name in MUST_REACH_OUT_GROUPS and (
+                chosen_code is None or chosen_code in NO_MESSAGE_ACTIONS
+            ):
+                fallback_code = default_action_code_for_group(session, group.name, as_of)
+                if (
+                    fallback_code is not None
+                    and fallback_code not in NO_MESSAGE_ACTIONS
+                    and load_action(session, fallback_code, as_of) is not None
+                ):
+                    chosen_code = fallback_code
+                    overridden = True
+
+            if chosen_code is None or (chosen_code == DO_NOTHING_ACTION and not overridden):
                 action = load_action_or_raise(session, DO_NOTHING_ACTION, as_of)
                 reason = (
                     choice.reason
@@ -630,18 +676,26 @@ def build_agent_loop_graph(
                 )
                 continue
 
-            action = load_action_or_raise(session, choice.action_code, as_of)
+            action = load_action_or_raise(session, chosen_code, as_of)
+            angle = action.message_angle if overridden else choice.angle
+            reason = (
+                f"{action.title} is this group's required outreach action; the model chose "
+                "not to send anything tonight, so this fixed default was used instead."
+                if overridden
+                else choice.reason
+            )
             skip_reasons = group_skip_reasons(session, group.members, action, as_of, cooldown_days)
             included = tuple(
                 member for member in group.members if skip_reasons[member_key(member)] is None
             )
             if not included:
                 action = load_action_or_raise(session, DO_NOTHING_ACTION, as_of)
+                angle = None
 
             checked[group.name] = GroupDecision(
                 action=action,
-                angle=choice.angle,
-                reason=choice.reason,
+                angle=angle,
+                reason=reason,
                 included=included,
                 skip_reasons=skip_reasons,
             )
@@ -750,17 +804,66 @@ def build_agent_loop_graph(
                 included_count=len(decision.included),
                 permission_applied=proposal.permission_applied,
             )
-            if (
-                decision.action.action_code != DO_NOTHING_ACTION
-                and proposal.permission_applied != ACTS_ALONE
-            ):
-                events.record(
-                    APPROVAL_NEEDED,
-                    proposal_id=proposal.proposal_id,
-                    group_name=group.name,
-                    action_code=decision.action.action_code,
-                    included_count=len(decision.included),
-                )
+            if decision.action.action_code != DO_NOTHING_ACTION:
+                if proposal.permission_applied == ACTS_ALONE:
+                    proposal = transition_proposal(
+                        session,
+                        proposal,
+                        to_status="approved",
+                        reason="act_alone permission needs no human approval",
+                        decided_by="agent",
+                    )
+                    session.commit()
+                    events.record(
+                        APPROVAL_GIVEN,
+                        proposal_id=proposal.proposal_id,
+                        group_name=group.name,
+                        action_code=decision.action.action_code,
+                        decided_by="agent",
+                    )
+
+                    from app.agents.write_tools import run_proposal as _run_proposal_tool
+
+                    events.record(
+                        ACTION_STARTED,
+                        proposal_id=proposal.proposal_id,
+                        group_name=group.name,
+                        action_code=decision.action.action_code,
+                    )
+                    try:
+                        run_result = _run_proposal_tool(
+                            session,
+                            proposal.proposal_id,
+                            run_id=run_id,
+                            as_of=as_of,
+                            cooldown_days=cooldown_days,
+                        )
+                    except Exception as exc:
+                        session.rollback()
+                        proposal = session.get(AgentProposal, proposal.proposal_id)
+                        run_result = {"error": "run_failed", "message": str(exc)}
+                        events.record(
+                            ERROR,
+                            about="action",
+                            step="propose",
+                            reason=str(exc),
+                            proposal_id=proposal.proposal_id,
+                        )
+                    events.record(
+                        ACTION_COMPLETED,
+                        proposal_id=proposal.proposal_id,
+                        group_name=group.name,
+                        action_code=decision.action.action_code,
+                        result=run_result,
+                    )
+                else:
+                    events.record(
+                        APPROVAL_NEEDED,
+                        proposal_id=proposal.proposal_id,
+                        group_name=group.name,
+                        action_code=decision.action.action_code,
+                        included_count=len(decision.included),
+                    )
             proposals.append(proposal)
 
         record_audit(

@@ -6,13 +6,17 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+import structlog
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.agents.proposal_state import transition_proposal
+from app.agents.propose import DO_NOTHING_ACTION
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.outreach import Campaign
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_id_cursor, encode_id_cursor
+
+logger = structlog.get_logger(__name__)
 
 _DECISION_TO_STATUS = {"approve": "approved", "reject": "rejected"}
 
@@ -147,6 +151,64 @@ def get_proposal_clients(session: Session, proposal_id: int) -> list[AgentPropos
     )
 
 
+def get_proposal_included_count(session: Session, proposal_id: int) -> int | None:
+    total = session.scalar(
+        select(func.count())
+        .select_from(AgentProposalClient)
+        .where(AgentProposalClient.proposal_id == proposal_id)
+    )
+    if not total:
+        return None
+    included = session.scalar(
+        select(func.count())
+        .select_from(AgentProposalClient)
+        .where(
+            AgentProposalClient.proposal_id == proposal_id,
+            AgentProposalClient.included.is_(True),
+        )
+    )
+    return included or 0
+
+
+def list_proposal_clients(
+    session: Session,
+    proposal_id: int,
+    *,
+    included: bool | None = None,
+    cursor: str | None = None,
+    limit: int = DEFAULT_LIMIT,
+) -> tuple[list[AgentProposalClient], str | None]:
+    limit = clamp_limit(limit)
+    clauses = [AgentProposalClient.proposal_id == proposal_id]
+    if included is not None:
+        clauses.append(AgentProposalClient.included.is_(included))
+    query = select(AgentProposalClient).where(*clauses)
+    if cursor is not None:
+        after_id = decode_id_cursor(cursor)
+        query = query.where(AgentProposalClient.proposal_client_id > after_id)
+    query = query.order_by(AgentProposalClient.proposal_client_id).limit(limit + 1)
+
+    rows = list(session.scalars(query).all())
+    next_cursor = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        next_cursor = encode_id_cursor(rows[-1].proposal_client_id)
+    return rows, next_cursor
+
+
+def list_client_proposals(
+    session: Session, client_id: int, *, limit: int = 20
+) -> list[tuple[AgentProposal, AgentProposalClient]]:
+    rows = session.execute(
+        select(AgentProposal, AgentProposalClient)
+        .join(AgentProposalClient, AgentProposalClient.proposal_id == AgentProposal.proposal_id)
+        .where(AgentProposalClient.client_id == client_id)
+        .order_by(AgentProposal.created_at.desc())
+        .limit(limit)
+    ).all()
+    return [(proposal, proposal_client) for proposal, proposal_client in rows]
+
+
 @dataclass(frozen=True)
 class DailyUsage:
     """How much of one action's daily allowance its proposals have used up."""
@@ -222,13 +284,24 @@ def decide_proposal(
 ) -> AgentProposal:
     """Approve or reject one proposal, recording who decided and why."""
     proposal = get_proposal(session, proposal_id)
-    return transition_proposal(
+    proposal = transition_proposal(
         session,
         proposal,
         to_status=_DECISION_TO_STATUS[decision],
         reason=reason,
         decided_by=decided_by,
     )
+    if decision == "approve" and proposal.action_code != DO_NOTHING_ACTION:
+        session.commit()
+        from app.agents.write_tools import run_proposal
+
+        try:
+            run_proposal(session, proposal_id)
+        except Exception:
+            session.rollback()
+            logger.exception("decide_proposal.run_proposal_failed", proposal_id=proposal_id)
+            proposal = get_proposal(session, proposal_id)
+    return proposal
 
 
 def stop_proposal(

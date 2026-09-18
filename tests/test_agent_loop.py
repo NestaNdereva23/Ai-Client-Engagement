@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import delete, select
 
 from app.agents import agent_loop as agent_loop_module
+from app.agents.action_catalog import load_action
 from app.agents.agent_loop import (
     CHOOSE_ACTION_TOOL_NAME,
     NOT_SELECTED_TONIGHT,
@@ -19,7 +20,12 @@ from app.agents.agent_loop import (
     run_nightly_agent,
 )
 from app.agents.propose import DO_NOTHING_ACTION, ON_DO_NOT_CONTACT_LIST
-from app.agents.watchlist import FEE_PRESSURE_GONE_QUIET, WatchlistThresholds
+from app.agents.situations import SMALL_BALANCE_INACTIVE
+from app.agents.watchlist import (
+    FEE_PRESSURE_GONE_QUIET,
+    VERY_SMALL_AND_QUIET,
+    WatchlistThresholds,
+)
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.agent_run import AgentRun, AgentToolCall
@@ -33,6 +39,7 @@ from app.privacy.llm_client import ConversationTurn, LLMClientError, LLMUsage, T
 FUND_ID = 9610
 ELIGIBLE_CLIENT = 961001
 SUPPRESSED_CLIENT = 961002
+MUST_REACH_CLIENT = 961003
 
 AS_OF = date(2026, 9, 7)
 
@@ -146,7 +153,7 @@ def _stalling_choose_turn() -> ConversationTurn:
 
 
 def _purge(session) -> None:
-    client_ids = (ELIGIBLE_CLIENT, SUPPRESSED_CLIENT)
+    client_ids = (ELIGIBLE_CLIENT, SUPPRESSED_CLIENT, MUST_REACH_CLIENT)
     run_ids = session.scalars(select(AgentRun.run_id).where(AgentRun.trigger == "manual")).all()
     proposal_ids = session.scalars(
         select(AgentProposal.proposal_id).where(AgentProposal.run_id.in_(run_ids))
@@ -237,6 +244,34 @@ def _seed_fee_pressure_gone_quiet_client(client_id: int) -> None:
         session.commit()
 
 
+def _seed_very_small_and_quiet_client(client_id: int) -> None:
+    with SessionLocal() as session:
+        session.add(
+            ActiveClientFund(
+                client_id=client_id,
+                unit_fund_id=FUND_ID,
+                balance=50.0,
+                n_deposits=1,
+                n_withdrawals=0,
+            )
+        )
+        if session.get(SignalRun, SIGNAL_RUN_ID) is None:
+            session.add(SignalRun(run_id=SIGNAL_RUN_ID, state="completed"))
+            session.flush()
+        session.add(
+            ClientSituationState(
+                client_id=client_id,
+                unit_fund_id=FUND_ID,
+                situation_code=SMALL_BALANCE_INACTIVE,
+                is_active=True,
+                signal_codes=["small_balance"],
+                since=AS_OF,
+                run_id=SIGNAL_RUN_ID,
+            )
+        )
+        session.commit()
+
+
 def test_a_full_run_produces_a_proposal_chosen_by_the_model() -> None:
     _seed_fee_pressure_gone_quiet_client(ELIGIBLE_CLIENT)
     llm_client = FakeConversingLLMClient(
@@ -280,6 +315,107 @@ def test_a_full_run_produces_a_proposal_chosen_by_the_model() -> None:
     assert proposal.action_code == "fee_warning"
     assert proposal.angle == "sitting_still"
     assert proposal.reason == "their balance will run out within a few months"
+
+    with SessionLocal() as session:
+        clients = session.scalars(
+            select(AgentProposalClient).where(
+                AgentProposalClient.proposal_id == proposal.proposal_id
+            )
+        ).all()
+    assert len(clients) == 1
+    assert clients[0].client_id == ELIGIBLE_CLIENT
+    assert clients[0].included is True
+    assert clients[0].skip_reason is None
+
+
+def test_a_must_reach_out_group_is_not_left_on_watch_for_now() -> None:
+    _seed_very_small_and_quiet_client(MUST_REACH_CLIENT)
+    llm_client = FakeConversingLLMClient(
+        [
+            _final_answer("Nothing urgent tonight; a quiet group can just be watched."),
+            *_choose_reply(
+                [
+                    {
+                        "group_name": VERY_SMALL_AND_QUIET,
+                        "action_code": "watch_for_now",
+                        "angle": None,
+                        "reason": "small quiet group, no pressing trigger tonight",
+                    }
+                ]
+            ),
+        ]
+    )
+
+    with SessionLocal() as session:
+        run = run_nightly_agent(session, trigger="manual", llm_client=llm_client, as_of=AS_OF)
+        run_id = run.run_id
+        expected_action = load_action(session, "start_win_back", AS_OF)
+
+    with SessionLocal() as session:
+        proposals = session.scalars(
+            select(AgentProposal).where(AgentProposal.run_id == run_id)
+        ).all()
+
+    assert len(proposals) == 1
+    proposal = proposals[0]
+    assert proposal.group_name == VERY_SMALL_AND_QUIET
+    assert proposal.action_code == expected_action.action_code
+    assert proposal.angle == expected_action.message_angle
+    assert "required outreach action" in proposal.reason
+
+    with SessionLocal() as session:
+        clients = session.scalars(
+            select(AgentProposalClient).where(
+                AgentProposalClient.proposal_id == proposal.proposal_id
+            )
+        ).all()
+    assert len(clients) == 1
+    assert clients[0].client_id == MUST_REACH_CLIENT
+    assert clients[0].included is True
+    assert clients[0].skip_reason is None
+
+
+FEE_PRESSURE_SPLIT_AS_OF = date(2026, 9, 17)
+
+
+def test_a_fee_pressure_group_is_not_left_on_do_nothing() -> None:
+    _seed_fee_pressure_gone_quiet_client(ELIGIBLE_CLIENT)
+    llm_client = FakeConversingLLMClient(
+        [
+            _final_answer("This client already has a message in flight; leave it alone."),
+            *_choose_reply(
+                [
+                    {
+                        "group_name": FEE_PRESSURE_GONE_QUIET,
+                        "action_code": "do_nothing",
+                        "angle": None,
+                        "reason": "this client already has a fee warning proposed elsewhere",
+                    }
+                ]
+            ),
+        ]
+    )
+
+    with SessionLocal() as session:
+        run = run_nightly_agent(
+            session, trigger="manual", llm_client=llm_client, as_of=FEE_PRESSURE_SPLIT_AS_OF
+        )
+        run_id = run.run_id
+        expected_action = load_action(
+            session, "fee_pressure_warning_dormant", FEE_PRESSURE_SPLIT_AS_OF
+        )
+
+    with SessionLocal() as session:
+        proposals = session.scalars(
+            select(AgentProposal).where(AgentProposal.run_id == run_id)
+        ).all()
+
+    assert len(proposals) == 1
+    proposal = proposals[0]
+    assert proposal.group_name == FEE_PRESSURE_GONE_QUIET
+    assert proposal.action_code == expected_action.action_code
+    assert proposal.angle == expected_action.message_angle
+    assert "required outreach action" in proposal.reason
 
     with SessionLocal() as session:
         clients = session.scalars(
