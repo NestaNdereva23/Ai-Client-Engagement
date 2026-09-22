@@ -198,6 +198,12 @@ class ClientFund(Base):
     # How the final sale was recorded, which says whether leaving was a choice.
     exit_type: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    has_extended_history: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    activity_window_from: Mapped[date | None] = mapped_column(Date, nullable=True)
+    activity_window_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

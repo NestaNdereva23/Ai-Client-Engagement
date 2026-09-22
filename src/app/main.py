@@ -47,20 +47,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         version=__version__,
-        docs_url=None if settings.is_production else "/docs",
-        openapi_url=None if settings.is_production else "/openapi.json",
+        docs_url="/docs",
+        openapi_url="/openapi.json",
         lifespan=lifespan,
     )
     app.state.settings = settings
 
     register_error_handlers(app)
-    if settings.cors_allow_origins_list:
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=settings.cors_allow_origins_list,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
     app.add_middleware(IdempotencyMiddleware)
     app.add_middleware(CorrelationIdMiddleware)
     app.add_middleware(
@@ -70,6 +63,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         same_site="lax",
         https_only=settings.is_production,
     )
+    if settings.cors_allow_origins_list:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_allow_origins_list,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
     app.include_router(health.router)
     app.include_router(v1.router)

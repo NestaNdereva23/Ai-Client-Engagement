@@ -38,7 +38,7 @@ MODEL_FACT_BLOCK_VERSION = 3
 RISK_FACT_BLOCK_VERSION = 1
 
 # A deposit trend's direction, band-only. Mirrors transform/features.py's own
-# _trend_band split of the same TREND_EPS constant -- briefing/render.py
+# _trend_band split of the same MIN_TREND_CHANGE constant -- briefing/render.py
 # already makes this exact three-way comparison inline, in prose; this just
 # gives the comparison a name so it can be a fact-block field instead.
 DEPOSIT_TREND_BANDS = ("rising", "flat", "falling", "unknown")

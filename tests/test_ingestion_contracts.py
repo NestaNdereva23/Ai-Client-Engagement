@@ -125,3 +125,47 @@ def test_schema_drift_accepts_sale_type_on_a_sale():
 
 def test_envelope_defaults_to_empty():
     assert RawEnvelope.model_validate({}).data == []
+
+
+def test_activity_window_reads_from_and_to():
+    client = ClientRecord.model_validate(
+        {
+            "client_id": 1,
+            "activity_window": {"from": "2025-09-01", "to": "2026-08-15"},
+        }
+    )
+    assert client.activity_window.from_ == "2025-09-01"
+    assert client.activity_window.to == "2026-08-15"
+
+
+def test_activity_window_defaults_to_none():
+    client = ClientRecord.model_validate({"client_id": 1})
+    assert client.activity_window is None
+
+
+def test_twelve_month_transaction_lists_parse():
+    client = ClientRecord.model_validate(
+        {
+            "client_id": 1,
+            "purchases_last_12_months": [{"id": 1, "date": "2026-01-01", "number": "500"}],
+            "sales_last_12_months": [
+                {"id": 2, "date": "2026-02-01", "number": "50", "sale_type": "unit_sale"}
+            ],
+        }
+    )
+    assert client.purchases_last_12_months[0].number == "500"
+    assert client.sales_last_12_months[0].sale_type == "unit_sale"
+
+
+def test_schema_drift_accepts_status_and_the_twelve_month_fields():
+    payload = _sample_payload()
+    payload["data"][0]["clients"][0]["status"] = "inactive"
+    payload["data"][0]["clients"][0]["activity_window"] = {
+        "from": "2025-09-01",
+        "to": "2026-08-15",
+    }
+    payload["data"][0]["clients"][0]["purchases_last_12_months"] = [
+        {"id": 5, "date": "2026-01-01", "number": "500"}
+    ]
+    payload["data"][0]["clients"][0]["sales_last_12_months"] = []
+    assert schema_drift(payload) == set()

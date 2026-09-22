@@ -445,7 +445,7 @@ def test_relationship_measures_persist(measured) -> None:
         assert row.rhythm_days == 30
         assert row.active_window_days == 60
         assert row.hold_days == 400
-        assert row.drawdown_days == 0
+        assert row.drawdown_days is None
         assert row.exit_type == "unit_sale"
         assert row.ticket_trend is not None and row.ticket_trend > 0
 

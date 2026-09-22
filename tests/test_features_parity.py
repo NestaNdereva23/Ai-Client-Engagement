@@ -23,7 +23,7 @@ from app.db.session import SessionLocal
 from app.rules.engine import resolve
 from app.rules.store import load_active_rules
 from app.transform.features import (
-    DRAWDOWN_DAYS,
+    DECLINE_LOOKBACK_DAYS,
     LONG_HOLD_DAYS,
     _cadence_band,
     _exit_reason,
@@ -236,8 +236,8 @@ def test_fund_type_covers_every_fund_in_the_source(rows) -> None:
 
 
 def test_staged_exit_threshold_holds(rows) -> None:
-    staged = [r for r in rows if (_int(r["drawdown_days"]) or -1) >= DRAWDOWN_DAYS]
-    assert all((_int(r["drawdown_days"]) or 0) >= DRAWDOWN_DAYS for r in staged)
+    staged = [r for r in rows if (_int(r["drawdown_days"]) or -1) >= DECLINE_LOOKBACK_DAYS]
+    assert all((_int(r["drawdown_days"]) or 0) >= DECLINE_LOOKBACK_DAYS for r in staged)
 
 
 def _tier_of(row: dict[str, str]) -> str:
@@ -273,7 +273,9 @@ def _routing_features(row: dict[str, str]) -> dict[str, str]:
         if _has_depth(n_purchases, _int(row["active_window_days"]))
         else "false",
         "purchase_depth": _purchase_depth(n_purchases),
-        "staged_exit": "true" if drawdown is not None and drawdown >= DRAWDOWN_DAYS else "false",
+        "staged_exit": "true"
+        if drawdown is not None and drawdown >= DECLINE_LOOKBACK_DAYS
+        else "false",
         "trend_band": _trend_band(_num(row["ticket_trend"])),
         "cadence_band": _cadence_band(_num(row["rhythm_days"])),
     }

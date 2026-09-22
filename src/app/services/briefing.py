@@ -22,7 +22,7 @@ from app.privacy.fact_block import FUND_DISPLAY_NAMES, RiskFactBlock
 from app.privacy.llm_client import LLMClient
 from app.risk.signals import SIGNAL_LABELS, SIGNAL_ORDER
 from app.transform.active_features import BALANCE_TIERS
-from app.transform.features import TREND_EPS
+from app.transform.features import MIN_TREND_CHANGE
 from app.transform.features import fund_type_from_name as classify_fund_type
 
 
@@ -238,7 +238,7 @@ def get_briefing(
 def _deposit_trend_band(deposit_trend: float | None) -> str:
     if deposit_trend is None:
         return "unknown"
-    if abs(deposit_trend) < TREND_EPS:
+    if abs(deposit_trend) < MIN_TREND_CHANGE:
         return "flat"
     return "falling" if deposit_trend < 0 else "rising"
 
