@@ -19,11 +19,11 @@ from app.transform.features import (
     _has_depth,
     _hold_band,
     _in_wave,
-    _log_slope,
-    _median_gap,
     _purchase_depth,
     _recency_band,
     _trend_band,
+    _trend_change,
+    _typical_gap,
     _value_band,
     fund_type_from_name,
 )
@@ -193,30 +193,30 @@ def test_has_depth_takes_either_route(n_purchases: int, window: int | None, expe
     assert _has_depth(n_purchases, window) is expected
 
 
-def test_median_gap_keeps_same_day_repeats() -> None:
+def test_typical_gap_keeps_same_day_repeats() -> None:
     """Three top-ups on one day is a gap of zero, not an absent cadence."""
     day = date(2024, 1, 1)
-    assert _median_gap([day, day, day]) == 0.0
+    assert _typical_gap([day, day, day]) == 0.0
 
 
-def test_median_gap_needs_two_purchases() -> None:
-    assert _median_gap([date(2024, 1, 1)]) is None
-    assert _median_gap([]) is None
+def test_typical_gap_needs_two_purchases() -> None:
+    assert _typical_gap([date(2024, 1, 1)]) is None
+    assert _typical_gap([]) is None
 
 
-def test_log_slope_needs_three_points() -> None:
-    assert _log_slope([100.0, 200.0]) is None
+def test_trend_change_needs_three_points() -> None:
+    assert _trend_change([100.0, 200.0]) is None
 
 
-def test_log_slope_signs_the_direction() -> None:
-    rising = _log_slope([100.0, 1_000.0, 10_000.0])
-    falling = _log_slope([10_000.0, 1_000.0, 100.0])
-    flat = _log_slope([500.0, 500.0, 500.0])
+def test_trend_change_signs_the_direction() -> None:
+    rising = _trend_change([100.0, 1_000.0, 10_000.0])
+    falling = _trend_change([10_000.0, 1_000.0, 100.0])
+    flat = _trend_change([500.0, 500.0, 500.0])
     assert rising is not None and rising > 0
     assert falling is not None and falling < 0
     assert flat == 0.0
 
 
-def test_log_slope_survives_a_zero_amount() -> None:
+def test_trend_change_survives_a_zero_amount() -> None:
     """log10(0) is undefined, so amounts are floored at one before the fit."""
-    assert _log_slope([0.0, 100.0, 1_000.0]) is not None
+    assert _trend_change([0.0, 100.0, 1_000.0]) is not None

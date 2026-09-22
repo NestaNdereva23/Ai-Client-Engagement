@@ -15,6 +15,7 @@ import pytest
 
 from app.db.models.models import IngestionStatus, RawStaging
 from app.db.session import SessionLocal
+from app.transform.features import derive_relationship_measures
 from app.transform.flatten import flatten_payload, flatten_run, latest_reference_date
 
 # A fixed EAT anchor and a known last-activity date, 22 days apart.
@@ -234,6 +235,121 @@ def test_flatten_run_sums_the_fund_headcount_across_pages(
     assert len(result.funds) == 1
     assert result.funds[0].inactive_client_count == 247
     assert {c.client_id for c in result.clients} == {1, 2}
+
+
+def _payload_with_windows(
+    last_5: list[dict[str, Any]],
+    purchases_12m: list[dict[str, Any]],
+    last_2: list[dict[str, Any]] | None = None,
+    sales_12m: list[dict[str, Any]] | None = None,
+    activity_window: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "data": [
+            {
+                "unit_fund_id": 10,
+                "unit_fund_name": "Money Market Fund",
+                "inactive_client_count": 1,
+                "clients": [
+                    {
+                        "client_id": 1001,
+                        "last_5_purchases": last_5,
+                        "last_2_sales": last_2 or [],
+                        "purchases_last_12_months": purchases_12m,
+                        "sales_last_12_months": sales_12m or [],
+                        "activity_window": activity_window,
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def test_a_transaction_shared_by_both_windows_is_not_double_counted() -> None:
+    shared = {"id": 1, "date": "2026-06-01T00:00:00", "number": "1000", "unit_fund_id": 10}
+    only_in_window = {"id": 2, "date": "2026-01-01T00:00:00", "number": "2000", "unit_fund_id": 10}
+    payload = _payload_with_windows(last_5=[shared], purchases_12m=[shared, only_in_window])
+
+    client = flatten_payload(payload, ANCHOR).clients[0]
+
+    assert client.n_purchases_returned == 2
+    assert client.total_purchase_amount == 3000
+
+
+def test_purchases_censored_clears_once_the_twelve_month_window_is_present() -> None:
+    last_5 = [
+        {"id": i, "date": "2026-07-01T00:00:00", "number": "100", "unit_fund_id": 10}
+        for i in range(5)
+    ]
+    payload = _payload_with_windows(last_5=last_5, purchases_12m=last_5)
+
+    client = flatten_payload(payload, ANCHOR).clients[0]
+
+    assert client.purchases_censored is False
+    assert client.has_extended_history is True
+
+
+def test_has_extended_history_is_false_without_either_new_field() -> None:
+    client = flatten_payload(_payload(), ANCHOR).clients[0]
+    assert client.has_extended_history is False
+    assert client.activity_window_from is None
+    assert client.activity_window_to is None
+
+
+def test_activity_window_to_is_the_recency_anchor_when_present() -> None:
+    purchase = {"id": 1, "date": "2026-01-01T00:00:00", "number": "500", "unit_fund_id": 10}
+    payload = _payload_with_windows(
+        last_5=[purchase],
+        purchases_12m=[purchase],
+        activity_window={"from": "2025-08-01", "to": "2026-07-10"},
+    )
+
+    client = flatten_payload(payload, ANCHOR).clients[0]
+
+    assert client.activity_window_from == date(2025, 8, 1)
+    assert client.activity_window_to == date(2026, 7, 10)
+    assert client.last_activity_date == date(2026, 7, 10)
+    assert client.days_since_last_activity == (date(2026, 7, 23) - date(2026, 7, 10)).days
+
+
+def test_drawdown_ignores_fee_sized_sales_between_two_real_ones() -> None:
+    sales = [
+        {"id": 1, "date": "2026-01-01T00:00:00", "number": "5000", "unit_fund_id": 10},
+        {"id": 2, "date": "2026-02-01T00:00:00", "number": "50", "unit_fund_id": 10},
+        {"id": 3, "date": "2026-03-01T00:00:00", "number": "50", "unit_fund_id": 10},
+        {"id": 4, "date": "2026-07-01T00:00:00", "number": "6000", "unit_fund_id": 10},
+    ]
+    payload = _payload_with_windows(
+        last_5=[{"id": 99, "date": "2026-07-01T00:00:00", "number": "100", "unit_fund_id": 10}],
+        purchases_12m=[],
+        last_2=sales[-2:],
+        sales_12m=sales,
+    )
+
+    result = flatten_payload(payload, ANCHOR)
+    measures = derive_relationship_measures(result)
+    measure = measures[(1001, 10)]
+
+    assert measure.drawdown_days == (date(2026, 7, 1) - date(2026, 1, 1)).days
+
+
+def test_drawdown_is_none_with_only_one_real_sale() -> None:
+    sales = [
+        {"id": 1, "date": "2026-01-01T00:00:00", "number": "5000", "unit_fund_id": 10},
+        {"id": 2, "date": "2026-02-01T00:00:00", "number": "50", "unit_fund_id": 10},
+    ]
+    payload = _payload_with_windows(
+        last_5=[{"id": 99, "date": "2026-07-01T00:00:00", "number": "100", "unit_fund_id": 10}],
+        purchases_12m=[],
+        last_2=sales,
+        sales_12m=sales,
+    )
+
+    result = flatten_payload(payload, ANCHOR)
+    measures = derive_relationship_measures(result)
+    measure = measures[(1001, 10)]
+
+    assert measure.drawdown_days is None
 
 
 def test_latest_reference_date_reads_the_most_recently_completed_run(

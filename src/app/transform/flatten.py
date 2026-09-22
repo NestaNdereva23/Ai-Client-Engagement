@@ -16,8 +16,9 @@ logger = structlog.get_logger(__name__)
 
 _PROGRESS_EVERY = 25
 
-# The source returns at most this many purchases and sales per client. Hitting a
-# cap means real history is hidden behind it.
+# The last_5/last_2 fields return at most this many purchases and sales per
+# client. purchases_last_12_months/sales_last_12_months widen this to a real
+# calendar window; the cap only still hides history when that window is absent.
 PURCHASE_CAP = 5
 SALE_CAP = 2
 
@@ -49,6 +50,9 @@ class ClientRow:
     computed_at: str | None
     purchases_censored: bool
     history_censored: bool
+    has_extended_history: bool
+    activity_window_from: date | None
+    activity_window_to: date | None
 
 
 @dataclass
@@ -117,6 +121,19 @@ def max_date(dates: list[date | None]) -> date | None:
     return max(present) if present else None
 
 
+def _dedupe_transactions(raw_lists: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    seen: dict[Any, dict[str, Any]] = {}
+    extra: list[dict[str, Any]] = []
+    for raw in raw_lists:
+        for txn in raw:
+            key = txn.get("id")
+            if key is None:
+                extra.append(txn)
+            elif key not in seen:
+                seen[key] = txn
+    return list(seen.values()) + extra
+
+
 def _combine_fund(existing: FundRow | None, incoming: FundRow) -> FundRow:
     if existing is None:
         return incoming
@@ -173,8 +190,13 @@ def flatten_payload(payload: dict[str, Any], reference_date: datetime) -> Flatte
                 result.counters.clients_skipped += 1
                 continue
 
-            purchases = client_raw.get("last_5_purchases") or []
-            sales = client_raw.get("last_2_sales") or []
+            last_5 = client_raw.get("last_5_purchases") or []
+            last_2 = client_raw.get("last_2_sales") or []
+            purchases_12m = client_raw.get("purchases_last_12_months") or []
+            sales_12m = client_raw.get("sales_last_12_months") or []
+            purchases = _dedupe_transactions([last_5, purchases_12m])
+            sales = _dedupe_transactions([last_2, sales_12m])
+
             purchase_rows = [
                 _txn_row(t, client, fund.unit_fund_id, "purchase", result.counters)
                 for t in purchases
@@ -185,13 +207,22 @@ def flatten_payload(payload: dict[str, Any], reference_date: datetime) -> Flatte
             result.transactions.extend(purchase_rows)
             result.transactions.extend(sale_rows)
 
+            window = client_raw.get("activity_window") or {}
+            activity_window_from = parse_date(window.get("from"), result.counters)
+            activity_window_to = parse_date(window.get("to"), result.counters)
+
             last_purchase = max_date([r.date for r in purchase_rows])
             last_sale = max_date([r.date for r in sale_rows])
-            last_activity = max_date([last_purchase, last_sale])
+            last_activity = (
+                activity_window_to
+                if activity_window_to is not None
+                else max_date([last_purchase, last_sale])
+            )
             total_purchase = sum(r.amount for r in purchase_rows)
             total_sale = sum(r.amount for r in sale_rows)
-            purchases_censored = len(purchases) >= PURCHASE_CAP
-            history_censored = purchases_censored or len(sales) >= SALE_CAP
+            has_extended_history = bool(purchases_12m) or bool(sales_12m)
+            purchases_censored = not purchases_12m and len(last_5) >= PURCHASE_CAP
+            history_censored = purchases_censored or (not sales_12m and len(last_2) >= SALE_CAP)
 
             result.clients.append(
                 ClientRow(
@@ -213,6 +244,9 @@ def flatten_payload(payload: dict[str, Any], reference_date: datetime) -> Flatte
                     computed_at=client.computed_at,
                     purchases_censored=purchases_censored,
                     history_censored=history_censored,
+                    has_extended_history=has_extended_history,
+                    activity_window_from=activity_window_from,
+                    activity_window_to=activity_window_to,
                 )
             )
 

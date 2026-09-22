@@ -28,16 +28,18 @@ SHORT_HOLD_DAYS = 60
 MID_HOLD_DAYS = 180
 LONG_HOLD_DAYS = 365
 
-# Two sales this far apart is a wind-down rather than one change of mind.
-DRAWDOWN_DAYS = 180
+# Two real withdrawals this far apart is a wind-down rather than one change of mind.
+DECLINE_LOOKBACK_DAYS = 180
 
 # Slope of log10 contribution size beyond which the trend is real.
-TREND_EPS = 0.15
+MIN_TREND_CHANGE = 0.15
 
 # A median purchase gap at or under this is a savings cadence.
-TIGHT_RHYTHM_DAYS = 45
+REGULAR_GAP_DAYS = 45
 CADENCE_REGULAR_DAYS = 90
 CADENCE_PERIODIC_DAYS = 365
+
+DORMANT_FEE_AMOUNT = 50.0
 
 # Contact details older than this need checking before they are used.
 STALE_CONTACT_DAYS = 1095
@@ -127,7 +129,7 @@ def _rhythm_days(dates: list[date]) -> int | None:
     return int(median(gaps))
 
 
-def _median_gap(dates: list[date]) -> float | None:
+def _typical_gap(dates: list[date]) -> float | None:
     """Median gap between consecutive purchases, keeping same-day repeats.
 
     Repeats are kept because several top-ups booked on one date are exactly what
@@ -140,7 +142,7 @@ def _median_gap(dates: list[date]) -> float | None:
     return float(median(gaps))
 
 
-def _log_slope(amounts: list[float]) -> float | None:
+def _trend_change(amounts: list[float]) -> float | None:
     """Trend in contribution size across the visible purchases, on a log10 scale.
 
     Positive means each contribution was getting bigger. Needs three points
@@ -188,7 +190,7 @@ def _cadence_band(rhythm_days: float | None) -> str:
     """A gap under a day is same-day top-ups, so it counts as no cadence."""
     if rhythm_days is None or rhythm_days < 1:
         return "None"
-    if rhythm_days <= TIGHT_RHYTHM_DAYS:
+    if rhythm_days <= REGULAR_GAP_DAYS:
         return "Tight"
     if rhythm_days <= CADENCE_REGULAR_DAYS:
         return "Regular"
@@ -223,9 +225,9 @@ def _purchase_depth(n_purchases: int) -> str:
 def _trend_band(ticket_trend: float | None) -> str:
     if ticket_trend is None:
         return "unknown"
-    if ticket_trend >= TREND_EPS:
+    if ticket_trend >= MIN_TREND_CHANGE:
         return "rising"
-    if ticket_trend <= -TREND_EPS:
+    if ticket_trend <= -MIN_TREND_CHANGE:
         return "falling"
     return "flat"
 
@@ -318,7 +320,8 @@ def derive_relationship_measures(
         sell_dates = [t.date for t in sold]
 
         window = (buy_dates[-1] - buy_dates[0]).days if buy_dates else None
-        drawdown = (sell_dates[-1] - sell_dates[0]).days if sell_dates else None
+        real_sold = [t for t in sold if t.amount > DORMANT_FEE_AMOUNT]
+        drawdown = (real_sold[-1].date - real_sold[0].date).days if len(real_sold) >= 2 else None
         hold = None
         if buy_dates and sell_dates:
             hold = max((sell_dates[-1] - buy_dates[-1]).days, 0)
@@ -328,10 +331,10 @@ def derive_relationship_measures(
             unit_fund_id=row.unit_fund_id,
             avg_ticket=(sum(amounts) / len(amounts)) if amounts else None,
             max_ticket=max(amounts) if amounts else None,
-            rhythm_days=_median_gap(buy_dates),
+            rhythm_days=_typical_gap(buy_dates),
             first_purchase=buy_dates[0] if buy_dates else None,
             active_window_days=window,
-            ticket_trend=_log_slope(amounts),
+            ticket_trend=_trend_change(amounts),
             first_sale=sell_dates[0] if sell_dates else None,
             drawdown_days=drawdown,
             hold_days=hold,
@@ -396,7 +399,7 @@ def derive_features(
                 in_wave=_in_wave(primary.last_activity_date),
                 has_depth=_has_depth(primary.n_purchases_returned, measure.active_window_days),
                 staged_exit=measure.drawdown_days is not None
-                and measure.drawdown_days >= DRAWDOWN_DAYS,
+                and measure.drawdown_days >= DECLINE_LOOKBACK_DAYS,
                 stale_contact=primary.days_since_last_activity is not None
                 and primary.days_since_last_activity > STALE_CONTACT_DAYS,
                 newly_dormant=primary.days_since_last_activity is not None

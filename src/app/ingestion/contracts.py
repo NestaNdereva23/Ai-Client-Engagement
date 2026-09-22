@@ -20,10 +20,14 @@ EXPECTED_CLIENT_KEYS = {
     "client_name",
     "client_email",
     "client_phone",
+    "status",
     "balance",
     "computed_at",
     "last_5_purchases",
     "last_2_sales",
+    "activity_window",
+    "purchases_last_12_months",
+    "sales_last_12_months",
 }
 EXPECTED_TXN_KEYS = {
     "id",
@@ -70,6 +74,13 @@ class TransactionRecord(BaseModel):
         return str(value)
 
 
+class ActivityWindow(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    from_: str | None = Field(default=None, alias="from")
+    to: str | None = None
+
+
 class ClientRecord(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -82,6 +93,9 @@ class ClientRecord(BaseModel):
     computed_at: str | None = None
     last_5_purchases: list[TransactionRecord] = Field(default_factory=list)
     last_2_sales: list[TransactionRecord] = Field(default_factory=list)
+    activity_window: ActivityWindow | None = None
+    purchases_last_12_months: list[TransactionRecord] = Field(default_factory=list)
+    sales_last_12_months: list[TransactionRecord] = Field(default_factory=list)
 
 
 class FundRecord(BaseModel):
@@ -107,7 +121,12 @@ def schema_drift(payload: dict[str, Any]) -> set[str]:
             if not isinstance(client, dict):
                 continue
             unexpected |= set(client.keys()) - EXPECTED_CLIENT_KEYS
-            for bucket in ("last_5_purchases", "last_2_sales"):
+            for bucket in (
+                "last_5_purchases",
+                "last_2_sales",
+                "purchases_last_12_months",
+                "sales_last_12_months",
+            ):
                 for txn in client.get(bucket, []) or []:
                     if isinstance(txn, dict):
                         unexpected |= set(txn.keys()) - EXPECTED_TXN_KEYS

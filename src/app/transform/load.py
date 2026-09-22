@@ -75,6 +75,9 @@ _CLIENT_FUND_UPDATE = [
     "drawdown_days",
     "hold_days",
     "exit_type",
+    "has_extended_history",
+    "activity_window_from",
+    "activity_window_to",
 ]
 _TXN_UPDATE = [
     "txn_type",
@@ -181,6 +184,9 @@ def _client_fund_dict(c: ClientRow, m: RelationshipMeasures, *, is_primary: bool
         "drawdown_days": m.drawdown_days,
         "hold_days": m.hold_days,
         "exit_type": m.exit_type,
+        "has_extended_history": c.has_extended_history,
+        "activity_window_from": c.activity_window_from,
+        "activity_window_to": c.activity_window_to,
     }
 
 

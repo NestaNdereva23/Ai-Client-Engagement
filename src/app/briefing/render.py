@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.risk.signals import SIGNAL_LABELS, SIGNAL_ORDER
-from app.transform.features import TREND_EPS
+from app.transform.features import MIN_TREND_CHANGE
 
 _RULE = "-" * 78
 
@@ -97,7 +97,7 @@ def render_briefing(facts: BriefingFacts) -> str:
         )
 
     if facts.deposit_trend is not None:
-        if abs(facts.deposit_trend) < TREND_EPS:
+        if abs(facts.deposit_trend) < MIN_TREND_CHANGE:
             lines.append("Deposit trend   holding steady - no clear rise or fall in top-up size")
         elif facts.deposit_trend < 0:
             pct = (1 - 10**facts.deposit_trend) * 100
