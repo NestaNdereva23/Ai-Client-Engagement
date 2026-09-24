@@ -20,9 +20,9 @@ from app.campaigns.state_machine import transition_enrollment
 from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
 from app.db.models.models import ClientFeatures
 
-DEFAULT_BATCH_LIMIT = 500
-MAX_BATCH_LIMIT = 20000
-INSTANTIATE_DEFAULT_LIMIT = 20000
+DEFAULT_BATCH_LIMIT = 10
+MAX_BATCH_LIMIT = 10000
+INSTANTIATE_DEFAULT_LIMIT = 10000
 
 SCHEDULABLE_STATUSES = ("enrolled", "in_progress")
 

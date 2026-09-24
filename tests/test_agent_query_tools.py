@@ -248,15 +248,20 @@ async def test_an_empty_result_answers_zero_rather_than_withholding(book: None) 
     assert result["measures"]["client_count"] == 0
 
 
-async def test_a_group_too_small_to_hide_in_is_withheld(book: None) -> None:
-    async with AsyncSessionLocal() as session:
-        result = await measure_slice(
-            session,
-            conditions=[
-                *HIGH_RISK,
-                {"field": "risk_score", "op": "eq", "value": 50},
-            ],
-        )
+async def test_a_group_too_small_to_hide_in_is_withheld(book: None, monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_QUERY_MIN_GROUP_SIZE", "5")
+    get_settings.cache_clear()
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await measure_slice(
+                session,
+                conditions=[
+                    *HIGH_RISK,
+                    {"field": "risk_score", "op": "eq", "value": 50},
+                ],
+            )
+    finally:
+        get_settings.cache_clear()
 
     assert result["measures"]["too_small"] is True
     assert "client_count" not in result["measures"]

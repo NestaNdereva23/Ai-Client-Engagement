@@ -12,6 +12,7 @@ from starlette.responses import Response
 
 from app.api.idempotency import call_next_shielded
 from app.config import get_settings
+from app.logging_config import HEALTH_PATH
 
 REQUEST_ID_HEADER = "X-Request-ID"
 DURATION_HEADER = "X-Response-Time-Ms"
@@ -56,6 +57,8 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
             "status_code": status_code,
             "duration_ms": round(duration_ms, 1),
         }
+        if entry["path"] == HEALTH_PATH and status_code < 500:
+            return
         if duration_ms >= get_settings().slow_request_ms:
             _log.warning("slow_request", **entry)
         else:

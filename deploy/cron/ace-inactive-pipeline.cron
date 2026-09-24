@@ -1,0 +1,4 @@
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+SHELL=/bin/bash
+
+0 1 * * * root /opt/Ai-Outreach/Ai-Client-Engagement/deploy/cron/inactive-pipeline.sh >> /var/log/ace/inactive-pipeline.log 2>&1

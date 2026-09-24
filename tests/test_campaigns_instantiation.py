@@ -28,7 +28,11 @@ from app.db.session import SessionLocal
 from app.llmops.versions import persist_generation_run
 from app.rules.tier_contract import TierSpec, save_tier_contract_version
 from app.services.campaigns import add_campaign_step
-from app.services.review import TemplateNotApproved, instantiate_message
+from app.services.review import (
+    TemplateNotApproved,
+    create_outreach_message,
+    instantiate_message,
+)
 
 FUND_ID = 9720
 CLIENT_ID = 972001
@@ -652,3 +656,46 @@ def test_instantiate_many_templates_keeps_going_after_one_template_raises(
             )
             session.execute(delete(GenerationRun).where(GenerationRun.run_id == good_run_id))
             session.commit()
+
+
+def test_create_outreach_message_fills_every_fact_token_for_a_single_draft(
+    campaign: int, run: str, client: int
+) -> None:
+    """A draft generated for one client gets the same fact tokens filled as a
+    template instance does, not just the name and fund."""
+    with SessionLocal() as session:
+        message = create_outreach_message(
+            session, session.get(GenerationRun, run), campaign_id=campaign
+        )
+        session.commit()
+
+    assert message is not None
+    body = message.personalized_content["body"]
+    assert "typical contribution was 5,000" in body
+    assert "left March 2025" in body
+    assert "cadence 30 days" in body
+    assert "{{" not in body
+
+
+def test_create_outreach_message_rejects_a_draft_with_a_token_the_client_cannot_fill(
+    campaign: int, run: str, client: int
+) -> None:
+    with SessionLocal() as session:
+        session.execute(delete(ClientFund).where(ClientFund.client_id == client))
+        session.commit()
+
+        message = create_outreach_message(
+            session, session.get(GenerationRun, run), campaign_id=campaign
+        )
+        session.commit()
+
+        assert message is None
+        stored_run = session.get(GenerationRun, run)
+        assert stored_run.status == "rejected"
+        assert stored_run.failed_guardrail == "unresolved_placeholder"
+        assert (
+            session.scalars(
+                select(OutreachMessage.message_id).where(OutreachMessage.generation_run_id == run)
+            ).first()
+            is None
+        )
