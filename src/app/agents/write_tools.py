@@ -39,7 +39,6 @@ from app.agents.email_channel import build_default_orchestrator
 from app.agents.events import NO_EVENTS, EventLog
 from app.agents.insight_members import resolve_insight_members
 from app.agents.insight_proposal import ACCEPTED, gate_members, save_insight_proposal
-from app.agents.permissions import resolve_permission
 from app.agents.proposal_state import transition_proposal
 from app.agents.propose import (
     DO_NOTHING_ACTION,
@@ -63,7 +62,6 @@ from app.db.models.campaigns import CampaignStep
 from app.db.models.outreach import Campaign
 from app.privacy.llm_client import ToolSpec
 from app.services.active_clients import ActiveClientNotFound, record_interaction
-from app.services.agent_proposals import action_has_run_before, daily_usage, overall_daily_usage
 
 logger = structlog.get_logger(__name__)
 
@@ -83,7 +81,6 @@ APPROVED = "approved"
 RUNNING = "running"
 
 NO_ACTION_DECIDED = "no_action_decided"
-DAILY_LIMIT_REACHED = "daily_limit_reached"
 
 AGENT_ACTOR = "agent"
 
@@ -220,40 +217,6 @@ def run_proposal(
             "every_client_was_left_out",
             "every client on this proposal was left out by a check since it was "
             f"written: {dropped}",
-        )
-
-    permission_row = resolve_permission(session, action.action_code)
-    caps = []
-    if settings.agent_daily_send_limit is not None:
-        used_overall = overall_daily_usage(session, as_of=day).used_clients
-        caps.append(max(settings.agent_daily_send_limit - used_overall, 0))
-    if permission_row is not None and permission_row.max_clients_per_day is not None:
-        used_action = daily_usage(session, action_code=action.action_code, as_of=day).used_clients
-        caps.append(max(permission_row.max_clients_per_day - used_action, 0))
-    if not action_has_run_before(session, action.action_code):
-        caps.append(settings.agent_first_run_limit)
-
-    if caps:
-        remaining_capacity = min(caps)
-        if len(still_allowed) > remaining_capacity:
-            over_capacity = still_allowed[remaining_capacity:]
-            still_allowed = still_allowed[:remaining_capacity]
-            for member in over_capacity:
-                blocked[member_key(member)] = DAILY_LIMIT_REACHED
-            dropped[DAILY_LIMIT_REACHED] = dropped.get(DAILY_LIMIT_REACHED, 0) + len(over_capacity)
-
-    if not still_allowed:
-        record_audit(
-            session,
-            entity_type="agent_proposal",
-            action="run_refused",
-            entity_id=str(proposal_id),
-            run_id=audit_run_id,
-            detail={"reason": "today's send limit is already used up", "dropped": dropped},
-        )
-        return _refuse(
-            "daily_limit_reached",
-            f"today's send limit for '{action.action_code}' is already used up: {dropped}",
         )
 
     for member in members:

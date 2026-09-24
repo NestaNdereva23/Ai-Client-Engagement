@@ -279,8 +279,12 @@ def create_outreach_message(
     channel: str = EMAIL_CHANNEL,
     call_brief: str | None = None,
     cohort_slot: CohortSlot | None = None,
-) -> OutreachMessage:
+) -> OutreachMessage | None:
     """Re-attach real values to an accepted run and store the result.
+
+    A draft that uses a fact token this client has no value for would
+    reach a client with the raw token in it. That run is marked rejected
+    with the reason instead, and no message is stored.
 
     ai_draft_content is copied from the run unchanged; personalized_content
     is computed fresh here. call_brief, when given, is stored as-is -- it
@@ -296,10 +300,29 @@ def create_outreach_message(
     """
     fund_name = _resolve_fund_name(session, run.client_id)
     first_name = _resolve_first_name(run.client_id)
+    _raw_facts, placeholder_kwargs = _placeholder_facts_for_client(session, run.client_id)
 
     personalized = personalize_content(
-        run.ai_draft_content, first_name=first_name, fund_name=fund_name
+        run.ai_draft_content,
+        first_name=first_name,
+        fund_name=fund_name,
+        **placeholder_kwargs,
     )
+
+    try:
+        check_no_unresolved_placeholders(personalized.get("subject", ""), personalized["body"])
+    except GuardrailFailure as failure:
+        run.status = "rejected"
+        run.failed_guardrail = failure.guardrail
+        run.reason = str(failure)
+        logger.warning(
+            "personalization.unresolved_placeholder",
+            client_id=run.client_id,
+            run_id=run.run_id,
+            reason=str(failure),
+        )
+        session.flush()
+        return None
 
     if cohort_slot is None:
         cohort_slot = resolve_cohort_slot(

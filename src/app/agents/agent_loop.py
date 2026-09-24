@@ -18,6 +18,7 @@ from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agents.action_brief import proposal_prohibitions
 from app.agents.action_catalog import load_action, selectable_actions
 from app.agents.events import NO_EVENTS, EventLog, RunEventLog
 from app.agents.permissions import effective_permission
@@ -1004,6 +1005,64 @@ def start_agent_run(
     return run
 
 
+def _resume_running_campaigns(session: Session, *, events: EventLog) -> dict[str, int]:
+    """Draft the next batch for campaigns an earlier proposal already started.
+
+    Drafting only ever handles one batch at a time (see
+    campaigns.scheduler.DEFAULT_BATCH_LIMIT), so a cohort bigger than that is
+    never lost: whatever did not fit last time stays enrolled, waiting for
+    this call the next time the agent runs, until the whole cohort is
+    drafted. Runs before tonight's own proposing, so last night's leftovers
+    go out before anything new is decided.
+    """
+    proposals = session.scalars(
+        select(AgentProposal).where(
+            AgentProposal.status == "running",
+            AgentProposal.campaign_id.is_not(None),
+        )
+    ).all()
+
+    from app.agents.write_tools import draft_into_review_queue
+
+    campaigns_drafted = 0
+    drafted_total = 0
+    for proposal in proposals:
+        try:
+            drafted = draft_into_review_queue(
+                session,
+                campaign_id=proposal.campaign_id,
+                prohibitions=proposal_prohibitions(session, proposal),
+            )
+        except Exception as exc:
+            logger.exception(
+                "agent_loop.resume_campaign_failed",
+                proposal_id=proposal.proposal_id,
+                campaign_id=proposal.campaign_id,
+            )
+            events.record(
+                ERROR,
+                about="resume_campaigns",
+                proposal_id=proposal.proposal_id,
+                campaign_id=proposal.campaign_id,
+                reason=str(exc),
+            )
+            continue
+        if drafted:
+            campaigns_drafted += 1
+            drafted_total += drafted
+            logger.info(
+                "agent_loop.resume_campaign",
+                proposal_id=proposal.proposal_id,
+                campaign_id=proposal.campaign_id,
+                drafted_count=drafted,
+            )
+    return {
+        "campaigns_checked": len(proposals),
+        "campaigns_drafted": campaigns_drafted,
+        "drafted_count": drafted_total,
+    }
+
+
 def execute_agent_run(
     session: Session,
     run: AgentRun,
@@ -1065,6 +1124,10 @@ def execute_agent_run(
 
     try:
         try:
+            events.record(STEP_STARTED, step="resume_campaigns")
+            resume_summary = _resume_running_campaigns(session, events=events)
+            events.record(STEP_COMPLETED, step="resume_campaigns", **resume_summary)
+
             graph.invoke({})
         except Exception as exc:
             logger.exception("agent_loop.run_failed", run_id=run_id, reason=str(exc))

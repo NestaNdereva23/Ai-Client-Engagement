@@ -493,10 +493,14 @@ def _persist_result(
     session.flush()
     persist_generation_telemetry(session, run, state, tracer=tracer)
 
+    message = None
     if status == "accepted":
         message = create_outreach_message(
             session, run, campaign_id=batch.campaign_id, channel=channel
         )
+        if message is None:
+            status, reason = run.status, run.reason
+    if message is not None:
         touch = session.execute(
             select(TouchLog).where(
                 TouchLog.enrollment_id == item.enrollment_id, TouchLog.step_no == item.step_no

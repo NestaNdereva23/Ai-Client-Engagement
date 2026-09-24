@@ -171,17 +171,17 @@ class Settings(BaseSettings):
         default="", validation_alias=AliasChoices("AI_OUTREACH_JWT_SECRET")
     )
 
-    campaign_cooldown_days: int = 7
+    campaign_cooldown_days: int = 1
 
-    agent_new_client_days: int = 7
+    agent_new_client_days: int = 2
     agent_awaiting_call_days: int = 2
     agent_contact_cooldown_days: int = 1
 
     agent_daily_send_limit: int | None = None
-    agent_first_run_limit: int = 5
+    agent_first_run_limit: int = 50
     agent_force_approve_each: bool = False
 
-    signal_situation_source: Literal["legacy", "situations"] = "legacy"
+    signal_situation_source: Literal["legacy", "situations"] = "situations"
 
     # What one investigation of a group may spend on its own queries.
     agent_query_call_budget: int = 12

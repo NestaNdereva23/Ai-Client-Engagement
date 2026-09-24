@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.agents.action_catalog import load_action
-from app.agents.permissions import effective_permission, resolve_permission
+from app.agents.permissions import effective_permission
 from app.agents.propose import GROUP_ACTIONS, SITUATION_PRIORITY
 from app.agents.scenario_studio import ACT_ALONE
 from app.agents.situation_action_mapping import (
@@ -36,7 +36,6 @@ from app.db.models.signals import ClientSituationSnapshot, ClientSituationState
 from app.risk.store import load_active_config
 from app.rules import versioning
 from app.rules.catalog import load_angle
-from app.services.agent_proposals import action_has_run_before, daily_usage, overall_daily_usage
 
 SITUATION_ACTION_MAPPING = "situation_action_mapping"
 
@@ -111,14 +110,8 @@ def run_batch_simulation(session: Session, as_of: date) -> BatchSimulationResult
     )
     money_total = sum(count.money_total_kes for count in by_situation)
 
-    settings = get_settings()
     auto_queued = 0
     needs_approval = 0
-    trimmed = 0
-    remaining_overall = None
-    if settings.agent_daily_send_limit is not None:
-        used_overall = overall_daily_usage(session, as_of=as_of).used_clients
-        remaining_overall = max(settings.agent_daily_send_limit - used_overall, 0)
 
     for situation, balances in winners.items():
         if not balances:
@@ -141,21 +134,7 @@ def run_batch_simulation(session: Session, as_of: date) -> BatchSimulationResult
             needs_approval += client_count
             continue
 
-        caps = []
-        if remaining_overall is not None:
-            caps.append(remaining_overall)
-        permission_row = resolve_permission(session, action_code)
-        if permission_row is not None and permission_row.max_clients_per_day is not None:
-            used_action = daily_usage(session, action_code=action_code, as_of=as_of).used_clients
-            caps.append(max(permission_row.max_clients_per_day - used_action, 0))
-        if not action_has_run_before(session, action_code):
-            caps.append(settings.agent_first_run_limit)
-
-        allowed = client_count if not caps else min(client_count, min(caps))
-        auto_queued += allowed
-        trimmed += client_count - allowed
-        if remaining_overall is not None:
-            remaining_overall = max(remaining_overall - allowed, 0)
+        auto_queued += client_count
 
     return BatchSimulationResult(
         as_of=as_of,
@@ -166,7 +145,7 @@ def run_batch_simulation(session: Session, as_of: date) -> BatchSimulationResult
         by_situation=by_situation,
         auto_queued=auto_queued,
         needs_approval=needs_approval,
-        trimmed_by_daily_cap=trimmed,
+        trimmed_by_daily_cap=0,
     )
 
 

@@ -4,6 +4,17 @@ import logging
 
 import structlog
 
+HEALTH_PATH = "/health"
+
+
+class _HideHealthChecks(logging.Filter):
+    """Drops uvicorn's access line for the container health check, which
+    fires every 30 seconds and would otherwise fill the log."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        return not (isinstance(args, tuple) and len(args) >= 3 and args[2] == HEALTH_PATH)
+
 
 def configure_logging(level: str = "INFO", json_logs: bool = False) -> None:
     log_level = getattr(logging, level.upper(), logging.INFO)
@@ -35,3 +46,4 @@ def configure_logging(level: str = "INFO", json_logs: bool = False) -> None:
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(log_level)
+    logging.getLogger("uvicorn.access").addFilter(_HideHealthChecks())
