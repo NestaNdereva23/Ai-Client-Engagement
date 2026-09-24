@@ -263,3 +263,44 @@ def test_a_test_campaign_enrolls_at_most_the_cap(db: None, monkeypatch):
         assert enrolled == [1, 2]
         session.rollback()
     get_settings.cache_clear()
+
+
+def _create_with_cap(monkeypatch, env: dict[str, str], *, is_test: bool) -> tuple[int, list[int]]:
+    enrolled: list[int] = []
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.campaigns.resolve_cohort_client_ids", lambda *_, **__: [5, 4, 3, 2, 1]
+    )
+    monkeypatch.setattr(
+        "app.services.campaigns.enroll_cohort",
+        lambda _session, *, campaign_id, client_ids: enrolled.extend(client_ids),
+    )
+    with SessionLocal() as session:
+        _, count, _ = create_campaign(
+            session,
+            name="live cap check",
+            campaign_type="dormant_reengagement",
+            cohort_filters={},
+            is_test=is_test,
+        )
+        session.rollback()
+    get_settings.cache_clear()
+    return count, enrolled
+
+
+def test_a_live_campaign_enrolls_at_most_the_live_cap(db: None, monkeypatch):
+    count, enrolled = _create_with_cap(
+        monkeypatch, {"LIVE_CAMPAIGN_MAX_CLIENTS": "3"}, is_test=False
+    )
+    assert count == 3
+    assert enrolled == [1, 2, 3]
+
+
+def test_a_live_campaign_enrolls_everyone_when_the_live_cap_is_zero(db: None, monkeypatch):
+    count, enrolled = _create_with_cap(
+        monkeypatch, {"LIVE_CAMPAIGN_MAX_CLIENTS": "0"}, is_test=False
+    )
+    assert count == 5
+    assert sorted(enrolled) == [1, 2, 3, 4, 5]

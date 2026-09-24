@@ -225,6 +225,8 @@ class Settings(BaseSettings):
     test_client_first_name: str = "Test Client"
     test_subject_prefix: str = "[TEST] "
     test_campaign_max_clients: int = 1
+    # Live campaigns enroll at most this many clients; 0 means no limit.
+    live_campaign_max_clients: int = 0
 
     smtp_host: str = ""
     smtp_port: int = 1025
