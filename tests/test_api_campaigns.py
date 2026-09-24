@@ -21,8 +21,6 @@ from app.db.models.template_generation_plan import TemplateGenerationPlan
 from app.db.session import SessionLocal, restricted_session
 from app.delivery import sender as sender_module
 from app.delivery import sms_sender as sms_sender_module
-from app.delivery.mailer import NullMailer
-from app.delivery.sms_gateway import RecordingSmsGateway
 from app.llmops.versions import persist_generation_run
 from app.main import app
 
@@ -1145,39 +1143,28 @@ def campaign_with_an_approved_touch(db: None):
 
 
 @pytest.fixture
-def unconfigured_mailer(monkeypatch) -> NullMailer:
-    """Point the campaign sender at a recording no-op, so POST .../send never
-    opens a real socket regardless of the local .env's own SMTP settings.
-    """
-    mailer = NullMailer(sender="ace@example.com")
-    monkeypatch.setattr(sender_module, "get_mailer", lambda *args, **kwargs: mailer)
-    return mailer
+def no_mailer(monkeypatch) -> None:
+    def refuse(*args, **kwargs):
+        raise AssertionError("dispatch must not build a real mailer")
+
+    monkeypatch.setattr(sender_module, "get_mailer", refuse)
+    monkeypatch.setattr(sms_sender_module, "get_sms_gateway", refuse)
 
 
-def test_send_sends_the_approved_touch_and_flips_the_campaign_to_running(
-    campaign_with_an_approved_touch: int, unconfigured_mailer: NullMailer
-) -> None:
+def test_send_route_is_gone(campaign_with_an_approved_touch: int, no_mailer: None) -> None:
     response = client.post(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/send")
-    assert response.status_code == 200
-    outcomes = response.json()
-    assert len(outcomes) == 1
-    assert outcomes[0]["sent"] is True
-    assert outcomes[0]["delivery_status"] == "recorded"
-    assert [m.to for m in unconfigured_mailer.sent_messages] == ["test@example.com"]
-
-    detail = client.get(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}")
-    assert detail.json()["status"] == "running"
+    assert response.status_code in (404, 405)
 
 
-def test_readiness_reflects_a_send_the_messages_status_count_cannot(
-    campaign_with_an_approved_touch: int, unconfigured_mailer: NullMailer
+def test_readiness_reflects_a_dispatch_the_messages_status_count_cannot(
+    campaign_with_an_approved_touch: int, no_mailer: None
 ) -> None:
     before = client.get(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/readiness").json()
     assert before["messages"]["approved"] == 1
     assert before["sendable_now"] == 1
     assert before["sent_count"] == 0
 
-    client.post(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/send")
+    client.post(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/dispatch")
 
     after = client.get(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/readiness").json()
     assert after["messages"]["approved"] == 1
@@ -1185,17 +1172,34 @@ def test_readiness_reflects_a_send_the_messages_status_count_cannot(
     assert after["sent_count"] == 1
 
 
-def test_send_is_a_no_op_the_second_time(
-    campaign_with_an_approved_touch: int, unconfigured_mailer: NullMailer
+def test_dispatch_hands_back_the_message_and_marks_the_touch_sent(
+    campaign_with_an_approved_touch: int, no_mailer: None
 ) -> None:
-    client.post(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/send")
-    response = client.post(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/send")
+    response = client.post(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/dispatch")
     assert response.status_code == 200
-    assert response.json() == []
+    payload = response.json()
+    assert [o["sent"] for o in payload["outcomes"]] == [True]
+    assert [(d["channel"], d["to"], d["body"]) for d in payload["deliveries"]] == [
+        ("email", "test@example.com", "Body")
+    ]
+    assert payload["deliveries"][0]["subject"].endswith("Subject")
+
+    readiness = client.get(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/readiness").json()
+    assert readiness["sent_count"] == 1
+    detail = client.get(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}").json()
+    assert detail["status"] == "running"
 
 
-def test_send_404s_for_an_unknown_campaign(db: None) -> None:
-    response = client.post(f"{CAMPAIGNS}/9999999/send")
+def test_dispatch_claims_each_message_only_once(
+    campaign_with_an_approved_touch: int, no_mailer: None
+) -> None:
+    client.post(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/dispatch")
+    response = client.post(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/dispatch")
+    assert response.json() == {"outcomes": [], "deliveries": []}
+
+
+def test_dispatch_404s_for_an_unknown_campaign(db: None) -> None:
+    response = client.post(f"{CAMPAIGNS}/9999999/dispatch")
     assert response.status_code == 404
 
 
@@ -1297,20 +1301,18 @@ def campaign_with_email_and_sms_approved_touches(db: None):
         session.commit()
 
 
-def test_send_routes_email_and_sms_touches_to_their_own_sender(
-    campaign_with_email_and_sms_approved_touches, monkeypatch
+def test_dispatch_hands_back_email_and_sms_touches_on_their_own_channel(
+    campaign_with_email_and_sms_approved_touches, no_mailer: None
 ) -> None:
-    mailer = NullMailer(sender="ace@example.com")
-    monkeypatch.setattr(sender_module, "get_mailer", lambda *args, **kwargs: mailer)
-    gateway = RecordingSmsGateway(sender="ACE")
-    monkeypatch.setattr(sms_sender_module, "get_sms_gateway", lambda *args, **kwargs: gateway)
-
     campaign_id, touch_ids = campaign_with_email_and_sms_approved_touches
-    response = client.post(f"{CAMPAIGNS}/{campaign_id}/send")
+    response = client.post(f"{CAMPAIGNS}/{campaign_id}/dispatch")
 
     assert response.status_code == 200
-    outcomes = {o["touch_id"]: o for o in response.json()}
+    payload = response.json()
+    outcomes = {o["touch_id"]: o for o in payload["outcomes"]}
     assert outcomes[touch_ids["email"]]["sent"] is True
     assert outcomes[touch_ids["sms"]]["sent"] is True
-    assert [m.to for m in mailer.sent_messages] == ["test@example.com"]
-    assert [m.to for m in gateway.sent_messages] == ["+254712345678"]
+    assert sorted((d["channel"], d["to"]) for d in payload["deliveries"]) == [
+        ("email", "test@example.com"),
+        ("sms", "+254712345678"),
+    ]

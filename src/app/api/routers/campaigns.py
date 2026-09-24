@@ -19,6 +19,7 @@ from app.campaigns.template_policy import EffectivePolicy, TemplatePolicyValidat
 from app.config import get_settings
 from app.db.models.campaigns import CampaignStep
 from app.db.session import get_session
+from app.delivery.dispatch import dispatch_campaign
 from app.llmops.tracing import get_shared_tracer
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.privacy.llm_client import get_llm_client
@@ -28,6 +29,7 @@ from app.schemas.campaigns import (
     CampaignCreateOut,
     CampaignCreateRequest,
     CampaignDetailOut,
+    CampaignDispatchOut,
     CampaignListItemOut,
     CampaignReadinessOut,
     CampaignStepCreateRequest,
@@ -40,6 +42,7 @@ from app.schemas.campaigns import (
     CohortPreviewBatchRequest,
     CohortPreviewNarrowOut,
     CohortPreviewOut,
+    DeliveryOut,
     EnrollmentOut,
     GenerationBatchOut,
     GenerationCostModelOut,
@@ -94,7 +97,6 @@ from app.services.campaigns import (
     preview_cohort,
     preview_cohort_batch,
     run_campaign_generation,
-    send_campaign,
     set_campaign_template_policy,
     start_bulk_instantiate,
     submit_campaign_batch,
@@ -521,28 +523,35 @@ def post_campaign_generate(
     ]
 
 
-@router.post("/{campaign_id}/send", response_model=list[TouchSendOutcomeOut])
-def post_campaign_send(
+@router.post("/{campaign_id}/dispatch", response_model=CampaignDispatchOut)
+def post_campaign_dispatch(
     campaign_id: int,
     limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
     session: Session = Depends(get_session),
-) -> list[TouchSendOutcomeOut]:
+) -> CampaignDispatchOut:
+    """Claim the due messages for the Ticketing app to deliver; nothing is sent from here."""
     try:
-        outcomes = send_campaign(session, campaign_id, limit=limit)
+        outcomes, deliveries = dispatch_campaign(session, campaign_id, limit=limit)
         session.commit()
     except CampaignNotFound:
         session.rollback()
         raise HTTPException(status_code=404, detail="campaign not found") from None
-    return [
-        TouchSendOutcomeOut(
-            touch_id=o.touch_id,
-            enrollment_id=o.enrollment_id,
-            sent=o.sent,
-            delivery_status=o.delivery_status,
-            reason=o.reason,
-        )
-        for o in outcomes
-    ]
+    return CampaignDispatchOut(
+        outcomes=[
+            TouchSendOutcomeOut(
+                touch_id=o.touch_id,
+                enrollment_id=o.enrollment_id,
+                sent=o.sent,
+                delivery_status=o.delivery_status,
+                reason=o.reason,
+            )
+            for o in outcomes
+        ],
+        deliveries=[
+            DeliveryOut(channel=d.channel, to=d.to, subject=d.subject, body=d.body)
+            for d in deliveries
+        ],
+    )
 
 
 def _batch_out(batch) -> GenerationBatchOut:

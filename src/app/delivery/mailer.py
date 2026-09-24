@@ -270,29 +270,12 @@ def get_mailer(settings: Settings | None = None) -> Mailer:
     """Build the configured Mailer. The one place an implementation is
     chosen; downstream code only ever depends on the protocol.
 
-    No SMTP host, or a host with no sender address, gives NullMailer: an
-    environment that cannot send should record and stay quiet rather than
-    raise in the middle of a scheduled run.
+    Every email goes out through the Ticketing app. No Ticketing URL or
+    secret gives NullMailer: an environment that cannot send should record
+    and stay quiet rather than raise in the middle of a scheduled run.
     """
     settings = settings or get_settings()
-    if settings.mail_transport == "ticketing":
-        return _ticketing_mailer(settings)
-    if not settings.smtp_host:
-        return NullMailer(sender=settings.email_sender)
-    if not settings.email_sender:
-        return NullMailer(
-            reason="no sender address configured",
-            sender="",
-        )
-    return SmtpMailer(
-        host=settings.smtp_host,
-        port=settings.smtp_port,
-        sender=settings.email_sender,
-        username=settings.smtp_username,
-        password=settings.smtp_password,
-        starttls=settings.smtp_starttls,
-        timeout=settings.smtp_timeout_seconds,
-    )
+    return _ticketing_mailer(settings)
 
 
 def _ticketing_mailer(settings: Settings) -> Mailer:

@@ -17,6 +17,7 @@ from app.delivery.mailer import (
     Mailer,
     NullMailer,
     SmtpMailer,
+    TicketingMailer,
     build_mime_message,
     get_mailer,
 )
@@ -76,37 +77,34 @@ def a_message() -> EmailMessage:
     )
 
 
-def test_factory_returns_null_mailer_without_a_host():
-    built = get_mailer(
-        Settings(mail_transport="smtp", smtp_host="", email_sender="ace@example.com")
-    )
-    assert isinstance(built, NullMailer)
-
-
-def test_factory_returns_null_mailer_without_a_sender():
-    built = get_mailer(Settings(mail_transport="smtp", smtp_host="localhost", email_sender=""))
-    assert isinstance(built, NullMailer)
-    assert built.reason == "no sender address configured"
-
-
-def test_factory_returns_smtp_mailer_when_configured():
+def test_factory_sends_through_ticketing_even_when_smtp_is_configured():
     built = get_mailer(
         Settings(
             mail_transport="smtp",
             smtp_host="localhost",
-            smtp_port=1025,
             email_sender="ace@example.com",
-            smtp_username="user",
-            smtp_password="secret",
-            smtp_starttls=True,
+            ticketing_base_url="https://ticketing.example.com",
+            AI_OUTREACH_JWT_SECRET="secret",
         )
     )
-    assert isinstance(built, SmtpMailer)
-    assert (built.host, built.port) == ("localhost", 1025)
-    assert built.sender == "ace@example.com"
-    assert built.username == "user"
-    assert built.password == "secret"
-    assert built.starttls is True
+    assert isinstance(built, TicketingMailer)
+    assert built.base_url == "https://ticketing.example.com"
+
+
+def test_factory_returns_null_mailer_without_a_ticketing_url():
+    built = get_mailer(
+        Settings(smtp_host="localhost", ticketing_base_url="", AI_OUTREACH_JWT_SECRET="secret")
+    )
+    assert isinstance(built, NullMailer)
+    assert built.reason == "no ticketing url configured"
+
+
+def test_factory_returns_null_mailer_without_a_ticketing_secret():
+    built = get_mailer(
+        Settings(ticketing_base_url="https://ticketing.example.com", AI_OUTREACH_JWT_SECRET="")
+    )
+    assert isinstance(built, NullMailer)
+    assert built.reason == "no ticketing secret configured"
 
 
 def test_both_implementations_satisfy_the_protocol():
@@ -133,8 +131,8 @@ def test_null_mailer_close_is_a_harmless_no_op():
 
 
 def test_a_misconfigured_environment_sends_nothing_and_still_records():
-    """An unset SMTP_HOST must not raise on a scheduled run; it records."""
-    built = get_mailer(Settings(mail_transport="smtp", smtp_host=""))
+    """An unset TICKETING_BASE_URL must not raise on a scheduled run; it records."""
+    built = get_mailer(Settings(ticketing_base_url=""))
     result = built.send(a_message())
 
     assert result.sent is False
