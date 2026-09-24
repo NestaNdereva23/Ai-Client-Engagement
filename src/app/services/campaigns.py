@@ -342,6 +342,13 @@ def list_campaigns(
     return rows, next_cursor
 
 
+def _enrollment_cap(is_test: bool) -> int:
+    settings = get_settings()
+    if is_test:
+        return settings.test_campaign_max_clients
+    return settings.live_campaign_max_clients
+
+
 def create_campaign(
     session: Session,
     *,
@@ -367,8 +374,9 @@ def create_campaign(
     session.flush()
 
     client_ids = resolve_cohort_client_ids(session, **cohort_filters)
-    if is_test:
-        client_ids = sorted(client_ids)[: get_settings().test_campaign_max_clients]
+    cap = _enrollment_cap(is_test)
+    if cap:
+        client_ids = sorted(client_ids)[:cap]
     enroll_cohort(session, campaign_id=campaign.campaign_id, client_ids=client_ids)
 
     created_steps = [
