@@ -188,19 +188,7 @@ class RecordingSmsGateway:
 
 def get_sms_gateway(settings: Settings | None = None) -> SmsGateway:
     settings = settings or get_settings()
-    if settings.sms_transport == "ticketing":
-        return _ticketing_gateway(settings)
-    if not settings.sms_provider_api_key or not settings.sms_provider_username:
-        return RecordingSmsGateway(sender=settings.sms_sender_id)
-    if not settings.sms_sender_id:
-        return RecordingSmsGateway(reason="no sender id configured", sender="")
-    return AfricasTalkingGateway(
-        api_key=settings.sms_provider_api_key,
-        username=settings.sms_provider_username,
-        sender_id=settings.sms_sender_id,
-        base_url=settings.sms_provider_base_url,
-        timeout=settings.sms_timeout_seconds,
-    )
+    return _ticketing_gateway(settings)
 
 
 def _ticketing_gateway(settings: Settings) -> SmsGateway:

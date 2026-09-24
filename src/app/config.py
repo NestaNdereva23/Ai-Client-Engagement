@@ -223,7 +223,7 @@ class Settings(BaseSettings):
     # Test mode sends only to the test_recipient list and hides real client names.
     delivery_mode: Literal["test", "live"] = "test"
     test_client_first_name: str = "Test Client"
-    test_subject_prefix: str = "[TEST] "
+    test_subject_prefix: str = "[TEST]"
     test_campaign_max_clients: int = 1
     # Live campaigns enroll at most this many clients; 0 means no limit.
     live_campaign_max_clients: int = 0

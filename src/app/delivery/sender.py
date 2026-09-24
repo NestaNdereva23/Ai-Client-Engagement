@@ -76,7 +76,7 @@ def build_email_sender(
         body = content["body"]
         if test_mode:
             to = pick_test_recipient(message.client_id, "email")
-            subject = f"{settings.test_subject_prefix}{subject}"
+            subject = f"{settings.test_subject_prefix.strip()} {subject}"
             body = (
                 f"{body}\n\n--\nTest send for client {message.client_id}, "
                 f"campaign {message.campaign_id}."

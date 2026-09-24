@@ -9,6 +9,7 @@ from app.delivery.sms_gateway import (
     RecordingSmsGateway,
     SmsGateway,
     SmsMessage,
+    TicketingSmsGateway,
     get_sms_gateway,
 )
 
@@ -17,38 +18,33 @@ def a_message() -> SmsMessage:
     return SmsMessage(to="+254712345678", body="Your fund is open again. Reply for details.")
 
 
-def test_factory_returns_recording_gateway_without_credentials():
-    built = get_sms_gateway(
-        Settings(sms_transport="africastalking", sms_provider_api_key="", sms_provider_username="")
-    )
-    assert isinstance(built, RecordingSmsGateway)
-
-
-def test_factory_returns_recording_gateway_without_a_sender_id():
-    built = get_sms_gateway(
-        Settings(
-            sms_transport="africastalking",
-            sms_provider_api_key="key",
-            sms_provider_username="user",
-            sms_sender_id="",
-        )
-    )
-    assert isinstance(built, RecordingSmsGateway)
-    assert built.reason == "no sender id configured"
-
-
-def test_factory_returns_africas_talking_gateway_when_configured():
+def test_factory_sends_through_ticketing_even_when_africas_talking_is_configured():
     built = get_sms_gateway(
         Settings(
             sms_transport="africastalking",
             sms_provider_api_key="key",
             sms_provider_username="user",
             sms_sender_id="ACE",
+            ticketing_base_url="https://ticketing.example.com",
+            AI_OUTREACH_JWT_SECRET="secret",
         )
     )
-    assert isinstance(built, AfricasTalkingGateway)
-    assert built.username == "user"
-    assert built.sender_id == "ACE"
+    assert isinstance(built, TicketingSmsGateway)
+    assert built.base_url == "https://ticketing.example.com"
+
+
+def test_factory_returns_recording_gateway_without_a_ticketing_url():
+    built = get_sms_gateway(Settings(ticketing_base_url="", AI_OUTREACH_JWT_SECRET="secret"))
+    assert isinstance(built, RecordingSmsGateway)
+    assert built.reason == "no ticketing url configured"
+
+
+def test_factory_returns_recording_gateway_without_a_ticketing_secret():
+    built = get_sms_gateway(
+        Settings(ticketing_base_url="https://ticketing.example.com", AI_OUTREACH_JWT_SECRET="")
+    )
+    assert isinstance(built, RecordingSmsGateway)
+    assert built.reason == "no ticketing secret configured"
 
 
 def test_both_implementations_satisfy_the_protocol():

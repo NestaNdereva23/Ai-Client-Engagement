@@ -375,8 +375,8 @@ def test_auto_checkin_campaign_reachable_through_the_real_api(
     )
     assert decision.status_code == 200
 
-    sent = api_client.post(f"{CAMPAIGNS}/{campaign_id}/send")
+    sent = api_client.post(f"{CAMPAIGNS}/{campaign_id}/dispatch")
     assert sent.status_code == 200
-    outcomes_json = sent.json()
+    outcomes_json = sent.json()["outcomes"]
     assert len(outcomes_json) == 1
     assert outcomes_json[0]["sent"] is True

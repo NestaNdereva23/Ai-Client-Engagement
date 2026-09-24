@@ -267,6 +267,22 @@ class TouchSendOutcomeOut(BaseModel):
     reason: str | None
 
 
+class DeliveryOut(BaseModel):
+    """One ready-to-send message handed to the Ticketing app to deliver."""
+
+    channel: str
+    to: str
+    subject: str | None
+    body: str
+
+
+class CampaignDispatchOut(BaseModel):
+    """The touches claimed for sending, and the messages Ticketing must deliver for them."""
+
+    outcomes: list[TouchSendOutcomeOut]
+    deliveries: list[DeliveryOut]
+
+
 class GenerationBatchOut(BaseModel):
     """One submission to the model provider's async batch endpoint."""
 
