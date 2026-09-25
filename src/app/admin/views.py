@@ -7,6 +7,13 @@ from app.db.models.active_clients import (
     ActiveClientInteraction,
     ActiveTransaction,
 )
+from app.db.models.agent import AgentActionCatalog, SituationActionMapping
+from app.db.models.agent_event import AgentEvent
+from app.db.models.agent_insight import AgentInsight, AgentInsightClient, AgentInsightFact
+from app.db.models.agent_permission import AgentPermission
+from app.db.models.agent_prompt import AgentPrompt
+from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
+from app.db.models.agent_run import AgentRun, AgentToolCall
 from app.db.models.api import IdempotencyKey
 from app.db.models.audit import AuditLog
 from app.db.models.auth import ReviewerUser
@@ -43,7 +50,15 @@ from app.db.models.models import (
     Transactions,
 )
 from app.db.models.outreach import Campaign, OutreachMessage, ReviewAction, ReviewCohort
-from app.db.models.rag import RagChunk, RagDocument, RagDocumentVersion
+from app.db.models.prompt_config import (
+    ActiveConfiguration,
+    FactEligibilityRule,
+    OutputPolicy,
+    PersonalizationPolicy,
+    SafetyPolicy,
+    VoiceContract,
+)
+from app.db.models.rag import RagChunk, RagDocument, RagDocumentVersion, RagSetting
 from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion, RiskRun, RiskSnapshot
 from app.db.models.rules import (
     BusinessRule,
@@ -51,9 +66,19 @@ from app.db.models.rules import (
     MessageAngleCatalog,
     TierContract,
 )
+from app.db.models.signals import (
+    ClientSignalSnapshot,
+    ClientSignalState,
+    ClientSituationSnapshot,
+    ClientSituationState,
+    SignalRun,
+    SignalThreshold,
+    SituationRunCount,
+)
 from app.db.models.suppression import Suppression
 from app.db.models.template_generation_plan import TemplateGenerationPlan
 from app.db.models.template_policy import CampaignTemplatePolicy, TemplatePolicyConfigVersion
+from app.db.models.test_recipient import TestRecipient
 
 
 class _ReadOnlyView(ModelView):
@@ -640,6 +665,245 @@ class IdempotencyKeyAdmin(_ReadOnlyView, model=IdempotencyKey):
     column_default_sort = [(IdempotencyKey.created_at, True)]
 
 
+class TestRecipientAdmin(_ReadOnlyView, model=TestRecipient):
+    name = "Test Recipient"
+    name_plural = "Test Recipients"
+    icon = "fa-solid fa-vial"
+    category = "Campaigns & Outreach"
+    category_icon = "fa-solid fa-bullhorn"
+    column_default_sort = [(TestRecipient.created_at, True)]
+
+
+class RagSettingAdmin(_ReadOnlyView, model=RagSetting):
+    name = "RAG Setting"
+    name_plural = "RAG Settings"
+    icon = "fa-solid fa-gear"
+    category = "RAG"
+    category_icon = "fa-solid fa-database"
+    column_default_sort = [(RagSetting.updated_at, True)]
+
+
+class ActiveConfigurationAdmin(_ReadOnlyView, model=ActiveConfiguration):
+    name = "Active Configuration"
+    name_plural = "Active Configurations"
+    icon = "fa-solid fa-toggle-on"
+    category = "Prompt Config"
+    category_icon = "fa-solid fa-sliders"
+    column_default_sort = [(ActiveConfiguration.updated_at, True)]
+
+
+class VoiceContractAdmin(_ReadOnlyView, model=VoiceContract):
+    name = "Voice Contract"
+    name_plural = "Voice Contracts"
+    icon = "fa-solid fa-microphone"
+    category = "Prompt Config"
+    category_icon = "fa-solid fa-sliders"
+    column_default_sort = [(VoiceContract.created_at, True)]
+
+
+class SafetyPolicyAdmin(_ReadOnlyView, model=SafetyPolicy):
+    name = "Safety Policy"
+    name_plural = "Safety Policies"
+    icon = "fa-solid fa-shield"
+    category = "Prompt Config"
+    category_icon = "fa-solid fa-sliders"
+    column_default_sort = [(SafetyPolicy.created_at, True)]
+
+
+class OutputPolicyAdmin(_ReadOnlyView, model=OutputPolicy):
+    name = "Output Policy"
+    name_plural = "Output Policies"
+    icon = "fa-solid fa-file-export"
+    category = "Prompt Config"
+    category_icon = "fa-solid fa-sliders"
+    column_default_sort = [(OutputPolicy.created_at, True)]
+
+
+class PersonalizationPolicyAdmin(_ReadOnlyView, model=PersonalizationPolicy):
+    name = "Personalization Policy"
+    name_plural = "Personalization Policies"
+    icon = "fa-solid fa-wand-magic-sparkles"
+    category = "Prompt Config"
+    category_icon = "fa-solid fa-sliders"
+    column_default_sort = [(PersonalizationPolicy.created_at, True)]
+
+
+class FactEligibilityRuleAdmin(_ReadOnlyView, model=FactEligibilityRule):
+    name = "Fact Eligibility Rule"
+    name_plural = "Fact Eligibility Rules"
+    icon = "fa-solid fa-filter"
+    category = "Prompt Config"
+    category_icon = "fa-solid fa-sliders"
+    column_default_sort = [(FactEligibilityRule.created_at, True)]
+
+
+class SignalRunAdmin(_ReadOnlyView, model=SignalRun):
+    name = "Signal Run"
+    name_plural = "Signal Runs"
+    icon = "fa-solid fa-play"
+    category = "Signals"
+    category_icon = "fa-solid fa-signal"
+    column_default_sort = [(SignalRun.started_at, True)]
+
+
+class SignalThresholdAdmin(_ReadOnlyView, model=SignalThreshold):
+    name = "Signal Threshold"
+    name_plural = "Signal Thresholds"
+    icon = "fa-solid fa-sliders"
+    category = "Signals"
+    category_icon = "fa-solid fa-signal"
+    column_default_sort = [(SignalThreshold.created_at, True)]
+
+
+class ClientSignalSnapshotAdmin(_ReadOnlyView, model=ClientSignalSnapshot):
+    name = "Client Signal Snapshot"
+    name_plural = "Client Signal Snapshots"
+    icon = "fa-solid fa-camera"
+    category = "Signals"
+    category_icon = "fa-solid fa-signal"
+    column_default_sort = [(ClientSignalSnapshot.created_at, True)]
+
+
+class ClientSignalStateAdmin(_ReadOnlyView, model=ClientSignalState):
+    name = "Client Signal State"
+    name_plural = "Client Signal States"
+    icon = "fa-solid fa-signal"
+    category = "Signals"
+    category_icon = "fa-solid fa-signal"
+    column_default_sort = [(ClientSignalState.updated_at, True)]
+
+
+class ClientSituationSnapshotAdmin(_ReadOnlyView, model=ClientSituationSnapshot):
+    name = "Client Situation Snapshot"
+    name_plural = "Client Situation Snapshots"
+    icon = "fa-solid fa-camera"
+    category = "Signals"
+    category_icon = "fa-solid fa-signal"
+    column_default_sort = [(ClientSituationSnapshot.created_at, True)]
+
+
+class ClientSituationStateAdmin(_ReadOnlyView, model=ClientSituationState):
+    name = "Client Situation State"
+    name_plural = "Client Situation States"
+    icon = "fa-solid fa-location-dot"
+    category = "Signals"
+    category_icon = "fa-solid fa-signal"
+    column_default_sort = [(ClientSituationState.updated_at, True)]
+
+
+class SituationRunCountAdmin(_ReadOnlyView, model=SituationRunCount):
+    name = "Situation Run Count"
+    name_plural = "Situation Run Counts"
+    icon = "fa-solid fa-hashtag"
+    category = "Signals"
+    category_icon = "fa-solid fa-signal"
+
+
+class AgentActionCatalogAdmin(_ReadOnlyView, model=AgentActionCatalog):
+    name = "Agent Action"
+    name_plural = "Agent Action Catalog"
+    icon = "fa-solid fa-list-check"
+    category = "Agents"
+    category_icon = "fa-solid fa-user-gear"
+    column_default_sort = [(AgentActionCatalog.created_at, True)]
+
+
+class SituationActionMappingAdmin(_ReadOnlyView, model=SituationActionMapping):
+    name = "Situation Action Mapping"
+    name_plural = "Situation Action Mappings"
+    icon = "fa-solid fa-shuffle"
+    category = "Agents"
+    category_icon = "fa-solid fa-user-gear"
+    column_default_sort = [(SituationActionMapping.created_at, True)]
+
+
+class AgentPermissionAdmin(_ReadOnlyView, model=AgentPermission):
+    name = "Agent Permission"
+    name_plural = "Agent Permissions"
+    icon = "fa-solid fa-key"
+    category = "Agents"
+    category_icon = "fa-solid fa-user-gear"
+    column_default_sort = [(AgentPermission.updated_at, True)]
+
+
+class AgentPromptAdmin(_ReadOnlyView, model=AgentPrompt):
+    name = "Agent Prompt"
+    name_plural = "Agent Prompts"
+    icon = "fa-solid fa-terminal"
+    category = "Agents"
+    category_icon = "fa-solid fa-user-gear"
+    column_default_sort = [(AgentPrompt.created_at, True)]
+
+
+class AgentRunAdmin(_ReadOnlyView, model=AgentRun):
+    name = "Agent Run"
+    name_plural = "Agent Runs"
+    icon = "fa-solid fa-play"
+    category = "Agents"
+    category_icon = "fa-solid fa-user-gear"
+    column_default_sort = [(AgentRun.started_at, True)]
+
+
+class AgentToolCallAdmin(_ReadOnlyView, model=AgentToolCall):
+    name = "Agent Tool Call"
+    name_plural = "Agent Tool Calls"
+    icon = "fa-solid fa-wrench"
+    category = "Agents"
+    category_icon = "fa-solid fa-user-gear"
+    column_default_sort = [(AgentToolCall.created_at, True)]
+
+
+class AgentEventAdmin(_ReadOnlyView, model=AgentEvent):
+    name = "Agent Event"
+    name_plural = "Agent Events"
+    icon = "fa-solid fa-bell"
+    category = "Agents"
+    category_icon = "fa-solid fa-user-gear"
+    column_default_sort = [(AgentEvent.created_at, True)]
+
+
+class AgentInsightAdmin(_ReadOnlyView, model=AgentInsight):
+    name = "Agent Insight"
+    name_plural = "Agent Insights"
+    icon = "fa-solid fa-lightbulb"
+    category = "Agents"
+    category_icon = "fa-solid fa-user-gear"
+    column_default_sort = [(AgentInsight.created_at, True)]
+
+
+class AgentInsightClientAdmin(_ReadOnlyView, model=AgentInsightClient):
+    name = "Agent Insight Client"
+    name_plural = "Agent Insight Clients"
+    icon = "fa-solid fa-link"
+    category = "Agents"
+    category_icon = "fa-solid fa-user-gear"
+
+
+class AgentInsightFactAdmin(_ReadOnlyView, model=AgentInsightFact):
+    name = "Agent Insight Fact"
+    name_plural = "Agent Insight Facts"
+    icon = "fa-solid fa-clipboard-list"
+    category = "Agents"
+    category_icon = "fa-solid fa-user-gear"
+
+
+class AgentProposalAdmin(_ReadOnlyView, model=AgentProposal):
+    name = "Agent Proposal"
+    name_plural = "Agent Proposals"
+    icon = "fa-solid fa-file-signature"
+    category = "Agents"
+    category_icon = "fa-solid fa-user-gear"
+    column_default_sort = [(AgentProposal.created_at, True)]
+
+
+class AgentProposalClientAdmin(_ReadOnlyView, model=AgentProposalClient):
+    name = "Agent Proposal Client"
+    name_plural = "Agent Proposal Clients"
+    icon = "fa-solid fa-link"
+    category = "Agents"
+    category_icon = "fa-solid fa-user-gear"
+
+
 ADMIN_VIEWS = [
     RawStagingAdmin,
     IngestionStatusAdmin,
@@ -701,4 +965,31 @@ ADMIN_VIEWS = [
     ReviewerUserAdmin,
     AuditLogAdmin,
     IdempotencyKeyAdmin,
+    TestRecipientAdmin,
+    RagSettingAdmin,
+    ActiveConfigurationAdmin,
+    VoiceContractAdmin,
+    SafetyPolicyAdmin,
+    OutputPolicyAdmin,
+    PersonalizationPolicyAdmin,
+    FactEligibilityRuleAdmin,
+    SignalRunAdmin,
+    SignalThresholdAdmin,
+    ClientSignalSnapshotAdmin,
+    ClientSignalStateAdmin,
+    ClientSituationSnapshotAdmin,
+    ClientSituationStateAdmin,
+    SituationRunCountAdmin,
+    AgentActionCatalogAdmin,
+    SituationActionMappingAdmin,
+    AgentPermissionAdmin,
+    AgentPromptAdmin,
+    AgentRunAdmin,
+    AgentToolCallAdmin,
+    AgentEventAdmin,
+    AgentInsightAdmin,
+    AgentInsightClientAdmin,
+    AgentInsightFactAdmin,
+    AgentProposalAdmin,
+    AgentProposalClientAdmin,
 ]

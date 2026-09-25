@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.agents.signals import (
@@ -21,6 +21,7 @@ from app.db.models.signals import (
     ClientSignalState,
     ClientSituationSnapshot,
     ClientSituationState,
+    SituationRunCount,
 )
 
 NEW_CLIENT_SINGLE_DEPOSIT = "new_client_single_deposit"
@@ -238,6 +239,23 @@ def recompute_risk_action_gap(session: Session, as_of: date, run_id: str) -> Non
     )
 
 
+def record_situation_counts(session: Session, run_id: str) -> None:
+    counts = session.execute(
+        select(
+            ClientSituationSnapshot.situation_code,
+            func.count().filter(ClientSituationSnapshot.is_active.is_(True)),
+        )
+        .where(ClientSituationSnapshot.run_id == run_id)
+        .group_by(ClientSituationSnapshot.situation_code)
+    ).all()
+    session.execute(delete(SituationRunCount).where(SituationRunCount.run_id == run_id))
+    session.add_all(
+        SituationRunCount(run_id=run_id, situation_code=code, active_count=active)
+        for code, active in counts
+    )
+    session.commit()
+
+
 def recompute_all_situations(session: Session, as_of: date, run_id: str) -> None:
     recompute_new_client_single_deposit(session, as_of, run_id)
     recompute_system_fee_pressure(session, as_of, run_id)
@@ -248,6 +266,7 @@ def recompute_all_situations(session: Session, as_of: date, run_id: str) -> None
     recompute_single_fund_healthy(session, as_of, run_id)
     recompute_follow_up_overdue(session, as_of, run_id)
     recompute_risk_action_gap(session, as_of, run_id)
+    record_situation_counts(session, run_id)
 
 
 @dataclass(frozen=True)

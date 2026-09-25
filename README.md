@@ -22,6 +22,30 @@ DATABASE_URL=postgresql+psycopg://ace:ace@localhost:5432/ace_test uv run alembic
 
 The test suite never runs against the database used for real ingested data: `tests/conftest.py` redirects `DATABASE_URL` to a database named `<database>_test` automatically (or to `TEST_DATABASE_URL` if set). A fresh `docker compose up -d` creates both databases on first boot (`docker/init-test-db.sh`); an existing container needs the one-off `CREATE DATABASE <name>_test` above, or an equivalent `psql`/`CREATE DATABASE` command, before the second `alembic upgrade head` will connect.
 
+## Branches
+
+`main` is what production runs. `staging` is where every change is checked first. Open each pull request against `staging`. When staging looks good, open one pull request from `staging` to `main`. Merge `staging` into `main` with a merge commit, not a squash, so the two branches never drift apart.
+
+## Deploying
+
+Only `main` is deployed, and only to the production droplet. When a change lands on `main` and CI passes, the Deploy workflow (`.github/workflows/deploy.yml`) connects to the droplet over SSH and runs `deploy/deploy.sh`. You can also start it by hand from the Actions tab (Deploy, then Run workflow), or run the script on the droplet:
+
+```bash
+/opt/Ai-Outreach/Ai-Client-Engagement/deploy/deploy.sh
+```
+
+One time setup, in the repo settings under Environments, create an environment named `production` and add these secrets:
+
+- `DEPLOY_HOST`: the droplet address.
+- `DEPLOY_USER`: the login the workflow uses, for example `root`.
+- `DEPLOY_SSH_KEY`: the private half of a new key made just for deploys, with no passphrase. Add its public half to the droplet's `~/.ssh/authorized_keys`.
+- `DEPLOY_KNOWN_HOSTS`: the output of `ssh-keyscan <droplet address>`. If the droplet address changes, this must be updated too.
+
+Turn on "Required reviewers" for the `production` environment if you want a person to approve each deploy.
+
+The script pulls `main` (fast-forward only), builds the image, applies migrations, starts the new container, and waits until it reports healthy. It stops without changing anything if the checkout is not on `main`, has uncommitted changes, or has no `.env.prod`. If a deploy fails, the old image is kept as `ace-app:previous`. Migrations that already ran are not undone by going back to it.
+
+
 ## Tracing (Langfuse)
 
 `docker compose up -d` also starts a self-hosted Langfuse (web on `localhost:3000`, its own worker, Postgres, ClickHouse, Redis and MinIO, fully isolated from the app's own database). It is optional: a generation run behaves identically without it. See the `LANGFUSE_*` block in `.env.example` for the compose bootstrap variables (all `CHANGEME` defaults, dev-only) and for `LANGFUSE_HOST` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`, the three the app itself reads. Until all three are set, every generation runs through a no-op tracer.
