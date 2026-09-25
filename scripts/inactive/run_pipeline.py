@@ -28,6 +28,7 @@ from app.db.session import SessionLocal  # noqa: E402
 from app.ingestion.api_client import CytonnClient  # noqa: E402
 from app.ingestion.endpoints import resolve_endpoint  # noqa: E402
 from app.logging_config import configure_logging  # noqa: E402
+from app.retention import prune_raw_staging  # noqa: E402
 from app.rules.indicators import populate_indicators  # noqa: E402
 from app.transform.load import transform_run  # noqa: E402
 from app.workers.ingestion import IngestionAborted, IngestionWorker  # noqa: E402
@@ -124,6 +125,11 @@ def main(argv: list[str] | None = None) -> int:
     with SessionLocal() as session:
         resolved = populate_indicators(session, at=args.at)
         print(f"resolve_indicators: resolved {resolved} client(s) as of {args.at.isoformat()}")
+
+    with SessionLocal() as session:
+        pruned = prune_raw_staging(session)
+        session.commit()
+        print(f"retention: removed {pruned} old raw page(s)")
 
     return 0
 

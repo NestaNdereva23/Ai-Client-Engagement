@@ -108,6 +108,7 @@ from app.db.models.signals import (
     ClientSignalState,
     SignalRun,
     SignalThreshold,
+    SituationRunCount,
 )
 from app.db.models.suppression import Suppression
 from app.db.models.template_generation_plan import TemplateGenerationPlan
@@ -210,6 +211,7 @@ __all__ = [
     "SafetyPolicy",
     "SignalRun",
     "SignalThreshold",
+    "SituationRunCount",
     "Suppression",
     "TemplateGenerationPlan",
     "TestRecipient",

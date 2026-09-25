@@ -61,6 +61,7 @@ from app.ingestion.complaints_source import ComplaintsSource, get_complaints_sou
 from app.ingestion.endpoints import resolve_endpoint
 from app.ingestion.fa_assignment_source import FaAssignmentSource, get_fa_assignment_source
 from app.privacy.llm_client import get_agent_llm_client, get_briefing_llm_client
+from app.retention import prune_raw_staging, prune_risk_snapshots, prune_signal_snapshots
 from app.risk.fa_allocation import ClientLoad
 from app.risk.history import write_snapshot
 from app.risk.routing import RoutableRow, RouteResult, route_population
@@ -428,6 +429,7 @@ class RiskDetectionWorker:
             self._send_digest_emails(digest_run.digest_run_id, allocation.covering)
             self._warm_narratives(digest_run.digest_run_id)
             self._recompute_signals_and_situations(run.reference_ts.date(), run.run_id)
+            self._prune_old_data()
             self._run_agent(run.reference_ts.date())
 
             result = RiskRunResult(
@@ -524,6 +526,16 @@ class RiskDetectionWorker:
                 )
         except Exception:
             logger.exception("risk_detection.signal_recompute_failed", risk_run_id=risk_run_id)
+
+    def _prune_old_data(self) -> None:
+        try:
+            with self._session_factory() as session:
+                prune_raw_staging(session)
+                prune_signal_snapshots(session)
+                prune_risk_snapshots(session)
+                session.commit()
+        except Exception:
+            logger.exception("risk_detection.prune_failed")
 
     def _run_agent(self, as_of: date) -> None:
         """Start the agent once this risk run has finished, when the setting

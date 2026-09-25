@@ -32,7 +32,7 @@ from app.agents.watchlist import GROUP_TO_SITUATION, load_thresholds
 from app.config import get_settings
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.agent_permission import AgentPermission
-from app.db.models.signals import ClientSituationSnapshot, ClientSituationState
+from app.db.models.signals import ClientSituationState, SignalRun, SituationRunCount
 from app.risk.store import load_active_config
 from app.rules import versioning
 from app.rules.catalog import load_angle
@@ -164,29 +164,18 @@ class SnapshotComparison:
 
 
 def _situation_counts_as_of(session: Session, cutoff: datetime) -> dict[str, int]:
-    latest = (
-        select(
-            ClientSituationSnapshot.situation_code,
-            ClientSituationSnapshot.is_active,
-        )
-        .distinct(
-            ClientSituationSnapshot.client_id,
-            ClientSituationSnapshot.unit_fund_id,
-            ClientSituationSnapshot.situation_code,
-        )
-        .where(ClientSituationSnapshot.created_at <= cutoff)
-        .order_by(
-            ClientSituationSnapshot.client_id,
-            ClientSituationSnapshot.unit_fund_id,
-            ClientSituationSnapshot.situation_code,
-            ClientSituationSnapshot.created_at.desc(),
-        )
-        .subquery()
+    latest_run = (
+        select(SignalRun.run_id)
+        .join(SituationRunCount, SituationRunCount.run_id == SignalRun.run_id)
+        .where(SignalRun.started_at <= cutoff)
+        .order_by(SignalRun.started_at.desc())
+        .limit(1)
+        .scalar_subquery()
     )
     rows = session.execute(
-        select(latest.c.situation_code, func.count())
-        .where(latest.c.is_active.is_(True))
-        .group_by(latest.c.situation_code)
+        select(SituationRunCount.situation_code, SituationRunCount.active_count).where(
+            SituationRunCount.run_id == latest_run
+        )
     ).all()
     return dict(rows)
 
