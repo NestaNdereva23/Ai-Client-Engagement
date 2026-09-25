@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import anyio.to_thread
 from fastapi import FastAPI
@@ -12,6 +13,7 @@ from sqladmin import Admin
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.admin.auth import AdminAuth
+from app.admin.table_sizes import TableSizesView
 from app.admin.views import ADMIN_VIEWS
 from app.api import v1
 from app.api.errors import register_error_handlers
@@ -25,6 +27,8 @@ from app.llmops.tracing import shutdown_shared_tracer
 from app.logging_config import configure_logging
 
 __version__ = "0.1.0"
+
+_ADMIN_TEMPLATES_DIR = Path(__file__).resolve().parent / "admin" / "templates"
 
 
 @asynccontextmanager
@@ -76,10 +80,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(reviewer_ui.router)
 
     admin = Admin(
-        app, engine, authentication_backend=AdminAuth(secret_key=settings.admin_secret_key)
+        app,
+        engine,
+        authentication_backend=AdminAuth(secret_key=settings.admin_secret_key),
+        templates_dir=str(_ADMIN_TEMPLATES_DIR),
     )
     for view in ADMIN_VIEWS:
         admin.add_view(view)
+    admin.add_base_view(TableSizesView)
 
     return app
 

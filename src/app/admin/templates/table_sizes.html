@@ -1,0 +1,40 @@
+{% extends "sqladmin/layout.html" %}
+{% block content %}
+<div class="col-12">
+  <div class="card">
+    <div class="card-header">
+      <h3 class="card-title">Disk space used by each table</h3>
+    </div>
+    <div class="table-responsive">
+      <table class="table card-table table-vcenter text-nowrap">
+        <thead>
+          <tr>
+            <th>Table</th>
+            <th class="text-end">Approx. rows</th>
+            <th class="text-end">Data (MB)</th>
+            <th class="text-end">Indexes (MB)</th>
+            <th class="text-end">Total (MB)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for size in sizes %}
+          <tr>
+            <td>{{ size.name }}</td>
+            <td class="text-end">{% if size.approx_rows is none %}n/a{% else %}{{ "{:,}".format(size.approx_rows) }}{% endif %}</td>
+            <td class="text-end">{{ "{:,.2f}".format(size.table_mb) }}</td>
+            <td class="text-end">{{ "{:,.2f}".format(size.index_mb) }}</td>
+            <td class="text-end">{{ "{:,.2f}".format(size.total_mb) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <th colspan="4">All tables</th>
+            <th class="text-end">{{ "{:,.2f}".format(total_mb) }}</th>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

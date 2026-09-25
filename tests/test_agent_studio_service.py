@@ -15,7 +15,12 @@ from app.db.models.active_clients import ActiveClientFund
 from app.db.models.agent_permission import AgentPermission
 from app.db.models.prompt_config import ActiveConfiguration
 from app.db.models.risk import RiskConfigVersion
-from app.db.models.signals import ClientSituationSnapshot, ClientSituationState, SignalRun
+from app.db.models.signals import (
+    ClientSituationSnapshot,
+    ClientSituationState,
+    SignalRun,
+    SituationRunCount,
+)
 from app.db.session import SessionLocal
 from app.risk.store import save_config_version
 from app.services.agent_studio import (
@@ -37,6 +42,7 @@ MULTI_MATCH_CLIENT = 986003
 CLIENT_IDS = (CALL_URGENT_CLIENT, HEALTHY_CLIENT, MULTI_MATCH_CLIENT)
 
 RUN_ID = "agent-studio-batch-test-run"
+LATE_RUN_ID = "agent-studio-late-test-run"
 
 _FAR_FUTURE = date(2099, 1, 1)
 _CONFIG_VERSION = 950001
@@ -94,7 +100,10 @@ def _purge(session, client_ids: tuple[int, ...]) -> None:
     session.execute(
         delete(ClientSituationSnapshot).where(ClientSituationSnapshot.client_id.in_(client_ids))
     )
-    session.execute(delete(SignalRun).where(SignalRun.run_id == RUN_ID))
+    session.execute(
+        delete(SituationRunCount).where(SituationRunCount.run_id.in_((RUN_ID, LATE_RUN_ID)))
+    )
+    session.execute(delete(SignalRun).where(SignalRun.run_id.in_((RUN_ID, LATE_RUN_ID))))
     session.execute(delete(ActiveClientFund).where(ActiveClientFund.client_id.in_(client_ids)))
     session.commit()
 
@@ -197,27 +206,20 @@ def snapshot_dates(db: None):
     late = datetime.combine(date(2026, 9, 1), time(6, 0))
     with SessionLocal() as session:
         _purge(session, CLIENT_IDS)
-        session.add(SignalRun(run_id=RUN_ID, state="completed"))
+        session.add_all(
+            [
+                SignalRun(run_id=RUN_ID, state="completed", started_at=early),
+                SignalRun(run_id=LATE_RUN_ID, state="completed", started_at=late),
+            ]
+        )
         session.flush()
         session.add_all(
             [
-                ClientSituationSnapshot(
-                    run_id=RUN_ID,
-                    client_id=CALL_URGENT_CLIENT,
-                    unit_fund_id=FUND_ID,
-                    situation_code="follow_up_overdue",
-                    is_active=True,
-                    signal_codes=[],
-                    created_at=early,
+                SituationRunCount(
+                    run_id=RUN_ID, situation_code="follow_up_overdue", active_count=1
                 ),
-                ClientSituationSnapshot(
-                    run_id=RUN_ID,
-                    client_id=HEALTHY_CLIENT,
-                    unit_fund_id=FUND_ID,
-                    situation_code="follow_up_overdue",
-                    is_active=True,
-                    signal_codes=[],
-                    created_at=late,
+                SituationRunCount(
+                    run_id=LATE_RUN_ID, situation_code="follow_up_overdue", active_count=2
                 ),
             ]
         )

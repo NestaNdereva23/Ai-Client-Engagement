@@ -135,6 +135,16 @@ class ClientSituationState(Base):
     )
 
 
+class SituationRunCount(Base):
+    __tablename__ = "situation_run_count"
+
+    run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("signal_run.run_id"), primary_key=True, autoincrement=False
+    )
+    situation_code: Mapped[str] = mapped_column(Text, primary_key=True)
+    active_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class SignalThreshold(Base):
     __tablename__ = "signal_threshold"
     __table_args__ = (
