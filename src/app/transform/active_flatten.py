@@ -14,7 +14,13 @@ from app.db.models.models import IngestionStatus, RawStaging
 from app.ingestion.contracts_active import ActiveClientRecord, ActiveFundRecord
 from app.transform.flatten import PURCHASE_CAP as DEPOSIT_CAP
 from app.transform.flatten import SALE_CAP as WITHDRAWAL_CAP
-from app.transform.flatten import FlattenCounters, max_date, parse_amount, parse_date
+from app.transform.flatten import (
+    FlattenCounters,
+    dedupe_transactions,
+    max_date,
+    parse_amount,
+    parse_date,
+)
 
 
 @dataclass
@@ -33,6 +39,8 @@ class ActiveClientRow:
     deposit_count_capped: bool
     withdrawal_history_hidden: bool
     computed_at: str | None
+    fa_name: str | None = None
+    fa_email: str | None = None
 
 
 @dataclass
@@ -78,6 +86,10 @@ def _active_txn_row(
     )
 
 
+def _older_history_may_exist(latest: list[Any], window: list[Any], cap: int) -> bool:
+    return len(latest) >= cap and len(window) < cap
+
+
 def flatten_active_payload(
     payload: dict[str, Any], reference_date: datetime
 ) -> ActiveFlattenResult:
@@ -98,8 +110,12 @@ def flatten_active_payload(
                 result.counters.clients_skipped += 1
                 continue
 
-            deposits = client_raw.get("last_5_purchases") or []
-            withdrawals = client_raw.get("last_2_sales") or []
+            last_5 = client_raw.get("last_5_purchases") or []
+            last_2 = client_raw.get("last_2_sales") or []
+            purchases_12m = client_raw.get("purchases_last_12_months") or []
+            sales_12m = client_raw.get("sales_last_12_months") or []
+            deposits = dedupe_transactions([last_5, purchases_12m])
+            withdrawals = dedupe_transactions([last_2, sales_12m])
             deposit_rows = [
                 _active_txn_row(t, client, fund.unit_fund_id, "purchase", result.counters)
                 for t in deposits
@@ -114,9 +130,6 @@ def flatten_active_payload(
             last_deposit_date = max_date([r.date for r in deposit_rows])
             last_withdrawal_slot_date = max_date([r.date for r in withdrawal_rows])
 
-            deposit_count_capped = len(deposits) >= DEPOSIT_CAP
-            withdrawal_history_hidden = len(withdrawals) >= WITHDRAWAL_CAP
-
             result.clients.append(
                 ActiveClientRow(
                     client_id=client.client_id,
@@ -130,9 +143,15 @@ def flatten_active_payload(
                     n_withdrawals=len(withdrawals),
                     last_deposit_date=last_deposit_date,
                     last_withdrawal_slot_date=last_withdrawal_slot_date,
-                    deposit_count_capped=deposit_count_capped,
-                    withdrawal_history_hidden=withdrawal_history_hidden,
+                    deposit_count_capped=_older_history_may_exist(
+                        last_5, purchases_12m, DEPOSIT_CAP
+                    ),
+                    withdrawal_history_hidden=_older_history_may_exist(
+                        last_2, sales_12m, WITHDRAWAL_CAP
+                    ),
                     computed_at=client.computed_at,
+                    fa_name=client.fa_name,
+                    fa_email=client.fa_email,
                 )
             )
 

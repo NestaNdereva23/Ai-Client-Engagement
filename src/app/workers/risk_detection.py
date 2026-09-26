@@ -307,6 +307,7 @@ class RiskDetectionWorker:
                 roster=roster,
                 clients=_client_loads(measures, scores, routes),
                 keys=list(measures),
+                source_emails={c.client_id: c.fa_email for c in flat.clients if c.fa_email},
             )
             demoted_count = _demote_over_capacity(routes, allocation.demoted)
 

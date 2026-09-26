@@ -20,6 +20,8 @@ EXPECTED_CLIENT_KEYS = {
     "client_name",
     "client_email",
     "client_phone",
+    "fa_name",
+    "fa_email",
     "status",
     "balance",
     "computed_at",

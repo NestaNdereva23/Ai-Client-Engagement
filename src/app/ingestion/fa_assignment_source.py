@@ -1,8 +1,9 @@
 """The FA-assignment source: a contract fixed now so a real source can swap
 in later with no change to whoever calls it.
 
-The active-clients feed carries no FA (relationship-manager) field, so there
-is nothing to read one from. Two implementations:
+The active-clients feed names each client's FA (relationship manager) by
+email, and the nightly allocation turns that into fa_assignment rows. Two
+implementations:
 
 StubFaAssignmentSource returns fa_id=None for every client-fund it is asked
 about, and the digest builder treats a null fa_id as "group by fund
@@ -10,8 +11,8 @@ instead". DbFaAssignmentSource reads fa_assignment, which the nightly
 allocation fills in from the roster seeded in the environment.
 
 Every caller downstream depends only on the FaAssignmentSource protocol, so
-the day Cytonn does supply a real FA field, a new class implementing
-fetch_assignments and one line in app/config.py is the whole change.
+a different source is a new class implementing fetch_assignments and one line
+in app/config.py.
 """
 
 from __future__ import annotations
@@ -49,8 +50,7 @@ class FaAssignmentSource(Protocol):
 
 class StubFaAssignmentSource:
     """Returns fa_id=None for every client-fund relationship, matching the
-    notebook's own stand-in: there is no FA-assignment field on the
-    active-clients feed to read yet.
+    notebook's own stand-in: no advisor is assigned to anyone.
 
     Which relationships to answer for comes from active_client_fund, the
     same active-book table the risk engine reads, so a caller only has to

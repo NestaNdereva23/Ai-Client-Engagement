@@ -20,7 +20,6 @@ from datetime import date, datetime
 from statistics import median
 
 from app.transform.active_flatten import ActiveFlattenResult, ActiveTxnRow
-from app.transform.flatten import SALE_CAP as WITHDRAWAL_CAP
 
 # The source has no transaction type code for withdrawals yet, so a real
 # client withdrawal can't be told apart from a system fee posting directly.
@@ -261,7 +260,7 @@ def derive_active_measures(
         # that, not one of the withdrawals it shows is a real one -- a full
         # window with at least one real withdrawal visible is capped, not
         # hidden.
-        withdrawal_history_hidden = len(withdrawn) >= WITHDRAWAL_CAP and largest_withdrawal is None
+        withdrawal_history_hidden = row.withdrawal_history_hidden and largest_withdrawal is None
 
         measures[key] = ActiveFeatureMeasures(
             client_id=row.client_id,

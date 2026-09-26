@@ -18,11 +18,23 @@ EXPECTED_ACTIVE_CLIENT_KEYS = {
     "client_name",
     "client_email",
     "client_phone",
+    "fa_name",
+    "fa_email",
+    "status",
     "balance",
     "computed_at",
     "last_5_purchases",
     "last_2_sales",
+    "activity_window",
+    "purchases_last_12_months",
+    "sales_last_12_months",
 }
+TXN_BUCKETS = (
+    "last_5_purchases",
+    "last_2_sales",
+    "purchases_last_12_months",
+    "sales_last_12_months",
+)
 EXPECTED_ACTIVE_TXN_KEYS = {
     "id",
     "date",
@@ -71,10 +83,26 @@ class ActiveClientRecord(BaseModel):
     client_name: str | None = None
     client_email: str | None = None
     client_phone: str | None = None
+    fa_name: str | None = None
+    fa_email: str | None = None
     balance: float | None = None
     computed_at: str | None = None
     last_5_purchases: list[ActiveTransactionRecord] = Field(default_factory=list)
     last_2_sales: list[ActiveTransactionRecord] = Field(default_factory=list)
+    purchases_last_12_months: list[ActiveTransactionRecord] = Field(default_factory=list)
+    sales_last_12_months: list[ActiveTransactionRecord] = Field(default_factory=list)
+
+    @field_validator("fa_name", "fa_email", mode="before")
+    @classmethod
+    def _blank_to_none(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        return str(value).strip() or None
+
+    @field_validator("fa_email")
+    @classmethod
+    def _lowercase_email(cls, value: str | None) -> str | None:
+        return value.lower() if value else value
 
 
 class ActiveFundRecord(BaseModel):
@@ -104,7 +132,7 @@ def schema_drift_active(payload: dict[str, Any]) -> set[str]:
             if not isinstance(client, dict):
                 continue
             unexpected |= set(client.keys()) - EXPECTED_ACTIVE_CLIENT_KEYS
-            for bucket in ("last_5_purchases", "last_2_sales"):
+            for bucket in TXN_BUCKETS:
                 for txn in client.get(bucket, []) or []:
                     if isinstance(txn, dict):
                         unexpected |= set(txn.keys()) - EXPECTED_ACTIVE_TXN_KEYS

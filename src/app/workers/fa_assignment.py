@@ -11,7 +11,7 @@ while a person can never be split across two advisors.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import func, select
@@ -20,10 +20,16 @@ from sqlalchemy.orm import Session
 from app.audit.log import record_audit
 from app.config import FaRecord
 from app.db.models.fa_assignment import FaAssignment
-from app.risk.fa_allocation import AdvisorAllocation, ClientLoad, allocate_advisors
+from app.risk.fa_allocation import (
+    AdvisorAllocation,
+    ClientLoad,
+    allocate_advisors,
+    owners_from_source,
+)
 from app.transform.load import upsert
 
 SOURCE = "roster"
+FEED_SOURCE = "feed"
 
 _UPDATE_COLUMNS = ["fa_id", "fa_name", "source"]
 
@@ -35,6 +41,7 @@ def allocate_and_persist(
     roster: Sequence[FaRecord],
     clients: Sequence[ClientLoad],
     keys: Sequence[tuple[int, int]],
+    source_emails: Mapping[int, str] | None = None,
 ) -> AdvisorAllocation:
     """Assign this run's clients to advisors and store the result.
 
@@ -56,7 +63,9 @@ def allocate_and_persist(
         ).all()
     }
 
-    allocation = allocate_advisors(roster, clients, current_owners)
+    source_emails = source_emails or {}
+    source_owners = owners_from_source(roster, source_emails)
+    allocation = allocate_advisors(roster, clients, current_owners, source_owners)
 
     names = {record.fa_id: record.name for record in roster}
     rows: list[dict[str, Any]] = []
@@ -70,7 +79,7 @@ def allocate_and_persist(
                 "unit_fund_id": unit_fund_id,
                 "fa_id": fa_id,
                 "fa_name": names[fa_id],
-                "source": SOURCE,
+                "source": FEED_SOURCE if source_owners.get(client_id) == fa_id else SOURCE,
             }
         )
     upsert(
@@ -88,6 +97,9 @@ def allocate_and_persist(
         for client_id, fa_id in allocation.owner.items()
         if client_id in current_owners and current_owners[client_id] != fa_id
     )
+    placed_by_feed = sum(
+        1 for client_id, fa_id in allocation.owner.items() if source_owners.get(client_id) == fa_id
+    )
     record_audit(
         session,
         entity_type="fa_assignment",
@@ -100,10 +112,12 @@ def allocate_and_persist(
             "rows_written": len(rows),
             "first_time": first_time,
             "reassigned": moved,
+            "placed_by_feed": placed_by_feed,
+            "feed_clients_not_matched": len(set(source_emails) - set(source_owners)),
             "lent_for_tonight": len(allocation.covering),
         },
     )
     return allocation
 
 
-__all__ = ["allocate_and_persist", "SOURCE"]
+__all__ = ["allocate_and_persist", "FEED_SOURCE", "SOURCE"]
