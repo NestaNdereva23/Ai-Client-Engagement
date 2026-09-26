@@ -121,7 +121,7 @@ def max_date(dates: list[date | None]) -> date | None:
     return max(present) if present else None
 
 
-def _dedupe_transactions(raw_lists: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+def dedupe_transactions(raw_lists: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
     seen: dict[Any, dict[str, Any]] = {}
     extra: list[dict[str, Any]] = []
     for raw in raw_lists:
@@ -194,8 +194,8 @@ def flatten_payload(payload: dict[str, Any], reference_date: datetime) -> Flatte
             last_2 = client_raw.get("last_2_sales") or []
             purchases_12m = client_raw.get("purchases_last_12_months") or []
             sales_12m = client_raw.get("sales_last_12_months") or []
-            purchases = _dedupe_transactions([last_5, purchases_12m])
-            sales = _dedupe_transactions([last_2, sales_12m])
+            purchases = dedupe_transactions([last_5, purchases_12m])
+            sales = dedupe_transactions([last_2, sales_12m])
 
             purchase_rows = [
                 _txn_row(t, client, fund.unit_fund_id, "purchase", result.counters)

@@ -58,6 +58,8 @@ class ActiveClientFund(Base):
         Boolean, nullable=False, server_default=text("false")
     )
     computed_at: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fa_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fa_email: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Derived measures, computed by transform/active_features.py from the
     # client's own transactions. Null here means "not yet computed", not
