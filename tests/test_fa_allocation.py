@@ -8,7 +8,7 @@ tonight's overflow is lent without moving who owns whom.
 from __future__ import annotations
 
 from app.config import FaRecord
-from app.risk.fa_allocation import ClientLoad, allocate_advisors
+from app.risk.fa_allocation import ClientLoad, allocate_advisors, owners_from_source
 
 ROSTER = (
     FaRecord(fa_id=1, name="FA One", email="fa1@example.com", daily_capacity=2),
@@ -33,6 +33,17 @@ def test_existing_owner_is_kept():
     clients = _clients((1, 500.0, False), (2, 10.0, False))
     result = allocate_advisors(ROSTER, clients, {1: 2, 2: 2})
     assert result.owner == {1: 2, 2: 2}
+
+
+def test_source_emails_match_the_roster_ignoring_case_and_spaces():
+    emails = {1: " FA1@Example.com ", 2: "nobody@example.com"}
+    assert owners_from_source(ROSTER, emails) == {1: 1}
+
+
+def test_the_source_advisor_beats_the_kept_owner_and_other_clients_are_untouched():
+    clients = _clients((1, 500.0, False), (2, 10.0, False), (3, 100.0, False))
+    result = allocate_advisors(ROSTER, clients, {1: 2, 3: 2}, source_owners={1: 1})
+    assert result.owner == {1: 1, 2: 2, 3: 2}
 
 
 def test_unassigned_client_goes_to_the_lightest_advisor():

@@ -77,6 +77,36 @@ def test_advisor_is_written_onto_every_fund_row(db, cleanup) -> None:
     assert all(row.source == "roster" and row.fa_name.startswith("FA Sixty") for row in rows)
 
 
+def test_a_feed_advisor_is_kept_and_recorded_as_the_source(db, cleanup) -> None:
+    with SessionLocal() as session:
+        run_id = _run(session, cleanup)
+        allocate_and_persist(
+            session,
+            run_id,
+            roster=ROSTER,
+            clients=_loads(),
+            keys=KEYS,
+            source_emails={CLIENT_A: "FA62@example.com", CLIENT_B: "gone@example.com"},
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        rows = session.scalars(select(FaAssignment).where(FaAssignment.client_id == CLIENT_A)).all()
+        other = session.scalars(
+            select(FaAssignment).where(FaAssignment.client_id == CLIENT_B)
+        ).all()
+        entry = session.scalar(
+            select(AuditLog).where(
+                AuditLog.run_id == run_id, AuditLog.entity_type == "fa_assignment"
+            )
+        )
+
+    assert {(row.fa_id, row.source) for row in rows} == {("fa-62", "feed")}
+    assert {row.source for row in other} == {"roster"}
+    assert entry.detail["placed_by_feed"] == 1
+    assert entry.detail["feed_clients_not_matched"] == 1
+
+
 def test_a_second_run_leaves_ownership_alone(db, cleanup) -> None:
     with SessionLocal() as session:
         first = allocate_and_persist(

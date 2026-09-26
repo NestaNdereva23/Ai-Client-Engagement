@@ -5,15 +5,18 @@ no database access here. The nightly worker gathers the roster, the current
 ownership and this run's clients, calls allocate_advisors once for the whole
 book, and writes the answer to fa_assignment itself.
 
-Four rules, in order:
+Five rules, in order:
 
-1. A client keeps the advisor they already have, as long as that advisor is
-   still on the roster. Ownership is a relationship, so it survives a run.
-2. A client with no advisor goes to the least loaded one, measured by the
+1. A client whose source record names an advisor on the roster goes to that
+   advisor, so a reassignment at the source is followed on the next run.
+2. Otherwise a client keeps the advisor they already have, as long as that
+   advisor is still on the roster. Ownership is a relationship, so it
+   survives a run.
+3. A client with no advisor goes to the least loaded one, measured by the
    money at risk they already carry and then by how many clients they hold.
-3. A client whose advisor has left the roster is treated as unassigned and
+4. A client whose advisor has left the roster is treated as unassigned and
    gets a new permanent owner by that same rule.
-4. When an advisor's call queue for the night runs past their daily
+5. When an advisor's call queue for the night runs past their daily
    capacity, the overflow lines are lent to advisors with room. A loan is
    for that night only. It never moves ownership, so tomorrow the client is
    back with the advisor who knows them. A client nobody has room for is
@@ -28,7 +31,7 @@ what an advisor can actually get through in one morning.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from app.config import FaRecord
@@ -71,10 +74,26 @@ class AdvisorAllocation:
         return stand_in if stand_in is not None else self.owner.get(client_id)
 
 
+def _normalized_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def owners_from_source(
+    roster: Sequence[FaRecord], source_emails: Mapping[int, str]
+) -> dict[int, str]:
+    fa_id_by_email = {_normalized_email(record.email): record.fa_id for record in roster}
+    return {
+        client_id: fa_id_by_email[_normalized_email(email)]
+        for client_id, email in source_emails.items()
+        if _normalized_email(email) in fa_id_by_email
+    }
+
+
 def allocate_advisors(
     roster: Sequence[FaRecord],
     clients: Sequence[ClientLoad],
     current_owners: dict[int, str],
+    source_owners: Mapping[int, str] | None = None,
 ) -> AdvisorAllocation:
     """Assign every client an owner and lend out tonight's overflow.
 
@@ -86,10 +105,11 @@ def allocate_advisors(
     if not rostered or not clients:
         return AdvisorAllocation()
 
+    source_owners = source_owners or {}
     owner: dict[int, str] = {}
     unassigned: list[ClientLoad] = []
     for client in clients:
-        existing = current_owners.get(client.client_id)
+        existing = source_owners.get(client.client_id, current_owners.get(client.client_id))
         if existing is not None and existing in rostered:
             owner[client.client_id] = existing
         else:
@@ -165,4 +185,4 @@ def _lend_overflow(
     return covering, demoted
 
 
-__all__ = ["AdvisorAllocation", "ClientLoad", "allocate_advisors"]
+__all__ = ["AdvisorAllocation", "ClientLoad", "allocate_advisors", "owners_from_source"]

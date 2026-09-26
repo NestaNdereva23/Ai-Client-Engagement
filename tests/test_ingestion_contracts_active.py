@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.ingestion.contracts_active import schema_drift_active
+from app.ingestion.contracts_active import ActiveClientRecord, schema_drift_active
 
 
 def _sample_payload():
@@ -50,6 +50,29 @@ def test_schema_drift_clean_and_dirty():
         "data": [{"unit_fund_id": 1, "surprise": 9, "clients": [{"client_id": 2, "extra": 1}]}]
     }
     assert schema_drift_active(dirty) == {"surprise", "extra"}
+
+
+def test_new_feed_fields_are_not_drift_and_the_advisor_is_cleaned():
+    payload = _sample_payload()
+    client = payload["data"][0]["clients"][0]
+    client.update(
+        fa_name=" Jane Advisor ",
+        fa_email=" Jane.Advisor@Cytonn.com ",
+        status="active",
+        activity_window={"from": "2025-07-01", "to": "2026-07-01"},
+        purchases_last_12_months=[{"id": 101, "date": "2026-01-02", "number": "500"}],
+        sales_last_12_months=[
+            {"id": 102, "date": "2026-02-01", "number": "50", "sale_type": "unit_sale"}
+        ],
+    )
+    assert schema_drift_active(payload) == set()
+
+    record = ActiveClientRecord.model_validate(client)
+    assert (record.fa_name, record.fa_email) == ("Jane Advisor", "jane.advisor@cytonn.com")
+    assert [t.id for t in record.purchases_last_12_months] == [101]
+
+    client["fa_email"] = "  "
+    assert ActiveClientRecord.model_validate(client).fa_email is None
 
 
 def test_schema_drift_accepts_meta():

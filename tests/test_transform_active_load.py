@@ -140,6 +140,24 @@ def test_persist_writes_first_deposit_date(db, cleanup_runs, normalized_ids):
         assert row.first_deposit_date.isoformat() == "2026-06-15"
 
 
+def test_persist_writes_the_feed_advisor(db, cleanup_runs, normalized_ids):
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    normalized_ids["clients"].add(9109)
+
+    client = _client(9109, 10, 91091)
+    client.update(fa_name="Jane Advisor", fa_email="Jane.Advisor@Cytonn.com")
+    with SessionLocal() as session:
+        _seed_run(session, run_id, _one_fund(1, [client]))
+        transform_active_run(session, run_id)
+
+    with SessionLocal() as session:
+        row = session.execute(
+            select(ActiveClientFund).where(ActiveClientFund.client_id == 9109)
+        ).scalar_one()
+        assert (row.fa_name, row.fa_email) == ("Jane Advisor", "jane.advisor@cytonn.com")
+
+
 def test_sale_type_survives_flatten(db, cleanup_runs, normalized_ids):
     """flatten_active_run keeps sale_type on the in-memory row, ahead of it
     landing on the persisted active_transaction row -- see

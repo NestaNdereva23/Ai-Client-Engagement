@@ -30,6 +30,8 @@ def _payload(
     deposits: list[tuple[int, str, str]],
     withdrawals: list[tuple[int, str, str]] | None = None,
     balance: float = 42_000.0,
+    deposits_12m: list[tuple[int, str, str]] | None = None,
+    withdrawals_12m: list[tuple[int, str, str]] | None = None,
 ) -> dict[str, Any]:
     """One client in one fund. Each txn tuple is (id, date, amount)."""
     return {
@@ -49,6 +51,13 @@ def _payload(
                         "last_2_sales": [
                             {"id": i, "date": d, "number": a, "unit_fund_id": 10}
                             for (i, d, a) in (withdrawals or [])
+                        ],
+                        "purchases_last_12_months": [
+                            {"id": i, "date": d, "number": a} for (i, d, a) in (deposits_12m or [])
+                        ],
+                        "sales_last_12_months": [
+                            {"id": i, "date": d, "number": a}
+                            for (i, d, a) in (withdrawals_12m or [])
                         ],
                     }
                 ],
@@ -133,6 +142,38 @@ def test_one_fee_posting_alone_is_not_hidden() -> None:
     m = _only(_payload([(1, "2024-01-01T00:00:00", "10000")], withdrawals=withdrawals))
     assert m.largest_withdrawal is None
     assert m.withdrawal_history_hidden is False
+
+
+def test_twelve_month_window_and_last_five_are_merged_without_double_counting() -> None:
+    old = (1, "2023-01-01T00:00:00", "10000")
+    shared = (2, "2026-03-01T00:00:00", "20000")
+    only_in_window = (3, "2026-05-01T00:00:00", "30000")
+    m = _only(_payload([old, shared], deposits_12m=[shared, only_in_window]))
+    assert m.n_deposits == 3
+    assert m.first_deposit_date == date(2023, 1, 1)
+    assert m.last_deposit_amount == 30000.0
+
+
+def test_full_last_five_is_capped_only_when_the_window_cannot_cover_it() -> None:
+    deposits = [(i, f"2026-0{i}-01T00:00:00", "10000") for i in range(1, 6)]
+    older = [(i, f"2025-0{i}-01T00:00:00", "10000") for i in range(1, 4)]
+    assert _only(_payload(deposits, deposits_12m=deposits + older)).deposit_count_capped is False
+    assert _only(_payload(deposits, deposits_12m=deposits[:2])).deposit_count_capped is True
+
+
+def test_withdrawals_in_the_twelve_month_window_are_seen_and_not_hidden() -> None:
+    fee = str(SYSTEM_FEE_MAX - 1)
+    last_two = [(50, "2026-06-01T00:00:00", fee), (51, "2026-07-01T00:00:00", fee)]
+    real = (49, "2026-02-01T00:00:00", "15000")
+    deposit = [(1, "2026-01-01T00:00:00", "10000")]
+
+    only_fees = _only(_payload(deposit, last_two, withdrawals_12m=last_two))
+    assert only_fees.withdrawal_history_hidden is False
+    assert only_fees.largest_withdrawal is None
+
+    with_real = _only(_payload(deposit, last_two, withdrawals_12m=[real, *last_two]))
+    assert with_real.largest_withdrawal == 15000.0
+    assert with_real.last_withdrawal_date == date(2026, 2, 1)
 
 
 def test_deposit_trend_needs_three_points() -> None:
