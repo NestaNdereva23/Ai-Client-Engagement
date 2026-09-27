@@ -29,6 +29,7 @@ from app.db.models.agent_prompt import AgentPrompt
 from app.db.models.agent_proposal import PROPOSAL_STATUSES, AgentProposal, AgentProposalClient
 from app.db.models.agent_run import AGENT_RUN_STATES, AGENT_RUN_TRIGGERS, AgentRun, AgentToolCall
 from app.db.models.api import IdempotencyKey
+from app.db.models.app_setting import AppSetting
 from app.db.models.audit import AuditLog
 from app.db.models.auth import REVIEWER_ROLES, ReviewerUser
 from app.db.models.briefing import BriefingNarrative
@@ -156,6 +157,7 @@ __all__ = [
     "AgentInsightFact",
     "AgentPermission",
     "AgentPrompt",
+    "AppSetting",
     "AgentProposal",
     "AgentProposalClient",
     "AgentRun",

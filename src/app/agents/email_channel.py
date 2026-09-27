@@ -26,7 +26,6 @@ from app.llmops.tracing import NullTracer, Tracer
 from app.privacy.boundary import AuditSink
 from app.privacy.llm_client import LLMClient, get_llm_client
 from app.schemas.email_draft import parse_email_draft
-from app.services.rag import get_rag_enabled
 
 CHANNEL = "email"
 CALL_BRIEF_CHANNEL = "call_brief"
@@ -93,7 +92,7 @@ def build_default_agent(
     prompt_builder: PromptBuilder = build_system_prompt,
 ) -> EmailAgent:
     settings = settings or get_settings()
-    use_rag = settings.rag_enabled and get_rag_enabled(session)
+    use_rag = settings.rag_enabled
     return EmailAgent(
         context_loader=functools.partial(load_client_context, session, use_rag=use_rag),
         llm_client=get_llm_client(settings),

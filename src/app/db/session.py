@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Any
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import get_settings
+from app.editable_settings import EDITABLE_SETTINGS_BY_KEY
 
 _settings = get_settings()
 
@@ -39,6 +41,15 @@ SessionLocal = sessionmaker(
     expire_on_commit=False,
     class_=Session,
 )
+
+
+def read_setting_overrides() -> dict[str, Any]:
+    with engine.connect() as connection:
+        rows = connection.execute(text("SELECT key, value FROM app_setting")).all()
+    return {key: value for key, value in rows if key in EDITABLE_SETTINGS_BY_KEY}
+
+
+get_settings.use_overrides(read_setting_overrides)
 
 
 def get_session() -> Iterator[Session]:

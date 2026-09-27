@@ -13,12 +13,10 @@ from app.db.models.prompt_config import (
     PersonalizationPolicy,
     VoiceContract,
 )
-from app.db.models.rag import RagSetting
 from app.db.models.rules import MessageAngleCatalog
 from app.db.session import SessionLocal
 from app.main import app
 from app.services.prompt_testing import PromptTestingError, generate_test_draft
-from app.services.rag import get_rag_enabled, set_rag_enabled
 
 client = TestClient(app)
 
@@ -464,49 +462,3 @@ def test_use_rag_toggle_controls_whether_retrieved_facts_reach_the_prompt(
             use_rag=False,
         )
         assert "SENTINEL_RAG_FACT_FOR_TESTING" not in off_client.last_system
-
-
-def test_rag_enabled_service_round_trips(db: None) -> None:
-    with SessionLocal() as session:
-        original = get_rag_enabled(session)
-        session.commit()
-
-    try:
-        with SessionLocal() as session:
-            set_rag_enabled(session, False)
-            session.commit()
-        with SessionLocal() as session:
-            assert get_rag_enabled(session) is False
-
-        with SessionLocal() as session:
-            set_rag_enabled(session, True)
-            session.commit()
-        with SessionLocal() as session:
-            assert get_rag_enabled(session) is True
-    finally:
-        with SessionLocal() as session:
-            set_rag_enabled(session, original)
-            session.commit()
-
-
-def test_rag_settings_endpoints(
-    configured_reviewers: None, reviewer_1_headers: dict[str, str]
-) -> None:
-    original = client.get("/api/v1/rag/settings", headers=reviewer_1_headers).json()["enabled"]
-    try:
-        response = client.put(
-            "/api/v1/rag/settings", json={"enabled": False}, headers=reviewer_1_headers
-        )
-        assert response.status_code == 200
-        assert response.json() == {"enabled": False}
-
-        response = client.get("/api/v1/rag/settings", headers=reviewer_1_headers)
-        assert response.json() == {"enabled": False}
-    finally:
-        client.put("/api/v1/rag/settings", json={"enabled": original}, headers=reviewer_1_headers)
-
-
-def test_rag_setting_row_cleanup_is_not_needed_between_runs(db: None) -> None:
-    with SessionLocal() as session:
-        row = session.get(RagSetting, 1)
-        assert row is not None

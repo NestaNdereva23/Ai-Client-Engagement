@@ -58,7 +58,7 @@ from app.db.models.prompt_config import (
     SafetyPolicy,
     VoiceContract,
 )
-from app.db.models.rag import RagChunk, RagDocument, RagDocumentVersion, RagSetting
+from app.db.models.rag import RagChunk, RagDocument, RagDocumentVersion
 from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion, RiskRun, RiskSnapshot
 from app.db.models.rules import (
     BusinessRule,
@@ -674,15 +674,6 @@ class TestRecipientAdmin(_ReadOnlyView, model=TestRecipient):
     column_default_sort = [(TestRecipient.created_at, True)]
 
 
-class RagSettingAdmin(_ReadOnlyView, model=RagSetting):
-    name = "RAG Setting"
-    name_plural = "RAG Settings"
-    icon = "fa-solid fa-gear"
-    category = "RAG"
-    category_icon = "fa-solid fa-database"
-    column_default_sort = [(RagSetting.updated_at, True)]
-
-
 class ActiveConfigurationAdmin(_ReadOnlyView, model=ActiveConfiguration):
     name = "Active Configuration"
     name_plural = "Active Configurations"
@@ -966,7 +957,6 @@ ADMIN_VIEWS = [
     AuditLogAdmin,
     IdempotencyKeyAdmin,
     TestRecipientAdmin,
-    RagSettingAdmin,
     ActiveConfigurationAdmin,
     VoiceContractAdmin,
     SafetyPolicyAdmin,
