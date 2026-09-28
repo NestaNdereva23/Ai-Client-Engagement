@@ -142,6 +142,39 @@ def test_live_mode_still_uses_the_client_contact(tester: None):
     assert mailer.sent_messages[0].subject == "Hello"
 
 
+def _live_sms_to_test_list_settings():
+    return get_settings().model_copy(
+        update={"delivery_mode": "live", "live_sms_to_test_list": True}
+    )
+
+
+def test_live_sms_goes_to_the_tester_with_the_body_unchanged(tester: None, monkeypatch):
+    def no_vault_contact(client_id: int):
+        raise AssertionError("live sms read a real phone while redirected to the test list")
+
+    monkeypatch.setattr("app.delivery.sms_sender._contact_phone", no_vault_contact)
+    gateway = FakeGateway()
+    result = build_sms_sender(gateway, settings=_live_sms_to_test_list_settings())(a_message())
+
+    assert gateway.sent_messages[0].to == TESTER_PHONE
+    assert gateway.sent_messages[0].body == "Body"
+    assert result.recipient == TESTER_PHONE
+
+
+def test_live_email_is_not_redirected_by_the_sms_switch(tester: None):
+    mailer = FakeMailer()
+    build_email_sender(mailer, settings=_live_sms_to_test_list_settings())(a_message())
+
+    assert mailer.sent_messages[0].to == REAL_EMAIL
+
+
+def test_live_sms_to_test_list_is_on_by_default(monkeypatch):
+    monkeypatch.delenv("LIVE_SMS_TO_TEST_LIST", raising=False)
+    from app.config import Settings
+
+    assert Settings(_env_file=None).live_sms_to_test_list is True
+
+
 def test_test_mode_hides_the_real_first_name(real_client: None, monkeypatch):
     monkeypatch.setenv("DELIVERY_MODE", "test")
     get_settings.cache_clear()

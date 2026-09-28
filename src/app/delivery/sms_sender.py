@@ -37,6 +37,7 @@ def build_sms_sender(
     settings = settings or get_settings()
     gateway = gateway if gateway is not None else get_sms_gateway(settings)
     test_mode = settings.delivery_mode == "test"
+    to_test_list = test_mode or settings.live_sms_to_test_list
 
     def send(message: OutreachMessage) -> SendResult:
         content = message.personalized_content
@@ -45,14 +46,15 @@ def build_sms_sender(
 
         body = content["body"]
         if test_mode:
-            to = pick_test_recipient(message.client_id, "sms")
             body = f"{settings.test_subject_prefix.strip()} {body} (client {message.client_id})"
+        if to_test_list:
+            to = pick_test_recipient(message.client_id, "sms")
         else:
             to = _contact_phone(message.client_id)
         if not to:
             raise SendBlocked("no_deliverable_contact")
         # Checked again right before sending, whatever picked the number.
-        if test_mode:
+        if to_test_list:
             ensure_test_recipient(to, "sms")
 
         result = gateway.send(SmsMessage(to=to, body=body))
@@ -69,7 +71,7 @@ def build_sms_sender(
             provider_status=result.provider_status,
             parts=result.parts,
             cost=result.cost,
-            recipient=to if test_mode else None,
+            recipient=to if to_test_list else None,
         )
 
     send.gateway = gateway

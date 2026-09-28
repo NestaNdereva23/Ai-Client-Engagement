@@ -43,8 +43,9 @@ def update_app_settings(
 ) -> None:
     cleaned = {key: editable_setting(key).clean(value) for key, value in changes.items()}
     current = get_settings()
-    if _turns_live_on(cleaned, current) and not confirm_live:
-        raise SettingValueError("delivery_mode", "switching to live needs confirmation")
+    live_key = _turns_live_on(cleaned, current)
+    if live_key and not confirm_live:
+        raise SettingValueError(live_key, "sending to real clients needs confirmation")
     rows = {
         row.key: row
         for row in session.scalars(select(AppSetting).where(AppSetting.key.in_(cleaned)))
@@ -65,8 +66,13 @@ def update_app_settings(
     session.flush()
 
 
-def _turns_live_on(cleaned: dict[str, Any], current: Settings) -> bool:
-    return cleaned.get("delivery_mode") == "live" and current.delivery_mode != "live"
+def _turns_live_on(cleaned: dict[str, Any], current: Settings) -> str | None:
+    """The key of a change that would start sending to real clients, if any."""
+    if cleaned.get("delivery_mode") == "live" and current.delivery_mode != "live":
+        return "delivery_mode"
+    if cleaned.get("live_sms_to_test_list") is False and current.live_sms_to_test_list:
+        return "live_sms_to_test_list"
+    return None
 
 
 def _store(session: Session, row: AppSetting | None, key: str, value: Any, actor_id: str) -> None:

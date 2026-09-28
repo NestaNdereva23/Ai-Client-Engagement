@@ -84,3 +84,16 @@ def test_switching_to_live_needs_confirmation(
     assert refused.status_code == 422
     assert confirmed.status_code == 200
     assert get_settings().delivery_mode == "live"
+
+
+def test_turning_off_the_live_sms_redirect_needs_confirmation(
+    clean_settings: None, reviewer_1_headers: dict[str, str]
+) -> None:
+    assert _save(reviewer_1_headers, {"live_sms_to_test_list": True}).status_code == 200
+
+    refused = _save(reviewer_1_headers, {"live_sms_to_test_list": False})
+    confirmed = _save(reviewer_1_headers, {"live_sms_to_test_list": False}, confirm_live=True)
+
+    assert refused.status_code == 422
+    assert confirmed.status_code == 200
+    assert get_settings().live_sms_to_test_list is False

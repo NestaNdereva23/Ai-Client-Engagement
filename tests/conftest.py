@@ -52,6 +52,7 @@ _default_prompt_config_source_to_db()
 def _default_delivery_mode_to_live() -> None:
     # Most tests check real addressing; the test mode tests opt in themselves.
     os.environ.setdefault("DELIVERY_MODE", "live")
+    os.environ.setdefault("LIVE_SMS_TO_TEST_LIST", "false")
     get_settings.cache_clear()
 
 
