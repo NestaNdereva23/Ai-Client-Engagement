@@ -282,8 +282,8 @@ def send_touch(session: Session, touch: TouchLog, *, sender: SenderFn = stub_sen
             "parts": result.parts,
             "cost": result.cost,
             "delivery_mode": mode,
-            # Live sends log a marker, never the client's own address.
-            "recipient": result.recipient if mode == "test" else "client_contact",
+            # A sender reports a recipient only when it went to the test list, never a client's.
+            "recipient": result.recipient or "client_contact",
         },
     )
 

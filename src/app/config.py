@@ -228,6 +228,8 @@ class Settings(BaseSettings):
     test_client_first_name: str = "Test Client"
     test_subject_prefix: str = "[TEST]"
     test_campaign_max_clients: int = 1
+    # Live SMS goes to the test_recipient list until this is turned off at go live.
+    live_sms_to_test_list: bool = True
     # Live campaigns enroll at most this many clients; 0 means no limit.
     live_campaign_max_clients: int = 0
 
