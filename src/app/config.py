@@ -230,6 +230,12 @@ class Settings(BaseSettings):
     test_campaign_max_clients: int = 1
     # Live SMS goes to the test_recipient list until this is turned off at go live.
     live_sms_to_test_list: bool = True
+
+    # A campaign dispatch normally hands each message to Ticketing to queue and
+    # send later. Turning this on makes ACE send each one itself instead, while
+    # the dispatch call is running, so nothing waits on Ticketing's queue.
+    dispatch_direct_send: bool = False
+    dispatch_direct_send_max_batch: int = 50
     # Live campaigns enroll at most this many clients; 0 means no limit.
     live_campaign_max_clients: int = 0
 
