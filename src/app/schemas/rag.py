@@ -36,11 +36,3 @@ class RetrievedChunkOut(BaseModel):
     metadata: dict
     score: float
     version_id: int
-
-
-class RagSettingOut(BaseModel):
-    enabled: bool
-
-
-class RagSettingIn(BaseModel):
-    enabled: bool

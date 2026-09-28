@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal
 
+import structlog
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -241,14 +244,6 @@ class Settings(BaseSettings):
     ticketing_base_url: str = ""
     ticketing_timeout_seconds: float = 30.0
 
-    # africastalking sends directly; ticketing sends through the Ticketing app's sendSMS helper.
-    sms_transport: Literal["africastalking", "ticketing"] = "ticketing"
-    sms_provider_api_key: str = ""
-    sms_provider_username: str = ""
-    sms_sender_id: str = ""
-    sms_provider_base_url: str = "https://api.africastalking.com/version1/messaging"
-    sms_timeout_seconds: float = 30.0
-
     console_base_url: str = Field(
         default="", validation_alias=AliasChoices("CONSOLE_BASE_URL", "console_base_url")
     )
@@ -277,7 +272,70 @@ class Settings(BaseSettings):
         )
 
 
-@lru_cache
-def get_settings() -> Settings:
-    """Return the application settings, cached for the process lifetime."""
-    return Settings()
+logger = structlog.get_logger(__name__)
+
+OVERRIDE_REFRESH_SECONDS = 10.0
+
+
+class SettingsProvider:
+    def __init__(self) -> None:
+        self._env: Settings | None = None
+        self._merged: Settings | None = None
+        self._overrides: dict[str, Any] = {}
+        self._loader: Callable[[], dict[str, Any]] | None = None
+        self._checked_at = float("-inf")
+        self._lock = threading.Lock()
+
+    def __call__(self) -> Settings:
+        if self._env is None:
+            self._env = Settings()
+            self._merged = None
+        if self._loader is not None and self._is_stale():
+            self._reload()
+        merged = self._merged
+        if merged is None:
+            merged = self._merge()
+            self._merged = merged
+        return merged
+
+    def cache_clear(self) -> None:
+        self._env = None
+        self._merged = None
+        self._checked_at = float("-inf")
+
+    def use_overrides(self, loader: Callable[[], dict[str, Any]]) -> None:
+        self._loader = loader
+        self._checked_at = float("-inf")
+
+    def reload_overrides(self) -> None:
+        self._checked_at = float("-inf")
+
+    def _merge(self) -> Settings:
+        if not self._overrides:
+            return self._env
+        return self._env.model_copy(update=self._overrides)
+
+    def _is_stale(self) -> bool:
+        return time.monotonic() - self._checked_at >= OVERRIDE_REFRESH_SECONDS
+
+    def _reload(self) -> None:
+        if not self._lock.acquire(blocking=False):
+            return
+        try:
+            overrides = self._read_overrides()
+            self._checked_at = time.monotonic()
+            if overrides != self._overrides:
+                self._overrides = overrides
+                self._merged = None
+        finally:
+            self._lock.release()
+
+    def _read_overrides(self) -> dict[str, Any]:
+        try:
+            return self._loader()
+        except Exception:
+            logger.warning("setting_overrides_unavailable", exc_info=True)
+            return self._overrides
+
+
+get_settings = SettingsProvider()

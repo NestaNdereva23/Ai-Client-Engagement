@@ -62,7 +62,6 @@ def test_an_unreachable_ticketing_raises():
 def test_get_sms_gateway_picks_ticketing_when_configured():
     settings = get_settings().model_copy(
         update={
-            "sms_transport": "ticketing",
             "ticketing_base_url": "https://ticketing.test",
             "ai_outreach_jwt_secret": SECRET,
         }
@@ -80,7 +79,6 @@ def test_get_sms_gateway_picks_ticketing_when_configured():
 def test_get_sms_gateway_stays_quiet_when_ticketing_is_half_configured(url, secret, reason):
     settings = get_settings().model_copy(
         update={
-            "sms_transport": "ticketing",
             "ticketing_base_url": url,
             "ai_outreach_jwt_secret": secret,
         }

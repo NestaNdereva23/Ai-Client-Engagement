@@ -9,6 +9,7 @@ from app.api.routers import (
     agent_proposals,
     agent_runs,
     agent_studio,
+    app_settings,
     audit,
     briefing,
     campaigns,
@@ -50,3 +51,4 @@ router.include_router(active_clients.router)
 router.include_router(delivery.router)
 router.include_router(situations.router)
 router.include_router(agent_studio.router)
+router.include_router(app_settings.router)
