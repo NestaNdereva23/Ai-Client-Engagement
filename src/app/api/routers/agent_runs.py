@@ -9,12 +9,14 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.agents.agent_loop import AgentRunInProgress
+from app.agents.run_report_email import announce_run_finished
 from app.api.reviewer_auth import get_current_reviewer_id
 from app.config import get_settings
 from app.db.async_session import AsyncSessionLocal
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.agent_events import AgentEventOut, RunActivityOut, RunProgressOut
+from app.schemas.agent_reports import RunReportOut
 from app.schemas.agent_runs import AgentRunOut
 from app.services.agent_event_stream import (
     STREAM_HEADERS,
@@ -29,6 +31,7 @@ from app.services.agent_events import (
     run_progress,
     run_state_async,
 )
+from app.services.agent_run_reports import get_run_report
 from app.services.agent_runs import (
     AgentRunNotFound,
     get_agent_run,
@@ -60,7 +63,16 @@ def post_agent_run(
     background_tasks.add_task(
         run_agent_in_background, run.run_id, as_of=as_of, settings=get_settings()
     )
+    background_tasks.add_task(announce_run_finished, run.run_id)
     return AgentRunOut.model_validate(run)
+
+
+@router.get("/{run_id}/report", response_model=RunReportOut)
+def get_agent_run_report(run_id: int, session: Session = Depends(get_session)) -> RunReportOut:
+    try:
+        return get_run_report(session, run_id)
+    except AgentRunNotFound:
+        raise HTTPException(status_code=404, detail="agent run not found") from None
 
 
 @router.get("/{run_id}", response_model=AgentRunOut)

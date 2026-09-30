@@ -135,6 +135,7 @@ class Settings(BaseSettings):
     agent_llm_temperature: float | None = None
     agent_llm_max_tokens: int = 2048
     agent_run_after_risk_detection: bool = False
+    agent_report_recipients: str = ""
 
     langfuse_base_url: str = ""
     langfuse_public_key: str = ""
@@ -266,6 +267,11 @@ class Settings(BaseSettings):
         default="dev-only-console-secret",
         validation_alias=AliasChoices("CONSOLE_SESSION_SECRET_KEY"),
     )
+
+    @property
+    def agent_report_recipient_list(self) -> tuple[str, ...]:
+        addresses = (part.strip() for part in self.agent_report_recipients.split(","))
+        return tuple(dict.fromkeys(address for address in addresses if "@" in address))
 
     @property
     def is_production(self) -> bool:

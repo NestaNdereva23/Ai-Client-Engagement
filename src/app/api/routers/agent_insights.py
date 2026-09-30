@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.action_agent import InsightNotActionable
 from app.agents.insight_state import InvalidTransition
+from app.agents.run_report_email import announce_run_finished
 from app.api.reviewer_auth import get_current_reviewer_id
 from app.config import get_settings
 from app.db.session import get_session
@@ -161,6 +162,7 @@ def decide_agent_insight(
         return result
 
     background_tasks.add_task(run_action_in_background, run.run_id, settings=get_settings())
+    background_tasks.add_task(announce_run_finished, run.run_id)
     return result.model_copy(update={"action_run_id": run.run_id})
 
 

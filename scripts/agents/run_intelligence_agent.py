@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 from sqlalchemy import select  # noqa: E402
 
 from app.agents.intelligence import run_intelligence_agent  # noqa: E402
+from app.agents.run_report_email import announce_run_finished  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.db.models.agent_insight import AgentInsight, AgentInsightFact  # noqa: E402
 from app.db.models.agent_run import AgentToolCall  # noqa: E402
@@ -85,6 +86,7 @@ async def _run(args, llm_client, tracer):
             concurrency=args.concurrency,
             tracer=tracer,
         )
+        await asyncio.to_thread(announce_run_finished, run.run_id)
         insights = session.scalars(
             select(AgentInsight)
             .where(AgentInsight.run_id == run.run_id)
