@@ -169,3 +169,16 @@ def test_schema_drift_accepts_status_and_the_twelve_month_fields():
     ]
     payload["data"][0]["clients"][0]["sales_last_12_months"] = []
     assert schema_drift(payload) == set()
+
+
+def test_the_advisor_is_kept_and_cleaned():
+    payload = _sample_payload()
+    client = payload["data"][0]["clients"][0]
+    client.update(fa_name=" Jane Advisor ", fa_email=" Jane.Advisor@Cytonn.com ")
+    assert schema_drift(payload) == set()
+
+    record = ClientRecord.model_validate(client)
+    assert (record.fa_name, record.fa_email) == ("Jane Advisor", "jane.advisor@cytonn.com")
+
+    client["fa_email"] = "  "
+    assert ClientRecord.model_validate(client).fa_email is None

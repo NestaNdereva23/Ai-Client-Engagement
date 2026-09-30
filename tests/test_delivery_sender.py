@@ -13,14 +13,16 @@ import pytest
 from sqlalchemy import delete
 
 from app.campaigns.touch import SendBlocked
-from app.db.models.models import PiiVault
+from app.db.models.active_clients import ActiveClientFund
+from app.db.models.models import ClientFund, Clients, Funds, PiiVault
 from app.db.models.outreach import OutreachMessage
-from app.db.session import restricted_session
+from app.db.session import SessionLocal, restricted_session
 from app.delivery.mailer import EmailMessage, NullMailer
 from app.delivery.mailer import SendResult as MailerSendResult
 from app.delivery.sender import build_email_sender
 
 CLIENT_ID = 9977801
+INACTIVE_FUND_IDS = (9977811, 9977812)
 
 
 def a_message(**overrides) -> OutreachMessage:
@@ -73,6 +75,142 @@ def test_sends_the_personalized_content_to_the_vault_contact(client_with_contact
     assert sent.to == "client@example.com"
     assert sent.subject == "Real subject"
     assert sent.text_body == "Real body"
+    assert sent.cc == ()
+
+
+def _clear_active_funds() -> None:
+    with SessionLocal() as session:
+        session.execute(delete(ActiveClientFund).where(ActiveClientFund.client_id == CLIENT_ID))
+        session.commit()
+
+
+@pytest.fixture
+def active_funds(client_with_contact: None):
+    """Adds active fund rows for the client, one per (fund id, fa_email) pair given."""
+    _clear_active_funds()
+
+    def add(*funds: tuple[int, str | None]) -> None:
+        with SessionLocal() as session:
+            session.add_all(
+                ActiveClientFund(
+                    client_id=CLIENT_ID,
+                    unit_fund_id=unit_fund_id,
+                    n_deposits=0,
+                    n_withdrawals=0,
+                    fa_email=fa_email,
+                )
+                for unit_fund_id, fa_email in funds
+            )
+            session.commit()
+
+    yield add
+    _clear_active_funds()
+
+
+def test_copies_the_account_manager_on_a_live_email(active_funds):
+    active_funds((1, "fa.one@example.com"))
+    mailer = FakeMailer()
+
+    build_email_sender(mailer)(a_message())
+
+    assert mailer.sent_messages[0].to == "client@example.com"
+    assert mailer.sent_messages[0].cc == ("fa.one@example.com",)
+
+
+def test_copies_each_account_manager_once_across_funds(active_funds):
+    active_funds(
+        (1, "fa.two@example.com"),
+        (2, "fa.one@example.com"),
+        (3, "fa.two@example.com"),
+        (4, None),
+    )
+    mailer = FakeMailer()
+
+    build_email_sender(mailer)(a_message())
+
+    assert mailer.sent_messages[0].cc == ("fa.one@example.com", "fa.two@example.com")
+
+
+def _clear_inactive_funds() -> None:
+    with SessionLocal() as session:
+        session.execute(delete(ClientFund).where(ClientFund.client_id == CLIENT_ID))
+        session.execute(delete(Clients).where(Clients.client_id == CLIENT_ID))
+        session.execute(delete(Funds).where(Funds.unit_fund_id.in_(INACTIVE_FUND_IDS)))
+        session.commit()
+
+
+@pytest.fixture
+def inactive_funds(client_with_contact: None):
+    """Adds inactive fund rows for the client, one per (fund id, fa_email) pair given."""
+    _clear_inactive_funds()
+
+    def add(*funds: tuple[int, str | None]) -> None:
+        with SessionLocal() as session:
+            session.add_all(
+                Funds(unit_fund_id=fund_id, unit_fund_name="Fund") for fund_id, _ in funds
+            )
+            session.commit()
+            session.add(
+                Clients(
+                    client_id=CLIENT_ID,
+                    unit_fund_id=funds[0][0],
+                    n_purchases_returned=0,
+                    n_sales_returned=0,
+                )
+            )
+            session.commit()
+            session.add_all(
+                ClientFund(
+                    client_id=CLIENT_ID,
+                    unit_fund_id=fund_id,
+                    n_purchases=0,
+                    n_sales=0,
+                    fa_email=fa_email,
+                )
+                for fund_id, fa_email in funds
+            )
+            session.commit()
+
+    yield add
+    _clear_inactive_funds()
+
+
+def test_copies_the_account_manager_of_an_inactive_client(inactive_funds):
+    inactive_funds((INACTIVE_FUND_IDS[0], "fa.inactive@example.com"))
+    mailer = FakeMailer()
+
+    build_email_sender(mailer)(a_message())
+
+    assert mailer.sent_messages[0].cc == ("fa.inactive@example.com",)
+
+
+def test_copies_each_account_manager_once_across_both_books(inactive_funds, active_funds):
+    inactive_funds(
+        (INACTIVE_FUND_IDS[0], "fa.two@example.com"),
+        (INACTIVE_FUND_IDS[1], "fa.one@example.com"),
+    )
+    active_funds((1, "fa.two@example.com"), (2, "fa.three@example.com"))
+    mailer = FakeMailer()
+
+    build_email_sender(mailer)(a_message())
+
+    assert mailer.sent_messages[0].cc == (
+        "fa.one@example.com",
+        "fa.three@example.com",
+        "fa.two@example.com",
+    )
+
+
+def test_leaves_out_an_account_manager_address_that_is_not_an_email(inactive_funds):
+    inactive_funds(
+        (INACTIVE_FUND_IDS[0], "gracemwende2010@gmail"),
+        (INACTIVE_FUND_IDS[1], "fa.one@example.com"),
+    )
+    mailer = FakeMailer()
+
+    build_email_sender(mailer)(a_message())
+
+    assert mailer.sent_messages[0].cc == ("fa.one@example.com",)
 
 
 def test_reports_recorded_when_the_mailer_is_the_recording_no_op(client_with_contact: None):
