@@ -49,6 +49,29 @@ def test_posts_the_email_with_a_send_token():
     assert claims["exp"] - claims["iat"] <= 60
 
 
+def test_posts_the_cc_list_when_someone_is_copied():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"sent": True})
+
+    message = EmailMessage(
+        to="client@example.com",
+        subject="Hello",
+        text_body="Body",
+        cc=("fa.one@example.com", "fa.two@example.com"),
+    )
+    _mailer(handler).send(message)
+
+    assert json.loads(seen[0].content) == {
+        "to": "client@example.com",
+        "subject": "Hello",
+        "body": "Body",
+        "cc": ["fa.one@example.com", "fa.two@example.com"],
+    }
+
+
 @pytest.mark.parametrize("status", [401, 422, 502, 503])
 def test_a_refusal_raises_rather_than_reporting_a_send(status: int):
     mailer = _mailer(lambda _: httpx.Response(status, json={"sent": False}))

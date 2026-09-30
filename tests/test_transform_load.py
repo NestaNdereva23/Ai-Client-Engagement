@@ -267,6 +267,35 @@ def test_a_single_fund_client_holds_one_relationship(
         assert session.get(Clients, 1001).n_funds == 1
 
 
+def _transform_with_advisor(cleanup_runs: list[str], **advisor: str | None) -> tuple:
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    payload = _one_fund_one_client()
+    payload["data"][0]["clients"][0].update(advisor)
+    with SessionLocal() as session:
+        _seed_run(session, run_id, payload)
+        transform_run(session, run_id)
+    with SessionLocal() as session:
+        row = session.get(ClientFund, (1001, 10))
+        return (row.fa_name, row.fa_email)
+
+
+def test_the_advisor_is_kept_and_cleared_when_the_feed_drops_it(
+    db: None, cleanup_runs: list[str], normalized_ids
+) -> None:
+    normalized_ids["funds"].add(10)
+    normalized_ids["clients"].add(1001)
+    normalized_ids["txns"].add(5001)
+
+    kept = _transform_with_advisor(
+        cleanup_runs, fa_name="Jane Advisor", fa_email="Jane.Advisor@Cytonn.com"
+    )
+    cleared = _transform_with_advisor(cleanup_runs, fa_name=None, fa_email=None)
+
+    assert kept == ("Jane Advisor", "jane.advisor@cytonn.com")
+    assert cleared == (None, None)
+
+
 def test_client_name_lands_only_in_the_vault(
     db: None, cleanup_runs: list[str], normalized_ids
 ) -> None:

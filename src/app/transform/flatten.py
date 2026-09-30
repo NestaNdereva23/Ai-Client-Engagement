@@ -53,6 +53,8 @@ class ClientRow:
     has_extended_history: bool
     activity_window_from: date | None
     activity_window_to: date | None
+    fa_name: str | None = None
+    fa_email: str | None = None
 
 
 @dataclass
@@ -247,6 +249,8 @@ def flatten_payload(payload: dict[str, Any], reference_date: datetime) -> Flatte
                     has_extended_history=has_extended_history,
                     activity_window_from=activity_window_from,
                     activity_window_to=activity_window_to,
+                    fa_name=client.fa_name,
+                    fa_email=client.fa_email,
                 )
             )
 

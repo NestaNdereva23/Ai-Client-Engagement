@@ -104,6 +104,17 @@ def test_email_goes_to_the_tester_not_the_client(tester: None):
     assert sent.subject == "[TEST] Hello"
 
 
+def test_test_mode_never_looks_up_or_copies_an_account_manager(tester: None, monkeypatch):
+    def no_advisor_lookup(client_id: int):
+        raise AssertionError("test mode looked up a real account manager")
+
+    monkeypatch.setattr("app.delivery.sender._advisor_emails", no_advisor_lookup)
+    mailer = FakeMailer()
+    build_email_sender(mailer, settings=_test_mode_settings())(a_message())
+
+    assert mailer.sent_messages[0].cc == ()
+
+
 def test_sms_goes_to_the_tester_not_the_client(tester: None):
     gateway = FakeGateway()
     build_sms_sender(gateway, settings=_test_mode_settings())(a_message())

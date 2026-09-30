@@ -548,7 +548,7 @@ def post_campaign_dispatch(
             for o in outcomes
         ],
         deliveries=[
-            DeliveryOut(channel=d.channel, to=d.to, subject=d.subject, body=d.body)
+            DeliveryOut(channel=d.channel, to=d.to, subject=d.subject, body=d.body, cc=list(d.cc))
             for d in deliveries
         ],
     )
