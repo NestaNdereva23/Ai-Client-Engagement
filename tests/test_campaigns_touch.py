@@ -28,6 +28,7 @@ from app.db.models.test_recipient import TestRecipient
 from app.db.session import SessionLocal, restricted_session
 from app.delivery.mailer import NullMailer
 from app.delivery.sender import build_email_sender
+from app.delivery.test_recipients import _sends_so_far
 from app.llmops.versions import persist_generation_run
 from app.rules.catalog import active_catalog_version
 from app.services.campaigns import campaign_readiness
@@ -1174,3 +1175,21 @@ def test_a_live_send_audits_a_marker_not_the_client_address(
         )
     assert audit.detail["delivery_mode"] == "live"
     assert audit.detail["recipient"] == "client_contact"
+
+
+def test_sends_so_far_counts_only_sent_touches_of_that_campaign_and_channel(
+    campaign_with_steps: int, client_row: int, delivery_mode
+) -> None:
+    delivery_mode("live")
+    with SessionLocal() as session:
+        touch = _approved_touch(
+            session, campaign_id=campaign_with_steps, client_id=client_row, is_test=False
+        )
+        before_send = _sends_so_far(campaign_with_steps, "email")
+        send_touch(session, touch)
+        session.commit()
+
+    assert before_send == 0
+    assert _sends_so_far(campaign_with_steps, "email") == 1
+    assert _sends_so_far(campaign_with_steps, "sms") == 0
+    assert _sends_so_far(-1, "email") == 0
