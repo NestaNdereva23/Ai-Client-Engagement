@@ -272,11 +272,13 @@ class ClientFeatures(Base):
     holds_other_funds: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )
-    # Derived from value_band and recency_band, not set by a rule.
-    priority_tier: Mapped[str] = mapped_column(Text, nullable=False, server_default="T4")
+    priority_tier: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="one_time_withdrawers"
+    )
     active_book_auto_checkin: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )
+    high_value: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

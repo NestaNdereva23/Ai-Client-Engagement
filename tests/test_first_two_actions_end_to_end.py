@@ -66,7 +66,7 @@ LIVE_ACTIONS = ("welcome_and_top_up", "fee_warning")
 ALL_LIVE_ACTIONS = LIVE_ACTIONS + ("fee_pressure_warning_dormant", "fee_pressure_encourage_active")
 
 # The tier a client with no risk history behind them falls to.
-TIER = "T3"
+TIER = "one_time_withdrawers"
 
 TODAY = date.today()
 

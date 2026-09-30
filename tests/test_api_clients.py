@@ -494,6 +494,8 @@ def test_segments_counts_include_the_new_buckets(two_clients) -> None:
     depths = {row["key"]: row["count"] for row in body["by_purchase_depth"]}
     assert depths.get("single", 0) >= 1
     assert depths.get("few", 0) >= 1
+    tiers = {row["key"]: row["count"] for row in body["by_priority_tier"]}
+    assert tiers.get("T1", 0) >= 1
 
 
 def test_segments_stale_contact_count_reflects_the_stale_client(two_clients) -> None:

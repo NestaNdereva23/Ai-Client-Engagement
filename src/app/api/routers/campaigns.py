@@ -121,6 +121,8 @@ def get_campaigns(
     recency_band: str | None = None,
     purchase_depth: str | None = None,
     newly_dormant: bool | None = None,
+    priority_tier: str | None = None,
+    high_value: bool | None = None,
     message_angle: str | None = None,
     channel: str | None = None,
     session: Session = Depends(get_session),
@@ -136,6 +138,8 @@ def get_campaigns(
             recency_band=recency_band,
             purchase_depth=purchase_depth,
             newly_dormant=newly_dormant,
+            priority_tier=priority_tier,
+            high_value=high_value,
             message_angle=message_angle,
             channel=channel,
         )
@@ -237,6 +241,8 @@ def post_campaign_preview_batch(
         "recency_band": body.recency_band,
         "purchase_depth": body.purchase_depth,
         "newly_dormant": body.newly_dormant,
+        "priority_tier": body.priority_tier,
+        "high_value": body.high_value,
     }
     result = preview_cohort_batch(session, narrow_filters, body.angles)
     return CohortPreviewBatchOut(

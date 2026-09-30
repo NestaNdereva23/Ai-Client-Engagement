@@ -34,6 +34,7 @@ class SegmentRollup:
     by_value_band: list[tuple[str | None, int]]
     by_cadence_band: list[tuple[str | None, int]]
     by_message_angle: list[tuple[str | None, int]]
+    by_priority_tier: list[tuple[str | None, int]]
     by_value_and_recency: list[tuple[str | None, str | None, int]]
     stale_contact_count: int
     history_censored_count: int
@@ -83,11 +84,18 @@ def _segment_rollup(session: Session) -> SegmentRollup:
         .order_by(func.count().desc())
     ).all()
 
+    by_tier = session.execute(
+        select(ClientMessageIndicators.priority_tier, func.count())
+        .group_by(ClientMessageIndicators.priority_tier)
+        .order_by(func.count().desc())
+    ).all()
+
     return SegmentRollup(
         by_purchase_depth=_ranked(by_depth),
         by_value_band=_ranked(by_value),
         by_cadence_band=_ranked(by_cadence),
         by_message_angle=[(angle, count) for angle, count in by_angle],
+        by_priority_tier=[(tier, count) for tier, count in by_tier],
         by_value_and_recency=[
             (value_band, recency_band, count)
             for (value_band, recency_band), count in _ranked(cross_tab)

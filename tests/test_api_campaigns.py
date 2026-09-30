@@ -697,6 +697,8 @@ def test_create_campaign_enrolls_exactly_the_matching_cohort(cohort_clients) -> 
         "recency_band": None,
         "purchase_depth": None,
         "newly_dormant": None,
+        "priority_tier": None,
+        "high_value": None,
     }
     assert body["steps"] == []
 

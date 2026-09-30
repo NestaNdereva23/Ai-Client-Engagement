@@ -62,7 +62,7 @@ def accepted_state(client_id: int, **overrides) -> dict:
         "client_id": client_id,
         "product": "money market",
         "angle": "pick_up_again",
-        "priority_tier": "T3",
+        "priority_tier": "hot_leads",
         "prompt_variant": "pick_up_again",
         "status": "accepted",
         "attempts": 1,
@@ -196,7 +196,7 @@ def make_template(
         generation_run_id=run_id,
         profile_key={
             "message_angle": "pick_up_again",
-            "priority_tier": "T3",
+            "priority_tier": "hot_leads",
             "product": "money market",
             "has_cadence": True,
             "stale_contact": False,
@@ -217,7 +217,7 @@ def make_sms_template(
         generation_run_id=run_id,
         profile_key={
             "message_angle": "pick_up_again",
-            "priority_tier": "T3",
+            "priority_tier": "hot_leads",
             "product": "money market",
             "has_cadence": True,
             "stale_contact": False,
@@ -300,7 +300,7 @@ def test_instantiate_message_builds_a_call_brief_when_the_tiers_contract_calls_f
             contract_version,
             [
                 TierSpec(
-                    tier="T3",
+                    tier="hot_leads",
                     display_name="Tier 3",
                     primary_channel="email",
                     secondary_channel="call_brief",
@@ -351,7 +351,7 @@ def test_instantiate_message_is_approved_even_on_a_mandatory_review_tier(
             contract_version,
             [
                 TierSpec(
-                    tier="T3",
+                    tier="hot_leads",
                     display_name="Tier 3",
                     primary_channel="email",
                     max_words=120,
@@ -413,7 +413,7 @@ def make_matching_context_loader():
             raw_context={},
             angle="pick_up_again",
             prompt_variant="pick_up_again",
-            priority_tier="T3",
+            priority_tier="hot_leads",
             chunks=(),
             facts={"invested_every_n_days": 30},
         )
@@ -427,7 +427,7 @@ def make_non_matching_context_loader():
             raw_context={},
             angle="not_a_goodbye",
             prompt_variant="not_a_goodbye",
-            priority_tier="T3",
+            priority_tier="hot_leads",
             chunks=(),
             facts={"invested_every_n_days": 30},
         )

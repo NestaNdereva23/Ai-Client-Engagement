@@ -32,10 +32,15 @@ _INDICATOR_UPDATE = [
     "rule_version",
 ]
 
-# A rule resolving to T1-T4 defers tier and urgency to the feature row rather
-# than naming a real value; older rule sets still emit a real P1-P3 and are
-# left untouched.
-_TIER_URGENCY = {"T1": "high", "T2": "medium", "T3": "medium", "T4": "low"}
+# A rule resolving to a real tier token defers tier and urgency to the
+# feature row rather than naming a value itself.
+_TIER_URGENCY = {
+    "gradual_withdrawers": "high",
+    "frequent_withdrawers": "high",
+    "one_time_withdrawers": "medium",
+    "low_depositors": "low",
+    "hot_leads": "low",
+}
 
 
 def _indicator_dict(feature: ClientFeatures, resolution: Resolution) -> dict[str, Any]:

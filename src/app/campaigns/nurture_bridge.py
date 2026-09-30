@@ -25,9 +25,17 @@ AUTO_CHECKIN_CAMPAIGN_TYPE = "auto_checkin_nurture"
 AUTO_CHECKIN_ANGLE = "sitting_still"
 
 _BRIDGE_PURCHASE_DEPTH = "capped"
-_TIER_URGENCY = {"T1": "high", "T2": "medium", "T3": "medium", "T4": "low"}
-_RISK_BAND_TIER = {"Critical": "T2", "High": "T2", "Watch": "T3", "Low": "T4", "None": "T4"}
-_DEFAULT_PRIORITY_TIER = "T3"
+_TIER_URGENCY = {
+    "gradual_withdrawers": "high",
+    "frequent_withdrawers": "high",
+    "one_time_withdrawers": "medium",
+    "low_depositors": "low",
+    "hot_leads": "low",
+}
+_DEFAULT_PRIORITY_TIER = "one_time_withdrawers"
+_RISK_BAND_TIER = dict.fromkeys(
+    ("Critical", "High", "Watch", "Low", "None"), _DEFAULT_PRIORITY_TIER
+)
 
 _CLIENT_FEATURES_UPDATE = ["active_book_auto_checkin"]
 _INDICATOR_UPDATE = [

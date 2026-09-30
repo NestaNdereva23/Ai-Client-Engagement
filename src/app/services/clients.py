@@ -49,6 +49,7 @@ _CLIENT_COLUMNS = (
     ClientFeatures.purchase_depth,
     ClientMessageIndicators.message_angle,
     ClientMessageIndicators.priority_tier,
+    ClientFeatures.high_value,
 )
 
 
@@ -76,6 +77,8 @@ def _apply_bucket_filters(
     cadence_band: str | None,
     message_angle: str | None,
     newly_dormant: bool | None,
+    priority_tier: str | None = None,
+    high_value: bool | None = None,
 ):
     """The allow-listed bucket filters every client query accepts, applied in
     one place so list_clients, get_client, and cohort resolution for a new
@@ -97,6 +100,10 @@ def _apply_bucket_filters(
         query = query.where(ClientMessageIndicators.message_angle == message_angle)
     if newly_dormant is not None:
         query = query.where(ClientFeatures.newly_dormant == newly_dormant)
+    if priority_tier is not None:
+        query = query.where(ClientMessageIndicators.priority_tier == priority_tier)
+    if high_value is not None:
+        query = query.where(ClientFeatures.high_value == high_value)
     return query
 
 
@@ -115,6 +122,8 @@ def list_clients(
     cadence_band: str | None = None,
     message_angle: str | None = None,
     newly_dormant: bool | None = None,
+    priority_tier: str | None = None,
+    high_value: bool | None = None,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> tuple[list[Row], str | None]:
@@ -130,6 +139,8 @@ def list_clients(
         cadence_band=cadence_band,
         message_angle=message_angle,
         newly_dormant=newly_dormant,
+        priority_tier=priority_tier,
+        high_value=high_value,
     )
     if cursor is not None:
         after_id = decode_id_cursor(cursor)
@@ -154,6 +165,8 @@ def resolve_cohort_client_ids(
     cadence_band: str | None = None,
     message_angle: str | None = None,
     newly_dormant: bool | None = None,
+    priority_tier: str | None = None,
+    high_value: bool | None = None,
 ) -> list[int]:
     """Every client_id matching the given bucket filters, unpaginated.
 
@@ -171,6 +184,8 @@ def resolve_cohort_client_ids(
         cadence_band=cadence_band,
         message_angle=message_angle,
         newly_dormant=newly_dormant,
+        priority_tier=priority_tier,
+        high_value=high_value,
     )
     return list(session.scalars(query).all())
 
@@ -225,6 +240,7 @@ _PROFILE_CORE_COLUMNS = (
     ClientFeatures.stale_contact,
     ClientFeatures.history_censored,
     ClientFeatures.purchases_censored,
+    ClientFeatures.high_value,
     Clients.last_activity_date,
     Clients.days_since_last_activity,
     ClientFeatures.observed_volume,
@@ -375,9 +391,9 @@ def get_client_name(
 
 def segment_distribution(session: Session) -> dict[str, list[tuple] | int]:
     """Client counts grouped by purchase depth, value band, cadence band,
-    message angle, and a value-band x recency-band cross-tab, plus scalar
-    counts of the data-quality flags a reader needs before treating any of
-    the above as a complete count.
+    message angle, priority tier, and a value-band x recency-band cross-tab,
+    plus scalar counts of the data-quality flags a reader needs before
+    treating any of the above as a complete count.
     """
 
     def _counts(column) -> list[tuple[str, int]]:
@@ -408,6 +424,7 @@ def segment_distribution(session: Session) -> dict[str, list[tuple] | int]:
         "by_value_band": _counts(ClientFeatures.value_band),
         "by_cadence_band": _counts(ClientFeatures.cadence_band),
         "by_message_angle": _counts(ClientMessageIndicators.message_angle),
+        "by_priority_tier": _counts(ClientMessageIndicators.priority_tier),
         "by_value_and_recency": cross_tab,
         "stale_contact_count": _flag_count(ClientFeatures.stale_contact),
         "history_censored_count": _flag_count(ClientFeatures.history_censored),
