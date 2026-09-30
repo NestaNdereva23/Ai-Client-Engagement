@@ -48,7 +48,7 @@ def build_sms_sender(
         if test_mode:
             body = f"{settings.test_subject_prefix.strip()} {body} (client {message.client_id})"
         if to_test_list:
-            to = pick_test_recipient(message.client_id, "sms")
+            to = pick_test_recipient(message.client_id, "sms", message.campaign_id)
         else:
             to = _contact_phone(message.client_id)
         if not to:
