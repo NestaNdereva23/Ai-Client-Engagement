@@ -274,6 +274,7 @@ class DeliveryOut(BaseModel):
     to: str
     subject: str | None
     body: str
+    cc: list[str] = Field(default_factory=list)
 
 
 class CampaignDispatchOut(BaseModel):

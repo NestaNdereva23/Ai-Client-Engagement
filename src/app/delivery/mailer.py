@@ -31,12 +31,14 @@ logger = structlog.get_logger(__name__)
 class EmailMessage:
     """One message to send. Plain text is required; HTML is optional and is
     added as an alternative part so a text-only reader still sees the body.
+    cc lists any other addresses to copy on the message.
     """
 
     to: str
     subject: str
     text_body: str
     html_body: str | None = None
+    cc: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,8 @@ def build_mime_message(sender: str, message: EmailMessage) -> MimeMessage:
     mime = MimeMessage()
     mime["From"] = sender
     mime["To"] = message.to
+    if message.cc:
+        mime["Cc"] = ", ".join(message.cc)
     mime["Subject"] = message.subject
     mime.set_content(message.text_body)
     if message.html_body is not None:
@@ -203,6 +207,13 @@ class TicketingMailer:
         return self._client
 
     def send(self, message: EmailMessage) -> SendResult:
+        payload: dict[str, str | list[str]] = {
+            "to": message.to,
+            "subject": message.subject,
+            "body": message.text_body,
+        }
+        if message.cc:
+            payload["cc"] = list(message.cc)
         try:
             response = self._http().post(
                 TICKETING_EMAIL_PATH,
@@ -210,7 +221,7 @@ class TicketingMailer:
                     "Authorization": f"Bearer {ticketing_send_token(self.secret, 'send_email')}",
                     "Accept": "application/json",
                 },
-                json={"to": message.to, "subject": message.subject, "body": message.text_body},
+                json=payload,
             )
         except httpx.HTTPError as exc:
             raise TicketingSendError(f"ticketing unreachable: {exc}") from exc
