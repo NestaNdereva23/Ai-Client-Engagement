@@ -134,6 +134,7 @@ def _guide_out(guide: GuideVersion) -> GuideOut:
         title=guide.title,
         topic=guide.topic,
         text=guide.text,
+        action_codes=list(guide.action_codes),
         status=status,
         approved_by=guide.approved_by,
         approved_at=guide.approved_at,
@@ -157,6 +158,7 @@ def create_client_guide(
             title=body.title,
             topic=body.topic,
             text=body.text,
+            action_codes=body.action_codes,
             created_by=reviewer_id,
         )
     except GuideRejected as exc:

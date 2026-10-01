@@ -64,6 +64,7 @@ def retrieve(
     *,
     sections: list[str] | None = None,
     doc_type: str | None = None,
+    chunk_contains: dict | None = None,
     active_only: bool = True,
     k: int = 5,
     min_score: float | None = None,
@@ -88,6 +89,8 @@ def retrieve(
         stmt = stmt.where(RagDocumentVersion.is_active.is_(True))
     if doc_type:
         stmt = stmt.where(RagDocument.doc_type == doc_type)
+    if chunk_contains:
+        stmt = stmt.where(RagChunk.chunk_metadata.contains(chunk_contains))
     if sections:
         in_sections = RagChunk.chunk_metadata["section"].astext.in_(sections)
         stmt = stmt.where(or_(in_sections, RagDocument.doc_type != DOC_TYPE_REPORT))

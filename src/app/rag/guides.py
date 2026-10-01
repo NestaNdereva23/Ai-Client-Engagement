@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -7,7 +8,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.audit.log import record_audit
-from app.config import get_settings
+from app.db.models.agent import AgentActionCatalog
 from app.db.models.rag import DOC_TYPE_CLIENT_GUIDE, RagChunk, RagDocument, RagDocumentVersion
 from app.privacy.scanners import OutboundLeak, scan_outbound
 from app.rag.chunking import ReportChunk
@@ -36,9 +37,17 @@ class GuideVersion:
     title: str
     topic: str
     text: str
+    action_codes: tuple[str, ...]
     is_active: bool
     approved_by: str | None
     approved_at: datetime | None
+
+
+def _check_actions(session: Session, action_codes: Sequence[str]) -> None:
+    known = set(session.scalars(select(AgentActionCatalog.action_code).distinct()))
+    unknown = sorted(set(action_codes) - known)
+    if unknown:
+        raise GuideRejected(f"these are not actions the agent can take: {', '.join(unknown)}")
 
 
 def _check(title: str, topic: str, text: str) -> None:
@@ -95,6 +104,7 @@ def _guide_versions(session: Session, version_id: int | None = None) -> list[Gui
             title=title,
             topic=(metadata or {}).get("topic", ""),
             text=text,
+            action_codes=tuple((metadata or {}).get("actions", ())),
             is_active=version.is_active,
             approved_by=version.approved_by,
             approved_at=version.approved_at,
@@ -114,10 +124,13 @@ def add_guide(
     topic: str,
     text: str,
     created_by: str | None,
+    action_codes: Sequence[str] = (),
     embedder: Embedder | None = None,
 ) -> GuideVersion:
     title, topic, text = title.strip(), topic.strip(), text.strip()
+    actions = sorted(set(action_codes))
     _check(title, topic, text)
+    _check_actions(session, actions)
     document = _guide_document(session, title)
     version = RagDocumentVersion(
         doc_id=document.doc_id,
@@ -132,13 +145,13 @@ def add_guide(
         action="create_guide",
         entity_id=str(version.version_id),
         actor_id=created_by,
-        detail={"doc_id": document.doc_id, "title": title, "topic": topic},
+        detail={"doc_id": document.doc_id, "title": title, "topic": topic, "actions": actions},
     )
     version_id = version.version_id
     index_chunks(
         session,
         version_id,
-        [ReportChunk(ordinal=0, text=text, metadata={"topic": topic})],
+        [ReportChunk(ordinal=0, text=text, metadata={"topic": topic, "actions": actions})],
         embedder=embedder,
     )
     return _guide_versions(session, version_id)[0]
@@ -177,13 +190,13 @@ def approve_guide_version(session: Session, version_id: int, *, approved_by: str
 
 
 def find_guides(
-    session: Session, query: str, *, embedder: Embedder | None = None
+    session: Session, action_code: str, query: str, *, embedder: Embedder | None = None
 ) -> list[Retrieved]:
     return retrieve(
         session,
         query,
         doc_type=DOC_TYPE_CLIENT_GUIDE,
+        chunk_contains={"actions": [action_code]},
         k=GUIDES_PER_DRAFT,
-        min_score=get_settings().rag_min_score,
         embedder=embedder,
     )

@@ -28,7 +28,9 @@ EMB = HashingEmbedder()
 AS_OF = date(2026, 9, 20)
 ACTION = "welcome_and_top_up"
 GROUP = "guide mix test group"
-GUIDE_TITLE = "Guide mix test: small regular deposits"
+TITLE_PREFIX = "Guide mix test: "
+GUIDE_TITLE = f"{TITLE_PREFIX}small regular deposits"
+OTHER_GUIDE_TITLE = f"{TITLE_PREFIX}a guide for another action"
 
 
 def test_every_content_mix_has_an_instruction_for_the_brief() -> None:
@@ -68,7 +70,7 @@ def _purge() -> None:
         session.execute(delete(AgentProposal).where(AgentProposal.group_name == GROUP))
         session.execute(delete(Campaign).where(Campaign.campaign_id.in_(campaign_ids)))
         doc_ids = session.scalars(
-            select(RagDocument.doc_id).where(RagDocument.title == GUIDE_TITLE)
+            select(RagDocument.doc_id).where(RagDocument.title.like(f"{TITLE_PREFIX}%"))
         ).all()
         version_ids = session.scalars(
             select(RagDocumentVersion.version_id).where(RagDocumentVersion.doc_id.in_(doc_ids))
@@ -118,23 +120,36 @@ def _proposal(session, *, content_mix: str | None) -> int:
     return campaign.campaign_id
 
 
-def test_a_campaign_is_drafted_with_its_proposals_mix_and_the_guide_that_fits(clean) -> None:
+def test_a_campaign_is_drafted_with_its_proposals_mix_and_the_guide_made_for_its_action(
+    clean,
+) -> None:
     with SessionLocal() as session:
         action = load_action(session, ACTION, AS_OF)
-        guide = add_guide(
+        made_for_it = add_guide(
             session,
             title=GUIDE_TITLE,
             topic="Saving habit",
-            text=f"{action.title}. {action.who}. Small deposits made regularly work well.",
+            text="Small deposits made regularly work well.",
+            action_codes=[ACTION],
             created_by="writer",
             embedder=EMB,
         )
-        approve_guide_version(session, guide.version_id, approved_by="lead")
+        closer_but_for_another_action = add_guide(
+            session,
+            title=OTHER_GUIDE_TITLE,
+            topic="Fees",
+            text=f"{action.title}. {action.who}.",
+            action_codes=["fee_warning"],
+            created_by="writer",
+            embedder=EMB,
+        )
+        for guide in (made_for_it, closer_but_for_another_action):
+            approve_guide_version(session, guide.version_id, approved_by="lead")
         campaign_id = _proposal(session, content_mix="mostly_learning")
         brief = guide_brief_for_campaign(session, campaign_id, at=AS_OF)
 
     assert "mostly explains" in brief.mix_instruction
-    assert [hit.text for hit in brief.guides] == [guide.text]
+    assert [hit.text for hit in brief.guides] == [made_for_it.text]
 
 
 def test_a_campaign_with_no_mix_is_drafted_as_before(clean) -> None:

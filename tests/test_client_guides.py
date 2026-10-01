@@ -186,6 +186,21 @@ def test_a_guide_must_be_short_and_hold_no_contact_details(clean, text: str) -> 
         assert session.scalar(select(RagDocument).where(RagDocument.title == TITLE)) is None
 
 
+def test_a_guide_may_only_name_actions_that_exist(clean) -> None:
+    with SessionLocal() as session:
+        with pytest.raises(GuideRejected, match="no_such_action"):
+            add_guide(
+                session,
+                title=TITLE,
+                topic="Saving habit",
+                text=TEXT,
+                action_codes=["fee_warning", "no_such_action"],
+                created_by="writer",
+            )
+        session.rollback()
+        assert session.scalar(select(RagDocument).where(RagDocument.title == TITLE)) is None
+
+
 def test_the_rollback_path_will_not_make_an_unapproved_guide_live(clean) -> None:
     with SessionLocal() as session:
         guide = add_guide(
@@ -197,12 +212,18 @@ def test_the_rollback_path_will_not_make_an_unapproved_guide_live(clean) -> None
 
 
 def test_a_guide_goes_from_writing_to_live_through_the_api(clean, authed) -> None:
-    body = {"title": TITLE, "topic": "Saving habit", "text": TEXT}
+    body = {
+        "title": TITLE,
+        "topic": "Saving habit",
+        "text": TEXT,
+        "action_codes": ["welcome_and_top_up"],
+    }
 
     created = client.post(f"{RAG}/guides", json=body)
     assert created.status_code == 201
     version_id = created.json()["version_id"]
     assert created.json()["status"] == "waiting_for_approval"
+    assert created.json()["action_codes"] == ["welcome_and_top_up"]
 
     assert version_id not in {row["version_id"] for row in client.get(f"{RAG}/versions").json()}
     assert client.post(f"{RAG}/versions/{version_id}/activate").status_code == 409

@@ -43,6 +43,7 @@ class GuideIn(BaseModel):
     title: str
     topic: str
     text: str
+    action_codes: list[str] = []
 
 
 class GuideOut(BaseModel):
@@ -52,6 +53,7 @@ class GuideOut(BaseModel):
     title: str
     topic: str
     text: str
+    action_codes: list[str]
     status: str
     approved_by: str | None
     approved_at: datetime | None

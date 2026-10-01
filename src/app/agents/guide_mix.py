@@ -71,5 +71,5 @@ def guide_brief_for_campaign(
     action = load_action(session, proposal.action_code, at or date.today())
     if action is None:
         return GuideBrief(mix_instruction=instruction)
-    guides = find_guides(session, f"{action.title}. {action.who}")
+    guides = find_guides(session, action.action_code, f"{action.title}. {action.who}")
     return GuideBrief(mix_instruction=instruction, guides=tuple(guides))

@@ -18,6 +18,7 @@ GUIDES = (
         "A monthly fee of KES 50 applies to your account. On a small balance this can add "
         "up over time. Paying in a little from time to time helps your balance stay ahead "
         "of the fee.",
+        ("fee_warning", "fee_pressure_warning_dormant", "fee_pressure_encourage_active"),
     ),
     (
         "What a money market fund is",
@@ -26,6 +27,7 @@ GUIDES = (
         "periods, for example by buying treasury bills or placing it in bank deposits. "
         "The aim is to keep your money safe and easy to reach while it earns a steady "
         "return. The return moves with market rates and is never guaranteed.",
+        (),
     ),
     (
         "Why small regular deposits beat one large one",
@@ -34,6 +36,7 @@ GUIDES = (
         "to invest one large amount. You do not have to guess the right moment, and a "
         "small habit is easier to keep than a big payment. Over time the small deposits "
         "add up.",
+        ("welcome_and_top_up",),
     ),
 )
 
@@ -48,12 +51,22 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(get_settings().log_level)
 
     with SessionLocal() as session:
-        on_file = {(guide.title.lower(), guide.text) for guide in list_guide_versions(session)}
-        for title, topic, text in GUIDES:
-            if (title.lower(), text) in on_file:
+        on_file = {
+            (guide.title.lower(), guide.text, guide.action_codes)
+            for guide in list_guide_versions(session)
+        }
+        for title, topic, text, actions in GUIDES:
+            if (title.lower(), text, tuple(sorted(actions))) in on_file:
                 print(f"already on file: {title}")
                 continue
-            guide = add_guide(session, title=title, topic=topic, text=text, created_by=args.by)
+            guide = add_guide(
+                session,
+                title=title,
+                topic=topic,
+                text=text,
+                action_codes=actions,
+                created_by=args.by,
+            )
             print(f"waiting for approval: {title} (version {guide.version_id})")
     return 0
 
