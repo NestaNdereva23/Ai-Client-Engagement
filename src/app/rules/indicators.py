@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+import structlog
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -20,6 +21,8 @@ from app.rules.engine import Resolution, feature_view, resolve
 from app.rules.store import load_active_rules
 from app.transform.features import PRIORITY_TIERS
 from app.transform.load import upsert
+
+logger = structlog.get_logger(__name__)
 
 # Columns refreshed when a client's row already exists. The key is excluded.
 _INDICATOR_UPDATE = [
@@ -64,15 +67,20 @@ def _indicator_dict(feature: ClientFeatures, resolution: Resolution) -> dict[str
 def populate_indicators(session: Session, at: date) -> int:
     """Resolve all clients against the rules active on `at` and upsert their rows.
 
-    Returns the number of clients resolved. Raises if no rule set is active,
-    since a client with no resolution would be left without an angle.
+    Returns the number of clients resolved. A client whose features still carry
+    a tier from an older contract is skipped and counted in a warning. Raises
+    if no rule set is active, since a client with no resolution would be left
+    without an angle.
     """
     rules = load_active_rules(session, at)
     if not rules:
         raise ValueError(f"no active rule version for {at}")
 
     features = session.scalars(select(ClientFeatures)).all()
-    rows = [_indicator_dict(f, resolve(feature_view(f), rules)) for f in features]
+    current = [f for f in features if f.priority_tier in PRIORITY_TIERS]
+    if len(current) < len(features):
+        logger.warning("indicators_skipped_old_tier", clients=len(features) - len(current))
+    rows = [_indicator_dict(f, resolve(feature_view(f), rules)) for f in current]
     if not rows:
         return 0
 
