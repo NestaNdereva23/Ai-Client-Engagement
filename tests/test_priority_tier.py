@@ -1,13 +1,13 @@
 """Priority tier: a pure lookup, the tier contract, and how it reaches a client.
 
-Covers the sixteen band combinations, the seeded tier contract, the sampling
-setting's off-by-default behaviour, and that indicator resolution reads the
-derived tier only from a rule that defers to it.
+Covers the withdrawal-cluster boundaries, the seeded tier contract, the
+sampling setting's off-by-default behaviour, and that indicator resolution
+reads the derived tier only from a rule that defers to it.
 """
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from sqlalchemy import delete
@@ -26,59 +26,64 @@ from app.rules.tier_contract import (
     save_tier_contract_version,
     validate_tiers,
 )
-from app.transform.features import _priority_tier
+from app.transform.features import (
+    DECLINE_LOOKBACK_DAYS,
+    FREQUENT_GAP_DAYS,
+    LOW_DEPOSITOR_THRESHOLD_KES,
+    _withdrawal_cluster,
+)
 
-SEEDED_VERSION = 4
+SEEDED_VERSION = 5
 IN_FORCE = date(2026, 12, 15)
-
-VALUE_BANDS = ("Low", "Medium", "High", "Top")
-RECENCY_BANDS = ("Over 6y", "3 to 6y", "1 to 3y", "Under 1y")
-
-# An independent computation of the same score and cut, not a call into the
-# function under test, so this actually checks the sixteen combinations rather
-# than confirming the code agrees with itself.
-_VALUE_POINTS = {"Low": 0, "Medium": 1, "High": 2, "Top": 3}
-_RECENCY_POINTS = {"Over 6y": 0, "3 to 6y": 1, "1 to 3y": 2, "Under 1y": 3}
-
-
-def _expected_tier(value_band: str, recency_band: str) -> str:
-    score = _VALUE_POINTS[value_band] * 2 + _RECENCY_POINTS[recency_band]
-    if score <= 2:
-        return "T4"
-    if score <= 4:
-        return "T3"
-    if score <= 6:
-        return "T2"
-    return "T1"
+SEEDED_VALID_FROM = date(2026, 9, 29)
 
 
 # --- the pure lookup ---
 
 
-@pytest.mark.parametrize(
-    ("value_band", "recency_band"), [(v, r) for v in VALUE_BANDS for r in RECENCY_BANDS]
-)
-def test_every_band_combination_matches_an_independent_computation(
-    value_band, recency_band
-) -> None:
-    assert _priority_tier(value_band, recency_band) == _expected_tier(value_band, recency_band)
+def test_zero_deposits_is_a_hot_lead() -> None:
+    assert _withdrawal_cluster(0, []) == "hot_leads"
 
 
-def test_the_score_boundaries_land_on_the_stated_cuts() -> None:
-    # A client scoring exactly 2, 4, or 6 belongs to the lower tier.
-    assert _priority_tier("Medium", "Over 6y") == "T4"  # score 2
-    assert _priority_tier("High", "Over 6y") == "T3"  # score 4
-    assert _priority_tier("Top", "Over 6y") == "T2"  # score 6
+def test_deposits_at_the_low_depositor_line() -> None:
+    assert _withdrawal_cluster(LOW_DEPOSITOR_THRESHOLD_KES, []) == "low_depositors"
+    assert _withdrawal_cluster(LOW_DEPOSITOR_THRESHOLD_KES + 1, []) == "one_time_withdrawers"
 
 
-def test_an_unrecognised_recency_band_is_treated_as_unknown() -> None:
-    assert _priority_tier("Top", "Unknown") == _priority_tier("Top", "Over 6y")
+def test_three_withdrawals_spanning_the_gradual_window() -> None:
+    start = date(2024, 1, 1)
+    span = start + timedelta(days=DECLINE_LOOKBACK_DAYS)
+    dates = [start, start + timedelta(days=90), span]
+    assert _withdrawal_cluster(50_000, dates) == "gradual_withdrawers"
+
+    short_dates = [start, start + timedelta(days=90), span - timedelta(days=1)]
+    assert _withdrawal_cluster(50_000, short_dates) == "one_time_withdrawers"
+
+
+def test_two_withdrawals_at_the_frequent_gap() -> None:
+    start = date(2024, 1, 1)
+    tight = [start, start + timedelta(days=FREQUENT_GAP_DAYS)]
+    assert _withdrawal_cluster(50_000, tight) == "frequent_withdrawers"
+
+    loose = [start, start + timedelta(days=FREQUENT_GAP_DAYS + 1)]
+    assert _withdrawal_cluster(50_000, loose) == "one_time_withdrawers"
+
+
+def test_gradual_wins_over_frequent_when_both_would_match() -> None:
+    start = date(2024, 1, 1)
+    dates = [
+        start,
+        start + timedelta(days=30),
+        start + timedelta(days=60),
+        start + timedelta(days=200),
+    ]
+    assert _withdrawal_cluster(50_000, dates) == "gradual_withdrawers"
 
 
 # --- the tier contract store ---
 
 
-def _spec(tier: str = "T1", **overrides) -> TierSpec:
+def _spec(tier: str = "hot_leads", **overrides) -> TierSpec:
     fields = {
         "tier": tier,
         "display_name": "A tier",
@@ -99,7 +104,7 @@ def test_a_contract_may_not_be_empty() -> None:
 
 def test_tier_identifiers_must_be_unique() -> None:
     with pytest.raises(TierContractValidationError, match="unique"):
-        validate_tiers([_spec("T1"), _spec("T1")])
+        validate_tiers([_spec("hot_leads"), _spec("hot_leads")])
 
 
 def test_an_unknown_tier_identifier_is_rejected() -> None:
@@ -118,36 +123,38 @@ def test_a_sample_rate_outside_zero_to_one_is_rejected() -> None:
 
 
 def test_a_well_formed_contract_passes() -> None:
-    validate_tiers([_spec("T1"), _spec("T2")])
+    validate_tiers([_spec("hot_leads"), _spec("low_depositors")])
 
 
-def test_the_seed_ships_all_four_tiers(db: None) -> None:
+def test_the_seed_ships_all_five_tiers(db: None) -> None:
     with SessionLocal() as session:
         tiers = load_active_tiers(session, IN_FORCE)
-    assert set(tiers) == {"T1", "T2", "T3", "T4"}
+    assert set(tiers) == {
+        "hot_leads",
+        "low_depositors",
+        "gradual_withdrawers",
+        "frequent_withdrawers",
+        "one_time_withdrawers",
+    }
 
 
-def test_every_tier_uses_email_as_its_primary_channel(db: None) -> None:
+def test_every_tier_uses_email_and_sms(db: None) -> None:
     with SessionLocal() as session:
         tiers = load_active_tiers(session, IN_FORCE)
     assert all(row.primary_channel == "email" for row in tiers.values())
+    assert all(row.secondary_channel == "sms" for row in tiers.values())
 
 
 def test_the_word_caps_match_the_tier_contract(db: None) -> None:
     with SessionLocal() as session:
         tiers = load_active_tiers(session, IN_FORCE)
     assert {tier: row.max_words for tier, row in tiers.items()} == {
-        "T1": 120,
-        "T2": 140,
-        "T3": 110,
-        "T4": 60,
+        "gradual_withdrawers": 130,
+        "frequent_withdrawers": 130,
+        "one_time_withdrawers": 120,
+        "low_depositors": 90,
+        "hot_leads": 90,
     }
-
-
-def test_no_tier_carries_a_call_brief(db: None) -> None:
-    with SessionLocal() as session:
-        tiers = load_active_tiers(session, IN_FORCE)
-    assert all(row.secondary_channel != "call_brief" for row in tiers.values())
 
 
 def test_every_tier_requires_approval_in_the_contract_itself(db: None) -> None:
@@ -158,7 +165,7 @@ def test_every_tier_requires_approval_in_the_contract_itself(db: None) -> None:
 
 def test_the_earlier_versions_no_longer_come_back_into_force(db: None) -> None:
     with SessionLocal() as session:
-        assert active_tier_contract_version(session, date(2026, 9, 11)) == SEEDED_VERSION
+        assert active_tier_contract_version(session, SEEDED_VALID_FROM) == SEEDED_VERSION
         assert active_tier_contract_version(session, IN_FORCE) == SEEDED_VERSION
 
 
@@ -182,7 +189,7 @@ def test_a_later_version_supersedes_the_one_before(db: None, contract_versions) 
     contract_versions.append(77)
     later = date(2027, 2, 1)
     with SessionLocal() as session:
-        save_tier_contract_version(session, 77, [_spec("T1")], valid_from=later)
+        save_tier_contract_version(session, 77, [_spec("hot_leads")], valid_from=later)
         session.commit()
 
     with SessionLocal() as session:
@@ -211,22 +218,30 @@ def _resolution(*, priority_tier: str, urgency: str) -> Resolution:
 
 
 def test_a_p_tier_resolution_keeps_the_rules_own_tier_and_urgency() -> None:
-    feature = ClientFeatures(client_id=1, priority_tier="T1")
+    feature = ClientFeatures(client_id=1, priority_tier="hot_leads")
     row = _indicator_dict(feature, _resolution(priority_tier="P1", urgency="high"))
     assert row["priority_tier"] == "P1"
     assert row["urgency"] == "high"
 
 
 def test_a_derived_tier_resolution_reads_the_feature_rows_own_tier() -> None:
-    feature = ClientFeatures(client_id=1, priority_tier="T1")
-    # The rule's own urgency ("low") must be discarded in favour of T1's own.
-    row = _indicator_dict(feature, _resolution(priority_tier="T3", urgency="low"))
-    assert row["priority_tier"] == "T1"
-    assert row["urgency"] == "high"
+    feature = ClientFeatures(client_id=1, priority_tier="hot_leads")
+    row = _indicator_dict(feature, _resolution(priority_tier="one_time_withdrawers", urgency="low"))
+    assert row["priority_tier"] == "hot_leads"
+    assert row["urgency"] == "low"
 
 
-@pytest.mark.parametrize("tier", ["T1", "T2", "T3", "T4"])
+@pytest.mark.parametrize(
+    "tier",
+    [
+        "hot_leads",
+        "low_depositors",
+        "gradual_withdrawers",
+        "frequent_withdrawers",
+        "one_time_withdrawers",
+    ],
+)
 def test_every_derived_tier_carries_its_own_urgency(tier: str) -> None:
     feature = ClientFeatures(client_id=1, priority_tier=tier)
-    row = _indicator_dict(feature, _resolution(priority_tier="T3", urgency="low"))
+    row = _indicator_dict(feature, _resolution(priority_tier="one_time_withdrawers", urgency="low"))
     assert row["priority_tier"] == tier

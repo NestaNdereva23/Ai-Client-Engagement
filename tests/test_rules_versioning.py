@@ -21,7 +21,7 @@ from app.rules.tier_contract import TierSpec, save_tier_contract_version
 from app.rules.versioning import DEFAULT_COMPONENT_KEY, VersioningError
 
 ANGLE = "versioning_test_angle"
-TIER = "T4"
+TIER = "hot_leads"
 SIGNAL_CODE = "versioning_test_signal"
 
 

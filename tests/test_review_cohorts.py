@@ -22,7 +22,13 @@ from app.db.models.outreach import Campaign, ReviewCohort
 from app.db.session import SessionLocal
 from app.rules.tier_contract import cohort_sample_rate_for, load_tier
 
-TODAY_TIER_RATES = {"T1": 0.05, "T2": 0.03, "T3": 0.02, "T4": 0.01}
+TODAY_TIER_RATES = {
+    "gradual_withdrawers": 0.01,
+    "frequent_withdrawers": 0.01,
+    "one_time_withdrawers": 0.01,
+    "low_depositors": 0.01,
+    "hot_leads": 0.01,
+}
 
 
 def _samples_in(cohort_size: int, *, rate: float | None, cap: int | None) -> list[int]:
@@ -78,7 +84,7 @@ def test_the_seeded_contract_carries_a_rate_for_every_tier(db: None) -> None:
 
 def test_sampling_off_falls_back_to_reviewing_everything(db: None) -> None:
     with SessionLocal() as session:
-        tier = load_tier(session, "T1", date.today())
+        tier = load_tier(session, "hot_leads", date.today())
     assert cohort_sample_rate_for(tier, sampling_enabled=False) is None
 
 
@@ -101,44 +107,54 @@ def test_a_new_cohort_takes_the_tiers_rate_and_the_configured_cap(
     db: None, campaign_id: int
 ) -> None:
     with SessionLocal() as session:
-        cohort = get_or_create_cohort(session, campaign_id=campaign_id, priority_tier="T1")
+        cohort = get_or_create_cohort(
+            session, campaign_id=campaign_id, priority_tier="gradual_withdrawers"
+        )
         session.commit()
-        assert cohort.sample_rate == TODAY_TIER_RATES["T1"]
+        assert cohort.sample_rate == TODAY_TIER_RATES["gradual_withdrawers"]
         assert cohort.sample_cap == get_settings().cohort_sample_cap
 
 
 def test_the_same_campaign_and_tier_reuse_one_cohort(db: None, campaign_id: int) -> None:
     with SessionLocal() as session:
-        first = get_or_create_cohort(session, campaign_id=campaign_id, priority_tier="T2")
+        first = get_or_create_cohort(
+            session, campaign_id=campaign_id, priority_tier="frequent_withdrawers"
+        )
         session.commit()
-        second = get_or_create_cohort(session, campaign_id=campaign_id, priority_tier="T2")
+        second = get_or_create_cohort(
+            session, campaign_id=campaign_id, priority_tier="frequent_withdrawers"
+        )
         session.commit()
     assert first.cohort_id == second.cohort_id
 
 
 def test_assigning_slots_marks_only_the_sampled_ones(db: None, campaign_id: int) -> None:
     with SessionLocal() as session:
-        cohort = get_or_create_cohort(session, campaign_id=campaign_id, priority_tier="T1")
+        cohort = get_or_create_cohort(
+            session, campaign_id=campaign_id, priority_tier="gradual_withdrawers"
+        )
         session.commit()
-        flags = [assign_cohort_slot(session, cohort) for _ in range(21)]
+        flags = [assign_cohort_slot(session, cohort) for _ in range(101)]
         session.commit()
-        assert cohort.assigned_count == 21
+        assert cohort.assigned_count == 101
 
-    # T1 at 5 percent: the first message, then every twentieth.
-    assert [slot for slot, sampled in enumerate(flags, start=1) if sampled] == [1, 21]
+    # gradual_withdrawers at 1 percent: the first message, then every hundredth.
+    assert [slot for slot, sampled in enumerate(flags, start=1) if sampled] == [1, 101]
 
 
 def test_a_message_arriving_after_the_cohort_closed_is_reviewed_on_its_own(
     db: None, campaign_id: int
 ) -> None:
     with SessionLocal() as session:
-        cohort = get_or_create_cohort(session, campaign_id=campaign_id, priority_tier="T3")
+        cohort = get_or_create_cohort(
+            session, campaign_id=campaign_id, priority_tier="one_time_withdrawers"
+        )
         assign_cohort_slot(session, cohort)
         cohort.status = "completed"
         session.commit()
 
-        # Slot 2 would not be a sample at T3's rate, but its cohort has
-        # already been approved and closed, so it cannot ride on it.
+        # Slot 2 would not be a sample at this tier's rate, but its cohort
+        # has already been approved and closed, so it cannot ride on it.
         assert assign_cohort_slot(session, cohort) is True
         session.commit()
 

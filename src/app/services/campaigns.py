@@ -283,6 +283,8 @@ def list_campaigns(
     recency_band: str | None = None,
     purchase_depth: str | None = None,
     newly_dormant: bool | None = None,
+    priority_tier: str | None = None,
+    high_value: bool | None = None,
     message_angle: str | None = None,
     channel: str | None = None,
 ) -> tuple[list[Row], str | None]:
@@ -322,6 +324,8 @@ def list_campaigns(
         "recency_band": recency_band,
         "purchase_depth": purchase_depth,
         "newly_dormant": newly_dormant,
+        "priority_tier": priority_tier,
+        "high_value": high_value,
         "message_angle": message_angle,
     }
     for key, value in cohort_filters.items():

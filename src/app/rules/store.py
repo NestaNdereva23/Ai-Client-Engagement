@@ -17,6 +17,7 @@ from app.transform.features import (
     EXIT_REASONS,
     FUND_TYPES,
     HOLD_BANDS,
+    PRIORITY_TIERS,
     PURCHASE_DEPTHS,
     RECENCY_BANDS,
     TREND_BANDS,
@@ -72,8 +73,6 @@ MESSAGE_ANGLES = {
     "fee_pressure_encourage_active",
 }
 URGENCIES = {"low", "medium", "high"}
-# Derived from value and recency rather than set by a rule.
-PRIORITY_TIERS = {"T1", "T2", "T3", "T4"}
 
 
 class RuleValidationError(ValueError):
@@ -89,7 +88,7 @@ class RuleSpec:
     match: Mapping[str, list[str]] = field(default_factory=dict)
     message_angle: str = "pick_up_again"
     urgency: str = "low"
-    priority_tier: str = "T4"
+    priority_tier: str = "one_time_withdrawers"
     prompt_variant: str = "pick_up_again"
 
 

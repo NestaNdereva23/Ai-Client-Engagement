@@ -41,6 +41,12 @@ CADENCE_PERIODIC_DAYS = 365
 
 DORMANT_FEE_AMOUNT = 50.0
 
+LOW_DEPOSITOR_THRESHOLD_KES = 6_000.0
+HIGH_VALUE_THRESHOLD_KES = 100_000.0
+FREQUENT_GAP_DAYS = 30
+GRADUAL_WITHDRAWAL_COUNT = 3
+FREQUENT_WITHDRAWAL_COUNT = 2
+
 # Contact details older than this need checking before they are used.
 STALE_CONTACT_DAYS = 1095
 
@@ -68,12 +74,15 @@ PURCHASE_DEPTHS = frozenset({"none", "single", "few", "capped"})
 TREND_BANDS = frozenset({"rising", "flat", "falling", "unknown"})
 EXIT_REASONS = frozenset({"client_sale", "charge_settled", "unknown"})
 FUND_TYPES = frozenset({"money_market", "high_yield", "other"})
-PRIORITY_TIERS = frozenset({"T1", "T2", "T3", "T4"})
-
-# Points feeding the tier score: value counts double, so a large client outranks
-# a merely recent one.
-_VALUE_POINTS = {"Low": 0, "Medium": 1, "High": 2, "Top": 3}
-_RECENCY_POINTS = {"Unknown": 0, "Over 6y": 0, "3 to 6y": 1, "1 to 3y": 2, "Under 1y": 3}
+PRIORITY_TIERS = frozenset(
+    {
+        "hot_leads",
+        "low_depositors",
+        "gradual_withdrawers",
+        "frequent_withdrawers",
+        "one_time_withdrawers",
+    }
+)
 
 
 @dataclass
@@ -118,6 +127,7 @@ class FeatureRow:
     newly_dormant: bool
     holds_other_funds: bool
     priority_tier: str
+    high_value: bool
 
 
 def _rhythm_days(dates: list[date]) -> int | None:
@@ -256,16 +266,22 @@ def _in_wave(exit_date: date | None) -> bool:
     return (exit_date.year, exit_date.month) in WAVE_MONTHS
 
 
-def _priority_tier(value_band: str, recency_band: str) -> str:
-    """A pure lookup over the sixteen band combinations, not a population score."""
-    score = _VALUE_POINTS[value_band] * 2 + _RECENCY_POINTS[recency_band]
-    if score <= 2:
-        return "T4"
-    if score <= 4:
-        return "T3"
-    if score <= 6:
-        return "T2"
-    return "T1"
+def _withdrawal_cluster(lifetime_deposits: float, real_sale_dates: list[date]) -> str:
+    if lifetime_deposits <= 0:
+        return "hot_leads"
+    if lifetime_deposits <= LOW_DEPOSITOR_THRESHOLD_KES:
+        return "low_depositors"
+    if (
+        len(real_sale_dates) >= GRADUAL_WITHDRAWAL_COUNT
+        and (max(real_sale_dates) - min(real_sale_dates)).days >= DECLINE_LOOKBACK_DAYS
+    ):
+        return "gradual_withdrawers"
+    if (
+        len(real_sale_dates) >= FREQUENT_WITHDRAWAL_COUNT
+        and (_typical_gap(real_sale_dates) or math.inf) <= FREQUENT_GAP_DAYS
+    ):
+        return "frequent_withdrawers"
+    return "one_time_withdrawers"
 
 
 def largest_first(rows: list[ClientRow]) -> list[ClientRow]:
@@ -365,9 +381,12 @@ def derive_features(
     fund_names = {fund.unit_fund_id: fund.unit_fund_name for fund in result.funds}
 
     purchase_dates: dict[int, list[date]] = defaultdict(list)
+    real_sale_dates: dict[int, list[date]] = defaultdict(list)
     for txn in result.transactions:
         if txn.txn_type == "purchase" and txn.date is not None:
             purchase_dates[txn.client_id].append(txn.date)
+        elif txn.txn_type == "sale" and txn.date is not None and txn.amount > DORMANT_FEE_AMOUNT:
+            real_sale_dates[txn.client_id].append(txn.date)
 
     features: list[FeatureRow] = []
     for client_id, rows in by_client.items():
@@ -379,6 +398,7 @@ def derive_features(
         rhythm = _rhythm_days(purchase_dates.get(client_id, []))
         recency_band = _recency_band(primary.days_since_last_activity)
         value_band = _value_band(measure.avg_ticket)
+        lifetime_deposits = sum(r.total_purchase_amount for r in ordered)
 
         features.append(
             FeatureRow(
@@ -405,7 +425,10 @@ def derive_features(
                 newly_dormant=primary.days_since_last_activity is not None
                 and primary.days_since_last_activity <= NEWLY_DORMANT_DAYS,
                 holds_other_funds=len(ordered) > 1,
-                priority_tier=_priority_tier(value_band, recency_band),
+                priority_tier=_withdrawal_cluster(
+                    lifetime_deposits, real_sale_dates.get(client_id, [])
+                ),
+                high_value=lifetime_deposits >= HIGH_VALUE_THRESHOLD_KES,
             )
         )
     return features

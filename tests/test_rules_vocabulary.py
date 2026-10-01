@@ -93,5 +93,11 @@ def test_every_angle_a_rule_may_resolve_to_has_a_brief(db: None) -> None:
     assert MESSAGE_ANGLES - legacy == catalogued
 
 
-def test_the_four_derived_tiers_are_allowed() -> None:
-    assert {"T1", "T2", "T3", "T4"} <= PRIORITY_TIERS
+def test_the_five_derived_tiers_are_allowed() -> None:
+    assert {
+        "hot_leads",
+        "low_depositors",
+        "gradual_withdrawers",
+        "frequent_withdrawers",
+        "one_time_withdrawers",
+    } <= PRIORITY_TIERS

@@ -106,7 +106,7 @@ def test_the_seeded_set_is_itself_valid_and_fully_reachable() -> None:
             match=r.match,
             message_angle=r.message_angle,
             urgency=r.urgency,
-            priority_tier=r.priority_tier,
+            priority_tier="hot_leads",
             prompt_variant=r.prompt_variant,
         )
         for r in active
