@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import delete, select
 
 from app.agents import insight_members as insight_members_module
+from app.agents.action_catalog import load_action
 from app.agents.proposal_state import transition_proposal
 from app.agents.propose import ON_DO_NOT_CONTACT_LIST
 from app.agents.watchlist import FEE_PRESSURE_GONE_QUIET, WatchlistThresholds
@@ -365,9 +366,11 @@ def test_run_proposal_creates_the_campaign_enrolls_and_drafts_into_review() -> N
                 AuditLog.entity_id == str(proposal_id),
             )
         ).all()
+        action = load_action(session, proposal.action_code, AS_OF)
 
     assert proposal.status == "running"
     assert proposal.campaign_id == campaign_id
+    assert proposal.content_mix == action.content_mix
     assert campaign.status == "running"
     assert list(enrolled) == [ELIGIBLE_CLIENT]
     assert [step.message_angle for step in steps] == ["fee_warning"]

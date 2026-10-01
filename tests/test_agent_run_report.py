@@ -202,6 +202,8 @@ def _proposal(session, *, insight_id, run_id, campaign_id, status, included, ski
         evidence="evidence",
         reason="reason",
         permission_applied="approve_each",
+        content_mix="mostly_learning",
+        response_kind="automated_email",
         status=status,
         campaign_id=campaign_id,
     )
@@ -278,6 +280,10 @@ def test_a_run_with_sends_reports_every_number_from_the_records() -> None:
     action = report.actions[0]
     assert action.skip_reasons == {"contacted_recently": 1, "open_complaint": 1}
     assert (action.messages.approved, action.messages.edited) == (2, 1)
+    assert action.content_mix == "mostly_learning"
+    assert [(row.content_mix, row.drafted, row.sent) for row in report.mixes] == [
+        ("mostly_learning", 4, 2)
+    ]
     assert {row.reason: row.count for row in report.skipped} == action.skip_reasons
 
     level = next(row for row in report.levels if row.action_code == ACTION)
@@ -288,6 +294,7 @@ def test_a_run_with_sends_reports_every_number_from_the_records() -> None:
 
     body = render_run_report(report).text_body
     assert "Sent 2" in body
+    assert "Mostly guiding: 1 action, drafted 4, sent 2" in body
     assert "growth offers are not switched on yet" in body
 
     response = client.get(REPORT_URL.format(run_id=run_id))

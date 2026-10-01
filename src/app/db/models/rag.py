@@ -13,6 +13,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -32,13 +33,23 @@ from app.db.base import Base
 # means a migration that rebuilds this column.
 EMBEDDING_DIM = 1024
 
+DOC_TYPE_REPORT = "report"
+DOC_TYPE_CLIENT_GUIDE = "client_guide"
+
 
 class RagDocument(Base):
     __tablename__ = "rag_documents"
+    __table_args__ = (
+        CheckConstraint(
+            f"doc_type IN ('{DOC_TYPE_REPORT}', '{DOC_TYPE_CLIENT_GUIDE}')",
+            name="ck_rag_documents_doc_type",
+        ),
+    )
 
     doc_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    doc_type: Mapped[str] = mapped_column(Text, nullable=False, server_default=DOC_TYPE_REPORT)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -67,6 +78,8 @@ class RagDocumentVersion(Base):
     published_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     source: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    approved_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

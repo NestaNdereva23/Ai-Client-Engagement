@@ -409,6 +409,7 @@ def build_system_prompt(
     output_rules: str | None = None,
     default_sign_off: str | None = None,
     base_instructions: str | None = None,
+    mix_instruction: str | None = None,
 ) -> str:
     sections = [
         template_text(
@@ -427,6 +428,9 @@ def build_system_prompt(
         sections.append(brief_block(brief))
     else:
         sections.append(f"Angle: {angle or 'winback'}")
+
+    if mix_instruction:
+        sections.append(f"How much to explain and how much to ask:\n{mix_instruction}")
 
     if contract is not None:
         sections.append(_contract_block(contract))

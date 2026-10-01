@@ -221,8 +221,8 @@ def search_knowledge(
     product: str | None = None,
     k: int = 5,
 ) -> dict[str, Any]:
-    """Search the knowledge store for product facts, market facts and
-    teaching notes. Returns the matched passages as they are indexed; the
+    """Search the Knowledge Base for product facts, market facts and
+    client guides. Returns the matched passages as they are indexed; the
     corpus itself carries no client data.
     """
     if not query or not query.strip():
@@ -235,6 +235,7 @@ def search_knowledge(
         "results": [
             {
                 "text": hit.text,
+                "kind": hit.doc_type,
                 "section": hit.metadata.get("section"),
                 "score": round(hit.score, _SEARCH_SCORE_DECIMALS),
             }
@@ -448,7 +449,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="search_knowledge",
         description=(
-            "Search the knowledge store for product facts, market facts and teaching notes."
+            "Search the Knowledge Base for product facts, market facts and client guides."
         ),
         input_schema={
             "type": "object",

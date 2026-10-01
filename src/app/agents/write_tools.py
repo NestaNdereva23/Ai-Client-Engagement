@@ -37,6 +37,7 @@ from app.agents.email_agent import build_system_prompt
 from app.agents.email_channel import CHANNEL as EMAIL_CHANNEL
 from app.agents.email_channel import build_default_orchestrator
 from app.agents.events import NO_EVENTS, EventLog
+from app.agents.guide_mix import guide_brief_for_campaign
 from app.agents.insight_members import resolve_insight_members
 from app.agents.insight_proposal import ACCEPTED, gate_members, save_insight_proposal
 from app.agents.proposal_state import transition_proposal
@@ -138,15 +139,20 @@ def draft_into_review_queue(
     Every draft ends as a message waiting on a person, which is exactly
     where the review queue picks it up. What the finding said a message must
     not claim is bound into the drafting prompt here, so an internal label
-    cannot travel from the finding to an inbox.
+    cannot travel from the finding to an inbox. The proposal's guide mix
+    and the client guide that fits its action are bound in the same way.
     """
     settings = settings or get_settings()
+    guide_brief = guide_brief_for_campaign(session, campaign_id)
     orchestrator = build_default_orchestrator(
         session,
         settings,
         prompt_builder=functools.partial(
-            build_system_prompt, extra_prohibitions=tuple(prohibitions)
+            build_system_prompt,
+            extra_prohibitions=tuple(prohibitions),
+            mix_instruction=guide_brief.mix_instruction,
         ),
+        extra_chunks=guide_brief.guides,
     )
     generate = functools.partial(
         generate_for_enrollment, orchestrator=orchestrator, channel=EMAIL_CHANNEL, settings=settings

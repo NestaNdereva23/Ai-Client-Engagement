@@ -75,12 +75,20 @@ class ReportAction(BaseModel):
     status: str
     permission_applied: str
     decided_by: str | None
+    content_mix: str | None
     group_size: int
     included: int
     skipped: int
     skip_reasons: dict[str, int]
     stopped_unsent: int
     messages: ReportMessages
+
+
+class ReportMix(BaseModel):
+    content_mix: str
+    actions: int
+    drafted: int
+    sent: int
 
 
 class ReportSkipReason(BaseModel):
@@ -164,6 +172,7 @@ class RunReportOut(BaseModel):
     coverage: ReportCoverage
     findings: ReportFindings
     actions: list[ReportAction]
+    mixes: list[ReportMix]
     skipped: list[ReportSkipReason]
     waiting: ReportWaiting
     levels: list[ReportLevel]

@@ -9,9 +9,11 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agents.guide_mix import MIX_LABELS
 from app.agents.run_report import build_run_report
 from app.audit.log import record_audit
 from app.config import Settings, get_settings
+from app.db.models.agent import CONTACTING_RESPONSE_KINDS
 from app.db.models.agent_run import AgentRun
 from app.db.models.audit import AuditLog
 from app.db.session import SessionLocal
@@ -140,6 +142,8 @@ def _action_lines(action: ReportAction) -> list[str]:
         f"approved {messages.approved}, edited {messages.edited}, rejected {messages.rejected}",
         f"  Sent {messages.sent}",
     ]
+    if action.content_mix and action.response_kind in CONTACTING_RESPONSE_KINDS:
+        lines.append(f"  Guide mix: {MIX_LABELS.get(action.content_mix, action.content_mix)}")
     if messages.recorded_only:
         lines.append(f"  Recorded but not delivered: {messages.recorded_only}")
     if action.stopped_unsent:
@@ -154,6 +158,16 @@ def _ran(report: RunReportOut) -> list[str]:
     for action in report.actions:
         lines.extend(_action_lines(action))
     return lines
+
+
+def _mix_lines(report: RunReportOut) -> list[str]:
+    if not report.mixes:
+        return ["No message was drafted."]
+    return [
+        f"- {MIX_LABELS.get(row.content_mix, row.content_mix)}: "
+        f"{_plural(row.actions, 'action', 'actions')}, drafted {row.drafted}, sent {row.sent}"
+        for row in report.mixes
+    ]
 
 
 def _waiting(report: RunReportOut, zone: str) -> list[str]:
@@ -264,6 +278,7 @@ def render_run_report(report: RunReportOut, settings: Settings | None = None) ->
         *_section("What was found", _found(report)),
         *_section("Accepted and dismissed", _decisions(report, zone)),
         *_section("What ran", _ran(report)),
+        *_section("Messages by guide mix", _mix_lines(report)),
         *_section("What is waiting", _waiting(report, zone)),
         *_section("What was left out, and why", _skipped(report)),
         *_section("Level of each action, and how it got there", _levels(report, zone)),

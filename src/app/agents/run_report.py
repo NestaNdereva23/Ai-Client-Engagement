@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.agents.action_catalog import load_active_actions
 from app.agents.permissions import effective_permission, resolve_permission
 from app.config import get_settings
-from app.db.models.agent import AgentActionCatalog
+from app.db.models.agent import CONTACTING_RESPONSE_KINDS, AgentActionCatalog
 from app.db.models.agent_event import ERROR, PAUSED, RESUMED, RUN_STATUS, WARNING, AgentEvent
 from app.db.models.agent_insight import AgentInsight
 from app.db.models.agent_permission import DEFAULT_PERMISSION, AgentPermission
@@ -30,6 +30,7 @@ from app.schemas.agent_reports import (
     ReportLevel,
     ReportLimits,
     ReportMessages,
+    ReportMix,
     ReportPermissionChange,
     ReportRun,
     ReportSkipReason,
@@ -64,6 +65,7 @@ def build_run_report(session: Session, run: AgentRun) -> RunReportOut:
         coverage=_coverage(session, run),
         findings=findings,
         actions=actions,
+        mixes=_mixes(actions),
         skipped=skipped,
         waiting=waiting,
         levels=_levels(session, proposals, run_day),
@@ -238,6 +240,7 @@ def _action_row(session: Session, proposal: AgentProposal) -> ReportAction:
         status=proposal.status,
         permission_applied=proposal.permission_applied,
         decided_by=proposal.decided_by,
+        content_mix=proposal.content_mix,
         group_size=proposal.client_count,
         included=included,
         skipped=sum(reasons.values()),
@@ -245,6 +248,21 @@ def _action_row(session: Session, proposal: AgentProposal) -> ReportAction:
         stopped_unsent=stopped_unsent,
         messages=messages,
     )
+
+
+def _mixes(actions: Sequence[ReportAction]) -> list[ReportMix]:
+    counts: dict[str, list[int]] = {}
+    for action in actions:
+        if action.content_mix is None or action.response_kind not in CONTACTING_RESPONSE_KINDS:
+            continue
+        row = counts.setdefault(action.content_mix, [0, 0, 0])
+        row[0] += 1
+        row[1] += action.messages.drafted
+        row[2] += action.messages.sent
+    return [
+        ReportMix(content_mix=mix, actions=acted, drafted=drafted, sent=sent)
+        for mix, (acted, drafted, sent) in sorted(counts.items())
+    ]
 
 
 def _skipped(actions: Sequence[ReportAction]) -> list[ReportSkipReason]:

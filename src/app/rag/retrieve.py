@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db.models.rag import RagChunk, RagDocumentVersion
+from app.db.models.rag import DOC_TYPE_REPORT, RagChunk, RagDocument, RagDocumentVersion
 from app.rag.embedding import Embedder, get_embedder
 
 # Which report sections carry a product's facts.
@@ -38,6 +38,7 @@ class Retrieved:
     metadata: dict
     score: float
     version_id: int
+    doc_type: str = DOC_TYPE_REPORT
 
 
 def sections_for_product(product: str) -> list[str] | None:
@@ -62,6 +63,7 @@ def retrieve(
     query: str,
     *,
     sections: list[str] | None = None,
+    doc_type: str | None = None,
     active_only: bool = True,
     k: int = 5,
     min_score: float | None = None,
@@ -76,13 +78,19 @@ def retrieve(
     query_vec = embedder.embed([query])[0]
     distance = RagChunk.embedding.cosine_distance(query_vec)
 
-    stmt = select(RagChunk, distance.label("distance")).where(RagChunk.embedding.isnot(None))
+    stmt = (
+        select(RagChunk, distance.label("distance"), RagDocument.doc_type)
+        .join(RagDocumentVersion, RagChunk.version_id == RagDocumentVersion.version_id)
+        .join(RagDocument, RagDocumentVersion.doc_id == RagDocument.doc_id)
+        .where(RagChunk.embedding.isnot(None))
+    )
     if active_only:
-        stmt = stmt.join(
-            RagDocumentVersion, RagChunk.version_id == RagDocumentVersion.version_id
-        ).where(RagDocumentVersion.is_active.is_(True))
+        stmt = stmt.where(RagDocumentVersion.is_active.is_(True))
+    if doc_type:
+        stmt = stmt.where(RagDocument.doc_type == doc_type)
     if sections:
-        stmt = stmt.where(RagChunk.chunk_metadata["section"].astext.in_(sections))
+        in_sections = RagChunk.chunk_metadata["section"].astext.in_(sections)
+        stmt = stmt.where(or_(in_sections, RagDocument.doc_type != DOC_TYPE_REPORT))
     stmt = stmt.order_by(distance).limit(k)
 
     hits = [
@@ -92,8 +100,9 @@ def retrieve(
             metadata=chunk.chunk_metadata or {},
             score=1.0 - float(dist),
             version_id=chunk.version_id,
+            doc_type=kind,
         )
-        for chunk, dist in session.execute(stmt).all()
+        for chunk, dist, kind in session.execute(stmt).all()
     ]
     if min_score is not None:
         hits = [hit for hit in hits if hit.score >= min_score]
@@ -121,6 +130,7 @@ def retrieve_product_facts(
         session,
         build_query(product, angle),
         sections=sections_for_product(product),
+        doc_type=DOC_TYPE_REPORT,
         active_only=active_only,
         k=settings.rag_retrieval_k if k is None else k,
         min_score=settings.rag_min_score if min_score is None else min_score,

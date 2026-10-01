@@ -25,6 +25,7 @@ from app.config import Settings, get_settings
 from app.llmops.tracing import NullTracer, Tracer
 from app.privacy.boundary import AuditSink
 from app.privacy.llm_client import LLMClient, get_llm_client
+from app.rag.grounding import GroundingChunk
 from app.schemas.email_draft import parse_email_draft
 
 CHANNEL = "email"
@@ -90,11 +91,14 @@ def build_default_agent(
     audit: AuditSink | None = None,
     tracer: Tracer | None = None,
     prompt_builder: PromptBuilder = build_system_prompt,
+    extra_chunks: Sequence[GroundingChunk] = (),
 ) -> EmailAgent:
     settings = settings or get_settings()
     use_rag = settings.rag_enabled
     return EmailAgent(
-        context_loader=functools.partial(load_client_context, session, use_rag=use_rag),
+        context_loader=functools.partial(
+            load_client_context, session, use_rag=use_rag, extra_chunks=extra_chunks
+        ),
         llm_client=get_llm_client(settings),
         audit=audit,
         tracer=tracer,
@@ -110,6 +114,7 @@ def build_default_orchestrator(
     audit: AuditSink | None = None,
     tracer: Tracer | None = None,
     prompt_builder: PromptBuilder = build_system_prompt,
+    extra_chunks: Sequence[GroundingChunk] = (),
 ) -> Orchestrator:
     # Local import: keeps this the one place email_channel knows sms_channel exists.
     from app.agents.sms_channel import build_default_sms_agent
@@ -117,7 +122,12 @@ def build_default_orchestrator(
     orchestrator = Orchestrator()
     orchestrator.register(
         build_default_agent(
-            session, settings, audit=audit, tracer=tracer, prompt_builder=prompt_builder
+            session,
+            settings,
+            audit=audit,
+            tracer=tracer,
+            prompt_builder=prompt_builder,
+            extra_chunks=extra_chunks,
         )
     )
     orchestrator.register(build_default_sms_agent(session, settings, audit=audit, tracer=tracer))
