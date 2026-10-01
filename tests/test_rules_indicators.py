@@ -32,6 +32,7 @@ EAT = timezone(timedelta(hours=3))
 ANCHOR = datetime(2026, 7, 23, 9, 0, tzinfo=EAT)
 # Comfortably inside v3's window (2026-08-04 onward).
 AT = date(2026, 8, 10)
+CURRENT_AT = date(2026, 10, 1)
 
 
 def _client(cid: int, purchases: list[tuple[int, str]]) -> dict[str, Any]:
@@ -156,3 +157,17 @@ def test_populate_refreshes_the_row_when_resolution_changes(cohort) -> None:
 def test_populate_without_active_rules_raises() -> None:
     with SessionLocal() as session, pytest.raises(ValueError, match="no active rule"):
         populate_indicators(session, at=date(1990, 1, 1))
+
+
+def test_populate_skips_a_client_whose_tier_is_from_an_older_contract(cohort) -> None:
+    with SessionLocal() as session:
+        session.get(ClientFeatures, 80002).priority_tier = "T2"
+        session.commit()
+
+    with SessionLocal() as session:
+        populate_indicators(session, at=CURRENT_AT)
+        kept = session.get(ClientMessageIndicators, 80001)
+        skipped = session.get(ClientMessageIndicators, 80002)
+
+    assert kept is not None
+    assert skipped is None
