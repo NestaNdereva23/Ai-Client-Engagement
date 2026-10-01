@@ -153,6 +153,8 @@ class CohortFilter(BaseModel):
     recency_band: str | None = None
     purchase_depth: str | None = None
     newly_dormant: bool | None = None
+    priority_tier: str | None = None
+    high_value: bool | None = None
 
     @model_validator(mode="after")
     def _at_least_one_filter(self) -> CohortFilter:
@@ -162,6 +164,8 @@ class CohortFilter(BaseModel):
             self.recency_band,
             self.purchase_depth,
             self.newly_dormant,
+            self.priority_tier,
+            self.high_value,
         )
         if not any(f is not None for f in fields):
             raise ValueError(
@@ -200,6 +204,8 @@ class CohortPreviewBatchRequest(BaseModel):
     recency_band: str | None = None
     purchase_depth: str | None = None
     newly_dormant: bool | None = None
+    priority_tier: str | None = None
+    high_value: bool | None = None
     angles: list[str] = []
 
 
@@ -274,6 +280,7 @@ class DeliveryOut(BaseModel):
     to: str
     subject: str | None
     body: str
+    cc: list[str] = Field(default_factory=list)
 
 
 class CampaignDispatchOut(BaseModel):

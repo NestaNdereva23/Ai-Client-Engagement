@@ -11,6 +11,7 @@ from sqlalchemy import func, select, true  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
 from app.config import get_settings  # noqa: E402
+from app.db.models.agent_proposal import AgentProposal  # noqa: E402
 from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog  # noqa: E402
 from app.db.models.generation_batch import GenerationBatch, GenerationBatchItem  # noqa: E402
 from app.db.models.instantiation_batch import InstantiationBatch  # noqa: E402
@@ -120,6 +121,16 @@ def _build_steps(campaign_ids: list[int] | None, run_ids: list[str] | None):
             InstantiationBatch,
             _in_or_all(InstantiationBatch.campaign_id, campaign_ids),
         ),
+        # campaign_id is nullable here on purpose: an agent_proposal is the
+        # agent's own decision record, not campaign data, so unlinking it
+        # clears the FK without erasing that history. Must run before the
+        # campaign delete below, or that delete hits this FK and fails.
+        (
+            "agent_proposal (unlinked)",
+            AgentProposal,
+            _in_or_all(AgentProposal.campaign_id, campaign_ids),
+            "null_campaign_id",
+        ),
         ("campaign", Campaign, _in_or_all(Campaign.campaign_id, campaign_ids)),
     ]
 
@@ -165,20 +176,26 @@ def main(argv: list[str] | None = None) -> int:
         print()
 
         total = 0
-        for label, model, where_clause in steps:
+        for label, model, where_clause, *rest in steps:
+            op = rest[0] if rest else "delete"
             count = session.execute(
                 select(func.count()).select_from(model).where(where_clause)
             ).scalar_one()
             total += count
             print(f"  {label:<32} {count}")
             if args.yes and count:
-                session.query(model).filter(where_clause).delete(synchronize_session=False)
+                if op == "null_campaign_id":
+                    session.query(model).filter(where_clause).update(
+                        {"campaign_id": None}, synchronize_session=False
+                    )
+                else:
+                    session.query(model).filter(where_clause).delete(synchronize_session=False)
 
         if args.yes:
             session.commit()
-            print(f"\ndeleted {total} row(s) total")
+            print(f"\ndeleted/unlinked {total} row(s) total")
         else:
-            print(f"\nwould delete {total} row(s) total (dry run, nothing changed)")
+            print(f"\nwould delete/unlink {total} row(s) total (dry run, nothing changed)")
 
     return 0
 

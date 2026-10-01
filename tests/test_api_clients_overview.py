@@ -151,7 +151,13 @@ def test_segments_match_the_segments_endpoint(enrolled_book) -> None:
     overview = client.get(OVERVIEW).json()["segments"]
     segments = client.get(SEGMENTS).json()
 
-    for field in ("by_purchase_depth", "by_value_band", "by_cadence_band", "by_message_angle"):
+    for field in (
+        "by_purchase_depth",
+        "by_value_band",
+        "by_cadence_band",
+        "by_message_angle",
+        "by_priority_tier",
+    ):
         assert _buckets(overview[field]) == _buckets(segments[field]), field
 
     assert _cells(overview["by_value_and_recency"]) == _cells(segments["by_value_and_recency"])

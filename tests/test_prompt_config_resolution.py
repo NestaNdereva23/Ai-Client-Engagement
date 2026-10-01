@@ -127,7 +127,7 @@ def test_resolve_active_configuration_returns_v1_for_now(db: None) -> None:
 
 def test_resolve_active_configuration_resolves_the_tier_contract_version(db: None) -> None:
     with SessionLocal() as session:
-        config = resolve_active_configuration(session, angle=None, tier="T1")
+        config = resolve_active_configuration(session, angle=None, tier="hot_leads")
 
     assert config.tier_contract_version is not None
 

@@ -60,7 +60,7 @@ def active_version(db: None):
                     match={"purchase_depth": ["capped"]},
                     message_angle="back_on_schedule",
                     urgency="high",
-                    priority_tier="T1",
+                    priority_tier="frequent_withdrawers",
                     prompt_variant="back_on_schedule",
                 ),
                 RuleSpec(name="catch_all", priority=20),

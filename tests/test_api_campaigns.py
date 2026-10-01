@@ -697,6 +697,8 @@ def test_create_campaign_enrolls_exactly_the_matching_cohort(cohort_clients) -> 
         "recency_band": None,
         "purchase_depth": None,
         "newly_dormant": None,
+        "priority_tier": None,
+        "high_value": None,
     }
     assert body["steps"] == []
 
@@ -1183,11 +1185,25 @@ def test_dispatch_hands_back_the_message_and_marks_the_touch_sent(
         ("email", "test@example.com", "Body")
     ]
     assert payload["deliveries"][0]["subject"].endswith("Subject")
+    assert payload["deliveries"][0]["cc"] == []
 
     readiness = client.get(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/readiness").json()
     assert readiness["sent_count"] == 1
     detail = client.get(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}").json()
     assert detail["status"] == "running"
+
+
+def test_dispatch_passes_the_account_manager_to_copy(
+    campaign_with_an_approved_touch: int, no_mailer: None, monkeypatch
+) -> None:
+    monkeypatch.setattr(sender_module, "_advisor_emails", lambda client_id: ("fa@example.com",))
+
+    response = client.post(f"{CAMPAIGNS}/{campaign_with_an_approved_touch}/dispatch")
+
+    assert response.status_code == 200
+    assert [(d["to"], d["cc"]) for d in response.json()["deliveries"]] == [
+        ("test@example.com", ["fa@example.com"])
+    ]
 
 
 def test_dispatch_claims_each_message_only_once(

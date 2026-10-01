@@ -40,6 +40,7 @@ class Delivery:
     to: str
     body: str
     subject: str | None = None
+    cc: tuple[str, ...] = ()
 
 
 @dataclass
@@ -49,7 +50,11 @@ class CapturingMailer:
     def send(self, message: EmailMessage) -> SendResult:
         self.deliveries.append(
             Delivery(
-                channel="email", to=message.to, subject=message.subject, body=message.text_body
+                channel="email",
+                to=message.to,
+                subject=message.subject,
+                body=message.text_body,
+                cc=message.cc,
             )
         )
         return SendResult(

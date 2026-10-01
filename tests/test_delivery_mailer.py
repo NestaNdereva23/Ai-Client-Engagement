@@ -165,6 +165,24 @@ def test_build_mime_message_adds_html_as_an_alternative():
     assert subtypes == ["plain", "html"]
 
 
+def test_build_mime_message_copies_every_cc_address():
+    mime = build_mime_message(
+        "ace@example.com",
+        EmailMessage(
+            to="client@example.com",
+            subject="Hello",
+            text_body="Body",
+            cc=("fa.one@example.com", "fa.two@example.com"),
+        ),
+    )
+
+    assert mime["Cc"] == "fa.one@example.com, fa.two@example.com"
+
+
+def test_build_mime_message_has_no_cc_header_when_nobody_is_copied():
+    assert build_mime_message("ace@example.com", a_message())["Cc"] is None
+
+
 def test_smtp_mailer_sends_the_message_it_was_asked_for(fake_smtp):
     sender = SmtpMailer(host="localhost", port=1025, sender="ace@example.com")
     result = sender.send(a_message())

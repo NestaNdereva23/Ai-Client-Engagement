@@ -64,6 +64,7 @@ def _to_summary(row, *, call_brief: str | None = None) -> ClientSummaryOut:
         purchase_depth=row.purchase_depth,
         message_angle=row.message_angle,
         priority_tier=row.priority_tier,
+        high_value=row.high_value,
         call_brief=call_brief,
     )
 
@@ -78,6 +79,8 @@ def get_clients(
     cadence_band: str | None = None,
     message_angle: str | None = None,
     newly_dormant: bool | None = None,
+    priority_tier: str | None = None,
+    high_value: bool | None = None,
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
@@ -93,6 +96,8 @@ def get_clients(
             cadence_band=cadence_band,
             message_angle=message_angle,
             newly_dormant=newly_dormant,
+            priority_tier=priority_tier,
+            high_value=high_value,
             cursor=cursor,
             limit=limit,
         )
@@ -146,6 +151,9 @@ def _to_overview_out(overview: ClientsOverview) -> ClientsOverviewOut:
             by_cadence_band=[SegmentBucketOut(key=k, count=c) for k, c in segments.by_cadence_band],
             by_message_angle=[
                 SegmentBucketOut(key=k, count=c) for k, c in segments.by_message_angle
+            ],
+            by_priority_tier=[
+                SegmentBucketOut(key=k, count=c) for k, c in segments.by_priority_tier
             ],
             by_value_and_recency=[
                 ValueRecencyBucketOut(value_band=v, recency_band=r, count=c)
@@ -256,6 +264,7 @@ def _to_profile_out(
             stale_contact=core.stale_contact,
             history_censored=core.history_censored,
             purchases_censored=core.purchases_censored,
+            high_value=core.high_value,
         ),
         activity=ClientActivityOut(
             last_activity_date=core.last_activity_date,
@@ -367,6 +376,9 @@ def get_segments(session: Session = Depends(get_session)) -> SegmentDistribution
         ],
         by_message_angle=[
             SegmentBucketOut(key=k, count=c) for k, c in distribution["by_message_angle"]
+        ],
+        by_priority_tier=[
+            SegmentBucketOut(key=k, count=c) for k, c in distribution["by_priority_tier"]
         ],
         by_value_and_recency=[
             ValueRecencyBucketOut(value_band=v, recency_band=r, count=c)

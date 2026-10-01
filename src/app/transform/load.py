@@ -78,6 +78,8 @@ _CLIENT_FUND_UPDATE = [
     "has_extended_history",
     "activity_window_from",
     "activity_window_to",
+    "fa_name",
+    "fa_email",
 ]
 _TXN_UPDATE = [
     "txn_type",
@@ -111,6 +113,7 @@ _FEATURE_UPDATE = [
     "newly_dormant",
     "holds_other_funds",
     "priority_tier",
+    "high_value",
 ]
 
 
@@ -187,6 +190,8 @@ def _client_fund_dict(c: ClientRow, m: RelationshipMeasures, *, is_primary: bool
         "has_extended_history": c.has_extended_history,
         "activity_window_from": c.activity_window_from,
         "activity_window_to": c.activity_window_to,
+        "fa_name": c.fa_name,
+        "fa_email": c.fa_email,
     }
 
 
@@ -266,6 +271,7 @@ def _feature_dict(f: FeatureRow) -> dict[str, Any]:
         "newly_dormant": f.newly_dormant,
         "holds_other_funds": f.holds_other_funds,
         "priority_tier": f.priority_tier,
+        "high_value": f.high_value,
         "client_id": f.client_id,
         "own_rhythm_days": f.own_rhythm_days,
         "observed_volume": f.observed_volume,

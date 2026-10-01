@@ -20,6 +20,7 @@ class ClientSummaryOut(BaseModel):
     purchase_depth: str | None
     message_angle: str | None
     priority_tier: str | None
+    high_value: bool | None
     call_brief: str | None = None
 
 
@@ -54,6 +55,7 @@ class ClientFlagsOut(BaseModel):
     stale_contact: bool | None
     history_censored: bool | None
     purchases_censored: bool | None
+    high_value: bool | None
 
 
 class ClientActivityOut(BaseModel):
@@ -169,6 +171,7 @@ class SegmentDistributionOut(BaseModel):
     by_value_band: list[SegmentBucketOut]
     by_cadence_band: list[SegmentBucketOut]
     by_message_angle: list[SegmentBucketOut]
+    by_priority_tier: list[SegmentBucketOut]
     by_value_and_recency: list[ValueRecencyBucketOut]
     # A contact over three years stale never blocks a send; this is visibility
     # into the ramp a batch should ease into, not a count of anything held.
