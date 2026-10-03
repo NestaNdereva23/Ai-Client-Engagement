@@ -214,6 +214,13 @@ class Settings(BaseSettings):
     agent_investigation_max_turns: int = 8
     agent_investigation_concurrency: int = 3
 
+    action_result_window_days: str = "7,30,90"
+
+    @property
+    def action_result_windows(self) -> tuple[int, ...]:
+        days = {int(part) for part in self.action_result_window_days.split(",") if part.strip()}
+        return tuple(sorted(day for day in days if day > 0))
+
     tier_sampling_enabled: bool = True
 
     prompt_config_source: Literal["hardcoded", "db"] = "hardcoded"
