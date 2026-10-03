@@ -7,7 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.action_catalog import load_action
-from app.db.models.agent_proposal import AgentProposal
+from app.db.models.agent import AgentActionCatalog
+from app.db.models.agent_proposal import AgentProposal, AgentProposalVariant
 from app.rag.guides import find_guides
 from app.rag.retrieve import Retrieved
 
@@ -59,17 +60,27 @@ def mix_instruction(content_mix: str | None) -> str | None:
     return f"{instruction} {GUIDE_RULE}"
 
 
+def guides_for_action(session: Session, action: AgentActionCatalog) -> list[Retrieved]:
+    return find_guides(session, action.action_code, f"{action.title}. {action.who}")
+
+
 def guide_brief_for_campaign(
-    session: Session, campaign_id: int, *, at: date | None = None
+    session: Session, campaign_id: int, *, at: date | None = None, variant: str | None = None
 ) -> GuideBrief:
     proposal = session.scalar(select(AgentProposal).where(AgentProposal.campaign_id == campaign_id))
     if proposal is None:
         return GuideBrief()
-    instruction = mix_instruction(proposal.content_mix)
+    instruction = mix_instruction(_content_mix(session, proposal, variant))
     if instruction is None:
         return GuideBrief()
     action = load_action(session, proposal.action_code, at or date.today())
     if action is None:
         return GuideBrief(mix_instruction=instruction)
-    guides = find_guides(session, action.action_code, f"{action.title}. {action.who}")
-    return GuideBrief(mix_instruction=instruction, guides=tuple(guides))
+    return GuideBrief(mix_instruction=instruction, guides=tuple(guides_for_action(session, action)))
+
+
+def _content_mix(session: Session, proposal: AgentProposal, variant: str | None) -> str | None:
+    if variant is None:
+        return proposal.content_mix
+    side = session.get(AgentProposalVariant, (proposal.proposal_id, variant))
+    return side.content_mix if side is not None else proposal.content_mix

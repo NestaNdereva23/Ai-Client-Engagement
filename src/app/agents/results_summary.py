@@ -5,9 +5,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, case, func, select
 from sqlalchemy.orm import Session
 
+from app.agents.guide_mix import MIX_LABELS
 from app.config import get_settings
 from app.db.models.action_performance import NONE_LABEL, ActionPerformance
 
@@ -18,6 +19,8 @@ PERCENT_DECIMALS = 1
 class ResultLine:
     action_code: str
     angle: str
+    variant: str
+    guide_mix: str
     sent_count: int
     reply_percent: float
     opt_out_percent: float
@@ -80,10 +83,16 @@ def read_results(
 
 
 def _summary_query(*, period_hours: int, window_days: int, since: datetime) -> Select[Any]:
+    tested_guide_mix = case(
+        (ActionPerformance.variant == NONE_LABEL, NONE_LABEL),
+        else_=ActionPerformance.content_mix,
+    )
     return (
         select(
             ActionPerformance.action_code,
             ActionPerformance.angle,
+            ActionPerformance.variant,
+            tested_guide_mix.label("guide_mix"),
             func.sum(ActionPerformance.sent_count).label("sent"),
             func.sum(ActionPerformance.replied_count).label("replied"),
             func.sum(ActionPerformance.opted_out_count).label("opted_out"),
@@ -97,8 +106,13 @@ def _summary_query(*, period_hours: int, window_days: int, since: datetime) -> S
             ActionPerformance.window_days == window_days,
             ActionPerformance.period_start >= since,
         )
-        .group_by(ActionPerformance.action_code, ActionPerformance.angle)
-        .order_by(ActionPerformance.action_code, ActionPerformance.angle)
+        .group_by(
+            ActionPerformance.action_code,
+            ActionPerformance.angle,
+            ActionPerformance.variant,
+            tested_guide_mix,
+        )
+        .order_by(ActionPerformance.action_code, ActionPerformance.angle, ActionPerformance.variant)
     )
 
 
@@ -106,17 +120,19 @@ def _line_from(row: Any) -> ResultLine:
     return ResultLine(
         action_code=row.action_code,
         angle=row.angle,
+        variant=row.variant,
+        guide_mix=row.guide_mix,
         sent_count=int(row.sent),
-        reply_percent=_percent(row.replied, row.sent),
-        opt_out_percent=_percent(row.opted_out, row.sent),
-        edit_percent=_percent(row.edited, row.sent),
-        deposit_percent=_percent(row.deposited, row.sent),
+        reply_percent=percent(row.replied, row.sent),
+        opt_out_percent=percent(row.opted_out, row.sent),
+        edit_percent=percent(row.edited, row.sent),
+        deposit_percent=percent(row.deposited, row.sent),
         money_in_kes=round(float(row.money)),
         periods=int(row.periods),
     )
 
 
-def _percent(count: int, sent: int) -> float:
+def percent(count: int, sent: int) -> float:
     return round(100 * int(count) / int(sent), PERCENT_DECIMALS)
 
 
@@ -124,6 +140,8 @@ def _line_as_dict(line: ResultLine) -> dict[str, Any]:
     return {
         "action_code": line.action_code,
         "angle": line.angle,
+        "variant": line.variant,
+        "guide_mix": line.guide_mix,
         "sent_count": line.sent_count,
         "reply_percent": line.reply_percent,
         "opt_out_percent": line.opt_out_percent,
@@ -172,11 +190,19 @@ def _prompt_line(line: ResultLine) -> str:
     label = line.action_code
     if line.angle != NONE_LABEL:
         label = f"{label} with the angle {line.angle}"
+    if line.variant != NONE_LABEL:
+        label = f"{label}, version {line.variant} ({_guide_note(line.guide_mix)})"
     return (
         f"- {label}: {line.sent_count} sent, {line.reply_percent:g}% replied, "
         f"{line.opt_out_percent:g}% opted out, {line.edit_percent:g}% edited by a reviewer, "
         f"{line.deposit_percent:g}% deposited, {line.money_in_kes:,.0f} KES came in."
     )
+
+
+def _guide_note(guide_mix: str) -> str:
+    if guide_mix == NONE_LABEL:
+        return "no client guide"
+    return f"guide mix: {MIX_LABELS.get(guide_mix, guide_mix)}"
 
 
 def _span(hours: int) -> str:

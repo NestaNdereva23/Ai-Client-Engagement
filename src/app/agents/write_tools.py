@@ -40,6 +40,8 @@ from app.agents.events import NO_EVENTS, EventLog
 from app.agents.guide_mix import guide_brief_for_campaign
 from app.agents.insight_members import resolve_insight_members
 from app.agents.insight_proposal import ACCEPTED, gate_members, save_insight_proposal
+from app.agents.orchestrator import Orchestrator
+from app.agents.proposal_split import Split, load_split, load_split_for_campaign
 from app.agents.proposal_state import transition_proposal
 from app.agents.propose import (
     DO_NOTHING_ACTION,
@@ -59,8 +61,8 @@ from app.config import Settings, get_settings
 from app.db.models.active_clients import FLAGGED_FOR_ACCOUNT_MANAGER, ActiveClientFund
 from app.db.models.agent_insight import AgentInsight
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
-from app.db.models.campaigns import CampaignStep
-from app.db.models.outreach import Campaign
+from app.db.models.campaigns import CampaignStep, Enrollment
+from app.db.models.outreach import Campaign, OutreachMessage
 from app.privacy.llm_client import ToolSpec
 from app.services.active_clients import ActiveClientNotFound, record_interaction
 
@@ -143,8 +145,39 @@ def draft_into_review_queue(
     and the client guide that fits its action are bound in the same way.
     """
     settings = settings or get_settings()
-    guide_brief = guide_brief_for_campaign(session, campaign_id)
-    orchestrator = build_default_orchestrator(
+    split = load_split_for_campaign(session, campaign_id)
+    variants = set(split.variant_of.values()) if split else {None}
+    orchestrators = {
+        variant: _orchestrator_for(session, settings, campaign_id, prohibitions, variant)
+        for variant in variants
+    }
+
+    def generate(
+        draft_session: Session, enrollment: Enrollment, step_no: int
+    ) -> OutreachMessage | None:
+        variant = split.variant_of.get(enrollment.client_id) if split else None
+        return generate_for_enrollment(
+            draft_session,
+            enrollment,
+            step_no,
+            orchestrator=orchestrators[variant],
+            channel=EMAIL_CHANNEL,
+            settings=settings,
+        )
+
+    outcomes = run_due_enrollments(session, campaign_id=campaign_id, generate=generate, limit=limit)
+    return sum(1 for outcome in outcomes if outcome.generated)
+
+
+def _orchestrator_for(
+    session: Session,
+    settings: Settings,
+    campaign_id: int,
+    prohibitions: Sequence[str],
+    variant: str | None,
+) -> Orchestrator:
+    guide_brief = guide_brief_for_campaign(session, campaign_id, variant=variant)
+    return build_default_orchestrator(
         session,
         settings,
         prompt_builder=functools.partial(
@@ -154,11 +187,10 @@ def draft_into_review_queue(
         ),
         extra_chunks=guide_brief.guides,
     )
-    generate = functools.partial(
-        generate_for_enrollment, orchestrator=orchestrator, channel=EMAIL_CHANNEL, settings=settings
-    )
-    outcomes = run_due_enrollments(session, campaign_id=campaign_id, generate=generate, limit=limit)
-    return sum(1 for outcome in outcomes if outcome.generated)
+
+
+def _angle_for(split: Split | None, client_id: int, default: str) -> str:
+    return default if split is None else split.angle_for(client_id, default)
 
 
 def run_proposal(
@@ -239,13 +271,14 @@ def run_proposal(
         row.included = False
         row.skip_reason = reason
 
+    split = load_split(session, proposal_id)
     ready = [
         member.client_id
         for member in still_allowed
         if prepare_client_for_drafting(
             session,
             member.client_id,
-            angle=proposal.angle,
+            angle=_angle_for(split, member.client_id, proposal.angle),
             chosen_by=proposal.action_code,
             catalog_version=proposal.catalog_version,
         )

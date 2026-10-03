@@ -142,3 +142,22 @@ class AgentProposalClient(Base):
     # Required whenever included is false. Null when the client was included.
     skip_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     variant: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class AgentProposalVariant(Base):
+    __tablename__ = "agent_proposal_variant"
+    __table_args__ = (
+        CheckConstraint("variant IN ('A', 'B')", name="ck_agent_proposal_variant_label"),
+        CheckConstraint(
+            "content_mix IS NULL OR content_mix IN "
+            "('learning_only', 'mostly_learning', 'balanced', 'mostly_ask')",
+            name="ck_agent_proposal_variant_content_mix",
+        ),
+    )
+
+    proposal_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("agent_proposal.proposal_id"), primary_key=True
+    )
+    variant: Mapped[str] = mapped_column(Text, primary_key=True)
+    angle: Mapped[str] = mapped_column(Text, nullable=False)
+    content_mix: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -17,6 +17,7 @@ from app.schemas.agent_proposals import (
     ProposalDecisionRequest,
     ProposalDecisionResultOut,
     ProposalStopRequest,
+    ProposalVersionsOut,
 )
 from app.services.agent_proposals import (
     ProposalNotFound,
@@ -28,6 +29,7 @@ from app.services.agent_proposals import (
     list_proposals,
     stop_proposal,
 )
+from app.services.proposal_versions import ProposalNotSplit, compare_versions
 
 router = APIRouter(
     prefix="/agent/proposals",
@@ -155,6 +157,21 @@ def list_agent_proposal_clients(
         items=[AgentProposalClientOut.model_validate(c) for c in clients],
         next_cursor=next_cursor,
     )
+
+
+@router.get("/{proposal_id}/versions", response_model=ProposalVersionsOut)
+def compare_agent_proposal_versions(
+    proposal_id: int,
+    window_days: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+) -> ProposalVersionsOut:
+    try:
+        comparison = compare_versions(session, proposal_id, window_days=window_days)
+    except ProposalNotFound:
+        raise HTTPException(status_code=404, detail="proposal not found") from None
+    except ProposalNotSplit as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    return ProposalVersionsOut.model_validate(comparison)
 
 
 @router.post("/{proposal_id}/decision", response_model=ProposalDecisionResultOut)

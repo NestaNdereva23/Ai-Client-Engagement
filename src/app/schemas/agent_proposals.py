@@ -44,6 +44,7 @@ class AgentProposalClientOut(BaseModel):
     unit_fund_id: int
     included: bool
     skip_reason: str | None
+    variant: str | None
 
 
 class AgentProposalDetailOut(AgentProposalSummaryOut):
@@ -80,3 +81,37 @@ class ProposalDecisionResultOut(BaseModel):
     status: str
     decided_by: str | None
     decided_at: datetime | None
+
+
+class ProposalVersionSideOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    variant: str
+    angle: str
+    guide_mix: str | None
+    guide_label: str
+    clients: int
+    measured: int
+    replied: int
+    opted_out: int
+    edited: int
+    deposited: int
+    money_in_kes: float
+    reply_percent: float | None
+    opt_out_percent: float | None
+    edit_percent: float | None
+    deposit_percent: float | None
+
+
+class ProposalVersionsOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    proposal_id: int
+    action_code: str
+    group_name: str
+    status: str
+    differs_in: Literal["angle", "guide"]
+    window_days: int
+    min_group_size: int
+    enough_to_compare: bool
+    sides: list[ProposalVersionSideOut]

@@ -8,14 +8,14 @@ from typing import Any, NamedTuple
 from zoneinfo import ZoneInfo
 
 import structlog
-from sqlalchemy import Select, and_, delete, func, insert, select
+from sqlalchemy import Select, and_, case, delete, func, insert, select
 from sqlalchemy.orm import Session
 
 from app.audit.log import record_audit
 from app.config import get_settings
 from app.db.models.action_performance import NONE_LABEL, UNKNOWN_LABEL, ActionPerformance
 from app.db.models.action_result import ActionResult
-from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
+from app.db.models.agent_proposal import AgentProposal, AgentProposalClient, AgentProposalVariant
 from app.db.models.llmops import GenerationRun
 from app.db.models.outreach import OutreachMessage
 from app.db.models.risk import RiskSnapshot
@@ -178,10 +178,18 @@ def _detail_query(window_days: int, complete_before: datetime) -> Select[Any]:
             ActionResult.deposited,
             ActionResult.deposit_amount_kes,
             AgentProposal.action_code,
-            func.coalesce(AgentProposal.angle, NONE_LABEL).label("angle"),
+            func.coalesce(AgentProposalVariant.angle, AgentProposal.angle, NONE_LABEL).label(
+                "angle"
+            ),
             func.coalesce(GenerationRun.priority_tier, UNKNOWN_LABEL).label("priority_tier"),
             func.coalesce(band_at_send, UNKNOWN_LABEL).label("risk_band"),
-            func.coalesce(AgentProposal.content_mix, NONE_LABEL).label("content_mix"),
+            func.coalesce(
+                case(
+                    (AgentProposalVariant.proposal_id.is_(None), AgentProposal.content_mix),
+                    else_=AgentProposalVariant.content_mix,
+                ),
+                NONE_LABEL,
+            ).label("content_mix"),
             func.coalesce(AgentProposalClient.variant, AgentProposal.variant, NONE_LABEL).label(
                 "variant"
             ),
@@ -195,6 +203,13 @@ def _detail_query(window_days: int, complete_before: datetime) -> Select[Any]:
                 AgentProposalClient.proposal_id == ActionResult.proposal_id,
                 AgentProposalClient.client_id == ActionResult.client_id,
                 AgentProposalClient.unit_fund_id == ActionResult.unit_fund_id,
+            ),
+        )
+        .outerjoin(
+            AgentProposalVariant,
+            and_(
+                AgentProposalVariant.proposal_id == ActionResult.proposal_id,
+                AgentProposalVariant.variant == AgentProposalClient.variant,
             ),
         )
         .where(ActionResult.window_days == window_days, ActionResult.sent_at < complete_before)

@@ -178,7 +178,10 @@ def test_the_drafting_step_hands_the_mix_and_the_guide_to_the_prompt(monkeypatch
         captured.update(kwargs)
         return object()
 
-    monkeypatch.setattr(write_tools, "guide_brief_for_campaign", lambda session, campaign_id: brief)
+    monkeypatch.setattr(
+        write_tools, "guide_brief_for_campaign", lambda session, campaign_id, variant=None: brief
+    )
+    monkeypatch.setattr(write_tools, "load_split_for_campaign", lambda session, campaign_id: None)
     monkeypatch.setattr(write_tools, "build_default_orchestrator", fake_orchestrator)
     monkeypatch.setattr(write_tools, "run_due_enrollments", lambda *args, **kwargs: [])
 
