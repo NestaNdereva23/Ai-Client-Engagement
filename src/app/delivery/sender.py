@@ -18,20 +18,25 @@ it), not something to paper over here.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 
 import structlog
+from sqlalchemy import select, union
 
 from app.audit.log import record_audit
 from app.campaigns.touch import SendBlocked, SenderFn, SendResult
 from app.config import Settings, get_settings
-from app.db.models.models import PiiVault
+from app.db.models.active_clients import ActiveClientFund
+from app.db.models.models import ClientFund, PiiVault
 from app.db.models.outreach import OutreachMessage
-from app.db.session import restricted_session
+from app.db.session import SessionLocal, restricted_session
 from app.delivery.mailer import EmailMessage, Mailer, get_mailer
 from app.delivery.test_recipients import ensure_test_recipient, pick_test_recipient
 
 logger = structlog.get_logger(__name__)
+
+_EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _contact_email(client_id: int) -> str | None:
@@ -47,6 +52,23 @@ def _contact_email(client_id: int) -> str | None:
         )
         session.commit()
         return vault.contact_email if vault else None
+
+
+def _advisor_emails(client_id: int) -> tuple[str, ...]:
+    """The account managers to copy on this client's email, each address once.
+
+    A client can be in the inactive book, the active book, or both. An address that is
+    not shaped like an email is left out, so one bad value cannot stop the send.
+    """
+    inactive = select(ClientFund.fa_email).where(
+        ClientFund.client_id == client_id, ClientFund.fa_email.is_not(None)
+    )
+    active = select(ActiveClientFund.fa_email).where(
+        ActiveClientFund.client_id == client_id, ActiveClientFund.fa_email.is_not(None)
+    )
+    with SessionLocal() as session:
+        addresses = session.scalars(union(inactive, active)).all()
+    return tuple(sorted(address for address in addresses if _EMAIL_SHAPE.match(address)))
 
 
 def build_email_sender(
@@ -75,7 +97,7 @@ def build_email_sender(
         subject = content["subject"]
         body = content["body"]
         if test_mode:
-            to = pick_test_recipient(message.client_id, "email")
+            to = pick_test_recipient(message.client_id, "email", message.campaign_id)
             subject = f"{settings.test_subject_prefix.strip()} {subject}"
             body = (
                 f"{body}\n\n--\nTest send for client {message.client_id}, "
@@ -89,7 +111,9 @@ def build_email_sender(
         if test_mode:
             ensure_test_recipient(to, "email")
 
-        result = mailer.send(EmailMessage(to=to, subject=subject, text_body=body))
+        # A test send goes only to the test list, so no real account manager is copied.
+        cc = () if test_mode else _advisor_emails(message.client_id)
+        result = mailer.send(EmailMessage(to=to, subject=subject, text_body=body, cc=cc))
         status = "sent" if result.sent else "recorded"
         logger.info("outreach_message.send", message_id=message.message_id, status=status)
         return SendResult(

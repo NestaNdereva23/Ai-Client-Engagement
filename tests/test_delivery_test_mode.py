@@ -18,7 +18,7 @@ from app.delivery.mailer import SendResult as MailerSendResult
 from app.delivery.sender import build_email_sender
 from app.delivery.sms_gateway import SmsMessage, SmsSendResult
 from app.delivery.sms_sender import build_sms_sender
-from app.delivery.test_recipients import ensure_test_recipient
+from app.delivery.test_recipients import ensure_test_recipient, pick_test_recipient
 from app.services.campaigns import create_campaign
 from app.services.review import _resolve_first_name
 
@@ -104,6 +104,17 @@ def test_email_goes_to_the_tester_not_the_client(tester: None):
     assert sent.subject == "[TEST] Hello"
 
 
+def test_test_mode_never_looks_up_or_copies_an_account_manager(tester: None, monkeypatch):
+    def no_advisor_lookup(client_id: int):
+        raise AssertionError("test mode looked up a real account manager")
+
+    monkeypatch.setattr("app.delivery.sender._advisor_emails", no_advisor_lookup)
+    mailer = FakeMailer()
+    build_email_sender(mailer, settings=_test_mode_settings())(a_message())
+
+    assert mailer.sent_messages[0].cc == ()
+
+
 def test_sms_goes_to_the_tester_not_the_client(tester: None):
     gateway = FakeGateway()
     build_sms_sender(gateway, settings=_test_mode_settings())(a_message())
@@ -124,6 +135,36 @@ def test_an_inactive_tester_gets_nothing(real_client: None):
         session.commit()
     with pytest.raises(SendBlocked, match="no_test_recipient"):
         build_email_sender(FakeMailer(), settings=_test_mode_settings())(a_message())
+
+
+def _add_three_testers() -> list[str]:
+    phones = ["+254711000961", "+254711000962", "+254711000963"]
+    with restricted_session() as session:
+        session.add_all(TestRecipient(name=f"Tester {n}", phone=p) for n, p in enumerate(phones))
+        session.commit()
+    return phones
+
+
+def test_testers_take_turns_so_everyone_gets_one_before_anyone_gets_two(
+    real_client: None, monkeypatch
+):
+    phones = _add_three_testers()
+    sends_so_far = iter(range(4))
+    monkeypatch.setattr("app.delivery.test_recipients._sends_so_far", lambda *_: next(sends_so_far))
+
+    picked = [pick_test_recipient(CLIENT_ID, "sms", 7) for _ in range(4)]
+
+    assert sorted(picked[:3]) == sorted(phones)
+    assert picked[3] == picked[0]
+
+
+def test_a_new_campaign_does_not_always_start_at_the_same_tester(real_client: None, monkeypatch):
+    _add_three_testers()
+    monkeypatch.setattr("app.delivery.test_recipients._sends_so_far", lambda *_: 0)
+
+    first_picks = {pick_test_recipient(CLIENT_ID, "sms", campaign_id) for campaign_id in (1, 2, 3)}
+
+    assert len(first_picks) == 3
 
 
 def test_final_check_refuses_an_address_off_the_list(tester: None):

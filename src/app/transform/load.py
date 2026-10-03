@@ -78,6 +78,8 @@ _CLIENT_FUND_UPDATE = [
     "has_extended_history",
     "activity_window_from",
     "activity_window_to",
+    "fa_name",
+    "fa_email",
 ]
 _TXN_UPDATE = [
     "txn_type",
@@ -188,6 +190,8 @@ def _client_fund_dict(c: ClientRow, m: RelationshipMeasures, *, is_primary: bool
         "has_extended_history": c.has_extended_history,
         "activity_window_from": c.activity_window_from,
         "activity_window_to": c.activity_window_to,
+        "fa_name": c.fa_name,
+        "fa_email": c.fa_email,
     }
 
 

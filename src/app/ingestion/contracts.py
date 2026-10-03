@@ -91,6 +91,8 @@ class ClientRecord(BaseModel):
     client_name: str | None = None
     client_email: str | None = None
     client_phone: str | None = None
+    fa_name: str | None = None
+    fa_email: str | None = None
     balance: float | None = 0
     computed_at: str | None = None
     last_5_purchases: list[TransactionRecord] = Field(default_factory=list)
@@ -98,6 +100,18 @@ class ClientRecord(BaseModel):
     activity_window: ActivityWindow | None = None
     purchases_last_12_months: list[TransactionRecord] = Field(default_factory=list)
     sales_last_12_months: list[TransactionRecord] = Field(default_factory=list)
+
+    @field_validator("fa_name", "fa_email", mode="before")
+    @classmethod
+    def _blank_to_none(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        return str(value).strip() or None
+
+    @field_validator("fa_email")
+    @classmethod
+    def _lowercase_email(cls, value: str | None) -> str | None:
+        return value.lower() if value else value
 
 
 class FundRecord(BaseModel):

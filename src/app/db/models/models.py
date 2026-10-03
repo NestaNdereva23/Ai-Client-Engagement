@@ -203,6 +203,8 @@ class ClientFund(Base):
     )
     activity_window_from: Mapped[date | None] = mapped_column(Date, nullable=True)
     activity_window_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    fa_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fa_email: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
