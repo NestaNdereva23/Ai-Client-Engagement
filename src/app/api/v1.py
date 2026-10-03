@@ -6,6 +6,7 @@ from app.api.routers import (
     active_clients,
     admin,
     agent_insights,
+    agent_patterns,
     agent_proposals,
     agent_runs,
     agent_studio,
@@ -32,6 +33,7 @@ router = APIRouter(prefix="/api/v1")
 router.include_router(review.router)
 router.include_router(agent_proposals.router)
 router.include_router(agent_insights.router)
+router.include_router(agent_patterns.router)
 router.include_router(agent_runs.router)
 router.include_router(ingestion.router)
 router.include_router(data_quality.router)

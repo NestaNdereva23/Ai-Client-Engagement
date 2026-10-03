@@ -83,6 +83,13 @@ from app.db.models.models import (
     RawStaging,
     Transactions,
 )
+from app.db.models.observed_pattern import (
+    PATTERN_COMPARISONS,
+    PATTERN_DIRECTIONS,
+    PATTERN_OUTCOMES,
+    PATTERN_STATUSES,
+    ObservedPattern,
+)
 from app.db.models.outreach import (
     CAMPAIGN_STATUSES,
     COHORT_STATUSES,
@@ -147,6 +154,10 @@ __all__ = [
     "INTERACTION_TYPES",
     "MESSAGE_STATUSES",
     "MESSAGE_TEMPLATE_STATUSES",
+    "PATTERN_COMPARISONS",
+    "PATTERN_DIRECTIONS",
+    "PATTERN_OUTCOMES",
+    "PATTERN_STATUSES",
     "PERMISSION_LEVELS",
     "PROPOSAL_STATUSES",
     "REVIEWER_ROLES",
@@ -205,6 +216,7 @@ __all__ = [
     "MessageAngleCatalog",
     "MessageTemplate",
     "ModelVersion",
+    "ObservedPattern",
     "OutputPolicy",
     "OutreachMessage",
     "PersonalizationPolicy",

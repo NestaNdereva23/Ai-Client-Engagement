@@ -235,6 +235,12 @@ class Settings(BaseSettings):
     def action_performance_lookback_hours(self) -> int:
         return parse_hours(self.action_performance_lookback, setting="ACTION_PERFORMANCE_LOOKBACK")
 
+    pattern_min_group_size: int = 30
+    pattern_min_gap_points: float = 5.0
+    pattern_min_z: float = 3.0
+    pattern_max_features: int = 3
+    pattern_max_per_run: int = 10
+
     tier_sampling_enabled: bool = True
 
     prompt_config_source: Literal["hardcoded", "db"] = "hardcoded"

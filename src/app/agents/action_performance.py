@@ -137,7 +137,7 @@ def _rebuild_window(session: Session, cut: Cut) -> int:
 
 def _tally_results(session: Session, cut: Cut, complete_before: datetime) -> dict[Cell, Tally]:
     tallies: dict[Cell, Tally] = defaultdict(Tally)
-    for row in session.execute(_detail_query(cut.window_days, complete_before)):
+    for row in session.execute(detail_query(cut.window_days, complete_before)):
         cell = Cell(
             period_index=cut.index_of(row.sent_at),
             action_code=row.action_code,
@@ -157,7 +157,7 @@ def _tally_results(session: Session, cut: Cut, complete_before: datetime) -> dic
     return tallies
 
 
-def _detail_query(window_days: int, complete_before: datetime) -> Select[Any]:
+def detail_query(window_days: int, complete_before: datetime) -> Select[Any]:
     band_at_send = (
         select(RiskSnapshot.risk_band)
         .where(
@@ -172,6 +172,7 @@ def _detail_query(window_days: int, complete_before: datetime) -> Select[Any]:
     return (
         select(
             ActionResult.sent_at,
+            AgentProposal.group_name,
             ActionResult.replied,
             ActionResult.opted_out,
             ActionResult.reviewer_changed,

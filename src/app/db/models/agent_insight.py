@@ -29,12 +29,14 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
+PATTERN_KIND = "pattern"
+
 INSIGHT_KINDS = (
     "risk",
     "opportunity",
     "lifecycle_change",
     "anomaly",
-    "pattern",
+    PATTERN_KIND,
     "campaign",
 )
 

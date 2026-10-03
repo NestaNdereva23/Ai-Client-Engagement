@@ -67,7 +67,7 @@ from app.db.models.agent_event import (
     STEP_STARTED,
     WARNING,
 )
-from app.db.models.agent_insight import AgentInsight
+from app.db.models.agent_insight import PATTERN_KIND, AgentInsight
 from app.db.models.agent_proposal import AgentProposal
 from app.db.models.agent_run import ACTION_AGENT, AgentRun
 from app.llmops.spans import ModelCallTally, counting_converse, traced_converse, traced_tool_call
@@ -698,6 +698,11 @@ def start_action_run(session: Session, insight_id: int, *, trigger: str = "manua
     if insight.state != ACCEPTED:
         raise InsightNotActionable(
             f"finding {insight_id} is {insight.state}, and only an accepted finding may be acted on"
+        )
+    if insight.kind == PATTERN_KIND:
+        raise InsightNotActionable(
+            f"finding {insight_id} is a pattern, which is for a person to read and never starts "
+            "an action"
         )
     return start_agent_run(session, trigger=trigger, kind=ACTION_AGENT, insight_id=insight_id)
 
