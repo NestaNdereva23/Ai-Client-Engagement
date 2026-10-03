@@ -241,6 +241,9 @@ class Settings(BaseSettings):
     pattern_max_features: int = 3
     pattern_max_per_run: int = 10
 
+    lifecycle_insight_max_clients: int = 5000
+    lifecycle_auto_max_clients: int = 100
+
     tier_sampling_enabled: bool = True
 
     prompt_config_source: Literal["hardcoded", "db"] = "hardcoded"

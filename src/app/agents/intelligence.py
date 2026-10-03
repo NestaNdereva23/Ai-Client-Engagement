@@ -36,6 +36,12 @@ from app.agents.insight_tools import (
     insight_tool_specs,
     make_insight_tools,
 )
+from app.agents.lifecycle_rules import run_lifecycle_rules
+from app.agents.lifecycle_tools import (
+    WRITE_LIFECYCLE_CHANGE,
+    lifecycle_tool_specs,
+    make_lifecycle_tools,
+)
 from app.agents.prompt_versioning import INTELLIGENCE_INVESTIGATION, active_prompt
 from app.agents.query_fields import FIELD_NAMES, MEASURES
 from app.agents.query_tools import QUERY_TOOL_SPECS
@@ -312,7 +318,7 @@ def build_investigation_system_prompt(*, brief: GroupBrief, context: GatheredCon
 
 def investigation_tool_specs() -> tuple[ToolSpec, ...]:
     """Everything one investigation may call: read, ask, and write down."""
-    return (*TOOL_SPECS, *QUERY_TOOL_SPECS, *insight_tool_specs())
+    return (*TOOL_SPECS, *QUERY_TOOL_SPECS, *insight_tool_specs(), *lifecycle_tool_specs())
 
 
 def _counting_converse(
@@ -360,15 +366,19 @@ async def investigate_group(
     write_tools = make_insight_tools(
         run_id=run_id, dismissals=dismissals, budget=budget, events=events
     )
-    inner_write = write_tools[WRITE_INSIGHT]
+    write_tools.update(make_lifecycle_tools(run_id=run_id, budget=budget, events=events))
 
-    def write_insight(session: Session, **arguments: Any) -> dict[str, Any]:
-        result = inner_write(session, **arguments)
-        if result.get("status") == "written":
-            written_ids.append(result["insight_id"])
-        return result
+    def collecting(inner):
+        def write(session: Session, **arguments: Any) -> dict[str, Any]:
+            result = inner(session, **arguments)
+            if result.get("status") == "written":
+                written_ids.append(result["insight_id"])
+            return result
 
-    write_tools[WRITE_INSIGHT] = write_insight
+        return write
+
+    for name in (WRITE_INSIGHT, WRITE_LIFECYCLE_CHANGE):
+        write_tools[name] = collecting(write_tools[name])
 
     blocking_session = SessionLocal()
     tally = ModelCallTally()
@@ -646,6 +656,7 @@ def build_intelligence_graph(
                 run_id=str(run_id),
                 detail=_outcome_detail(outcome),
             )
+        run_lifecycle_rules(session, run_id=run_id)
         session.commit()
         logger.info(
             "intelligence.record",
