@@ -47,6 +47,12 @@ from app.agents.propose import (
     member_key,
     skip_reason_counts,
 )
+from app.agents.results_summary import (
+    ResultsSummary,
+    read_results,
+    results_as_dict,
+    results_prompt_text,
+)
 from app.agents.run_cost import run_cost_kes
 from app.agents.tool_runtime import make_tool_executor
 from app.agents.tools import TOOL_SPECS
@@ -87,6 +93,12 @@ NO_CLIENTS_FOUND = "no_clients_found"
 NOT_CHOSEN = "no_response_was_chosen"
 
 MODEL_CHOSE_NOTHING = "the model did not settle on a response for this finding"
+
+CHOOSE_RESULTS_ASK = (
+    "Read these numbers before you choose. In your reason, name the numbers that made "
+    "you pick your response. If the response you pick has nothing measured yet, say so "
+    "in your reason."
+)
 
 
 class InsightNotActionable(Exception):
@@ -177,6 +189,7 @@ def build_choose_system_prompt(
     brief: InsightBrief,
     actions: Mapping[str, AgentActionCatalog],
     as_of: date,
+    results: ResultsSummary | None = None,
 ) -> tuple[str, int]:
     menu = "\n".join(
         f"- {code}: {row.title}. Who it is for: {row.who}. "
@@ -211,6 +224,12 @@ def build_choose_system_prompt(
         menu=menu,
         tool_name=CHOOSE_RESPONSE_TOOL_NAME,
     )
+    if results is not None:
+        sending = sorted(code for code, action in actions.items() if action.message_angle)
+        prompt = (
+            f"{prompt}\n\n"
+            f"{results_prompt_text(results, ask=CHOOSE_RESULTS_ASK, action_codes=sending)}"
+        )
     return prompt, row.version
 
 
@@ -397,8 +416,9 @@ def build_action_agent_graph(
         attempts = 0
         tally = ModelCallTally()
 
+        results = read_results(session)
         system_prompt, prompt_version = build_choose_system_prompt(
-            session, brief=brief, actions=actions, as_of=as_of
+            session, brief=brief, actions=actions, as_of=as_of, results=results
         )
         tools = (*TOOL_SPECS, build_choose_response_tool_spec(actions=actions))
         converse = traced_converse(
@@ -475,6 +495,7 @@ def build_action_agent_graph(
                 "angle": None if choice is None else choice.angle,
                 "attempts": attempts,
                 "last_error": last_error,
+                "results_shown": results_as_dict(results)["results"],
                 **tally.as_detail(),
             },
         )

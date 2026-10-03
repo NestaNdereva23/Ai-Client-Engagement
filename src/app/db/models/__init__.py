@@ -4,6 +4,7 @@ Importing this package registers every model on ``Base.metadata`` so migrations
 and ``create_all`` see them.
 """
 
+from app.db.models.action_performance import ActionPerformance
 from app.db.models.action_result import ActionResult
 from app.db.models.active_clients import (
     INTERACTION_TYPES,
@@ -147,6 +148,7 @@ __all__ = [
     "REVIEW_OUTCOMES",
     "SIGNAL_RUN_STATES",
     "TEMPLATE_REVIEW_OUTCOMES",
+    "ActionPerformance",
     "ActionResult",
     "ActiveClientFund",
     "ActiveClientInteraction",

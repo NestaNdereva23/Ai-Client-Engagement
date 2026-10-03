@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.action_catalog import load_action, load_active_actions
 from app.agents.permissions import effective_permission, resolve_permission
+from app.agents.results_summary import read_results, results_as_dict
 from app.agents.watchlist import (
     GROUP_NAMES,
     WatchGroup,
@@ -371,6 +372,31 @@ def check_allowance(
     }
 
 
+def get_results(
+    session: Session,
+    *,
+    action_code: str | None = None,
+    angle: str | None = None,
+    priority_tier: str | None = None,
+    risk_band: str | None = None,
+    content_mix: str | None = None,
+    variant: str | None = None,
+    window_days: int | None = None,
+) -> dict[str, Any]:
+    return results_as_dict(
+        read_results(
+            session,
+            action_code=action_code,
+            angle=angle,
+            priority_tier=priority_tier,
+            risk_band=risk_band,
+            content_mix=content_mix,
+            variant=variant,
+            window_days=window_days,
+        )
+    )
+
+
 TOOL_FUNCTIONS: dict[str, Callable[..., dict[str, Any]]] = {
     "list_groups": list_groups,
     "describe_group": describe_group,
@@ -380,6 +406,7 @@ TOOL_FUNCTIONS: dict[str, Callable[..., dict[str, Any]]] = {
     "list_angles": list_angles,
     "estimate_cost": estimate_cost,
     "check_allowance": check_allowance,
+    "get_results": get_results,
 }
 
 _AS_OF_PROPERTY = {
@@ -513,6 +540,42 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
                     ),
                 },
                 "as_of": _AS_OF_PROPERTY,
+            },
+        },
+    ),
+    ToolSpec(
+        name="get_results",
+        description=(
+            "What earlier messages led to, for each action and angle over the recent past: "
+            "how many were sent, the share that replied, opted out, were edited by a "
+            "reviewer and made a deposit, and the money that came in. Look at this before "
+            "you choose a response."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "action_code": {
+                    "type": "string",
+                    "description": "Only this action. Leave out for every action.",
+                },
+                "angle": {"type": "string", "description": "Only this message angle."},
+                "priority_tier": {"type": "string", "description": "Only this client tier."},
+                "risk_band": {
+                    "type": "string",
+                    "description": "Only clients in this risk band when the message was sent.",
+                },
+                "content_mix": {
+                    "type": "string",
+                    "description": "Only this guide mix, for example balanced.",
+                },
+                "variant": {"type": "string", "description": "Only this version of a message."},
+                "window_days": {
+                    "type": "integer",
+                    "description": (
+                        "How many days after sending the outcome was measured. "
+                        "Leave out for the usual one."
+                    ),
+                },
             },
         },
     ),

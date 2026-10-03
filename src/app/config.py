@@ -12,6 +12,8 @@ import structlog
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.durations import parse_hours
+
 
 @dataclass(frozen=True)
 class FaRecord:
@@ -220,6 +222,18 @@ class Settings(BaseSettings):
     def action_result_windows(self) -> tuple[int, ...]:
         days = {int(part) for part in self.action_result_window_days.split(",") if part.strip()}
         return tuple(sorted(day for day in days if day > 0))
+
+    action_performance_period: str = "7d"
+    action_performance_lookback: str = "90d"
+    action_performance_read_window_days: int = 30
+
+    @property
+    def action_performance_period_hours(self) -> int:
+        return parse_hours(self.action_performance_period, setting="ACTION_PERFORMANCE_PERIOD")
+
+    @property
+    def action_performance_lookback_hours(self) -> int:
+        return parse_hours(self.action_performance_lookback, setting="ACTION_PERFORMANCE_LOOKBACK")
 
     tier_sampling_enabled: bool = True
 

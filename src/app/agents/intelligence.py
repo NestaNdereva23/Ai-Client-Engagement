@@ -39,6 +39,7 @@ from app.agents.insight_tools import (
 from app.agents.prompt_versioning import INTELLIGENCE_INVESTIGATION, active_prompt
 from app.agents.query_fields import FIELD_NAMES, MEASURES
 from app.agents.query_tools import QUERY_TOOL_SPECS
+from app.agents.results_summary import read_results, results_prompt_text
 from app.agents.run_cost import run_cost_kes
 from app.agents.tool_runtime import (
     CallBudget,
@@ -85,6 +86,12 @@ RECENT_FINDINGS_SHOWN = 8
 
 STATES_WAITING_ON_A_PERSON = ("new", "accepted")
 
+RESULTS_ASK = (
+    "Read these numbers before you write anything down. When you suggest a response, "
+    "name the numbers here that support it, in your suggestion or in why you are that "
+    "sure. If nothing has been measured for it, say so."
+)
+
 
 @dataclass(frozen=True)
 class GroupBrief:
@@ -124,6 +131,7 @@ class GatheredContext:
     waiting_on_a_person: int
     prompt_template: str
     prompt_version: int
+    results_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -240,6 +248,7 @@ def gather_context(session: Session, as_of: date) -> GatheredContext:
         waiting_on_a_person=waiting,
         prompt_template=prompt_row.template,
         prompt_version=prompt_row.version,
+        results_text=results_prompt_text(read_results(session), ask=RESULTS_ASK),
     )
 
 
@@ -287,7 +296,7 @@ def _size_lines(brief: GroupBrief, context: GatheredContext) -> str:
 
 
 def build_investigation_system_prompt(*, brief: GroupBrief, context: GatheredContext) -> str:
-    return context.prompt_template.format(
+    prompt = context.prompt_template.format(
         as_of=context.as_of.isoformat(),
         group_name=brief.name,
         question=brief.question,
@@ -298,6 +307,7 @@ def build_investigation_system_prompt(*, brief: GroupBrief, context: GatheredCon
         field_names=", ".join(FIELD_NAMES),
         measures=", ".join(MEASURES),
     )
+    return f"{prompt}\n\n{context.results_text}" if context.results_text else prompt
 
 
 def investigation_tool_specs() -> tuple[ToolSpec, ...]:
