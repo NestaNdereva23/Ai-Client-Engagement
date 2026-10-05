@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
+from functools import lru_cache
 from typing import Any
 
 import structlog
 from pydantic import BaseModel, ValidationError
 
+from app.config import get_settings
 from app.privacy.fact_block import ModelFactBlock, RiskFactBlock
 
 logger = structlog.get_logger(__name__)
@@ -76,6 +78,19 @@ _INBOUND_CATEGORIES = ("email", "account_or_phone", "money", "date")
 # A placeholder-only draft may not carry a live contact channel.
 _OUTBOUND_CATEGORIES = ("email", "account_or_phone")
 _PLACEHOLDER = re.compile(r"\{\{[^}]*\}\}")
+
+
+@lru_cache(maxsize=8)
+def _public_contact_patterns(numbers: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
+    return tuple(re.compile(r"[\s().+-]*".join(number)) for number in numbers)
+
+
+def _strip_public_contacts(text: str) -> str:
+    numbers = tuple(get_settings().public_contact_numbers_list)
+    for pattern in _public_contact_patterns(numbers):
+        text = pattern.sub(" ", text)
+    return text
+
 
 # Fields ModelFactBlock's validator may silently correct rather than reject:
 # an amount rounds, and a cadence fact nulls out when there is no real
@@ -196,7 +211,7 @@ def scan_outbound(draft: str, identifiers: Iterable[str] = ()) -> None:
     Placeholders like {{first_name}} are allowed; a literal contact channel or a
     real client value is not.
     """
-    text = _PLACEHOLDER.sub(" ", draft)
+    text = _strip_public_contacts(_PLACEHOLDER.sub(" ", draft))
     reasons = _pattern_reasons(text, _OUTBOUND_CATEGORIES) + _literal_reasons(text, identifiers)
     if reasons:
         logger.warning("outbound_blocked", reasons=reasons)

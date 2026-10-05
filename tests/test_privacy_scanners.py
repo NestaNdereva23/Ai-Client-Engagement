@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.config import get_settings
 from app.privacy.scanners import InboundLeak, OutboundLeak, scan_inbound, scan_outbound
 from app.transform.features import (
     CADENCE_BANDS,
@@ -170,6 +171,49 @@ def test_outbound_still_blocks_a_phone_number_next_to_a_date() -> None:
 def test_a_placeholder_is_not_a_literal_even_if_it_names_the_value() -> None:
     # The real first name is Jane; the placeholder token is allowed.
     assert scan_outbound("Hi {{first_name}}", identifiers=["Jane"]) is None
+
+
+@pytest.fixture
+def public_numbers(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    numbers = ["0100000001", "0100000002"]
+    monkeypatch.setenv("PUBLIC_CONTACT_NUMBERS", ",".join(numbers))
+    get_settings.cache_clear()
+    yield numbers
+    get_settings.cache_clear()
+
+
+def test_outbound_allows_the_configured_public_contact_numbers(
+    public_numbers: list[str],
+) -> None:
+    plain = "Customer Care 24/7: " + " or WhatsApp ".join(public_numbers) + "."
+    assert scan_outbound(plain) is None
+
+
+def test_outbound_allows_a_public_number_that_was_reformatted(
+    public_numbers: list[str],
+) -> None:
+    number = public_numbers[0]
+    spaced = " ".join([number[:4], number[4:7], number[7:]])
+    assert scan_outbound(f"Call {spaced} any time.") is None
+
+
+def test_outbound_still_blocks_a_client_number_beside_the_public_ones(
+    public_numbers: list[str],
+) -> None:
+    with pytest.raises(OutboundLeak):
+        scan_outbound(f"Customer Care {public_numbers[0]}. Your line on file is 0712345678.")
+
+
+def test_outbound_blocks_a_public_number_when_none_are_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PUBLIC_CONTACT_NUMBERS", "")
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(OutboundLeak):
+            scan_outbound("Customer Care 0100000001.")
+    finally:
+        get_settings.cache_clear()
 
 
 def test_outbound_allows_a_tool_result_with_a_large_group_total() -> None:
