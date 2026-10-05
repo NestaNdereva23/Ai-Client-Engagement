@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from app.agents import guardrails
 from app.agents.guardrails import (
     MAX_BODY_LENGTH,
     GuardrailFailure,
@@ -26,6 +27,11 @@ from app.agents.guardrails import (
 class FakeChunk:
     chunk_id: int
     text: str
+
+
+@dataclass(frozen=True)
+class FakeSettings:
+    public_contact_numbers_list: list[str]
 
 
 @dataclass(frozen=True)
@@ -120,6 +126,41 @@ def test_every_untraceable_number_is_named_in_the_failure() -> None:
         _check("We saw 111,111 and 222,222 from you.")
     assert "111,111" in str(exc.value)
     assert "222,222" in str(exc.value)
+
+
+# --- our own public contact numbers ---
+
+
+def test_a_public_contact_number_passes_without_a_fact(monkeypatch) -> None:
+    monkeypatch.setattr(
+        guardrails,
+        "get_settings",
+        lambda: FakeSettings(["809", "0709101200", "0742910036"]),
+    )
+    _check("Dial *809#. Call 0709101200 or WhatsApp 0742910036.", facts=None)
+
+
+def test_a_number_not_on_the_public_list_is_still_caught(monkeypatch) -> None:
+    monkeypatch.setattr(
+        guardrails,
+        "get_settings",
+        lambda: FakeSettings(["0709101200"]),
+    )
+    with pytest.raises(GuardrailFailure, match="trace to no fact"):
+        _check("Call 0709101200 or our other line 0712345678.", facts=None)
+
+
+def test_instance_check_allows_a_public_contact_number(monkeypatch) -> None:
+    monkeypatch.setattr(
+        guardrails,
+        "get_settings",
+        lambda: FakeSettings(["0709101200"]),
+    )
+    instance_numeric_traceability_check(
+        template_body="Dear {{first_name}}, come back to us.",
+        resolved_body="Dear Jane, call us on 0709101200.",
+        client_facts=None,
+    )
 
 
 # --- the allowed set itself ---
