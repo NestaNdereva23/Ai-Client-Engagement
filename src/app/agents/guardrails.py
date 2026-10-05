@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from app.agents.email_agent import BANNED_WORDS
+from app.config import get_settings
 from app.rag.grounding import UngroundedClaim, enforce_grounding
 
 # A short win back email: long enough to be a real message, short enough to
@@ -98,6 +99,13 @@ def traceable_numbers(facts: Mapping[str, Any] | None, chunks: Sequence[Any] = (
     return allowed
 
 
+def public_contact_numbers() -> set[str]:
+    allowed: set[str] = set()
+    for number in get_settings().public_contact_numbers_list:
+        allowed |= set(_numbers_in(number))
+    return allowed
+
+
 def default_numeric_traceability_check(state: Mapping[str, Any]) -> None:
     """Every number in the body must trace to a supplied fact or retrieved chunk.
 
@@ -106,6 +114,7 @@ def default_numeric_traceability_check(state: Mapping[str, Any]) -> None:
     """
     body = _PLACEHOLDER.sub(" ", _content(state).get("body") or "")
     allowed = traceable_numbers(state.get("facts"), state.get("chunks", []))
+    allowed |= public_contact_numbers()
     untraceable = sorted({number for number in _numbers_in(body) if number not in allowed})
     if untraceable:
         raise GuardrailFailure(
@@ -289,7 +298,7 @@ def instance_numeric_traceability_check(
     figure.
     """
     already_allowed = set(_numbers_in(_PLACEHOLDER.sub(" ", template_body)))
-    allowed = already_allowed | traceable_numbers(client_facts)
+    allowed = already_allowed | traceable_numbers(client_facts) | public_contact_numbers()
     untraceable = sorted({number for number in _numbers_in(resolved_body) if number not in allowed})
     if untraceable:
         raise GuardrailFailure(
