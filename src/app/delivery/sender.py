@@ -55,11 +55,6 @@ def _contact_email(client_id: int) -> str | None:
 
 
 def _advisor_emails(client_id: int) -> tuple[str, ...]:
-    """The account managers to copy on this client's email, each address once.
-
-    A client can be in the inactive book, the active book, or both. An address that is
-    not shaped like an email is left out, so one bad value cannot stop the send.
-    """
     inactive = select(ClientFund.fa_email).where(
         ClientFund.client_id == client_id, ClientFund.fa_email.is_not(None)
     )
@@ -74,17 +69,6 @@ def _advisor_emails(client_id: int) -> tuple[str, ...]:
 def build_email_sender(
     mailer: Mailer | None = None, *, settings: Settings | None = None
 ) -> SenderFn:
-    """A SenderFn that hands an approved message to the configured Mailer.
-
-    mailer defaults to get_mailer(settings): the recording no-op with no
-    SMTP host configured, the same fallback every other mail path in the
-    app already uses, so an unconfigured environment stays quiet rather
-    than raising mid-send.
-
-    The chosen Mailer is exposed as send.mailer, so a caller sending a
-    whole batch through this SenderFn (send_campaign, for one) can close()
-    it once the batch is done instead of leaving a connection open.
-    """
     settings = settings or get_settings()
     mailer = mailer if mailer is not None else get_mailer(settings)
     test_mode = settings.delivery_mode == "test"

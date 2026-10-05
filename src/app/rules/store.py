@@ -71,6 +71,7 @@ MESSAGE_ANGLES = {
     "fee_warning",
     "fee_pressure_warning_dormant",
     "fee_pressure_encourage_active",
+    "first_deposit_welcome",
 }
 URGENCIES = {"low", "medium", "high"}
 
