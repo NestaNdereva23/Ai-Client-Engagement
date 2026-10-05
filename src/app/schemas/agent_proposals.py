@@ -27,6 +27,7 @@ class AgentProposalSummaryOut(BaseModel):
     skip_reason_counts: dict[str, int] | None
     status: str
     permission_applied: str
+    content_mix: str | None = None
     created_at: datetime
     decided_at: datetime | None
     card_title: str
@@ -54,7 +55,6 @@ class AgentProposalDetailOut(AgentProposalSummaryOut):
     evidence: str
     reason: str
     angle: str | None
-    content_mix: str | None
     campaign_id: int | None
     decided_by: str | None
 

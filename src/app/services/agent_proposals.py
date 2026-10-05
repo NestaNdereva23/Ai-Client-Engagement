@@ -14,6 +14,7 @@ from app.agents.proposal_state import transition_proposal
 from app.agents.propose import DO_NOTHING_ACTION
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.outreach import Campaign
+from app.db.session import SessionLocal
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_id_cursor, encode_id_cursor
 
 logger = structlog.get_logger(__name__)
@@ -291,17 +292,22 @@ def decide_proposal(
         reason=reason,
         decided_by=decided_by,
     )
-    if decision == "approve" and proposal.action_code != DO_NOTHING_ACTION:
-        session.commit()
-        from app.agents.write_tools import run_proposal
+    return proposal
 
+
+def proposal_needs_enrollment(proposal: AgentProposal) -> bool:
+    return proposal.status == "approved" and proposal.action_code != DO_NOTHING_ACTION
+
+
+def run_proposal_in_background(proposal_id: int) -> None:
+    from app.agents.write_tools import run_proposal
+
+    with SessionLocal() as session:
         try:
             run_proposal(session, proposal_id)
         except Exception:
             session.rollback()
             logger.exception("decide_proposal.run_proposal_failed", proposal_id=proposal_id)
-            proposal = get_proposal(session, proposal_id)
-    return proposal
 
 
 def stop_proposal(

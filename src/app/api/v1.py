@@ -3,9 +3,11 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api.routers import (
+    action_catalog,
     active_clients,
     admin,
     agent_insights,
+    agent_metrics,
     agent_patterns,
     agent_proposals,
     agent_runs,
@@ -14,6 +16,7 @@ from app.api.routers import (
     audit,
     briefing,
     campaigns,
+    chat,
     clients,
     data_quality,
     delivery,
@@ -54,3 +57,6 @@ router.include_router(delivery.router)
 router.include_router(situations.router)
 router.include_router(agent_studio.router)
 router.include_router(app_settings.router)
+router.include_router(chat.router)
+router.include_router(agent_metrics.router)
+router.include_router(action_catalog.router)

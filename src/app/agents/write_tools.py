@@ -32,6 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.action_brief import proposal_prohibitions
+from app.agents.action_rules import tell_account_managers
 from app.agents.agent_loop import GroupDecision
 from app.agents.email_agent import build_system_prompt
 from app.agents.email_channel import CHANNEL as EMAIL_CHANNEL
@@ -339,6 +340,8 @@ def run_proposal(
         campaign_id=campaign.campaign_id,
         prohibitions=proposal_prohibitions(session, proposal),
     )
+    told = tell_account_managers(session, proposal, campaign.campaign_id, author=AGENT_ACTOR)
+    session.commit()
     logger.info(
         "agent_write_tool.run_proposal",
         run_id=run_id,
@@ -346,6 +349,7 @@ def run_proposal(
         campaign_id=campaign.campaign_id,
         enrolled_count=len(enrollments),
         drafted_count=drafted,
+        account_managers_told=told,
     )
     return {
         "status": RUNNING,
@@ -354,6 +358,7 @@ def run_proposal(
         "enrolled_count": len(enrollments),
         "dropped_since_proposed": dropped,
         "drafted_count": drafted,
+        "account_managers_told": told,
         "note": "the drafts are waiting in the review queue and nothing has been sent",
     }
 

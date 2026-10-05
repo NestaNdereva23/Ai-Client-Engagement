@@ -71,6 +71,11 @@ MESSAGE_ANGLES = {
     "fee_warning",
     "fee_pressure_warning_dormant",
     "fee_pressure_encourage_active",
+    "follow_up_when_no_one_called",
+    "suggest_second_fund",
+    "ask_what_changed",
+    "send_learning_note",
+    "start_win_back",
 }
 URGENCIES = {"low", "medium", "high"}
 

@@ -48,6 +48,7 @@ from app.db.models.campaigns import (
     Enrollment,
     TouchLog,
 )
+from app.db.models.chat import ChatSession, ChatTurn
 from app.db.models.client_lifecycle import (
     LIFECYCLE_OUTCOMES,
     LIFECYCLE_STATES,
@@ -201,6 +202,8 @@ __all__ = [
     "Campaign",
     "CampaignStep",
     "CampaignTemplatePolicy",
+    "ChatSession",
+    "ChatTurn",
     "ClientComplaint",
     "ClientFeatures",
     "ClientFund",

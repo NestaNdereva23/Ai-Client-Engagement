@@ -27,7 +27,17 @@ GUIDES = (
         "periods, for example by buying treasury bills or placing it in bank deposits. "
         "The aim is to keep your money safe and easy to reach while it earns a steady "
         "return. The return moves with market rates and is never guaranteed.",
-        (),
+        ("send_learning_note",),
+    ),
+    (
+        "Why some investors hold more than one fund",
+        "Funds",
+        "Different funds are built for different jobs. Some are meant for money you may "
+        "need soon, and others for money you can leave for longer. Many investors hold "
+        "more than one fund so that each part of their savings has a clear purpose. "
+        "Knowing what each fund is for makes it easier to choose, and there is never "
+        "any rush.",
+        ("suggest_second_fund", "send_learning_note"),
     ),
     (
         "Why small regular deposits beat one large one",
@@ -36,7 +46,7 @@ GUIDES = (
         "to invest one large amount. You do not have to guess the right moment, and a "
         "small habit is easier to keep than a big payment. Over time the small deposits "
         "add up.",
-        ("welcome_and_top_up",),
+        ("welcome_and_top_up", "send_learning_note"),
     ),
 )
 

@@ -137,6 +137,8 @@ class Settings(BaseSettings):
     agent_llm_temperature: float | None = None
     agent_llm_max_tokens: int = 2048
     agent_run_after_risk_detection: bool = False
+    agent_resume_campaigns_enabled: bool = True
+    agent_run_stale_after_minutes: int = 120
     agent_report_recipients: str = ""
 
     langfuse_base_url: str = ""
@@ -216,12 +218,20 @@ class Settings(BaseSettings):
     agent_investigation_max_turns: int = 8
     agent_investigation_concurrency: int = 3
 
+    # How many turns one chat question may take before it must answer, so a
+    # single question cannot loop on the tools without end.
+    agent_chat_max_turns: int = 10
+
     action_result_window_days: str = "7,30,90"
 
     @property
     def action_result_windows(self) -> tuple[int, ...]:
         days = {int(part) for part in self.action_result_window_days.split(",") if part.strip()}
         return tuple(sorted(day for day in days if day > 0))
+
+    metrics_lookback_days: int = 90
+    metrics_window_days: int = 30
+    metrics_stay_balance_kes: float = 1000.0
 
     action_performance_period: str = "7d"
     action_performance_lookback: str = "90d"

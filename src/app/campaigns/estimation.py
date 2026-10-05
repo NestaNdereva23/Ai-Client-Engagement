@@ -267,12 +267,12 @@ def _resolve_eligible_profile_keys(
         if any(occurred_at > last_sent_at for occurred_at in reply_times):
             continue
 
-        if _reengaged(clients_by_id.get(client_id), enrollment):
+        features = features_by_client[client_id]
+        if _reengaged(clients_by_id.get(client_id), enrollment, features.active_book_auto_checkin):
             continue
         if client_id in cooldown_client_ids:
             continue
 
-        features = features_by_client[client_id]
         indicator = indicators_by_client[client_id]
         primary = primary_fund_by_client.get(client_id)
         resolved.append(
@@ -328,7 +328,11 @@ def _last_touch_sent_at(touches: Sequence[TouchLog], enrollment: Enrollment) -> 
     return max(sent_ats) if sent_ats else enrollment.enrolled_at
 
 
-def _reengaged(client: Clients | None, enrollment: Enrollment) -> bool:
+def _reengaged(
+    client: Clients | None, enrollment: Enrollment, active_book_auto_checkin: bool = False
+) -> bool:
+    if active_book_auto_checkin:
+        return False
     if client is None:
         return False
     if client.balance is not None and client.balance > 0:

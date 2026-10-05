@@ -166,6 +166,82 @@ def results_as_dict(summary: ResultsSummary) -> dict[str, Any]:
     return answer
 
 
+@dataclass(frozen=True)
+class MixResultLine:
+    guide_mix: str
+    sent_count: int
+    reply_percent: float
+    opt_out_percent: float
+    edit_percent: float
+    deposit_percent: float
+    money_in_kes: float
+
+
+@dataclass(frozen=True)
+class MixResults:
+    window_days: int
+    period_hours: int
+    lookback_hours: int
+    min_group_size: int
+    lines: tuple[MixResultLine, ...]
+    withheld_small_groups: int
+
+
+def read_results_by_mix(
+    session: Session,
+    *,
+    window_days: int | None = None,
+    lookback_hours: int | None = None,
+    now: datetime | None = None,
+) -> MixResults:
+    settings = get_settings()
+    period_hours = settings.action_performance_period_hours
+    look = lookback_hours or settings.action_performance_lookback_hours
+    window = window_days or settings.action_performance_read_window_days
+    since = (now or datetime.now(UTC)) - timedelta(hours=look)
+    stmt = (
+        select(
+            ActionPerformance.content_mix.label("guide_mix"),
+            func.sum(ActionPerformance.sent_count).label("sent"),
+            func.sum(ActionPerformance.replied_count).label("replied"),
+            func.sum(ActionPerformance.opted_out_count).label("opted_out"),
+            func.sum(ActionPerformance.edited_count).label("edited"),
+            func.sum(ActionPerformance.deposited_count).label("deposited"),
+            func.sum(ActionPerformance.money_in_kes).label("money"),
+        )
+        .where(
+            ActionPerformance.period_hours == period_hours,
+            ActionPerformance.window_days == window,
+            ActionPerformance.period_start >= since,
+        )
+        .group_by(ActionPerformance.content_mix)
+        .order_by(ActionPerformance.content_mix)
+    )
+    min_group_size = settings.agent_query_min_group_size
+    rows = session.execute(stmt).all()
+    lines = tuple(
+        MixResultLine(
+            guide_mix=row.guide_mix,
+            sent_count=int(row.sent),
+            reply_percent=percent(row.replied, row.sent),
+            opt_out_percent=percent(row.opted_out, row.sent),
+            edit_percent=percent(row.edited, row.sent),
+            deposit_percent=percent(row.deposited, row.sent),
+            money_in_kes=round(float(row.money)),
+        )
+        for row in rows
+        if row.sent >= min_group_size
+    )
+    return MixResults(
+        window_days=window,
+        period_hours=period_hours,
+        lookback_hours=look,
+        min_group_size=min_group_size,
+        lines=lines,
+        withheld_small_groups=sum(1 for row in rows if row.sent < min_group_size),
+    )
+
+
 def results_prompt_text(
     summary: ResultsSummary, *, ask: str, action_codes: Sequence[str] | None = None
 ) -> str:

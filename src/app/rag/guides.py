@@ -12,9 +12,9 @@ from app.db.models.agent import AgentActionCatalog
 from app.db.models.rag import DOC_TYPE_CLIENT_GUIDE, RagChunk, RagDocument, RagDocumentVersion
 from app.privacy.scanners import OutboundLeak, scan_outbound
 from app.rag.chunking import ReportChunk
-from app.rag.embedding import Embedder
+from app.rag.embedding import Embedder, get_embedder
 from app.rag.index import index_chunks
-from app.rag.retrieve import Retrieved, retrieve
+from app.rag.retrieve import Retrieved
 
 GUIDE_MAX_CHARS = 1000
 GUIDES_PER_DRAFT = 1
@@ -192,11 +192,47 @@ def approve_guide_version(session: Session, version_id: int, *, approved_by: str
 def find_guides(
     session: Session, action_code: str, query: str, *, embedder: Embedder | None = None
 ) -> list[Retrieved]:
-    return retrieve(
-        session,
-        query,
-        doc_type=DOC_TYPE_CLIENT_GUIDE,
-        chunk_contains={"actions": [action_code]},
-        k=GUIDES_PER_DRAFT,
-        embedder=embedder,
+    embedder = embedder or get_embedder()
+    vector = embedder.embed([query])[0]
+    matching = (
+        select(
+            RagChunk.chunk_id,
+            RagChunk.text,
+            RagChunk.chunk_metadata.label("chunk_metadata"),
+            RagChunk.version_id,
+            RagChunk.embedding,
+        )
+        .join(RagDocumentVersion, RagChunk.version_id == RagDocumentVersion.version_id)
+        .join(RagDocument, RagDocumentVersion.doc_id == RagDocument.doc_id)
+        .where(
+            RagChunk.embedding.isnot(None),
+            RagDocumentVersion.is_active.is_(True),
+            RagDocument.doc_type == DOC_TYPE_CLIENT_GUIDE,
+            RagChunk.chunk_metadata.contains({"actions": [action_code]}),
+        )
+        .offset(0)
+        .subquery("matching_guides")
     )
+    distance = matching.c.embedding.cosine_distance(vector)
+    rows = session.execute(
+        select(
+            matching.c.chunk_id,
+            matching.c.text,
+            matching.c.chunk_metadata,
+            matching.c.version_id,
+            distance.label("distance"),
+        )
+        .order_by(distance)
+        .limit(GUIDES_PER_DRAFT)
+    ).all()
+    return [
+        Retrieved(
+            chunk_id=row.chunk_id,
+            text=row.text,
+            metadata=row.chunk_metadata or {},
+            score=1.0 - float(row.distance),
+            version_id=row.version_id,
+            doc_type=DOC_TYPE_CLIENT_GUIDE,
+        )
+        for row in rows
+    ]
