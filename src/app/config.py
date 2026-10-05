@@ -48,6 +48,15 @@ class Settings(BaseSettings):
         """`cors_allow_origins`, split into the list CORSMiddleware wants."""
         return [origin.strip() for origin in self.cors_allow_origins.split(",") if origin.strip()]
 
+    public_contact_numbers: str = Field(
+        default="",
+        validation_alias=AliasChoices("PUBLIC_CONTACT_NUMBERS"),
+    )
+
+    @property
+    def public_contact_numbers_list(self) -> list[str]:
+        return [n.strip() for n in self.public_contact_numbers.split(",") if n.strip()]
+
     database_url: str = "postgresql+psycopg://ace:ace@localhost:5432/ace"
     db_timezone: str = "Africa/Nairobi"
     db_safe_role: str = "ace_safe"
