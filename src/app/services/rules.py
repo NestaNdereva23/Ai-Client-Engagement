@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import Row, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.models.rules import BusinessRule, MessageAngleCatalog
@@ -43,10 +43,9 @@ def list_rule_versions(
     return list(session.execute(query).all())
 
 
-def list_angle_status(
-    session: Session, *, active_on: date | None = None
-) -> list[tuple[str, int, date, date | None, bool]]:
-    """One row per (version, angle): (angle, version, valid_from, valid_to, held).
+def list_angle_status(session: Session, *, active_on: date | None = None) -> list[Row]:
+    """One row per (version, angle), the brief included so a console can
+    display an angle without also carrying its own hardcoded copy of it.
 
     held is mutable independent of a deploy (ops flips it live), so this
     reads message_angle_catalog directly rather than caching the answer
@@ -59,6 +58,12 @@ def list_angle_status(
         MessageAngleCatalog.valid_from,
         MessageAngleCatalog.valid_to,
         MessageAngleCatalog.held,
+        MessageAngleCatalog.headline,
+        MessageAngleCatalog.who,
+        MessageAngleCatalog.claim,
+        MessageAngleCatalog.ask,
+        MessageAngleCatalog.never,
+        MessageAngleCatalog.use,
     )
     if active_on is not None:
         query = query.where(MessageAngleCatalog.valid_from <= active_on).where(

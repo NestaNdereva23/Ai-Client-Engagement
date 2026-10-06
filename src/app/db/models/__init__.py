@@ -97,6 +97,7 @@ from app.db.models.prompt_config import (
 )
 from app.db.models.rag import RagChunk, RagDocument, RagDocumentVersion
 from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion, RiskRun, RiskSnapshot
+from app.db.models.routing import ClientSide
 from app.db.models.rules import (
     BusinessRule,
     ClientMessageIndicators,
@@ -173,6 +174,7 @@ __all__ = [
     "ClientFund",
     "ClientMessageIndicators",
     "ClientRiskFeatures",
+    "ClientSide",
     "ClientSignalSnapshot",
     "ClientSignalState",
     "Clients",

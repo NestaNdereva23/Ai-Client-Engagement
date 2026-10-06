@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.campaigns.enrollment import (
     fetch_client_names,
+    in_batches,
     primary_flags_from_maps,
     resolve_primary_client_ids,
 )
@@ -55,12 +56,17 @@ def _preview_from_client_ids(session: Session, client_ids: Sequence[int]) -> Coh
         )
 
     primary_ids = resolve_primary_client_ids(session, client_ids)
-    valued_count, estimated_value = session.execute(
-        select(
-            func.count(Clients.client_id),
-            func.coalesce(func.sum(Clients.total_purchase_amount), 0.0),
-        ).where(Clients.client_id.in_(primary_ids))
-    ).one()
+    valued_count = 0
+    estimated_value = 0.0
+    for batch in in_batches(list(primary_ids)):
+        batch_count, batch_value = session.execute(
+            select(
+                func.count(Clients.client_id),
+                func.coalesce(func.sum(Clients.total_purchase_amount), 0.0),
+            ).where(Clients.client_id.in_(batch))
+        ).one()
+        valued_count += batch_count
+        estimated_value += float(batch_value)
 
     return CohortPreview(
         matched_count=matched_count,

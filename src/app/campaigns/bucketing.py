@@ -31,6 +31,9 @@ class ProfileKey:
     stale_contact: bool
     exit_reason_charge_settled: bool
     fund_name_known: bool
+    balance_band: str | None = None
+    has_balance: bool = False
+    high_value: bool = False
     channel: str = "email"
 
     def as_dict(self) -> dict[str, object]:
@@ -43,6 +46,9 @@ class ProfileKey:
             "stale_contact": self.stale_contact,
             "exit_reason_charge_settled": self.exit_reason_charge_settled,
             "fund_name_known": self.fund_name_known,
+            "balance_band": self.balance_band,
+            "has_balance": self.has_balance,
+            "high_value": self.high_value,
             "channel": self.channel,
         }
 
@@ -87,6 +93,9 @@ def profile_key_sort_key(key: ProfileKey) -> tuple:
         key.stale_contact,
         key.exit_reason_charge_settled,
         key.fund_name_known,
+        key.balance_band or "",
+        key.has_balance,
+        key.high_value,
         key.channel,
     )
 
@@ -102,6 +111,9 @@ def profile_key_for(context: ClientContext, *, product: str, channel: str = "ema
         stale_contact=bool(facts.get("stale_contact")),
         exit_reason_charge_settled=facts.get("exit_reason") == "charge_settled",
         fund_name_known=bool(facts.get("fund_name")),
+        balance_band=context.balance_band,
+        has_balance=bool(context.has_balance),
+        high_value=bool(context.high_value),
         channel=channel,
     )
 

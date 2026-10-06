@@ -13,7 +13,7 @@ send.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -23,17 +23,31 @@ from app.db.models.campaigns import Enrollment
 from app.db.models.models import Clients, PiiVault
 from app.db.session import restricted_session
 
+# Postgres rejects a query with more than 65535 bind parameters. A cohort
+# query has no upper bound (see resolve_cohort_client_ids), so any IN clause
+# built from one must be split into batches this size or smaller.
+_MAX_BIND_PARAMS = 65535
+
+
+def in_batches(ids: Sequence[int]) -> Iterator[Sequence[int]]:
+    """Split ids into chunks no larger than Postgres's bind parameter limit."""
+    for start in range(0, len(ids), _MAX_BIND_PARAMS):
+        yield ids[start : start + _MAX_BIND_PARAMS]
+
 
 def _fetch_client_names(client_ids: Sequence[int]) -> dict[int, str | None]:
     """client_id to vault name for a batch of clients, read under the restricted role."""
     if not client_ids:
         return {}
+    names: dict[int, str] = {}
     with restricted_session() as session:
-        rows = session.execute(
-            select(PiiVault.client_id, PiiVault.client_name).where(
-                PiiVault.client_id.in_(client_ids)
-            )
-        ).all()
+        for batch in in_batches(client_ids):
+            rows = session.execute(
+                select(PiiVault.client_id, PiiVault.client_name).where(
+                    PiiVault.client_id.in_(batch)
+                )
+            ).all()
+            names.update({row.client_id: row.client_name for row in rows})
         record_audit(
             session,
             entity_type="pii_vault",
@@ -41,7 +55,6 @@ def _fetch_client_names(client_ids: Sequence[int]) -> dict[int, str | None]:
             detail={"count": len(client_ids), "purpose": "enrollment_dedup"},
         )
         session.commit()
-    names = {row.client_id: row.client_name for row in rows}
     return {client_id: names.get(client_id) or None for client_id in client_ids}
 
 
@@ -57,12 +70,15 @@ def _relationship_values(session: Session, client_ids: Sequence[int]) -> dict[in
     """
     if not client_ids:
         return {}
-    rows = session.execute(
-        select(Clients.client_id, Clients.total_purchase_amount).where(
-            Clients.client_id.in_(client_ids)
-        )
-    ).all()
-    return {row.client_id: row.total_purchase_amount or 0.0 for row in rows}
+    values: dict[int, float] = {}
+    for batch in in_batches(client_ids):
+        rows = session.execute(
+            select(Clients.client_id, Clients.total_purchase_amount).where(
+                Clients.client_id.in_(batch)
+            )
+        ).all()
+        values.update({row.client_id: row.total_purchase_amount or 0.0 for row in rows})
+    return values
 
 
 def primary_flags_from_maps(
@@ -141,15 +157,15 @@ def enroll_cohort(
     if not unique_ids:
         return []
 
-    existing = {
-        row.client_id: row
+    existing: dict[int, Enrollment] = {}
+    for batch in in_batches(unique_ids):
         for row in session.execute(
             select(Enrollment).where(
                 Enrollment.campaign_id == campaign_id,
-                Enrollment.client_id.in_(unique_ids),
+                Enrollment.client_id.in_(batch),
             )
-        ).scalars()
-    }
+        ).scalars():
+            existing[row.client_id] = row
     new_ids = [client_id for client_id in unique_ids if client_id not in existing]
     primary_flags = _resolve_primary_flags(session, campaign_id=campaign_id, new_client_ids=new_ids)
 
