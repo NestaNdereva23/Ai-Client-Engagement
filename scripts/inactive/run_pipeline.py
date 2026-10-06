@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from datetime import date
 from pathlib import Path
 
@@ -34,6 +35,13 @@ from app.transform.load import transform_run  # noqa: E402
 from app.workers.ingestion import IngestionAborted, IngestionWorker  # noqa: E402
 
 ENDPOINT = "inactive-clients"
+
+
+def _fmt(seconds: float) -> str:
+    minutes, secs = divmod(seconds, 60)
+    if minutes:
+        return f"{int(minutes)}m {secs:.1f}s"
+    return f"{secs:.1f}s"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -83,6 +91,8 @@ def main(argv: list[str] | None = None) -> int:
         count_field=config.count_field,
     )
 
+    started = time.perf_counter()
+    ingest_start = started
     try:
         if args.fast:
             ingest_result = worker.run_bulk(max_workers=args.workers)
@@ -93,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     finally:
         client.close()
+    ingest_secs = time.perf_counter() - ingest_start
 
     print(
         f"ingest: run {ingest_result.run_id} {ingest_result.state}: "
@@ -107,6 +118,9 @@ def main(argv: list[str] | None = None) -> int:
             f"records_seen {ingest_result.records_seen}, gap {ingest_result.population_gap}."
         )
 
+    print(f"ingest: took {_fmt(ingest_secs)}")
+
+    transform_start = time.perf_counter()
     with SessionLocal() as session:
         print(f"transform: transforming run {ingest_result.run_id}")
         counts = transform_run(session, ingest_result.run_id)
@@ -121,15 +135,30 @@ def main(argv: list[str] | None = None) -> int:
                 f"transform: {held} clients hold more than one fund; "
                 "each is contacted on their largest"
             )
+    transform_secs = time.perf_counter() - transform_start
+    print(f"transform: took {_fmt(transform_secs)}")
 
+    resolve_start = time.perf_counter()
     with SessionLocal() as session:
         resolved = populate_indicators(session, at=args.at)
         print(f"resolve_indicators: resolved {resolved} client(s) as of {args.at.isoformat()}")
+    resolve_secs = time.perf_counter() - resolve_start
+    print(f"resolve_indicators: took {_fmt(resolve_secs)}")
 
+    retention_start = time.perf_counter()
     with SessionLocal() as session:
         pruned = prune_raw_staging(session)
         session.commit()
         print(f"retention: removed {pruned} old raw page(s)")
+    retention_secs = time.perf_counter() - retention_start
+    print(f"retention: took {_fmt(retention_secs)}")
+
+    total_secs = time.perf_counter() - started
+    print(
+        f"pipeline: done in {_fmt(total_secs)} "
+        f"(ingest {_fmt(ingest_secs)}, transform {_fmt(transform_secs)}, "
+        f"resolve {_fmt(resolve_secs)}, retention {_fmt(retention_secs)})"
+    )
 
     return 0
 
