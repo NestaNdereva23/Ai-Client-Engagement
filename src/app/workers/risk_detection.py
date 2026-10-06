@@ -583,6 +583,7 @@ class RiskDetectionWorker:
             client_model=config.client_model,
             schema_drift_fn=config.schema_drift_fn,
             count_field=config.count_field,
+            page_size=config.page_size,
         )
         ingestion_result = worker.run(run_id=run.run_id)
         logger.info(

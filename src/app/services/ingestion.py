@@ -37,6 +37,7 @@ def run_in_background(client: Any, *, run_id: str, endpoint: str, max_pages: int
         client_model=config.client_model,
         schema_drift_fn=config.schema_drift_fn,
         count_field=config.count_field,
+        page_size=config.page_size,
     )
     try:
         worker.run(run_id=run_id)

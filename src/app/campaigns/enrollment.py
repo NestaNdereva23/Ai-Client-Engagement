@@ -45,6 +45,10 @@ def _fetch_client_names(client_ids: Sequence[int]) -> dict[int, str | None]:
     return {client_id: names.get(client_id) or None for client_id in client_ids}
 
 
+def fetch_client_names(client_ids: Sequence[int]) -> dict[int, str | None]:
+    return _fetch_client_names(client_ids)
+
+
 def _relationship_values(session: Session, client_ids: Sequence[int]) -> dict[int, float]:
     """Each client_id's own relationship size, sourced from its primary fund.
 
@@ -61,15 +65,13 @@ def _relationship_values(session: Session, client_ids: Sequence[int]) -> dict[in
     return {row.client_id: row.total_purchase_amount or 0.0 for row in rows}
 
 
-def _resolve_primary_flags_for_pool(
-    session: Session, client_ids: Sequence[int], *, already_claimed_names: set[str]
+def primary_flags_from_maps(
+    client_ids: Sequence[int],
+    names: dict[int, str | None],
+    values: dict[int, float],
+    *,
+    already_claimed_names: set[str],
 ) -> dict[int, bool]:
-    if not client_ids:
-        return {}
-
-    names = _fetch_client_names(client_ids)
-    values = _relationship_values(session, client_ids)
-
     flags: dict[int, bool] = {}
     claimed = set(already_claimed_names)
     ordered = sorted(client_ids, key=lambda cid: (-values.get(cid, 0.0), cid))
@@ -83,6 +85,19 @@ def _resolve_primary_flags_for_pool(
             flags[client_id] = True
             claimed.add(name)
     return flags
+
+
+def _resolve_primary_flags_for_pool(
+    session: Session, client_ids: Sequence[int], *, already_claimed_names: set[str]
+) -> dict[int, bool]:
+    if not client_ids:
+        return {}
+
+    names = _fetch_client_names(client_ids)
+    values = _relationship_values(session, client_ids)
+    return primary_flags_from_maps(
+        client_ids, names, values, already_claimed_names=already_claimed_names
+    )
 
 
 def _resolve_primary_flags(
