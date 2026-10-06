@@ -179,10 +179,7 @@ def _to_overview_out(overview: ClientsOverview) -> ClientsOverviewOut:
             reengaged_count=enrollment.reengaged_count,
             reengagement_rate=enrollment.reengagement_rate,
         ),
-        angles=[
-            AngleStatusOut(angle=a, version=v, valid_from=vf, valid_to=vt, held=held)
-            for a, v, vf, vt, held in overview.angles
-        ],
+        angles=[AngleStatusOut(**row._mapping) for row in overview.angles],
         records_rejected=overview.records_rejected,
         roster=Page(
             items=[_to_summary(r) for r in overview.roster],

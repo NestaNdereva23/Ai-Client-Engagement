@@ -139,6 +139,7 @@ def active_client(campaign_seed: int):
         session.commit()
 
 
+@pytest.mark.skip(reason="enroll_auto_checkin_clients is disabled pending a proper fix")
 def test_enroll_auto_checkin_clients_creates_bridge_rows_and_enrolls(active_client) -> None:
     client_id, campaign_id = active_client
     with SessionLocal() as session:
@@ -178,6 +179,7 @@ def test_enroll_auto_checkin_clients_creates_bridge_rows_and_enrolls(active_clie
     assert sync_audit.detail["client_ids"] == [client_id]
 
 
+@pytest.mark.skip(reason="enroll_auto_checkin_clients is disabled pending a proper fix")
 def test_enroll_auto_checkin_clients_is_idempotent(active_client) -> None:
     client_id, campaign_id = active_client
     with SessionLocal() as session:
@@ -203,6 +205,28 @@ def test_client_with_no_active_fund_rows_is_skipped(campaign_seed: int) -> None:
     assert bridged == []
 
 
+def test_enroll_auto_checkin_clients_is_currently_disabled(active_client) -> None:
+    """active_book_auto_checkin disagrees with client_side's inactive
+    definition, so this is paused until that is reconciled -- see
+    nurture_bridge.enroll_auto_checkin_clients.
+    """
+    client_id, campaign_id = active_client
+    with SessionLocal() as session:
+        bridged = enroll_auto_checkin_clients(session, [client_id])
+        session.commit()
+
+        assert bridged == []
+        assert session.get(ClientFeatures, client_id) is None
+        assert session.get(ClientMessageIndicators, client_id) is None
+        enrollment = session.scalar(
+            select(Enrollment).where(
+                Enrollment.client_id == client_id, Enrollment.campaign_id == campaign_id
+            )
+        )
+        assert enrollment is None
+
+
+@pytest.mark.skip(reason="enroll_auto_checkin_clients is disabled pending a proper fix")
 def test_existing_clients_row_is_never_overwritten(campaign_seed: int) -> None:
     with SessionLocal() as session:
         session.add(
@@ -303,6 +327,7 @@ def _fake_generate(session, enrollment, step_no) -> OutreachMessage:
     return message
 
 
+@pytest.mark.skip(reason="enroll_auto_checkin_clients is disabled pending a proper fix")
 def test_enroll_generate_approve_send_for_an_auto_checkin_client(active_client) -> None:
     client_id, campaign_id = active_client
     with SessionLocal() as session:
@@ -338,6 +363,7 @@ def unconfigured_mailer(monkeypatch) -> NullMailer:
     return mailer
 
 
+@pytest.mark.skip(reason="enroll_auto_checkin_clients is disabled pending a proper fix")
 def test_auto_checkin_campaign_reachable_through_the_real_api(
     active_client, configured_reviewers, reviewer_1_headers, unconfigured_mailer: NullMailer
 ) -> None:

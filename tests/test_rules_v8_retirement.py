@@ -22,6 +22,7 @@ _V2_ENDS = date(2026, 8, 4)
 _V3_ENDS = date(2026, 8, 11)
 _V4_ENDS = date(2026, 8, 24)
 _V5_ENDS = date(2026, 9, 29)
+_V7_ENDS = date(2026, 10, 6)
 _DROPPED_CLIENT_FEATURES_COLUMNS = {"archetype", "recency_bucket", "value_tier", "rhythm_band"}
 _DROPPED_CLIENTS_COLUMNS = {"net_flow"}
 
@@ -72,13 +73,23 @@ def test_v5_is_the_active_version_between_v4_and_v6() -> None:
     assert {r.version for r in on_the_boundary} == {6}
 
 
-def test_v6_is_the_active_version_from_its_cutover_onward() -> None:
+def test_v6_is_the_active_version_between_v5_and_v7() -> None:
     """v6 exists to carry the withdrawal-cluster tiers forward without mutating v5."""
     with SessionLocal() as session:
         just_after = load_active_rules(session, at=date(2026, 9, 30))
-        well_after = load_active_rules(session, at=date(2027, 1, 1))
+        on_the_boundary = load_active_rules(session, at=_V7_ENDS)
     assert {r.version for r in just_after} == {6}
-    assert {r.version for r in well_after} == {7}
+    # v8 (grow_back/former_high_value) and v9 (the has_balance gate on top of
+    # it) both landed the same day, so v8's own window is empty and v7 hands
+    # over straight to v9 on this boundary.
+    assert {r.version for r in on_the_boundary} == {9}
+
+
+def test_v9_is_the_active_version_from_its_cutover_onward() -> None:
+    """v9 exists to gate the exit-framed angles on a zero current balance."""
+    with SessionLocal() as session:
+        well_after = load_active_rules(session, at=date(2027, 1, 1))
+    assert {r.version for r in well_after} == {9}
 
 
 def test_the_four_windows_neither_gap_nor_overlap() -> None:

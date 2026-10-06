@@ -588,6 +588,68 @@ def test_new_activity_reengages_the_client_and_stops_the_sequence(
     _cleanup_client(client_id)
 
 
+def test_a_positive_balance_reengages_the_client_and_stops_the_sequence(
+    campaign_with_step: int, fund: int
+) -> None:
+    client_id = 99511
+    with SessionLocal() as session:
+        _make_client(session, client_id)
+        session.flush()
+        session.get(Clients, client_id).balance = 500.0
+        session.add(ClientFeatures(client_id=client_id, purchase_depth="single"))
+        session.commit()
+        enrollment = _make_enrollment(
+            session,
+            campaign_id=campaign_with_step,
+            client_id=client_id,
+            current_step=1,
+            status="in_progress",
+            enrolled_at=datetime.now(UTC) - timedelta(days=10),
+        )
+
+        result = check_eligibility(session, enrollment)
+        session.commit()
+        enrollment_id = enrollment.enrollment_id
+
+    assert result.reason == "reengaged"
+    with SessionLocal() as session:
+        assert session.get(Enrollment, enrollment_id).status == "stopped_reengaged"
+    _cleanup_client(client_id)
+
+
+@pytest.mark.parametrize(
+    "features_kwargs",
+    [
+        {"active_book_auto_checkin": True},
+        {"high_value": True},
+        {"balance_band": "worth_saving"},
+    ],
+)
+def test_a_positive_balance_does_not_reengage_a_client_whose_angle_expects_one(
+    campaign_with_step: int, fund: int, features_kwargs: dict
+) -> None:
+    client_id = 99512
+    with SessionLocal() as session:
+        _make_client(session, client_id)
+        session.flush()
+        session.get(Clients, client_id).balance = 500.0
+        session.add(ClientFeatures(client_id=client_id, purchase_depth="single", **features_kwargs))
+        session.commit()
+        enrollment = _make_enrollment(
+            session,
+            campaign_id=campaign_with_step,
+            client_id=client_id,
+            current_step=1,
+            status="in_progress",
+            enrolled_at=datetime.now(UTC) - timedelta(days=10),
+        )
+
+        result = check_eligibility(session, enrollment)
+
+    assert result.reason != "reengaged"
+    _cleanup_client(client_id)
+
+
 def test_a_paused_campaign_is_skipped_without_a_status_change(db: None, fund: int) -> None:
     client_id = 99510
     with SessionLocal() as session:

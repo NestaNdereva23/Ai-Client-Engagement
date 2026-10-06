@@ -8,8 +8,6 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.audit.log import record_audit
-from app.campaigns.enrollment import enroll_cohort
 from app.db.models.active_clients import ActiveClientFund, ActiveTransaction
 from app.db.models.models import ClientFeatures, Clients, Funds
 from app.db.models.outreach import Campaign
@@ -262,44 +260,9 @@ def _find_campaign(session: Session) -> Campaign | None:
 def enroll_auto_checkin_clients(
     session: Session, client_ids: Sequence[int], *, at: date | None = None
 ) -> list[int]:
-    on = at or date.today()
-    unique_ids = list(dict.fromkeys(client_ids))
-    if not unique_ids:
-        return []
-
-    campaign = _find_campaign(session)
-    if campaign is None:
-        return []
-
-    rules = load_active_rules(session, on)
-    resolution = resolve({"active_book_auto_checkin": "true"}, rules)
-
-    bridged: list[int] = []
-    feature_rows: list[dict] = []
-    indicator_rows: list[dict] = []
-    for client_id in unique_ids:
-        aggregate = _aggregate_active_funds(session, client_id)
-        if aggregate is None:
-            continue
-        _ensure_funds(session, aggregate.fund_ids)
-        _insert_client_if_absent(session, aggregate)
-        priority_tier = _priority_tier_for(session, client_id)
-        feature_rows.append(_feature_row(client_id, priority_tier)[0])
-        indicator_rows.append(_indicator_row(client_id, priority_tier, resolution))
-        bridged.append(client_id)
-
-    if not bridged:
-        return []
-
-    upsert(session, ClientFeatures, feature_rows, "client_id", list(_CLIENT_FEATURES_UPDATE))
-    upsert(session, ClientMessageIndicators, indicator_rows, "client_id", _INDICATOR_UPDATE)
-
-    enroll_cohort(session, campaign_id=campaign.campaign_id, client_ids=bridged)
-    record_audit(
-        session,
-        entity_type="enrollment",
-        action="auto_checkin_sync",
-        entity_id=str(campaign.campaign_id),
-        detail={"client_ids": bridged},
-    )
-    return bridged
+    # Disabled for now: active_book_auto_checkin no longer agrees with
+    # client_side's balance-threshold definition of inactive, so this would
+    # enroll clients the rest of the system now treats as dormant. A proper
+    # reconciliation is pending; until then this is a no-op. The previous
+    # implementation is in git history (app/campaigns/nurture_bridge.py).
+    return []

@@ -232,3 +232,29 @@ def test_enroll_cohort_with_no_clients_is_a_no_op(campaign: int, db: None) -> No
     with SessionLocal() as session:
         created = enroll_cohort(session, campaign_id=campaign, client_ids=[])
     assert created == []
+
+
+def test_enroll_cohort_batches_in_clauses_under_the_postgres_bind_param_limit(
+    campaign: int,
+    same_person_unequal_relationships: tuple[int, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for the real limit (65535): force tiny batches with a
+    handful of rows instead of needing tens of thousands of real clients.
+    """
+    from app.campaigns import enrollment as enrollment_module
+
+    monkeypatch.setattr(enrollment_module, "_MAX_BIND_PARAMS", 1)
+    smaller_id_smaller_value, larger_id_larger_value = same_person_unequal_relationships
+
+    with SessionLocal() as session:
+        created = enroll_cohort(
+            session,
+            campaign_id=campaign,
+            client_ids=[smaller_id_smaller_value, larger_id_larger_value],
+        )
+        session.commit()
+
+    primary_ids = {row.client_id for row in created if row.is_primary_contact_row}
+    assert primary_ids == {larger_id_larger_value}
+    assert len(created) == 2

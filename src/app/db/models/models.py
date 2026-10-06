@@ -256,6 +256,8 @@ class ClientFeatures(Base):
     n_funds: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     recency_band: Mapped[str] = mapped_column(Text, nullable=False, server_default="Unknown")
     value_band: Mapped[str] = mapped_column(Text, nullable=False, server_default="Low")
+    balance_band: Mapped[str] = mapped_column(Text, nullable=False, server_default="nearly_empty")
+    has_balance: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     cadence_band: Mapped[str] = mapped_column(Text, nullable=False, server_default="None")
     hold_band: Mapped[str] = mapped_column(Text, nullable=False, server_default="Unknown")
     purchase_depth: Mapped[str] = mapped_column(Text, nullable=False, server_default="none")

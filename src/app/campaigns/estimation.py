@@ -40,6 +40,7 @@ from sqlalchemy.orm import Session
 from app.agents.graph import ContextLoader
 from app.audit.log import record_audit
 from app.campaigns.bucketing import Bucket, ProfileKey, derive_buckets, profile_key_sort_key
+from app.campaigns.enrollment import in_batches
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT, select_due_enrollments
 from app.config import get_settings
 from app.db.models.campaigns import CampaignStep, ContactEvent, Enrollment, TouchLog
@@ -163,39 +164,45 @@ def _resolve_eligible_profile_keys(
     )
     features_by_client = {
         row.client_id: row
+        for batch in in_batches(client_ids)
         for row in session.scalars(
-            select(ClientFeatures).where(ClientFeatures.client_id.in_(client_ids))
+            select(ClientFeatures).where(ClientFeatures.client_id.in_(batch))
         )
     }
     indicators_by_client = {
         row.client_id: row
+        for batch in in_batches(client_ids)
         for row in session.scalars(
-            select(ClientMessageIndicators).where(ClientMessageIndicators.client_id.in_(client_ids))
+            select(ClientMessageIndicators).where(ClientMessageIndicators.client_id.in_(batch))
         )
     }
     touches_by_enrollment: dict[int, list[TouchLog]] = {}
-    touch_query = select(TouchLog).where(TouchLog.enrollment_id.in_(enrollment_ids))
-    for touch in session.scalars(touch_query):
-        touches_by_enrollment.setdefault(touch.enrollment_id, []).append(touch)
-    message_ids = {
-        t.message_id
-        for touches in touches_by_enrollment.values()
-        for t in touches
-        if t.message_id is not None
-    }
-    messages_by_id = (
+    for batch in in_batches(enrollment_ids):
+        touch_query = select(TouchLog).where(TouchLog.enrollment_id.in_(batch))
+        for touch in session.scalars(touch_query):
+            touches_by_enrollment.setdefault(touch.enrollment_id, []).append(touch)
+    message_ids = list(
         {
-            row.message_id: row
-            for row in session.scalars(
-                select(OutreachMessage).where(OutreachMessage.message_id.in_(message_ids))
-            )
+            t.message_id
+            for touches in touches_by_enrollment.values()
+            for t in touches
+            if t.message_id is not None
         }
-        if message_ids
-        else {}
     )
-    suppressed_client_ids = set(
-        session.scalars(select(Suppression.client_id).where(Suppression.client_id.in_(client_ids)))
-    )
+    messages_by_id = {
+        row.message_id: row
+        for batch in in_batches(message_ids)
+        for row in session.scalars(
+            select(OutreachMessage).where(OutreachMessage.message_id.in_(batch))
+        )
+    }
+    suppressed_client_ids = {
+        client_id
+        for batch in in_batches(client_ids)
+        for client_id in session.scalars(
+            select(Suppression.client_id).where(Suppression.client_id.in_(batch))
+        )
+    }
 
     # Phase one: every condition that needs no PII vault read. Candidates
     # still standing after this are the only clients whose vault booleans
@@ -230,18 +237,18 @@ def _resolve_eligible_profile_keys(
     )
     clients_by_id = {
         row.client_id: row
-        for row in session.scalars(
-            select(Clients).where(Clients.client_id.in_(candidate_client_ids))
-        )
+        for batch in in_batches(candidate_client_ids)
+        for row in session.scalars(select(Clients).where(Clients.client_id.in_(batch)))
     }
     cooldown_client_ids = _bulk_cooldown(
         session, candidate_client_ids, settings.campaign_cooldown_days
     )
     primary_fund_by_client = {
         row.client_id: row
+        for batch in in_batches(candidate_client_ids)
         for row in session.scalars(
             select(ClientFund).where(
-                ClientFund.client_id.in_(candidate_client_ids),
+                ClientFund.client_id.in_(batch),
                 ClientFund.is_primary_contact_row.is_(True),
             )
         )
@@ -267,12 +274,12 @@ def _resolve_eligible_profile_keys(
         if any(occurred_at > last_sent_at for occurred_at in reply_times):
             continue
 
-        if _reengaged(clients_by_id.get(client_id), enrollment):
+        features = features_by_client[client_id]
+        if _reengaged(clients_by_id.get(client_id), features, enrollment):
             continue
         if client_id in cooldown_client_ids:
             continue
 
-        features = features_by_client[client_id]
         indicator = indicators_by_client[client_id]
         primary = primary_fund_by_client.get(client_id)
         resolved.append(
@@ -303,6 +310,9 @@ def _profile_key_from_columns(
         stale_contact=has_facts and bool(features.stale_contact),
         exit_reason_charge_settled=has_facts and features.exit_reason == "charge_settled",
         fund_name_known=has_facts and features.fund_type in FUND_DISPLAY_NAMES,
+        balance_band=features.balance_band,
+        has_balance=features.has_balance,
+        high_value=features.high_value,
         channel=channel,
     )
 
@@ -328,7 +338,15 @@ def _last_touch_sent_at(touches: Sequence[TouchLog], enrollment: Enrollment) -> 
     return max(sent_ats) if sent_ats else enrollment.enrolled_at
 
 
-def _reengaged(client: Clients | None, enrollment: Enrollment) -> bool:
+def _reengaged(
+    client: Clients | None, features: ClientFeatures | None, enrollment: Enrollment
+) -> bool:
+    if features is not None and (
+        features.active_book_auto_checkin
+        or features.high_value
+        or features.balance_band == "worth_saving"
+    ):
+        return False
     if client is None:
         return False
     if client.balance is not None and client.balance > 0:
@@ -345,12 +363,16 @@ def _bulk_contact_events(
     """(client_ids with a bounce/complaint ever, client_id -> reply timestamps)."""
     if not client_ids:
         return set(), {}
-    rows = session.execute(
-        select(ContactEvent.client_id, ContactEvent.type, ContactEvent.occurred_at).where(
-            ContactEvent.client_id.in_(client_ids),
-            ContactEvent.type.in_((*_STOPPING_EVENT_TYPES, "reply")),
-        )
-    ).all()
+    rows = [
+        row
+        for batch in in_batches(client_ids)
+        for row in session.execute(
+            select(ContactEvent.client_id, ContactEvent.type, ContactEvent.occurred_at).where(
+                ContactEvent.client_id.in_(batch),
+                ContactEvent.type.in_((*_STOPPING_EVENT_TYPES, "reply")),
+            )
+        ).all()
+    ]
     stopping = {row.client_id for row in rows if row.type in _STOPPING_EVENT_TYPES}
     replies: dict[int, list[datetime]] = {}
     for row in rows:
@@ -364,17 +386,20 @@ def _bulk_cooldown(session: Session, client_ids: Sequence[int], cooldown_days: i
     if not client_ids:
         return set()
     cutoff = func.now() - timedelta(days=cooldown_days)
-    rows = session.execute(
-        select(Enrollment.client_id)
-        .join(TouchLog, TouchLog.enrollment_id == Enrollment.enrollment_id)
-        .where(
-            Enrollment.client_id.in_(client_ids),
-            TouchLog.sent_at.isnot(None),
-            TouchLog.sent_at >= cutoff,
-        )
-        .distinct()
-    ).scalars()
-    return set(rows)
+    result: set[int] = set()
+    for batch in in_batches(client_ids):
+        rows = session.execute(
+            select(Enrollment.client_id)
+            .join(TouchLog, TouchLog.enrollment_id == Enrollment.enrollment_id)
+            .where(
+                Enrollment.client_id.in_(batch),
+                TouchLog.sent_at.isnot(None),
+                TouchLog.sent_at >= cutoff,
+            )
+            .distinct()
+        ).scalars()
+        result.update(rows)
+    return result
 
 
 def _bulk_vault_signals(
@@ -386,14 +411,18 @@ def _bulk_vault_signals(
     if get_settings().delivery_mode == "test":
         return _bulk_test_mode_signals(client_ids)
     with restricted_session() as session:
-        rows = session.execute(
-            select(
-                PiiVault.client_id,
-                PiiVault.opt_out_flag,
-                PiiVault.contact_email,
-                PiiVault.contact_phone,
-            ).where(PiiVault.client_id.in_(client_ids))
-        ).all()
+        rows = [
+            row
+            for batch in in_batches(client_ids)
+            for row in session.execute(
+                select(
+                    PiiVault.client_id,
+                    PiiVault.opt_out_flag,
+                    PiiVault.contact_email,
+                    PiiVault.contact_phone,
+                ).where(PiiVault.client_id.in_(batch))
+            ).all()
+        ]
         record_audit(
             session,
             entity_type="pii_vault",
@@ -409,11 +438,15 @@ def _bulk_test_mode_signals(
 ) -> dict[int, tuple[bool, str | None, str | None]]:
     # Test sends go to the team list, so only the opt out is read from the vault.
     with restricted_session() as session:
-        rows = session.execute(
-            select(PiiVault.client_id, PiiVault.opt_out_flag).where(
-                PiiVault.client_id.in_(client_ids)
-            )
-        ).all()
+        rows = [
+            row
+            for batch in in_batches(client_ids)
+            for row in session.execute(
+                select(PiiVault.client_id, PiiVault.opt_out_flag).where(
+                    PiiVault.client_id.in_(batch)
+                )
+            ).all()
+        ]
         email = next(iter(active_test_contacts(session, "email")), None)
         phone = next(iter(active_test_contacts(session, "sms")), None)
         record_audit(

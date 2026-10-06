@@ -13,6 +13,7 @@ from app.db.models.rules import BusinessRule
 from app.rules import versioning
 from app.rules.versioning import DEFAULT_COMPONENT_KEY
 from app.transform.features import (
+    BALANCE_BANDS,
     CADENCE_BANDS,
     EXIT_REASONS,
     FUND_TYPES,
@@ -37,6 +38,7 @@ RULE_FIELD_DOMAINS: dict[str, set[str]] = {
     # whole router without the engine needing to compare numbers.
     "recency_band": set(RECENCY_BANDS),
     "value_band": set(VALUE_BANDS),
+    "balance_band": set(BALANCE_BANDS),
     "cadence_band": set(CADENCE_BANDS),
     "hold_band": set(HOLD_BANDS),
     "purchase_depth": set(PURCHASE_DEPTHS),
@@ -50,6 +52,8 @@ RULE_FIELD_DOMAINS: dict[str, set[str]] = {
     "newly_dormant": _BOOL,
     "never_funded": _BOOL,
     "active_book_auto_checkin": _BOOL,
+    "high_value": _BOOL,
+    "has_balance": _BOOL,
 }
 
 # Every angle a message may be written on. Kept in step with
@@ -73,6 +77,8 @@ MESSAGE_ANGLES = {
     "fee_pressure_warning_dormant",
     "fee_pressure_encourage_active",
     "first_deposit_welcome",
+    "grow_back",
+    "former_high_value",
 }
 URGENCIES = {"low", "medium", "high"}
 

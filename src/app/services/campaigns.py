@@ -12,7 +12,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import Row, func, select, tuple_
+from sqlalchemy import BigInteger, Row, any_, cast, func, select, tuple_
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session
 
 from app.agents.orchestrator import Orchestrator
@@ -353,6 +354,12 @@ def _enrollment_cap(is_test: bool) -> int:
     return settings.live_campaign_max_clients
 
 
+def _already_enrolled_client_ids(session: Session, client_ids: Sequence[int]) -> set[int]:
+    ids_array = cast(list(client_ids), ARRAY(BigInteger))
+    stmt = select(Enrollment.client_id).where(Enrollment.client_id == any_(ids_array))
+    return set(session.scalars(stmt))
+
+
 def create_campaign(
     session: Session,
     *,
@@ -378,6 +385,8 @@ def create_campaign(
     session.flush()
 
     client_ids = resolve_cohort_client_ids(session, **cohort_filters)
+    already_enrolled = _already_enrolled_client_ids(session, client_ids)
+    client_ids = [cid for cid in client_ids if cid not in already_enrolled]
     cap = _enrollment_cap(is_test)
     if cap:
         client_ids = sorted(client_ids)[:cap]

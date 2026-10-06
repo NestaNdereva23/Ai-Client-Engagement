@@ -360,7 +360,11 @@ def _last_touch_sent_at(session: Session, enrollment: Enrollment):
 
 def _reengaged(session: Session, enrollment: Enrollment) -> bool:
     features = session.get(ClientFeatures, enrollment.client_id)
-    if features is not None and features.active_book_auto_checkin:
+    if features is not None and (
+        features.active_book_auto_checkin
+        or features.high_value
+        or features.balance_band == "worth_saving"
+    ):
         return False
     client = session.get(Clients, enrollment.client_id)
     if client is None:
