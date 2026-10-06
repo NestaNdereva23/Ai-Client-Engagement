@@ -7,6 +7,7 @@ from typing import Any
 
 import structlog
 from sqlalchemy import func, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -286,6 +287,68 @@ def _feature_dict(f: FeatureRow) -> dict[str, Any]:
 _MAX_BIND_PARAMS = 65535
 _MAX_BATCH_ROWS = 1000
 
+# Above this many rows, bulk-load through COPY into a temp table instead of
+# multi-row INSERTs. COPY parses far faster, so it only pays off in bulk; small
+# callers keep the simpler INSERT path.
+_COPY_MIN_ROWS = 2000
+
+
+def _quote(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _copy_into_temp(
+    session: Session, source_table: str, temp_table: str, columns: list[str], rows: list[dict]
+) -> None:
+    """Create a temp copy of the target table and stream the rows into it."""
+    raw = session.connection().connection.driver_connection
+    col_sql = ", ".join(_quote(c) for c in columns)
+    with raw.cursor() as cur:
+        cur.execute(
+            f"CREATE TEMP TABLE {_quote(temp_table)} "
+            f"(LIKE {_quote(source_table)} INCLUDING DEFAULTS) ON COMMIT DROP"
+        )
+        with cur.copy(f"COPY {_quote(temp_table)} ({col_sql}) FROM STDIN") as copy:
+            for row in rows:
+                copy.write_row([row.get(c) for c in columns])
+
+
+def _copy_upsert(
+    session: Session,
+    table: str,
+    rows: list[dict[str, Any]],
+    index_elements: list[str],
+    set_clause: str,
+) -> int:
+    columns = list(rows[0].keys())
+    temp_table = f"_copy_{table}"
+    _copy_into_temp(session, table, temp_table, columns, rows)
+    col_sql = ", ".join(_quote(c) for c in columns)
+    conflict_sql = ", ".join(_quote(c) for c in index_elements)
+    raw = session.connection().connection.driver_connection
+    with raw.cursor() as cur:
+        cur.execute(
+            f"INSERT INTO {_quote(table)} ({col_sql}) "
+            f"SELECT {col_sql} FROM {_quote(temp_table)} "
+            f"ON CONFLICT ({conflict_sql}) DO UPDATE SET {set_clause}"
+        )
+    session.commit()
+    logger.info("upsert.copy", table=table, rows=len(rows))
+    return len(rows)
+
+
+def _extra_set_sql(extra_set: dict[str, Any] | None) -> list[str]:
+    """Render extra ON CONFLICT assignments (e.g. updated_at=now()) as SQL text."""
+    if not extra_set:
+        return []
+    parts = []
+    for col, expr in extra_set.items():
+        compiled = expr.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+        parts.append(f"{_quote(col)} = {compiled}")
+    return parts
+
 
 def upsert(
     session: Session,
@@ -299,8 +362,14 @@ def upsert(
         return 0
 
     index_elements = [key] if isinstance(key, str) else list(key)
-    batch_size = min(_MAX_BATCH_ROWS, max(1, _MAX_BIND_PARAMS // len(rows[0])))
     table = getattr(model, "__tablename__", model.__name__)
+
+    if len(rows) >= _COPY_MIN_ROWS:
+        set_parts = [f"{_quote(c)} = EXCLUDED.{_quote(c)}" for c in update_columns]
+        set_parts.extend(_extra_set_sql(extra_set))
+        return _copy_upsert(session, table, rows, index_elements, ", ".join(set_parts))
+
+    batch_size = min(_MAX_BATCH_ROWS, max(1, _MAX_BIND_PARAMS // len(rows[0])))
     total_batches = (len(rows) + batch_size - 1) // batch_size
     for batch_num, start in enumerate(range(0, len(rows), batch_size), start=1):
         batch = rows[start : start + batch_size]
@@ -310,14 +379,28 @@ def upsert(
             set_.update(extra_set)
         stmt = stmt.on_conflict_do_update(index_elements=index_elements, set_=set_)
         session.execute(stmt)
-        session.commit()
         logger.info("upsert.batch", table=table, batch=batch_num, of=total_batches, rows=len(batch))
+    session.commit()
     return len(rows)
+
+
+_VAULT_SET_SQL = (
+    "client_name = EXCLUDED.client_name, "
+    "contact_email = COALESCE(EXCLUDED.contact_email, pii_vault.contact_email), "
+    "contact_whatsapp = COALESCE(EXCLUDED.contact_whatsapp, pii_vault.contact_whatsapp), "
+    "contact_phone = COALESCE(EXCLUDED.contact_phone, pii_vault.contact_phone), "
+    "source = EXCLUDED.source, "
+    "updated_at = now()"
+)
 
 
 def upsert_vault(session: Session, rows: list[dict[str, Any]]) -> int:
     if not rows:
         return 0
+
+    if len(rows) >= _COPY_MIN_ROWS:
+        return _copy_upsert(session, "pii_vault", rows, ["client_id"], _VAULT_SET_SQL)
+
     batch_size = min(_MAX_BATCH_ROWS, max(1, _MAX_BIND_PARAMS // len(rows[0])))
     total_batches = (len(rows) + batch_size - 1) // batch_size
     for batch_num, start in enumerate(range(0, len(rows), batch_size), start=1):
@@ -337,10 +420,10 @@ def upsert_vault(session: Session, rows: list[dict[str, Any]]) -> int:
             },
         )
         session.execute(stmt)
-        session.commit()
         logger.info(
             "upsert.batch", table="pii_vault", batch=batch_num, of=total_batches, rows=len(batch)
         )
+    session.commit()
     return len(rows)
 
 

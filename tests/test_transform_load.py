@@ -562,6 +562,57 @@ def test_upsert_batches_to_stay_under_the_postgres_bind_param_limit(
         assert {row.client_id for row in rows} == set(client_ids)
 
 
+def test_upsert_bulk_loads_through_copy_and_updates_on_conflict(
+    db: None, cleanup_runs: list[str], normalized_ids, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Force the COPY path with a low threshold and prove it both inserts new
+    rows and updates existing ones on a second run (ON CONFLICT DO UPDATE).
+    """
+    from app.transform import load as load_module
+
+    monkeypatch.setattr(load_module, "_COPY_MIN_ROWS", 1)  # every upsert takes the COPY path
+
+    run_id = uuid4().hex
+    cleanup_runs.append(run_id)
+    n_clients = 5
+    client_ids = list(range(9101, 9101 + n_clients))
+    normalized_ids["funds"].add(11)
+    normalized_ids["clients"].update(client_ids)
+    normalized_ids["txns"].update(range(91001, 91001 + n_clients))
+
+    def _payload_for(amount: str) -> dict[str, Any]:
+        clients = [_client(cid, 11, 91001 + i, amount=amount) for i, cid in enumerate(client_ids)]
+        return _payload(
+            {
+                "unit_fund_id": 11,
+                "unit_fund_name": "Money Market Fund",
+                "inactive_client_count": n_clients,
+                "clients": clients,
+            }
+        )
+
+    with SessionLocal() as session:
+        _seed_run(session, run_id, _payload_for("5000"))
+        counts = transform_run(session, run_id)
+
+    assert counts.clients == n_clients
+    with SessionLocal() as session:
+        rows = session.scalars(select(Clients).where(Clients.client_id.in_(client_ids))).all()
+        assert {row.client_id for row in rows} == set(client_ids)
+        first_total = session.get(Clients, 9101).total_purchase_amount
+
+    run_id2 = uuid4().hex
+    cleanup_runs.append(run_id2)
+    with SessionLocal() as session:
+        _seed_run(session, run_id2, _payload_for("9000"))
+        transform_run(session, run_id2)
+
+    with SessionLocal() as session:
+        assert _count(session, Clients, 9101, Clients.client_id) == 1
+        assert session.get(Clients, 9101).total_purchase_amount != first_total
+        assert session.get(PiiVault, 9101) is not None
+
+
 def _count(session, model, key_value: int, key_col) -> int:
     return session.scalar(select(func.count()).select_from(model).where(key_col == key_value)) or 0
 
