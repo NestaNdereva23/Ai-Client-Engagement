@@ -21,6 +21,7 @@ from app.db.models.audit import AuditLog
 from app.db.models.campaigns import CampaignStep, ContactEvent, Enrollment, TouchLog
 from app.db.models.models import ClientFeatures, Clients, Funds, PiiVault
 from app.db.models.outreach import Campaign
+from app.db.models.routing import ClientSide
 from app.db.models.suppression import Suppression
 from app.db.session import SessionLocal
 
@@ -135,8 +136,23 @@ def _make_enrollment(session, *, campaign_id: int, client_id: int, **overrides) 
     return row
 
 
+def _set_side(client_id: int, side: str) -> None:
+    with SessionLocal() as session:
+        session.add(
+            ClientSide(
+                client_id=client_id,
+                side=side,
+                balance=0.0,
+                threshold_kes=6000.0,
+                source_feed="active",
+            )
+        )
+        session.commit()
+
+
 def _cleanup_client(client_id: int) -> None:
     with SessionLocal() as session:
+        session.execute(delete(ClientSide).where(ClientSide.client_id == client_id))
         session.execute(delete(ContactEvent).where(ContactEvent.client_id == client_id))
         session.execute(delete(Suppression).where(Suppression.client_id == client_id))
         session.execute(delete(ClientFeatures).where(ClientFeatures.client_id == client_id))
@@ -652,5 +668,48 @@ def test_a_touch_still_waiting_on_a_message_blocks_the_next_step(
     assert result.reason == "previous_touch_pending"
     with SessionLocal() as session:
         assert session.get(Enrollment, enrollment_id).status == "in_progress"
+
+    _cleanup_client(client_id)
+
+
+def test_a_client_now_on_the_active_side_is_skipped_non_terminal(
+    campaign_with_step: int, fund: int
+) -> None:
+    client_id = 99540
+    with SessionLocal() as session:
+        _make_client(session, client_id)
+        session.commit()
+        enrollment = _make_enrollment(session, campaign_id=campaign_with_step, client_id=client_id)
+    _set_side(client_id, "active")
+
+    with SessionLocal() as session:
+        enrollment = session.get(Enrollment, enrollment.enrollment_id)
+        result = check_eligibility(session, enrollment)
+        session.commit()
+        enrollment_id = enrollment.enrollment_id
+
+    assert result.eligible is False
+    assert result.reason == "moved_to_active"
+    with SessionLocal() as session:
+        assert session.get(Enrollment, enrollment_id).status == "enrolled"
+
+    _cleanup_client(client_id)
+
+
+def test_a_client_still_on_the_inactive_side_passes_the_side_gate(
+    campaign_with_step: int, fund: int
+) -> None:
+    client_id = 99541
+    with SessionLocal() as session:
+        _make_client(session, client_id)
+        session.commit()
+        enrollment = _make_enrollment(session, campaign_id=campaign_with_step, client_id=client_id)
+    _set_side(client_id, "inactive")
+
+    with SessionLocal() as session:
+        enrollment = session.get(Enrollment, enrollment.enrollment_id)
+        result = check_eligibility(session, enrollment)
+
+    assert result.eligible is True
 
     _cleanup_client(client_id)

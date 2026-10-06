@@ -32,10 +32,12 @@ from app.config import get_settings
 from app.db.models.campaigns import CampaignStep, ContactEvent, Enrollment, TouchLog
 from app.db.models.models import ClientFeatures, Clients, PiiVault
 from app.db.models.outreach import Campaign, OutreachMessage
+from app.db.models.routing import ClientSide
 from app.db.models.rules import ClientMessageIndicators
 from app.db.models.suppression import Suppression
 from app.db.session import restricted_session
 from app.delivery.test_list import active_test_contacts
+from app.routing.sides import SIDE_INACTIVE
 from app.rules.catalog import angle_is_held
 
 _UNRESOLVED_MESSAGE_STATUSES = ("pending_review", "escalated", "held")
@@ -66,6 +68,9 @@ def check_eligibility(
     campaign = session.get(Campaign, enrollment.campaign_id)
     if campaign is None or campaign.status in ("paused", "completed"):
         return _skip(session, enrollment, reason="campaign_inactive", terminal=False)
+
+    if _moved_off_inactive(session, enrollment.client_id):
+        return _skip(session, enrollment, reason="moved_to_active", terminal=False)
 
     step_no = enrollment.current_step + 1
     step = session.scalar(
@@ -136,6 +141,9 @@ def check_stop_conditions(
     if campaign is None or campaign.status in ("paused", "completed"):
         return _skip(session, enrollment, reason="campaign_inactive", terminal=False)
 
+    if _moved_off_inactive(session, enrollment.client_id):
+        return _skip(session, enrollment, reason="moved_to_active", terminal=False)
+
     if _angle_held(session, enrollment.client_id):
         return _skip(session, enrollment, reason="angle_held", terminal=False)
 
@@ -152,6 +160,11 @@ def check_stop_conditions(
         )
 
     return EligibilityResult(eligible=True)
+
+
+def _moved_off_inactive(session: Session, client_id: int) -> bool:
+    side = session.get(ClientSide, client_id)
+    return side is not None and side.side != SIDE_INACTIVE
 
 
 def _has_no_visible_history(session: Session, client_id: int) -> bool:
