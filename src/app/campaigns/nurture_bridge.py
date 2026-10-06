@@ -155,9 +155,9 @@ def _priority_tier_for(session: Session, client_id: int) -> str:
     return _RISK_BAND_TIER.get(worst, _DEFAULT_PRIORITY_TIER)
 
 
-def _upsert_client_features(
-    session: Session, client_id: int, priority_tier: str, *, fund_type: str | None = None
-) -> None:
+def _feature_row(
+    client_id: int, priority_tier: str, *, fund_type: str | None = None
+) -> tuple[dict, list[str]]:
     row = {
         "client_id": client_id,
         "active_book_auto_checkin": True,
@@ -168,6 +168,31 @@ def _upsert_client_features(
     if fund_type is not None:
         row["fund_type"] = fund_type
         update.append("fund_type")
+    return row, update
+
+
+def _indicator_row(client_id: int, priority_tier: str, resolution) -> dict:
+    urgency = resolution.urgency
+    tier = resolution.priority_tier
+    if tier in PRIORITY_TIERS:
+        tier = priority_tier
+        urgency = _TIER_URGENCY[tier]
+    return {
+        "client_id": client_id,
+        "message_angle": resolution.message_angle,
+        "urgency": urgency,
+        "priority_tier": tier,
+        "prompt_variant": resolution.prompt_variant,
+        "rule_id": resolution.rule_id,
+        "rule_name": resolution.rule_name,
+        "rule_version": resolution.version,
+    }
+
+
+def _upsert_client_features(
+    session: Session, client_id: int, priority_tier: str, *, fund_type: str | None = None
+) -> None:
+    row, update = _feature_row(client_id, priority_tier, fund_type=fund_type)
     upsert(session, ClientFeatures, [row], "client_id", update)
 
 
@@ -176,24 +201,8 @@ def _resolve_and_upsert_indicator(
 ) -> None:
     rules = load_active_rules(session, at)
     resolution = resolve({"active_book_auto_checkin": "true"}, rules)
-    urgency = resolution.urgency
-    tier = resolution.priority_tier
-    if tier in PRIORITY_TIERS:
-        tier = priority_tier
-        urgency = _TIER_URGENCY[tier]
-    rows = [
-        {
-            "client_id": client_id,
-            "message_angle": resolution.message_angle,
-            "urgency": urgency,
-            "priority_tier": tier,
-            "prompt_variant": resolution.prompt_variant,
-            "rule_id": resolution.rule_id,
-            "rule_name": resolution.rule_name,
-            "rule_version": resolution.version,
-        }
-    ]
-    upsert(session, ClientMessageIndicators, rows, "client_id", _INDICATOR_UPDATE)
+    row = _indicator_row(client_id, priority_tier, resolution)
+    upsert(session, ClientMessageIndicators, [row], "client_id", _INDICATOR_UPDATE)
 
 
 def prepare_client_for_drafting(
@@ -262,7 +271,12 @@ def enroll_auto_checkin_clients(
     if campaign is None:
         return []
 
+    rules = load_active_rules(session, on)
+    resolution = resolve({"active_book_auto_checkin": "true"}, rules)
+
     bridged: list[int] = []
+    feature_rows: list[dict] = []
+    indicator_rows: list[dict] = []
     for client_id in unique_ids:
         aggregate = _aggregate_active_funds(session, client_id)
         if aggregate is None:
@@ -270,12 +284,15 @@ def enroll_auto_checkin_clients(
         _ensure_funds(session, aggregate.fund_ids)
         _insert_client_if_absent(session, aggregate)
         priority_tier = _priority_tier_for(session, client_id)
-        _upsert_client_features(session, client_id, priority_tier)
-        _resolve_and_upsert_indicator(session, client_id, priority_tier, at=on)
+        feature_rows.append(_feature_row(client_id, priority_tier)[0])
+        indicator_rows.append(_indicator_row(client_id, priority_tier, resolution))
         bridged.append(client_id)
 
     if not bridged:
         return []
+
+    upsert(session, ClientFeatures, feature_rows, "client_id", list(_CLIENT_FEATURES_UPDATE))
+    upsert(session, ClientMessageIndicators, indicator_rows, "client_id", _INDICATOR_UPDATE)
 
     enroll_cohort(session, campaign_id=campaign.campaign_id, client_ids=bridged)
     record_audit(

@@ -11,6 +11,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from app.db.bulk import copy_upsert, quote_ident
 from app.db.models.models import (
     ClientFeatures,
     ClientFund,
@@ -293,26 +294,6 @@ _MAX_BATCH_ROWS = 1000
 _COPY_MIN_ROWS = 2000
 
 
-def _quote(name: str) -> str:
-    return '"' + name.replace('"', '""') + '"'
-
-
-def _copy_into_temp(
-    session: Session, source_table: str, temp_table: str, columns: list[str], rows: list[dict]
-) -> None:
-    """Create a temp copy of the target table and stream the rows into it."""
-    raw = session.connection().connection.driver_connection
-    col_sql = ", ".join(_quote(c) for c in columns)
-    with raw.cursor() as cur:
-        cur.execute(
-            f"CREATE TEMP TABLE {_quote(temp_table)} "
-            f"(LIKE {_quote(source_table)} INCLUDING DEFAULTS) ON COMMIT DROP"
-        )
-        with cur.copy(f"COPY {_quote(temp_table)} ({col_sql}) FROM STDIN") as copy:
-            for row in rows:
-                copy.write_row([row.get(c) for c in columns])
-
-
 def _copy_upsert(
     session: Session,
     table: str,
@@ -320,18 +301,7 @@ def _copy_upsert(
     index_elements: list[str],
     set_clause: str,
 ) -> int:
-    columns = list(rows[0].keys())
-    temp_table = f"_copy_{table}"
-    _copy_into_temp(session, table, temp_table, columns, rows)
-    col_sql = ", ".join(_quote(c) for c in columns)
-    conflict_sql = ", ".join(_quote(c) for c in index_elements)
-    raw = session.connection().connection.driver_connection
-    with raw.cursor() as cur:
-        cur.execute(
-            f"INSERT INTO {_quote(table)} ({col_sql}) "
-            f"SELECT {col_sql} FROM {_quote(temp_table)} "
-            f"ON CONFLICT ({conflict_sql}) DO UPDATE SET {set_clause}"
-        )
+    copy_upsert(session, table, rows, index_elements, set_clause)
     session.commit()
     logger.info("upsert.copy", table=table, rows=len(rows))
     return len(rows)
@@ -346,7 +316,7 @@ def _extra_set_sql(extra_set: dict[str, Any] | None) -> list[str]:
         compiled = expr.compile(
             dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
         )
-        parts.append(f"{_quote(col)} = {compiled}")
+        parts.append(f"{quote_ident(col)} = {compiled}")
     return parts
 
 
@@ -365,7 +335,7 @@ def upsert(
     table = getattr(model, "__tablename__", model.__name__)
 
     if len(rows) >= _COPY_MIN_ROWS:
-        set_parts = [f"{_quote(c)} = EXCLUDED.{_quote(c)}" for c in update_columns]
+        set_parts = [f"{quote_ident(c)} = EXCLUDED.{quote_ident(c)}" for c in update_columns]
         set_parts.extend(_extra_set_sql(extra_set))
         return _copy_upsert(session, table, rows, index_elements, ", ".join(set_parts))
 
@@ -379,7 +349,10 @@ def upsert(
             set_.update(extra_set)
         stmt = stmt.on_conflict_do_update(index_elements=index_elements, set_=set_)
         session.execute(stmt)
-        logger.info("upsert.batch", table=table, batch=batch_num, of=total_batches, rows=len(batch))
+        if total_batches > 1:
+            logger.info(
+                "upsert.batch", table=table, batch=batch_num, of=total_batches, rows=len(batch)
+            )
     session.commit()
     return len(rows)
 
@@ -420,9 +393,14 @@ def upsert_vault(session: Session, rows: list[dict[str, Any]]) -> int:
             },
         )
         session.execute(stmt)
-        logger.info(
-            "upsert.batch", table="pii_vault", batch=batch_num, of=total_batches, rows=len(batch)
-        )
+        if total_batches > 1:
+            logger.info(
+                "upsert.batch",
+                table="pii_vault",
+                batch=batch_num,
+                of=total_batches,
+                rows=len(batch),
+            )
     session.commit()
     return len(rows)
 

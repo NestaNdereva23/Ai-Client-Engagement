@@ -30,6 +30,7 @@ class EndpointConfig:
     client_model: type
     schema_drift_fn: Callable[[dict[str, Any]], set[str]]
     count_field: str
+    page_size: int | None = None
 
 
 class UnknownEndpoint(ValueError):
@@ -50,6 +51,7 @@ def resolve_endpoint(endpoint: str, settings: Settings) -> EndpointConfig:
             client_model=ClientRecord,
             schema_drift_fn=schema_drift,
             count_field="inactive_client_count",
+            page_size=1000,
         )
     if endpoint == "active-clients":
         return EndpointConfig(
@@ -58,5 +60,6 @@ def resolve_endpoint(endpoint: str, settings: Settings) -> EndpointConfig:
             client_model=ActiveClientRecord,
             schema_drift_fn=schema_drift_active,
             count_field="client_count",
+            page_size=1000,
         )
     raise UnknownEndpoint(endpoint)

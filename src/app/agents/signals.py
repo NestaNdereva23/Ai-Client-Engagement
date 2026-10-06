@@ -3,10 +3,11 @@ from __future__ import annotations
 from datetime import date, timedelta
 from uuid import uuid4
 
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.agents.signal_config import active_threshold
+from app.db.bulk import copy_insert, copy_upsert
 from app.db.models.active_clients import ActiveClientFund, ActiveClientInteraction
 from app.db.models.digest import DigestLine, DigestRun
 from app.db.models.signals import ClientSignalSnapshot, ClientSignalState, SignalRun
@@ -39,8 +40,6 @@ ONE_FUND = 1
 CALL_LIST_ROUTE = "fa_call_priority"
 MORE_URGENT = "more_urgent"
 
-_EXISTING_STATE_LOOKUP_BATCH_SIZE = 1000
-
 
 class NewClientWindowMissing(LookupError):
     pass
@@ -56,57 +55,55 @@ def _signal_values(
     }
 
 
-def _existing_state(
-    session: Session, keys: list[tuple[int, int]]
-) -> dict[tuple[int, int, str], ClientSignalState]:
-    existing: dict[tuple[int, int, str], ClientSignalState] = {}
-    for start in range(0, len(keys), _EXISTING_STATE_LOOKUP_BATCH_SIZE):
-        batch = keys[start : start + _EXISTING_STATE_LOOKUP_BATCH_SIZE]
-        rows = session.scalars(
-            select(ClientSignalState).where(
-                tuple_(ClientSignalState.client_id, ClientSignalState.unit_fund_id).in_(batch)
-            )
-        )
-        existing.update({(row.client_id, row.unit_fund_id, row.signal_code): row for row in rows})
-    return existing
+# since only moves when a signal flips; an unchanged signal keeps its original date.
+_STATE_SET_SQL = (
+    "is_active = EXCLUDED.is_active, "
+    "run_id = EXCLUDED.run_id, "
+    "updated_at = now(), "
+    "since = CASE WHEN client_signal_state.is_active <> EXCLUDED.is_active "
+    "THEN EXCLUDED.since ELSE client_signal_state.since END"
+)
 
 
-def _write_signal(
-    session: Session,
-    run_id: str,
-    as_of: date,
-    client_id: int,
-    unit_fund_id: int,
-    signal_code: str,
-    is_active: bool,
-    existing: dict[tuple[int, int, str], ClientSignalState],
-) -> None:
-    session.add(
-        ClientSignalSnapshot(
-            run_id=run_id,
-            client_id=client_id,
-            unit_fund_id=unit_fund_id,
-            signal_code=signal_code,
-            is_active=is_active,
+class _SignalWrites:
+    """Collects one run's signal rows so they can be written in bulk."""
+
+    def __init__(self, run_id: str, as_of: date) -> None:
+        self.run_id = run_id
+        self.as_of = as_of
+        self.snapshots: list[dict] = []
+        self.states: list[dict] = []
+
+    def add(self, client_id: int, unit_fund_id: int, signal_code: str, is_active: bool) -> None:
+        self.snapshots.append(
+            {
+                "run_id": self.run_id,
+                "client_id": client_id,
+                "unit_fund_id": unit_fund_id,
+                "signal_code": signal_code,
+                "is_active": is_active,
+            }
         )
-    )
-    prior = existing.get((client_id, unit_fund_id, signal_code))
-    if prior is None:
-        session.add(
-            ClientSignalState(
-                client_id=client_id,
-                unit_fund_id=unit_fund_id,
-                signal_code=signal_code,
-                is_active=is_active,
-                since=as_of,
-                run_id=run_id,
-            )
+        self.states.append(
+            {
+                "client_id": client_id,
+                "unit_fund_id": unit_fund_id,
+                "signal_code": signal_code,
+                "is_active": is_active,
+                "since": self.as_of,
+                "run_id": self.run_id,
+            }
         )
-    else:
-        if prior.is_active != is_active:
-            prior.since = as_of
-        prior.is_active = is_active
-        prior.run_id = run_id
+
+    def flush(self, session: Session) -> None:
+        copy_insert(session, ClientSignalSnapshot.__tablename__, self.snapshots)
+        copy_upsert(
+            session,
+            ClientSignalState.__tablename__,
+            self.states,
+            ["client_id", "unit_fund_id", "signal_code"],
+            _STATE_SET_SQL,
+        )
 
 
 def _open_run(session: Session) -> SignalRun:
@@ -143,21 +140,12 @@ def recompute_new_client_signals(
         )
     ).all()
 
-    existing = _existing_state(session, [(fund.client_id, fund.unit_fund_id) for fund in funds])
-
+    writes = _SignalWrites(run_to_use.run_id, as_of)
     for fund in funds:
         values = _signal_values(fund.n_deposits, fund.first_deposit_date, as_of, int(window_days))
         for signal_code, is_active in values.items():
-            _write_signal(
-                session,
-                run_to_use.run_id,
-                as_of,
-                fund.client_id,
-                fund.unit_fund_id,
-                signal_code,
-                is_active,
-                existing,
-            )
+            writes.add(fund.client_id, fund.unit_fund_id, signal_code, is_active)
+    writes.flush(session)
 
     if run is None:
         return _close_run(session, run_to_use)
@@ -178,24 +166,15 @@ def recompute_fee_pressure_signal(
         )
     ).all()
 
-    existing = _existing_state(session, [(fund.client_id, fund.unit_fund_id) for fund in funds])
-
+    writes = _SignalWrites(run_to_use.run_id, as_of)
     for fund in funds:
         is_active = (
             fund.months_until_empty is not None
             and fund.months_until_empty < months_until_empty_threshold
             and (fund.balance or 0) > 0
         )
-        _write_signal(
-            session,
-            run_to_use.run_id,
-            as_of,
-            fund.client_id,
-            fund.unit_fund_id,
-            FEE_PRESSURE_CLOSE,
-            is_active,
-            existing,
-        )
+        writes.add(fund.client_id, fund.unit_fund_id, FEE_PRESSURE_CLOSE, is_active)
+    writes.flush(session)
 
     if run is None:
         return _close_run(session, run_to_use)
@@ -211,20 +190,11 @@ def recompute_small_balance_signal(
         select(ActiveClientFund.client_id, ActiveClientFund.unit_fund_id, ActiveClientFund.balance)
     ).all()
 
-    existing = _existing_state(session, [(fund.client_id, fund.unit_fund_id) for fund in funds])
-
+    writes = _SignalWrites(run_to_use.run_id, as_of)
     for fund in funds:
         is_active = fund.balance is not None and fund.balance < small_balance_threshold
-        _write_signal(
-            session,
-            run_to_use.run_id,
-            as_of,
-            fund.client_id,
-            fund.unit_fund_id,
-            SMALL_BALANCE,
-            is_active,
-            existing,
-        )
+        writes.add(fund.client_id, fund.unit_fund_id, SMALL_BALANCE, is_active)
+    writes.flush(session)
 
     if run is None:
         return _close_run(session, run_to_use)
@@ -249,20 +219,11 @@ def recompute_single_fund_held_signal(
         ).join(funds_held, funds_held.c.client_id == ActiveClientFund.client_id)
     ).all()
 
-    existing = _existing_state(session, [(fund.client_id, fund.unit_fund_id) for fund in funds])
-
+    writes = _SignalWrites(run_to_use.run_id, as_of)
     for fund in funds:
         is_active = fund.funds_held == ONE_FUND
-        _write_signal(
-            session,
-            run_to_use.run_id,
-            as_of,
-            fund.client_id,
-            fund.unit_fund_id,
-            SINGLE_FUND_HELD,
-            is_active,
-            existing,
-        )
+        writes.add(fund.client_id, fund.unit_fund_id, SINGLE_FUND_HELD, is_active)
+    writes.flush(session)
 
     if run is None:
         return _close_run(session, run_to_use)
@@ -303,20 +264,11 @@ def recompute_call_follow_up_overdue_signal(
 
     funds = session.execute(select(ActiveClientFund.client_id, ActiveClientFund.unit_fund_id)).all()
 
-    existing = _existing_state(session, [(fund.client_id, fund.unit_fund_id) for fund in funds])
-
+    writes = _SignalWrites(run_to_use.run_id, as_of)
     for fund in funds:
         is_active = (fund.client_id, fund.unit_fund_id) in overdue_keys
-        _write_signal(
-            session,
-            run_to_use.run_id,
-            as_of,
-            fund.client_id,
-            fund.unit_fund_id,
-            CALL_FOLLOW_UP_OVERDUE,
-            is_active,
-            existing,
-        )
+        writes.add(fund.client_id, fund.unit_fund_id, CALL_FOLLOW_UP_OVERDUE, is_active)
+    writes.flush(session)
 
     if run is None:
         return _close_run(session, run_to_use)
@@ -345,20 +297,11 @@ def recompute_route_escalated_signal(
 
     funds = session.execute(select(ActiveClientFund.client_id, ActiveClientFund.unit_fund_id)).all()
 
-    existing = _existing_state(session, [(fund.client_id, fund.unit_fund_id) for fund in funds])
-
+    writes = _SignalWrites(run_to_use.run_id, as_of)
     for fund in funds:
         is_active = (fund.client_id, fund.unit_fund_id) in escalated_keys
-        _write_signal(
-            session,
-            run_to_use.run_id,
-            as_of,
-            fund.client_id,
-            fund.unit_fund_id,
-            ROUTE_ESCALATED_THIS_RUN,
-            is_active,
-            existing,
-        )
+        writes.add(fund.client_id, fund.unit_fund_id, ROUTE_ESCALATED_THIS_RUN, is_active)
+    writes.flush(session)
 
     if run is None:
         return _close_run(session, run_to_use)
