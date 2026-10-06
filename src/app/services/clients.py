@@ -190,6 +190,38 @@ def resolve_cohort_client_ids(
     return list(session.scalars(query).all())
 
 
+def resolve_cohort_members(
+    session: Session,
+    *,
+    fund_id: int | None = None,
+    value_band: str | None = None,
+    recency_band: str | None = None,
+    purchase_depth: str | None = None,
+    cadence_band: str | None = None,
+    newly_dormant: bool | None = None,
+    priority_tier: str | None = None,
+    high_value: bool | None = None,
+) -> list[Row]:
+    query = _apply_bucket_filters(
+        _base_query(
+            Clients.client_id,
+            ClientMessageIndicators.message_angle,
+            Clients.total_purchase_amount,
+        ),
+        client_id=None,
+        fund_id=fund_id,
+        value_band=value_band,
+        recency_band=recency_band,
+        purchase_depth=purchase_depth,
+        cadence_band=cadence_band,
+        message_angle=None,
+        newly_dormant=newly_dormant,
+        priority_tier=priority_tier,
+        high_value=high_value,
+    )
+    return list(session.execute(query).all())
+
+
 def get_client(session: Session, client_id: int) -> Row:
     """One client's buckets, or raise ClientNotFound.
 
