@@ -112,6 +112,7 @@ _FEATURE_UPDATE = [
     "stale_contact",
     "newly_dormant",
     "holds_other_funds",
+    "never_funded",
     "priority_tier",
     "high_value",
 ]
@@ -270,6 +271,7 @@ def _feature_dict(f: FeatureRow) -> dict[str, Any]:
         "stale_contact": f.stale_contact,
         "newly_dormant": f.newly_dormant,
         "holds_other_funds": f.holds_other_funds,
+        "never_funded": f.never_funded,
         "priority_tier": f.priority_tier,
         "high_value": f.high_value,
         "client_id": f.client_id,

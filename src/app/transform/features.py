@@ -126,6 +126,7 @@ class FeatureRow:
     stale_contact: bool
     newly_dormant: bool
     holds_other_funds: bool
+    never_funded: bool
     priority_tier: str
     high_value: bool
 
@@ -425,6 +426,7 @@ def derive_features(
                 newly_dormant=primary.days_since_last_activity is not None
                 and primary.days_since_last_activity <= NEWLY_DORMANT_DAYS,
                 holds_other_funds=len(ordered) > 1,
+                never_funded=lifetime_deposits <= 0,
                 priority_tier=_withdrawal_cluster(
                     lifetime_deposits, real_sale_dates.get(client_id, [])
                 ),

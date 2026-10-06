@@ -78,7 +78,7 @@ def test_v6_is_the_active_version_from_its_cutover_onward() -> None:
         just_after = load_active_rules(session, at=date(2026, 9, 30))
         well_after = load_active_rules(session, at=date(2027, 1, 1))
     assert {r.version for r in just_after} == {6}
-    assert {r.version for r in well_after} == {6}
+    assert {r.version for r in well_after} == {7}
 
 
 def test_the_four_windows_neither_gap_nor_overlap() -> None:

@@ -48,6 +48,7 @@ RULE_FIELD_DOMAINS: dict[str, set[str]] = {
     "staged_exit": _BOOL,
     "stale_contact": _BOOL,
     "newly_dormant": _BOOL,
+    "never_funded": _BOOL,
     "active_book_auto_checkin": _BOOL,
 }
 
@@ -71,6 +72,7 @@ MESSAGE_ANGLES = {
     "fee_warning",
     "fee_pressure_warning_dormant",
     "fee_pressure_encourage_active",
+    "first_deposit_welcome",
 }
 URGENCIES = {"low", "medium", "high"}
 

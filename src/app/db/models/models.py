@@ -274,6 +274,9 @@ class ClientFeatures(Base):
     holds_other_funds: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )
+    never_funded: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
     priority_tier: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="one_time_withdrawers"
     )
