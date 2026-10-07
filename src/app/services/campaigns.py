@@ -170,6 +170,46 @@ def list_campaign_enrollments(
     return rows, next_cursor
 
 
+def list_sent_touches(
+    session: Session,
+    campaign_id: int,
+    *,
+    cursor: str | None = None,
+    limit: int = DEFAULT_LIMIT,
+) -> tuple[list[Row], str | None]:
+    if session.get(Campaign, campaign_id) is None:
+        raise CampaignNotFound(campaign_id)
+
+    limit = clamp_limit(limit)
+    query = (
+        select(
+            TouchLog.touch_id,
+            TouchLog.message_id,
+            Enrollment.client_id,
+            OutreachMessage.channel,
+            TouchLog.sent_at,
+            TouchLog.delivery_status,
+        )
+        .select_from(TouchLog)
+        .join(Enrollment, Enrollment.enrollment_id == TouchLog.enrollment_id)
+        .join(OutreachMessage, OutreachMessage.message_id == TouchLog.message_id)
+        .where(Enrollment.campaign_id == campaign_id, TouchLog.sent_at.isnot(None))
+    )
+    key = tuple_(TouchLog.sent_at, TouchLog.touch_id)
+    if cursor is not None:
+        after_sent_at, after_id = decode_cursor(cursor)
+        query = query.where(key < (after_sent_at, int(after_id)))
+    query = query.order_by(TouchLog.sent_at.desc(), TouchLog.touch_id.desc()).limit(limit + 1)
+
+    rows = list(session.execute(query).all())
+    next_cursor = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        next_cursor = encode_cursor(last.sent_at, str(last.touch_id))
+    return rows, next_cursor
+
+
 def campaign_summary(session: Session, campaign_id: int) -> dict[str, int]:
     if session.get(Campaign, campaign_id) is None:
         raise CampaignNotFound(campaign_id)
