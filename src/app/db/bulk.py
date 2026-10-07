@@ -6,6 +6,7 @@ thousands of rows at once. Callers own the transaction: nothing here commits.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from typing import Any
 from uuid import uuid4
 
@@ -36,6 +37,17 @@ def copy_insert(session: Session, table: str, rows: list[dict[str, Any]]) -> int
         with cur.copy(f"COPY {quote_ident(table)} ({col_sql}) FROM STDIN") as copy:
             _write_rows(copy, columns, rows)
     return len(rows)
+
+
+def copy_into_new_temp_table(
+    cur, table: str, columns: dict[str, str], rows: Iterable[Sequence[Any]]
+) -> None:
+    col_defs = ", ".join(f"{quote_ident(name)} {sqltype}" for name, sqltype in columns.items())
+    cur.execute(f"CREATE TEMP TABLE {quote_ident(table)} ({col_defs}) ON COMMIT DROP")
+    col_sql = ", ".join(quote_ident(name) for name in columns)
+    with cur.copy(f"COPY {quote_ident(table)} ({col_sql}) FROM STDIN") as copy:
+        for row in rows:
+            copy.write_row(list(row))
 
 
 def copy_upsert(

@@ -14,11 +14,13 @@ send.
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.audit.log import record_audit
+from app.db.bulk import copy_into_new_temp_table, quote_ident
 from app.db.models.campaigns import Enrollment
 from app.db.models.models import Clients, PiiVault
 from app.db.session import restricted_session
@@ -103,17 +105,50 @@ def primary_flags_from_maps(
     return flags
 
 
+def _rank_primary_flags(
+    pool: Sequence[tuple[int, float]], *, already_claimed_names: set[str]
+) -> dict[int, bool]:
+    if not pool:
+        return {}
+    table = f"_pool_{uuid4().hex[:8]}"
+    with restricted_session() as session:
+        raw = session.connection().connection.driver_connection
+        with raw.cursor() as cur:
+            copy_into_new_temp_table(
+                cur, table, {"client_id": "bigint", "value": "double precision"}, pool
+            )
+            cur.execute(
+                "SELECT p.client_id, "
+                "(row_number() OVER ("
+                "PARTITION BY coalesce(pv.client_name, p.client_id::text) "
+                "ORDER BY p.value DESC, p.client_id"
+                ") = 1) "
+                "AND (pv.client_name IS NULL OR NOT (pv.client_name = ANY(%s))) "
+                "AS is_primary "
+                f"FROM {quote_ident(table)} p "
+                "LEFT JOIN pii_vault pv ON pv.client_id = p.client_id",
+                (list(already_claimed_names),),
+            )
+            rows = cur.fetchall()
+        record_audit(
+            session,
+            entity_type="pii_vault",
+            action="read_batch",
+            detail={"count": len(pool), "purpose": "enrollment_dedup"},
+        )
+        session.commit()
+    return {client_id: bool(is_primary) for client_id, is_primary in rows}
+
+
 def _resolve_primary_flags_for_pool(
     session: Session, client_ids: Sequence[int], *, already_claimed_names: set[str]
 ) -> dict[int, bool]:
     if not client_ids:
         return {}
 
-    names = _fetch_client_names(client_ids)
     values = _relationship_values(session, client_ids)
-    return primary_flags_from_maps(
-        client_ids, names, values, already_claimed_names=already_claimed_names
-    )
+    pool = [(client_id, values.get(client_id, 0.0)) for client_id in client_ids]
+    return _rank_primary_flags(pool, already_claimed_names=already_claimed_names)
 
 
 def _resolve_primary_flags(
