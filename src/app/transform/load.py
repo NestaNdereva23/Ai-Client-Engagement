@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
@@ -409,6 +409,28 @@ def upsert_vault(session: Session, rows: list[dict[str, Any]]) -> int:
     return len(rows)
 
 
+def _clear_stale_primary_rows(session: Session, client_ids: Iterable[int], before: Any) -> int:
+    """Clears a stale is_primary flag left behind when a fund drops out of a later run."""
+    ids = list(client_ids)
+    if not ids:
+        return 0
+    cleared = 0
+    for start in range(0, len(ids), _MAX_BATCH_ROWS):
+        chunk = ids[start : start + _MAX_BATCH_ROWS]
+        result = session.execute(
+            update(ClientFund)
+            .where(
+                ClientFund.client_id.in_(chunk),
+                ClientFund.is_primary_contact_row.is_(True),
+                ClientFund.updated_at < before,
+            )
+            .values(is_primary_contact_row=False, updated_at=func.now())
+        )
+        cleared += result.rowcount
+    session.commit()
+    return cleared
+
+
 def persist_result(
     session: Session, result: FlattenResult, source: str | None = None, run_id: str | None = None
 ) -> PersistCounts:
@@ -477,6 +499,7 @@ def persist_result(
     logger.info("persist_result.upserting", table="clients", rows=len(clients))
     counts.clients = upsert(session, Clients, clients, "client_id", _CLIENT_UPDATE)
     logger.info("persist_result.upserting", table="client_fund", rows=len(client_funds))
+    primary_cutoff = session.execute(select(func.now())).scalar()
     counts.client_funds = upsert(
         session,
         ClientFund,
@@ -485,6 +508,13 @@ def persist_result(
         _CLIENT_FUND_UPDATE,
         extra_set={"updated_at": func.now()},
     )
+    cleared_primaries = _clear_stale_primary_rows(session, by_client.keys(), primary_cutoff)
+    if cleared_primaries:
+        logger.info(
+            "persist_result.cleared_stale_primary_rows",
+            clients=len(by_client),
+            rows=cleared_primaries,
+        )
     logger.info("persist_result.upserting", table="transactions", rows=len(txns))
     counts.transactions = upsert(session, Transactions, list(txns.values()), "txn_id", _TXN_UPDATE)
     logger.info("persist_result.upserting", table="pii_vault", rows=len(vault))

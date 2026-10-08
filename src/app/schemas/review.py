@@ -54,6 +54,7 @@ class OutreachMessageSummary(BaseModel):
     message_id: str
     campaign_id: int
     client_id: int
+    client_name: str | None = None
     channel: str
     status: str
     created_at: datetime

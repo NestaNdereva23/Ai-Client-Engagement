@@ -8,6 +8,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, TypedDict
 
+import structlog
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy import select
@@ -34,6 +35,8 @@ from app.rules.catalog import load_angle
 from app.rules.tier_contract import load_tier
 from app.schemas.email_draft import DraftValidationError, parse_email_draft
 from app.transform.flatten import latest_reference_date
+
+logger = structlog.get_logger(__name__)
 
 PromptBuilder = Callable[..., str]
 ConfigResolver = Callable[..., Any]
@@ -150,15 +153,23 @@ def load_client_facts(
     *,
     extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    numeric = (
+    numeric_rows = (
         session.execute(
             select(llm_client_numeric_facts).where(
                 llm_client_numeric_facts.c.client_id == client_id
             )
         )
         .mappings()
-        .one_or_none()
+        .all()
     )
+    if len(numeric_rows) > 1:
+        # More than one primary contact row for this client; degrade instead of failing the batch.
+        logger.warning(
+            "load_client_facts.duplicate_primary_contact_row",
+            client_id=client_id,
+            row_count=len(numeric_rows),
+        )
+    numeric = numeric_rows[0] if numeric_rows else None
     if numeric is None and not extra:
         return None
 
