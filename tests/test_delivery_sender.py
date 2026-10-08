@@ -108,27 +108,27 @@ def active_funds(client_with_contact: None):
 
 
 def test_copies_the_account_manager_on_a_live_email(active_funds):
-    active_funds((1, "fa.one@example.com"))
+    active_funds((1, "fa.one@cytonn.com"))
     mailer = FakeMailer()
 
     build_email_sender(mailer)(a_message())
 
     assert mailer.sent_messages[0].to == "client@example.com"
-    assert mailer.sent_messages[0].cc == ("fa.one@example.com",)
+    assert mailer.sent_messages[0].cc == ("fa.one@cytonn.com",)
 
 
 def test_copies_each_account_manager_once_across_funds(active_funds):
     active_funds(
-        (1, "fa.two@example.com"),
-        (2, "fa.one@example.com"),
-        (3, "fa.two@example.com"),
+        (1, "fa.two@cytonn.com"),
+        (2, "fa.one@cytonn.com"),
+        (3, "fa.two@cytonn.com"),
         (4, None),
     )
     mailer = FakeMailer()
 
     build_email_sender(mailer)(a_message())
 
-    assert mailer.sent_messages[0].cc == ("fa.one@example.com", "fa.two@example.com")
+    assert mailer.sent_messages[0].cc == ("fa.one@cytonn.com", "fa.two@cytonn.com")
 
 
 def _clear_inactive_funds() -> None:
@@ -176,41 +176,53 @@ def inactive_funds(client_with_contact: None):
 
 
 def test_copies_the_account_manager_of_an_inactive_client(inactive_funds):
-    inactive_funds((INACTIVE_FUND_IDS[0], "fa.inactive@example.com"))
+    inactive_funds((INACTIVE_FUND_IDS[0], "fa.inactive@cytonn.com"))
     mailer = FakeMailer()
 
     build_email_sender(mailer)(a_message())
 
-    assert mailer.sent_messages[0].cc == ("fa.inactive@example.com",)
+    assert mailer.sent_messages[0].cc == ("fa.inactive@cytonn.com",)
 
 
 def test_copies_each_account_manager_once_across_both_books(inactive_funds, active_funds):
     inactive_funds(
-        (INACTIVE_FUND_IDS[0], "fa.two@example.com"),
-        (INACTIVE_FUND_IDS[1], "fa.one@example.com"),
+        (INACTIVE_FUND_IDS[0], "fa.two@cytonn.com"),
+        (INACTIVE_FUND_IDS[1], "fa.one@cytonn.com"),
     )
-    active_funds((1, "fa.two@example.com"), (2, "fa.three@example.com"))
+    active_funds((1, "fa.two@cytonn.com"), (2, "fa.three@cytonn.com"))
     mailer = FakeMailer()
 
     build_email_sender(mailer)(a_message())
 
     assert mailer.sent_messages[0].cc == (
-        "fa.one@example.com",
-        "fa.three@example.com",
-        "fa.two@example.com",
+        "fa.one@cytonn.com",
+        "fa.three@cytonn.com",
+        "fa.two@cytonn.com",
     )
 
 
 def test_leaves_out_an_account_manager_address_that_is_not_an_email(inactive_funds):
     inactive_funds(
         (INACTIVE_FUND_IDS[0], "gracemwende2010@gmail"),
-        (INACTIVE_FUND_IDS[1], "fa.one@example.com"),
+        (INACTIVE_FUND_IDS[1], "fa.one@cytonn.com"),
     )
     mailer = FakeMailer()
 
     build_email_sender(mailer)(a_message())
 
-    assert mailer.sent_messages[0].cc == ("fa.one@example.com",)
+    assert mailer.sent_messages[0].cc == ("fa.one@cytonn.com",)
+
+
+def test_leaves_out_an_account_manager_address_that_is_not_cytonn(inactive_funds):
+    inactive_funds(
+        (INACTIVE_FUND_IDS[0], "fa.outside@gmail.com"),
+        (INACTIVE_FUND_IDS[1], "fa.one@cytonn.com"),
+    )
+    mailer = FakeMailer()
+
+    build_email_sender(mailer)(a_message())
+
+    assert mailer.sent_messages[0].cc == ("fa.one@cytonn.com",)
 
 
 def test_reports_recorded_when_the_mailer_is_the_recording_no_op(client_with_contact: None):

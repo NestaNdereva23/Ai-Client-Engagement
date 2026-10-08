@@ -22,6 +22,7 @@ class ClientSummaryOut(BaseModel):
     priority_tier: str | None
     high_value: bool | None
     call_brief: str | None = None
+    client_name: str | None = None
 
 
 class ClientIdentityOut(BaseModel):

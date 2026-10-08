@@ -41,7 +41,7 @@ from app.config import FaRecord, Settings, get_settings
 from app.db.models.digest import DigestEmailSend, DigestLine, DigestRun
 from app.db.models.fa_assignment import FaAssignment
 from app.db.models.risk import RiskSnapshot
-from app.delivery.mailer import EmailMessage, Mailer, get_mailer
+from app.delivery.mailer import EmailMessage, Mailer, get_mailer, is_cytonn_address
 from app.digest.build import DIGEST_ROUTES
 from app.risk.history import previous_scores
 from app.risk.signals import fired_signal_tags
@@ -282,11 +282,13 @@ def send_digest_emails(
         if email.fa_id in done:
             continue
         try:
+            cc = (email.advisor.email,) if is_cytonn_address(email.advisor.email) else ()
             result = mailer.send(
                 EmailMessage(
                     to=email.advisor.email,
                     subject=email.rendered.subject,
                     text_body=email.rendered.text_body,
+                    cc=cc,
                 )
             )
             status = "sent" if result.sent else "recorded"

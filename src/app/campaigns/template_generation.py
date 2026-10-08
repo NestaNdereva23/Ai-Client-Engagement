@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import json
+import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -54,6 +55,13 @@ from app.privacy.llm_client import LLMClient
 from app.rag.grounding import GroundingChunk
 
 logger = structlog.get_logger(__name__)
+
+# Caps one call's LLM round trips so it finishes before the Laravel proxy's timeout.
+MAX_DRAFTS_PER_CALL = 25
+
+# A second, time-based ceiling for when the model itself is slow: the count cap
+# above assumes normal latency, so this stops the loop early if it doesn't hold.
+TIME_BUDGET_SECONDS = 240.0
 
 # label, placeholder field name -- the five facts every bucket may stand a
 # token in for, regardless of whether this profile happens to use them.
@@ -385,11 +393,15 @@ def draft_templates_for_campaign(
     volumes = _group_observed_volumes(session, candidates)
     ordered = _ordered_by_priority(candidates, volumes)
     to_draft = ordered if draft_limit is None else ordered[:draft_limit]
+    to_draft = to_draft[:MAX_DRAFTS_PER_CALL]
 
     templates: list[MessageTemplate] = []
     failed_guardrails = 0
     failed_errors = 0
-    for group in to_draft:
+    started = time.monotonic()
+    for index, group in enumerate(to_draft):
+        if index > 0 and time.monotonic() - started >= TIME_BUDGET_SECONDS:
+            break
         # Committed per bucket rather than once at the end: an unexpected
         # error from one bucket (a provider timeout, a network blip) is
         # caught and counted rather than left to propagate, so it does not
