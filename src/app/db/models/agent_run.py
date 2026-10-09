@@ -35,11 +35,13 @@ AGENT_RUN_TRIGGERS = ("nightly", "manual", "chat")
 NIGHTLY_AGENT = "nightly"
 INTELLIGENCE_AGENT = "intelligence"
 ACTION_AGENT = "action"
+CHAT_AGENT = "chat"
 
 # Which agent the run belongs to. The two that read the whole book take a
 # while and only one of them may go at a time; an action run answers one
-# accepted finding, so it runs whenever a person asks for it.
-AGENT_KINDS = (NIGHTLY_AGENT, INTELLIGENCE_AGENT, ACTION_AGENT)
+# accepted finding, and a chat run answers one question a person just
+# asked, so both run whenever a person asks for them.
+AGENT_KINDS = (NIGHTLY_AGENT, INTELLIGENCE_AGENT, ACTION_AGENT, CHAT_AGENT)
 
 BOOK_WIDE_AGENTS = (NIGHTLY_AGENT, INTELLIGENCE_AGENT)
 
@@ -53,7 +55,7 @@ class AgentRun(Base):
         CheckConstraint("trigger IN ('nightly', 'manual', 'chat')", name="ck_agent_run_trigger"),
         CheckConstraint("cost_kes IS NULL OR cost_kes >= 0", name="ck_agent_run_cost_not_negative"),
         CheckConstraint(
-            "agent_kind IN ('nightly', 'intelligence', 'action')",
+            "agent_kind IN ('nightly', 'intelligence', 'action', 'chat')",
             name="ck_agent_run_agent_kind",
         ),
     )

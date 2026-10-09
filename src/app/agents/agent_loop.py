@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, is_dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, TypedDict
 
 import structlog
@@ -51,6 +51,7 @@ from app.agents.watchlist import (
     load_thresholds,
 )
 from app.audit.log import record_audit
+from app.config import get_settings
 from app.db.models.agent import AgentActionCatalog
 from app.db.models.agent_event import (
     ACTION_COMPLETED,
@@ -963,6 +964,33 @@ def _latest_completed_risk_run_id(session: Session) -> str | None:
     )
 
 
+def fail_stale_runs(
+    session: Session, *, max_runtime_minutes: int, now: datetime | None = None
+) -> list[int]:
+    cutoff = (now or datetime.now(UTC)) - timedelta(minutes=max_runtime_minutes)
+    stale = session.scalars(
+        select(AgentRun).where(AgentRun.state == "running", AgentRun.started_at < cutoff)
+    ).all()
+    if not stale:
+        return []
+    for run in stale:
+        run.state = "failed"
+        run.finished_at = datetime.now(UTC)
+        run.failure_reason = "run exceeded the maximum runtime and was treated as orphaned"
+        record_audit(
+            session,
+            entity_type="agent_run",
+            action="failed",
+            entity_id=str(run.run_id),
+            run_id=str(run.run_id),
+            detail={"reason": "stale", "max_runtime_minutes": max_runtime_minutes},
+        )
+    session.commit()
+    run_ids = [run.run_id for run in stale]
+    logger.info("agent_loop.stale_runs_failed", run_ids=run_ids, count=len(run_ids))
+    return run_ids
+
+
 def start_agent_run(
     session: Session,
     *,
@@ -981,6 +1009,7 @@ def start_agent_run(
     never needs a risk run to exist.
     """
     as_of = as_of or date.today()
+    fail_stale_runs(session, max_runtime_minutes=get_settings().agent_run_stale_after_minutes)
     if kind in BOOK_WIDE_AGENTS:
         in_progress = session.scalar(
             select(AgentRun)
@@ -1124,9 +1153,12 @@ def execute_agent_run(
 
     try:
         try:
-            events.record(STEP_STARTED, step="resume_campaigns")
-            resume_summary = _resume_running_campaigns(session, events=events)
-            events.record(STEP_COMPLETED, step="resume_campaigns", **resume_summary)
+            if get_settings().agent_resume_campaigns_enabled:
+                events.record(STEP_STARTED, step="resume_campaigns")
+                resume_summary = _resume_running_campaigns(session, events=events)
+                events.record(STEP_COMPLETED, step="resume_campaigns", **resume_summary)
+            else:
+                logger.info("agent_loop.resume_campaigns_skipped", run_id=run_id)
 
             graph.invoke({})
         except Exception as exc:

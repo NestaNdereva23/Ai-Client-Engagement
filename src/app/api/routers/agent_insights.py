@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.action_agent import InsightNotActionable
 from app.agents.insight_state import InvalidTransition
+from app.agents.run_report_email import announce_run_finished
 from app.api.reviewer_auth import get_current_reviewer_id
 from app.config import get_settings
 from app.db.session import get_session
@@ -19,6 +20,7 @@ from app.schemas.agent_insights import (
     InsightDecisionRequest,
     InsightDecisionResultOut,
     InsightKindCountsOut,
+    InsightLifecycleOut,
 )
 from app.services.agent_insights import (
     FactNotFound,
@@ -29,6 +31,7 @@ from app.services.agent_insights import (
     decide_insight,
     get_insight,
     get_insight_facts,
+    get_insight_lifecycle,
     list_insights,
     recheck_insight_fact,
     run_action_in_background,
@@ -96,6 +99,7 @@ def get_agent_insight(
         raise HTTPException(status_code=404, detail="insight not found") from None
 
     facts = get_insight_facts(session, insight_id)
+    lifecycle = get_insight_lifecycle(session, insight_id)
     return AgentInsightDetailOut(
         insight_id=insight.insight_id,
         run_id=insight.run_id,
@@ -117,6 +121,7 @@ def get_agent_insight(
         decided_at=insight.decided_at,
         listed_client_count=count_insight_clients(session, insight_id),
         facts=[AgentInsightFactOut.model_validate(fact) for fact in facts],
+        lifecycle=None if lifecycle is None else InsightLifecycleOut.model_validate(lifecycle),
     )
 
 
@@ -154,6 +159,10 @@ def decide_agent_insight(
     if body.decision != "accept":
         return result
 
+    lifecycle = get_insight_lifecycle(session, insight_id)
+    if lifecycle is not None:
+        return result.model_copy(update={"lifecycle_outcome": lifecycle.outcome})
+
     try:
         run = start_action_for_insight(session, insight_id)
     except InsightNotActionable:
@@ -161,6 +170,7 @@ def decide_agent_insight(
         return result
 
     background_tasks.add_task(run_action_in_background, run.run_id, settings=get_settings())
+    background_tasks.add_task(announce_run_finished, run.run_id)
     return result.model_copy(update={"action_run_id": run.run_id})
 
 

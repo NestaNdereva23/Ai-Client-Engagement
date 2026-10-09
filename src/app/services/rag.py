@@ -14,13 +14,22 @@ from pathlib import Path
 from sqlalchemy import Row, select, update
 from sqlalchemy.orm import Session
 
-from app.db.models.rag import RagDocument, RagDocumentVersion
+from app.db.models.rag import (
+    DOC_TYPE_CLIENT_GUIDE,
+    DOC_TYPE_REPORT,
+    RagDocument,
+    RagDocumentVersion,
+)
 from app.rag.ingest import IngestResult, ingest_report_pdf
 from app.rag.retrieve import Retrieved, retrieve, retrieve_product_facts, sections_for_product
 
 
 class VersionNotFound(Exception):
     """No rag_document_versions row exists with the given id."""
+
+
+class VersionNotApproved(Exception):
+    pass
 
 
 def ingest_uploaded_report(
@@ -69,6 +78,7 @@ def list_versions(session: Session) -> list[Row]:
             RagDocumentVersion.ingested_at,
         )
         .join(RagDocument, RagDocument.doc_id == RagDocumentVersion.doc_id)
+        .where(RagDocument.doc_type == DOC_TYPE_REPORT)
         .order_by(RagDocumentVersion.ingested_at.desc())
     )
     return list(session.execute(query).all())
@@ -79,6 +89,9 @@ def activate_version(session: Session, version_id: int) -> tuple[RagDocumentVers
     version = session.get(RagDocumentVersion, version_id)
     if version is None:
         raise VersionNotFound(version_id)
+    doc = session.get(RagDocument, version.doc_id)
+    if doc.doc_type == DOC_TYPE_CLIENT_GUIDE and version.approved_at is None:
+        raise VersionNotApproved(version_id)
 
     session.execute(
         update(RagDocumentVersion)
@@ -87,8 +100,6 @@ def activate_version(session: Session, version_id: int) -> tuple[RagDocumentVers
     )
     version.is_active = True
     session.flush()
-
-    doc = session.get(RagDocument, version.doc_id)
     return version, doc.title
 
 
@@ -99,6 +110,7 @@ def search(
     angle: str | None = None,
     q: str | None = None,
     k: int = 5,
+    doc_type: str | None = None,
 ) -> list[Retrieved]:
     """What a draft would retrieve for a product and angle, or a raw probe query via q.
 
@@ -111,7 +123,7 @@ def search(
     """
     if q is not None:
         sections = sections_for_product(product) if product else None
-        return retrieve(session, q, sections=sections, k=k)
+        return retrieve(session, q, sections=sections, doc_type=doc_type, k=k)
     if product is not None:
         return retrieve_product_facts(session, product=product, angle=angle)
     raise ValueError("either product or q is required")

@@ -14,7 +14,7 @@ import asyncio
 import json
 import re
 import time
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import delete, select
@@ -26,6 +26,8 @@ from app.agents.intelligence import (
     FOUND_NOTHING,
     RAN_OUT_OF_TURNS,
     WROTE_SOMETHING,
+    build_investigation_system_prompt,
+    gather_context,
     run_intelligence_agent,
 )
 from app.agents.watchlist import (
@@ -34,7 +36,9 @@ from app.agents.watchlist import (
     VERY_SMALL_AND_QUIET,
     WatchlistThresholds,
 )
+from app.config import get_settings
 from app.db.async_session import dispose_async_engine
+from app.db.models.action_performance import ActionPerformance
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.agent_insight import AgentInsight, AgentInsightFact
 from app.db.models.agent_run import AgentRun, AgentToolCall
@@ -294,6 +298,54 @@ def test_every_group_has_a_question_and_the_last_one_has_no_filter() -> None:
     assert set(GROUP_QUESTIONS) == set(GROUP_NAMES) | {EVERYTHING_ELSE}
     assert all(question.endswith("?") for question in GROUP_QUESTIONS.values())
     assert "none of the other groups would catch" in question_for(EVERYTHING_ELSE)
+
+
+def test_every_investigation_is_shown_what_earlier_messages_led_to(book: None) -> None:
+    settings = get_settings()
+    now = datetime.now(UTC)
+    code = "intelligence_prompt_test_action"
+    with SessionLocal() as session:
+        session.add(
+            ActionPerformance(
+                period_start=now - timedelta(days=10),
+                period_end=now - timedelta(days=3),
+                period_hours=settings.action_performance_period_hours,
+                window_days=settings.action_performance_read_window_days,
+                action_code=code,
+                angle="none",
+                priority_tier="unknown",
+                risk_band="unknown",
+                content_mix="none",
+                variant="none",
+                sent_count=50,
+                replied_count=5,
+                opted_out_count=1,
+                edited_count=10,
+                deposited_count=4,
+                reply_rate=0.1,
+                opt_out_rate=0.02,
+                edit_rate=0.2,
+                deposit_rate=0.08,
+                money_in_kes=64000.0,
+                computed_at=now,
+            )
+        )
+        session.commit()
+
+    try:
+        with SessionLocal() as session:
+            context = gather_context(session, AS_OF)
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(ActionPerformance).where(ActionPerformance.action_code == code))
+            session.commit()
+
+    prompt = build_investigation_system_prompt(brief=context.briefs[0], context=context)
+    assert (
+        f"- {code}: 50 sent, 10% replied, 2% opted out, 20% edited by a reviewer, "
+        "8% deposited, 64,000 KES came in." in prompt
+    )
+    assert "name the numbers here that support it" in prompt
 
 
 async def test_a_run_writes_several_findings_and_hangs_a_fact_on_one(book: None) -> None:

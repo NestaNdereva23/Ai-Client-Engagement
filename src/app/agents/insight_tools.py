@@ -38,6 +38,7 @@ from app.db.models.agent_event import INSIGHT_CREATED, INSIGHT_UPDATED
 from app.db.models.agent_insight import (
     INSIGHT_CONFIDENCE_LEVELS,
     INSIGHT_KINDS,
+    LIFECYCLE_CHANGE_KIND,
     AgentInsight,
     AgentInsightFact,
 )
@@ -153,6 +154,10 @@ def make_insight_tools(
         if spent:
             return _refuse("write_cap_reached", f"this run has already written its {cap} findings")
 
+        if kind == LIFECYCLE_CHANGE_KIND:
+            return _refuse(
+                "use_lifecycle_tool", "a change of label is written with write_lifecycle_change"
+            )
         if kind not in INSIGHT_KINDS:
             return _refuse("unknown_kind", f"'{kind}' is not one of: {', '.join(INSIGHT_KINDS)}")
         if confidence not in INSIGHT_CONFIDENCE_LEVELS:
@@ -339,7 +344,12 @@ def insight_tool_specs(*, cap: int | None = None) -> tuple[ToolSpec, ...]:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "kind": {"type": "string", "enum": sorted(INSIGHT_KINDS)},
+                    "kind": {
+                        "type": "string",
+                        "enum": sorted(
+                            kind for kind in INSIGHT_KINDS if kind != LIFECYCLE_CHANGE_KIND
+                        ),
+                    },
                     "title": {"type": "string", "description": "One short line saying what it is."},
                     "group_name": {"type": "string", "description": "Who the finding is about."},
                     "group_definition": _CONDITIONS_SCHEMA,

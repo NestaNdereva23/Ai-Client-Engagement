@@ -31,11 +31,25 @@ __version__ = "0.1.0"
 _ADMIN_TEMPLATES_DIR = Path(__file__).resolve().parent / "admin" / "templates"
 
 
+def _reclaim_orphaned_agent_runs(settings: Settings) -> None:
+    from app.agents.agent_loop import fail_stale_runs
+    from app.db.session import SessionLocal
+
+    try:
+        with SessionLocal() as session:
+            fail_stale_runs(session, max_runtime_minutes=settings.agent_run_stale_after_minutes)
+    except Exception:
+        import structlog
+
+        structlog.get_logger(__name__).exception("startup.reclaim_orphaned_runs_failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
     limiter = anyio.to_thread.current_default_thread_limiter()
     limiter.total_tokens = settings.worker_thread_count
+    await anyio.to_thread.run_sync(_reclaim_orphaned_agent_runs, settings)
     yield
     shutdown_shared_tracer()
     await dispose_async_engine()

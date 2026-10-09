@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agents.action_rules import ALWAYS_NEEDS_A_PERSON
 from app.audit.log import record_audit
 from app.config import get_settings
 from app.db.models.agent import PERMISSION_LEVELS
@@ -78,7 +79,16 @@ def effective_permission(
     ):
         return APPROVE_EACH
     row = resolve_permission(session, action_code, priority_tier=priority_tier, risk_band=risk_band)
-    return DEFAULT_PERMISSION if row is None else row.permission
+    level = DEFAULT_PERMISSION if row is None else row.permission
+    if action_code in ALWAYS_NEEDS_A_PERSON:
+        return _at_most_approve_each(level)
+    return level
+
+
+def _at_most_approve_each(level: str) -> str:
+    if PERMISSION_LEVELS.index(level) > PERMISSION_LEVELS.index(APPROVE_EACH):
+        return APPROVE_EACH
+    return level
 
 
 def _snapshot(row: AgentPermission | None) -> dict[str, Any] | None:

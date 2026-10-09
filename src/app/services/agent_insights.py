@@ -11,9 +11,16 @@ from sqlalchemy.orm import Session
 from app.agents.action_agent import execute_action_run, start_action_run
 from app.agents.insight_recount import RecountResult, recount_fact
 from app.agents.insight_state import transition_insight
+from app.agents.lifecycle_rules import settle_lifecycle_insight
 from app.config import Settings
-from app.db.models.agent_insight import AgentInsight, AgentInsightClient, AgentInsightFact
+from app.db.models.agent_insight import (
+    LIFECYCLE_CHANGE_KIND,
+    AgentInsight,
+    AgentInsightClient,
+    AgentInsightFact,
+)
 from app.db.models.agent_run import AgentRun
+from app.db.models.client_lifecycle import AgentInsightLifecycle
 from app.db.session import SessionLocal
 from app.llmops.tracing import get_shared_tracer
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_id_cursor, encode_id_cursor
@@ -148,13 +155,20 @@ def decide_insight(
 ) -> AgentInsight:
     """Accept or dismiss one finding, recording who decided and why."""
     insight = get_insight(session, insight_id)
-    return transition_insight(
+    transition_insight(
         session,
         insight,
         to_state=_DECISION_TO_STATE[decision],
         reason=reason,
         decided_by=decided_by,
     )
+    if decision == "accept" and insight.kind == LIFECYCLE_CHANGE_KIND:
+        settle_lifecycle_insight(session, insight, approved_by=decided_by)
+    return insight
+
+
+def get_insight_lifecycle(session: Session, insight_id: int) -> AgentInsightLifecycle | None:
+    return session.get(AgentInsightLifecycle, insight_id)
 
 
 def start_action_for_insight(session: Session, insight_id: int) -> AgentRun:

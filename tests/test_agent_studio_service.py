@@ -159,14 +159,14 @@ def test_batch_simulation_auto_queues_the_action_with_permission_to_act_alone(bo
     with SessionLocal() as session:
         before = session.scalar(
             select(AgentPermission.permission).where(
-                AgentPermission.action_code == "suggest_second_fund",
+                AgentPermission.action_code == "follow_up_when_no_one_called",
                 AgentPermission.priority_tier.is_(None),
                 AgentPermission.risk_band.is_(None),
             )
         )
         set_permission(
             session,
-            "suggest_second_fund",
+            "follow_up_when_no_one_called",
             "act_alone",
             changed_by="agent-studio-service-test",
             changed_reason="let the batch simulation test the auto-queue path",
@@ -181,7 +181,7 @@ def test_batch_simulation_auto_queues_the_action_with_permission_to_act_alone(bo
             if before is None:
                 session.execute(
                     delete(AgentPermission).where(
-                        AgentPermission.action_code == "suggest_second_fund",
+                        AgentPermission.action_code == "follow_up_when_no_one_called",
                         AgentPermission.priority_tier.is_(None),
                         AgentPermission.risk_band.is_(None),
                     )
@@ -189,7 +189,7 @@ def test_batch_simulation_auto_queues_the_action_with_permission_to_act_alone(bo
             else:
                 set_permission(
                     session,
-                    "suggest_second_fund",
+                    "follow_up_when_no_one_called",
                     before,
                     changed_by="agent-studio-service-test",
                     changed_reason="restore the setting this test found in place",

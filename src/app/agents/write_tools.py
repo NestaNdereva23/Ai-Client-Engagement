@@ -32,13 +32,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.action_brief import proposal_prohibitions
+from app.agents.action_rules import tell_account_managers
 from app.agents.agent_loop import GroupDecision
 from app.agents.email_agent import build_system_prompt
 from app.agents.email_channel import CHANNEL as EMAIL_CHANNEL
 from app.agents.email_channel import build_default_orchestrator
 from app.agents.events import NO_EVENTS, EventLog
+from app.agents.guide_mix import guide_brief_for_campaign
 from app.agents.insight_members import resolve_insight_members
 from app.agents.insight_proposal import ACCEPTED, gate_members, save_insight_proposal
+from app.agents.orchestrator import Orchestrator
+from app.agents.proposal_split import Split, load_split, load_split_for_campaign
 from app.agents.proposal_state import transition_proposal
 from app.agents.propose import (
     DO_NOTHING_ACTION,
@@ -58,8 +62,8 @@ from app.config import Settings, get_settings
 from app.db.models.active_clients import FLAGGED_FOR_ACCOUNT_MANAGER, ActiveClientFund
 from app.db.models.agent_insight import AgentInsight
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
-from app.db.models.campaigns import CampaignStep
-from app.db.models.outreach import Campaign
+from app.db.models.campaigns import CampaignStep, Enrollment
+from app.db.models.outreach import Campaign, OutreachMessage
 from app.privacy.llm_client import ToolSpec
 from app.services.active_clients import ActiveClientNotFound, record_interaction
 
@@ -138,21 +142,56 @@ def draft_into_review_queue(
     Every draft ends as a message waiting on a person, which is exactly
     where the review queue picks it up. What the finding said a message must
     not claim is bound into the drafting prompt here, so an internal label
-    cannot travel from the finding to an inbox.
+    cannot travel from the finding to an inbox. The proposal's guide mix
+    and the client guide that fits its action are bound in the same way.
     """
     settings = settings or get_settings()
-    orchestrator = build_default_orchestrator(
+    split = load_split_for_campaign(session, campaign_id)
+    variants = set(split.variant_of.values()) if split else {None}
+    orchestrators = {
+        variant: _orchestrator_for(session, settings, campaign_id, prohibitions, variant)
+        for variant in variants
+    }
+
+    def generate(
+        draft_session: Session, enrollment: Enrollment, step_no: int
+    ) -> OutreachMessage | None:
+        variant = split.variant_of.get(enrollment.client_id) if split else None
+        return generate_for_enrollment(
+            draft_session,
+            enrollment,
+            step_no,
+            orchestrator=orchestrators[variant],
+            channel=EMAIL_CHANNEL,
+            settings=settings,
+        )
+
+    outcomes = run_due_enrollments(session, campaign_id=campaign_id, generate=generate, limit=limit)
+    return sum(1 for outcome in outcomes if outcome.generated)
+
+
+def _orchestrator_for(
+    session: Session,
+    settings: Settings,
+    campaign_id: int,
+    prohibitions: Sequence[str],
+    variant: str | None,
+) -> Orchestrator:
+    guide_brief = guide_brief_for_campaign(session, campaign_id, variant=variant)
+    return build_default_orchestrator(
         session,
         settings,
         prompt_builder=functools.partial(
-            build_system_prompt, extra_prohibitions=tuple(prohibitions)
+            build_system_prompt,
+            extra_prohibitions=tuple(prohibitions),
+            mix_instruction=guide_brief.mix_instruction,
         ),
+        extra_chunks=guide_brief.guides,
     )
-    generate = functools.partial(
-        generate_for_enrollment, orchestrator=orchestrator, channel=EMAIL_CHANNEL, settings=settings
-    )
-    outcomes = run_due_enrollments(session, campaign_id=campaign_id, generate=generate, limit=limit)
-    return sum(1 for outcome in outcomes if outcome.generated)
+
+
+def _angle_for(split: Split | None, client_id: int, default: str) -> str:
+    return default if split is None else split.angle_for(client_id, default)
 
 
 def run_proposal(
@@ -233,13 +272,14 @@ def run_proposal(
         row.included = False
         row.skip_reason = reason
 
+    split = load_split(session, proposal_id)
     ready = [
         member.client_id
         for member in still_allowed
         if prepare_client_for_drafting(
             session,
             member.client_id,
-            angle=proposal.angle,
+            angle=_angle_for(split, member.client_id, proposal.angle),
             chosen_by=proposal.action_code,
             catalog_version=proposal.catalog_version,
         )
@@ -300,6 +340,8 @@ def run_proposal(
         campaign_id=campaign.campaign_id,
         prohibitions=proposal_prohibitions(session, proposal),
     )
+    told = tell_account_managers(session, proposal, campaign.campaign_id, author=AGENT_ACTOR)
+    session.commit()
     logger.info(
         "agent_write_tool.run_proposal",
         run_id=run_id,
@@ -307,6 +349,7 @@ def run_proposal(
         campaign_id=campaign.campaign_id,
         enrolled_count=len(enrollments),
         drafted_count=drafted,
+        account_managers_told=told,
     )
     return {
         "status": RUNNING,
@@ -315,6 +358,7 @@ def run_proposal(
         "enrolled_count": len(enrollments),
         "dropped_since_proposed": dropped,
         "drafted_count": drafted,
+        "account_managers_told": told,
         "note": "the drafts are waiting in the review queue and nothing has been sent",
     }
 

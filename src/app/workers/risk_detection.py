@@ -47,6 +47,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.agents.agent_loop import AgentRunInProgress, run_nightly_agent
+from app.agents.run_report_email import announce_run_finished
 from app.agents.signals import recompute_all_signals
 from app.agents.situations import recompute_all_situations
 from app.agents.watchlist import load_thresholds
@@ -574,6 +575,7 @@ class RiskDetectionWorker:
                     agent_run_id=run.run_id,
                     agent_run_state=run.state,
                 )
+                announce_run_finished(run.run_id)
         except AgentRunInProgress as exc:
             logger.info("risk_detection.agent_run_skipped", reason=str(exc))
         except Exception:

@@ -40,6 +40,15 @@ class AgentInsightFactOut(BaseModel):
     source_table: str
 
 
+class InsightLifecycleOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    from_state: str
+    to_state: str
+    outcome: str
+    policy_code: str | None
+
+
 class AgentInsightDetailOut(AgentInsightSummaryOut):
     """One finding with its facts kept apart from what the model reads
     into them, so a reader never has to guess which is which.
@@ -54,6 +63,7 @@ class AgentInsightDetailOut(AgentInsightSummaryOut):
     decided_at: datetime | None
     listed_client_count: int
     facts: list[AgentInsightFactOut]
+    lifecycle: InsightLifecycleOut | None = None
 
 
 class InsightKindCountsOut(BaseModel):
@@ -84,6 +94,7 @@ class InsightDecisionResultOut(BaseModel):
     state: str
     dismissed_reason: str | None
     action_run_id: int | None = None
+    lifecycle_outcome: str | None = None
     decided_by: str | None
     decided_at: datetime | None
 

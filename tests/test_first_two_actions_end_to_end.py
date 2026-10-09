@@ -64,6 +64,13 @@ INSIGHT_TITLE = "A group the first two actions were run against"
 
 LIVE_ACTIONS = ("welcome_and_top_up", "fee_warning")
 ALL_LIVE_ACTIONS = LIVE_ACTIONS + ("fee_pressure_warning_dormant", "fee_pressure_encourage_active")
+REMAINING_ACTIONS = (
+    "follow_up_when_no_one_called",
+    "suggest_second_fund",
+    "ask_what_changed",
+    "send_learning_note",
+    "start_win_back",
+)
 
 # The tier a client with no risk history behind them falls to.
 TIER = "one_time_withdrawers"
@@ -396,7 +403,9 @@ def test_no_action_beyond_the_known_live_ones_is_switched_on(db: None) -> None:
 
     running = {code for code, row in actions.items() if not row.paused}
     assert set(LIVE_ACTIONS) <= running
-    assert {code for code in running if actions[code].channel is not None} == set(ALL_LIVE_ACTIONS)
+    assert {code for code in running if actions[code].channel is not None} == set(
+        ALL_LIVE_ACTIONS + REMAINING_ACTIONS
+    )
 
 
 def test_every_live_action_needs_every_message_reviewed(db: None) -> None:

@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 from sqlalchemy import select  # noqa: E402
 
 from app.agents.agent_loop import run_nightly_agent  # noqa: E402
+from app.agents.run_report_email import announce_run_finished  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.db.models.agent_proposal import AgentProposal  # noqa: E402
 from app.db.models.agent_run import AgentToolCall  # noqa: E402
@@ -90,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
             cooldown_days=args.cooldown_days,
             tracer=tracer,
         )
+        announce_run_finished(run.run_id)
 
         tool_calls = session.scalars(
             select(AgentToolCall)

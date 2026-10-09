@@ -16,6 +16,7 @@ from app.agents.action_catalog import (
     load_active_actions,
     save_action_catalog_version,
     selectable_actions,
+    set_action_content_mix,
     validate_actions,
 )
 from app.db.models.agent import AgentActionCatalog
@@ -267,6 +268,47 @@ def test_the_old_version_is_still_readable_after_a_new_one_lands(
     with SessionLocal() as session:
         assert active_action_catalog_version(session, IN_FORCE) == before_version
         assert set(load_active_actions(session, IN_FORCE)) == before_actions
+
+
+def test_setting_a_mix_saves_a_new_version_that_changes_only_that_action(
+    db: None, catalog_versions: list[int]
+) -> None:
+    starts = date(2026, 12, 1)
+    with SessionLocal() as session:
+        before = {
+            code: row.content_mix for code, row in load_active_actions(session, starts).items()
+        }
+        code = "fee_warning"
+        new_mix = "learning_only" if before[code] != "learning_only" else "balanced"
+        version = set_action_content_mix(
+            session, code, new_mix, changed_by="lead", valid_from=starts
+        )
+        catalog_versions.append(version)
+        session.commit()
+
+    with SessionLocal() as session:
+        after = {
+            code: row.content_mix for code, row in load_active_actions(session, starts).items()
+        }
+        still_old = {
+            code: row.content_mix
+            for code, row in load_active_actions(session, date(2026, 11, 30)).items()
+        }
+
+    assert after[code] == new_mix
+    assert {c: m for c, m in after.items() if c != code} == {
+        c: m for c, m in before.items() if c != code
+    }
+    assert still_old == before
+
+
+def test_setting_a_mix_refuses_an_unknown_mix_or_action(db: None) -> None:
+    with SessionLocal() as session:
+        with pytest.raises(ActionCatalogValidationError, match="content mix"):
+            set_action_content_mix(session, "fee_warning", "chatty", changed_by="lead")
+        with pytest.raises(ActionCatalogValidationError, match="no action"):
+            set_action_content_mix(session, "no_such_action", "balanced", changed_by="lead")
+        session.rollback()
 
 
 def test_there_is_no_catalogue_before_the_first_one_starts(db: None) -> None:

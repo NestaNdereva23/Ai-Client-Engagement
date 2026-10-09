@@ -33,13 +33,13 @@ THRESHOLDS = WatchlistThresholds(
     new_client_days=30, months_until_empty=6.0, small_balance=100.0, awaiting_call_days=2
 )
 
-HEALTHY_ONE_FUND_ACTION = "suggest_second_fund"
+ACT_ALONE_ACTION = "follow_up_when_no_one_called"
 
 
 def _existing_permission(session) -> str | None:
     row = session.scalar(
         select(AgentPermission).where(
-            AgentPermission.action_code == HEALTHY_ONE_FUND_ACTION,
+            AgentPermission.action_code == ACT_ALONE_ACTION,
             AgentPermission.priority_tier.is_(None),
             AgentPermission.risk_band.is_(None),
         )
@@ -53,7 +53,7 @@ def act_alone_permission():
         before = _existing_permission(session)
         set_permission(
             session,
-            HEALTHY_ONE_FUND_ACTION,
+            ACT_ALONE_ACTION,
             "act_alone",
             changed_by="scenario-studio-test",
             changed_reason="let the scenario studio test the auto-queue path",
@@ -66,7 +66,7 @@ def act_alone_permission():
         if before is None:
             session.execute(
                 delete(AgentPermission).where(
-                    AgentPermission.action_code == HEALTHY_ONE_FUND_ACTION,
+                    AgentPermission.action_code == ACT_ALONE_ACTION,
                     AgentPermission.priority_tier.is_(None),
                     AgentPermission.risk_band.is_(None),
                 )
@@ -74,7 +74,7 @@ def act_alone_permission():
         else:
             set_permission(
                 session,
-                HEALTHY_ONE_FUND_ACTION,
+                ACT_ALONE_ACTION,
                 before,
                 changed_by="scenario-studio-test",
                 changed_reason="restore the setting this test found in place",
@@ -135,15 +135,17 @@ def test_consolidation_with_no_matches_has_no_winner() -> None:
     assert consolidation_winner(()) is None
 
 
-def test_a_healthy_single_fund_client_auto_queues_within_the_ceiling(act_alone_permission) -> None:
-    scenario = ScenarioInput(balance=50_000.0, risk_band="Low", funds_held=1)
+def test_a_client_waiting_on_a_call_auto_queues_within_the_ceiling(act_alone_permission) -> None:
+    scenario = ScenarioInput(
+        balance=50_000.0, risk_band="High", funds_held=2, days_since_call_flagged=6
+    )
 
     with SessionLocal() as session:
         result = evaluate_scenario(
             session, scenario, THRESHOLDS, as_of=AS_OF, money_ceiling_kes=250_000.0
         )
 
-    assert result.winner == HEALTHY_ONE_FUND
+    assert result.winner == WAITING_ON_A_CALL
     assert result.outcome == AUTO_QUEUED
     assert result.action_code is not None
 

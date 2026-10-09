@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.action_catalog import action_is_paused, load_action
+from app.agents.action_rules import already_offered, lacks_an_approved_guide
 from app.agents.permissions import effective_permission
 from app.agents.situation_action_mapping import action_code_for_situation
 from app.agents.watchlist import (
@@ -61,6 +62,8 @@ OPEN_COMPLAINT = "open_complaint"
 CONTACTED_RECENTLY = "contacted_recently"
 ANGLE_PAUSED = "angle_paused"
 ACTION_PAUSED = "action_paused"
+NO_APPROVED_GUIDE = "no_approved_guide"
+ALREADY_OFFERED = "already_offered"
 CONSOLIDATED_INTO_ANOTHER_SITUATION = "consolidated_into_another_situation"
 
 SITUATION_PRIORITY: tuple[str, ...] = (
@@ -234,6 +237,8 @@ def group_skip_reasons(
     """
     if action_is_paused(session, action.action_code, as_of):
         return {member_key(member): ACTION_PAUSED for member in members}
+    if lacks_an_approved_guide(session, action):
+        return {member_key(member): NO_APPROVED_GUIDE for member in members}
 
     settings = get_settings()
     cooldown = settings.agent_contact_cooldown_days if cooldown_days is None else cooldown_days
@@ -258,6 +263,8 @@ def member_skip_reason(
         return CONTACTED_RECENTLY
     if action.message_angle and angle_is_held(session, action.message_angle, as_of):
         return ANGLE_PAUSED
+    if already_offered(session, member.client_id, action):
+        return ALREADY_OFFERED
     return None
 
 
