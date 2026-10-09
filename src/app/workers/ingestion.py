@@ -69,6 +69,7 @@ class IngestionWorker:
         client_model: type[BaseModel] = ClientRecord,
         schema_drift_fn: Callable[[dict[str, Any]], set[str]] = schema_drift,
         count_field: str = "inactive_client_count",
+        page_size: int | None = None,
     ) -> None:
         self._client = client
         self._session_factory = session_factory
@@ -76,6 +77,10 @@ class IngestionWorker:
         self._fetch_path = "" if fetch_path is None else fetch_path
         self._max_pages = max_pages
         self._page_fetcher = page_fetcher
+        # When set, asks the source for this many records per page. Fewer pages
+        # means fewer round trips against a slow API. None leaves the source's
+        # own default in place.
+        self._page_size = page_size
         # Which contract set to validate against, and which field on the fund
         # record carries the source's own headcount for reconciliation. The
         # active-clients feed passes contracts_active's models and
@@ -126,6 +131,13 @@ class IngestionWorker:
 
                 after = page_key
                 pages += 1
+                logger.info(
+                    "ingestion.page",
+                    run_id=status.run_id,
+                    page=page_key,
+                    last_page=self._known_last_page,
+                    records_seen=status.records_seen,
+                )
 
             status.state = "completed"
             status.finished_at = func.now()
@@ -234,7 +246,10 @@ class IngestionWorker:
         if self._known_last_page is not None and next_page > self._known_last_page:
             return None
 
-        payload = self._client.fetch(self._fetch_path, params={"page": next_page})
+        params: dict[str, Any] = {"page": next_page}
+        if self._page_size is not None:
+            params["per_page"] = self._page_size
+        payload = self._client.fetch(self._fetch_path, params=params)
         meta = payload.get("meta") or {}
         current_page = meta.get("current_page", next_page)
         self._known_last_page = meta.get("last_page", current_page)

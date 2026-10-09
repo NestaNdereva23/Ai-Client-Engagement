@@ -18,13 +18,15 @@ client_features, client_message_indicators, funds, enrollment, touch_log,
 outreach_message (status fields only, never ai_draft_content or
 personalized_content), contact_events, or suppression -- never pii_vault.
 
-get_client_name is different on purpose: it is the one function here that
-reads pii_vault, through the restricted role, and it audits every read.
-Its caller is responsible for gating access to it (see app.api.reviewer_auth).
+get_client_name and get_client_names are different on purpose: they are the
+only functions here that read pii_vault, through the restricted role, and
+each audits every read. Their callers are responsible for gating access to
+them (see app.api.reviewer_auth).
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import Row, func, select
@@ -188,6 +190,38 @@ def resolve_cohort_client_ids(
         high_value=high_value,
     )
     return list(session.scalars(query).all())
+
+
+def resolve_cohort_members(
+    session: Session,
+    *,
+    fund_id: int | None = None,
+    value_band: str | None = None,
+    recency_band: str | None = None,
+    purchase_depth: str | None = None,
+    cadence_band: str | None = None,
+    newly_dormant: bool | None = None,
+    priority_tier: str | None = None,
+    high_value: bool | None = None,
+) -> list[Row]:
+    query = _apply_bucket_filters(
+        _base_query(
+            Clients.client_id,
+            ClientMessageIndicators.message_angle,
+            Clients.total_purchase_amount,
+        ),
+        client_id=None,
+        fund_id=fund_id,
+        value_band=value_band,
+        recency_band=recency_band,
+        purchase_depth=purchase_depth,
+        cadence_band=cadence_band,
+        message_angle=None,
+        newly_dormant=newly_dormant,
+        priority_tier=priority_tier,
+        high_value=high_value,
+    )
+    return list(session.execute(query).all())
 
 
 def get_client(session: Session, client_id: int) -> Row:
@@ -387,6 +421,33 @@ def get_client_name(
         )
         restricted.commit()
     return name
+
+
+def get_client_names(
+    client_ids: Sequence[int], *, reviewer_id: str | None = None
+) -> dict[int, str | None]:
+    unique_ids = list(dict.fromkeys(client_ids))
+    if not unique_ids:
+        return {}
+    with restricted_session() as restricted:
+        found = dict(
+            restricted.execute(
+                select(PiiVault.client_id, PiiVault.client_name).where(
+                    PiiVault.client_id.in_(unique_ids)
+                )
+            ).all()
+        )
+        for client_id in unique_ids:
+            record_audit(
+                restricted,
+                entity_type="pii_vault",
+                action="read",
+                entity_id=str(client_id),
+                actor_id=reviewer_id,
+                detail={"purpose": "roster_display"},
+            )
+        restricted.commit()
+    return {client_id: found.get(client_id) for client_id in unique_ids}
 
 
 def segment_distribution(session: Session) -> dict[str, list[tuple] | int]:

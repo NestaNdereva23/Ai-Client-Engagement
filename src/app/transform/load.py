@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from app.db.bulk import copy_upsert, quote_ident
 from app.db.models.models import (
     ClientFeatures,
     ClientFund,
@@ -101,6 +102,8 @@ _FEATURE_UPDATE = [
     "n_funds",
     "recency_band",
     "value_band",
+    "balance_band",
+    "has_balance",
     "cadence_band",
     "hold_band",
     "purchase_depth",
@@ -260,6 +263,8 @@ def _feature_dict(f: FeatureRow) -> dict[str, Any]:
         "n_funds": f.n_funds,
         "recency_band": f.recency_band,
         "value_band": f.value_band,
+        "balance_band": f.balance_band,
+        "has_balance": f.has_balance,
         "cadence_band": f.cadence_band,
         "hold_band": f.hold_band,
         "purchase_depth": f.purchase_depth,
@@ -293,26 +298,6 @@ _MAX_BATCH_ROWS = 1000
 _COPY_MIN_ROWS = 2000
 
 
-def _quote(name: str) -> str:
-    return '"' + name.replace('"', '""') + '"'
-
-
-def _copy_into_temp(
-    session: Session, source_table: str, temp_table: str, columns: list[str], rows: list[dict]
-) -> None:
-    """Create a temp copy of the target table and stream the rows into it."""
-    raw = session.connection().connection.driver_connection
-    col_sql = ", ".join(_quote(c) for c in columns)
-    with raw.cursor() as cur:
-        cur.execute(
-            f"CREATE TEMP TABLE {_quote(temp_table)} "
-            f"(LIKE {_quote(source_table)} INCLUDING DEFAULTS) ON COMMIT DROP"
-        )
-        with cur.copy(f"COPY {_quote(temp_table)} ({col_sql}) FROM STDIN") as copy:
-            for row in rows:
-                copy.write_row([row.get(c) for c in columns])
-
-
 def _copy_upsert(
     session: Session,
     table: str,
@@ -320,18 +305,7 @@ def _copy_upsert(
     index_elements: list[str],
     set_clause: str,
 ) -> int:
-    columns = list(rows[0].keys())
-    temp_table = f"_copy_{table}"
-    _copy_into_temp(session, table, temp_table, columns, rows)
-    col_sql = ", ".join(_quote(c) for c in columns)
-    conflict_sql = ", ".join(_quote(c) for c in index_elements)
-    raw = session.connection().connection.driver_connection
-    with raw.cursor() as cur:
-        cur.execute(
-            f"INSERT INTO {_quote(table)} ({col_sql}) "
-            f"SELECT {col_sql} FROM {_quote(temp_table)} "
-            f"ON CONFLICT ({conflict_sql}) DO UPDATE SET {set_clause}"
-        )
+    copy_upsert(session, table, rows, index_elements, set_clause)
     session.commit()
     logger.info("upsert.copy", table=table, rows=len(rows))
     return len(rows)
@@ -346,7 +320,7 @@ def _extra_set_sql(extra_set: dict[str, Any] | None) -> list[str]:
         compiled = expr.compile(
             dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
         )
-        parts.append(f"{_quote(col)} = {compiled}")
+        parts.append(f"{quote_ident(col)} = {compiled}")
     return parts
 
 
@@ -365,7 +339,7 @@ def upsert(
     table = getattr(model, "__tablename__", model.__name__)
 
     if len(rows) >= _COPY_MIN_ROWS:
-        set_parts = [f"{_quote(c)} = EXCLUDED.{_quote(c)}" for c in update_columns]
+        set_parts = [f"{quote_ident(c)} = EXCLUDED.{quote_ident(c)}" for c in update_columns]
         set_parts.extend(_extra_set_sql(extra_set))
         return _copy_upsert(session, table, rows, index_elements, ", ".join(set_parts))
 
@@ -379,7 +353,10 @@ def upsert(
             set_.update(extra_set)
         stmt = stmt.on_conflict_do_update(index_elements=index_elements, set_=set_)
         session.execute(stmt)
-        logger.info("upsert.batch", table=table, batch=batch_num, of=total_batches, rows=len(batch))
+        if total_batches > 1:
+            logger.info(
+                "upsert.batch", table=table, batch=batch_num, of=total_batches, rows=len(batch)
+            )
     session.commit()
     return len(rows)
 
@@ -420,11 +397,38 @@ def upsert_vault(session: Session, rows: list[dict[str, Any]]) -> int:
             },
         )
         session.execute(stmt)
-        logger.info(
-            "upsert.batch", table="pii_vault", batch=batch_num, of=total_batches, rows=len(batch)
-        )
+        if total_batches > 1:
+            logger.info(
+                "upsert.batch",
+                table="pii_vault",
+                batch=batch_num,
+                of=total_batches,
+                rows=len(batch),
+            )
     session.commit()
     return len(rows)
+
+
+def _clear_stale_primary_rows(session: Session, client_ids: Iterable[int], before: Any) -> int:
+    """Clears a stale is_primary flag left behind when a fund drops out of a later run."""
+    ids = list(client_ids)
+    if not ids:
+        return 0
+    cleared = 0
+    for start in range(0, len(ids), _MAX_BATCH_ROWS):
+        chunk = ids[start : start + _MAX_BATCH_ROWS]
+        result = session.execute(
+            update(ClientFund)
+            .where(
+                ClientFund.client_id.in_(chunk),
+                ClientFund.is_primary_contact_row.is_(True),
+                ClientFund.updated_at < before,
+            )
+            .values(is_primary_contact_row=False, updated_at=func.now())
+        )
+        cleared += result.rowcount
+    session.commit()
+    return cleared
 
 
 def persist_result(
@@ -495,6 +499,7 @@ def persist_result(
     logger.info("persist_result.upserting", table="clients", rows=len(clients))
     counts.clients = upsert(session, Clients, clients, "client_id", _CLIENT_UPDATE)
     logger.info("persist_result.upserting", table="client_fund", rows=len(client_funds))
+    primary_cutoff = session.execute(select(func.now())).scalar()
     counts.client_funds = upsert(
         session,
         ClientFund,
@@ -503,6 +508,13 @@ def persist_result(
         _CLIENT_FUND_UPDATE,
         extra_set={"updated_at": func.now()},
     )
+    cleared_primaries = _clear_stale_primary_rows(session, by_client.keys(), primary_cutoff)
+    if cleared_primaries:
+        logger.info(
+            "persist_result.cleared_stale_primary_rows",
+            clients=len(by_client),
+            rows=cleared_primaries,
+        )
     logger.info("persist_result.upserting", table="transactions", rows=len(txns))
     counts.transactions = upsert(session, Transactions, list(txns.values()), "txn_id", _TXN_UPDATE)
     logger.info("persist_result.upserting", table="pii_vault", rows=len(vault))

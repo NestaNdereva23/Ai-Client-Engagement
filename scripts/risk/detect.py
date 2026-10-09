@@ -22,8 +22,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from app.config import get_settings  # noqa: E402
+from app.db.session import SessionLocal  # noqa: E402
 from app.ingestion.api_client import CytonnClient  # noqa: E402
 from app.logging_config import configure_logging  # noqa: E402
+from app.routing.sides import assign_sides  # noqa: E402
 from app.workers.ingestion import IngestionAborted  # noqa: E402
 from app.workers.risk_detection import RiskDetectionWorker, RiskRunAborted  # noqa: E402
 
@@ -61,6 +63,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"route_distribution={result.route_distribution}")
     print(f"signals_fired={result.signals_fired}")
+
+    with SessionLocal() as session:
+        sides = assign_sides(session)
+    print(f"sides: active={sides['active']} inactive={sides['inactive']}")
     return 0
 
 

@@ -76,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
         client_model=config.client_model,
         schema_drift_fn=config.schema_drift_fn,
         count_field=config.count_field,
+        page_size=config.page_size,
     )
 
     try:

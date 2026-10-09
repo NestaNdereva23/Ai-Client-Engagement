@@ -40,10 +40,7 @@ def get_angle_status(
 ) -> list[AngleStatusOut]:
     resolved_on = active_on or date.today()
     rows = list_angle_status(session, active_on=resolved_on)
-    return [
-        AngleStatusOut(angle=a, version=v, valid_from=vf, valid_to=vt, held=held)
-        for a, v, vf, vt, held in rows
-    ]
+    return [AngleStatusOut(**row._mapping) for row in rows]
 
 
 @router.post("/preview", response_model=RulePreviewOut)

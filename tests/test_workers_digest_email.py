@@ -8,6 +8,7 @@ others sent, and this path never touches PiiVault or a model.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from uuid import uuid4
 
 import pytest
@@ -355,6 +356,30 @@ def test_an_advisor_with_nothing_to_call_gets_the_short_note(db, cleanup) -> Non
     body = _body_for(mailer, BRIAN.email)
     assert "Nothing on your call list this morning." in body
     assert "Clients to call today: 0" in body
+
+
+def test_cc_only_copies_the_advisor_on_a_cytonn_address(db, cleanup) -> None:
+    brian_cytonn = replace(BRIAN, email="brian@cytonn.com")
+    digest_run_id = _seed(
+        cleanup,
+        population=[(CLIENTS[0], 90, "fa_call_priority", 3_000_000.0, SIGNALS_DORMANT)],
+        owners={CLIENTS[0]: ASHA.fa_id},
+    )
+    mailer = FakeMailer()
+
+    with SessionLocal() as session:
+        send_digest_emails(
+            session,
+            digest_run_id,
+            roster=(ASHA, brian_cytonn),
+            mailer=mailer,
+            settings=_settings(),
+        )
+
+    asha_message = next(m for m in mailer.messages if m.to == ASHA.email)
+    brian_message = next(m for m in mailer.messages if m.to == brian_cytonn.email)
+    assert asha_message.cc == ()
+    assert brian_message.cc == (brian_cytonn.email,)
 
 
 def test_a_lent_client_is_counted_for_the_stand_in(db, cleanup) -> None:

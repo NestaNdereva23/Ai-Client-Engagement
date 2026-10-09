@@ -58,6 +58,10 @@ NEWLY_DORMANT_DAYS = 90
 # Quartile boundaries of the average contribution across the population,
 VALUE_BAND_CUTOFFS = (150.0, 1_000.0, 5_250.0)
 
+# The capital-preservation line and one month of fee, splitting a client's
+# current balance into nearly empty, sliding, or worth saving.
+BALANCE_BAND_CUTOFFS = (50.0, 600.0)
+
 # A client's history counts as deep at three purchases, or at six months
 # between the first and last one we can see.
 DEPTH_PURCHASES = 3
@@ -74,6 +78,7 @@ PURCHASE_DEPTHS = frozenset({"none", "single", "few", "capped"})
 TREND_BANDS = frozenset({"rising", "flat", "falling", "unknown"})
 EXIT_REASONS = frozenset({"client_sale", "charge_settled", "unknown"})
 FUND_TYPES = frozenset({"money_market", "high_yield", "other"})
+BALANCE_BANDS = frozenset({"nearly_empty", "sliding", "worth_saving"})
 PRIORITY_TIERS = frozenset(
     {
         "hot_leads",
@@ -114,6 +119,8 @@ class FeatureRow:
     n_funds: int
     recency_band: str
     value_band: str
+    balance_band: str
+    has_balance: bool
     cadence_band: str
     hold_band: str
     purchase_depth: str
@@ -195,6 +202,15 @@ def _value_band(avg_ticket: float | None) -> str:
     if avg_ticket > low:
         return "Medium"
     return "Low"
+
+
+def _balance_band(balance: float) -> str:
+    low, high = BALANCE_BAND_CUTOFFS
+    if balance < low:
+        return "nearly_empty"
+    if balance < high:
+        return "sliding"
+    return "worth_saving"
 
 
 def _cadence_band(rhythm_days: float | None) -> str:
@@ -399,6 +415,7 @@ def derive_features(
         rhythm = _rhythm_days(purchase_dates.get(client_id, []))
         recency_band = _recency_band(primary.days_since_last_activity)
         value_band = _value_band(measure.avg_ticket)
+        balance = sum(r.balance or 0.0 for r in ordered)
         lifetime_deposits = sum(r.total_purchase_amount for r in ordered)
 
         features.append(
@@ -411,6 +428,8 @@ def derive_features(
                 n_funds=len(ordered),
                 recency_band=recency_band,
                 value_band=value_band,
+                balance_band=_balance_band(balance),
+                has_balance=balance > 0,
                 cadence_band=_cadence_band(measure.rhythm_days),
                 hold_band=_hold_band(measure.hold_days),
                 purchase_depth=_purchase_depth(primary.n_purchases_returned),

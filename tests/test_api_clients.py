@@ -421,7 +421,7 @@ def test_list_clients_never_includes_a_call_brief(approved_call_brief) -> None:
         assert row.get("call_brief") is None
 
 
-def test_list_clients_returns_buckets_and_never_a_name(two_clients) -> None:
+def test_list_clients_name_is_null_with_no_pii_vault_row(two_clients) -> None:
     first_id, _second_id, fund_id = two_clients
     response = client.get(CLIENTS, params={"fund_id": fund_id})
     assert response.status_code == 200
@@ -429,8 +429,7 @@ def test_list_clients_returns_buckets_and_never_a_name(two_clients) -> None:
     ids = [row["client_id"] for row in items]
     assert first_id in ids
     for row in items:
-        assert "client_name" not in row
-        assert "name" not in row
+        assert row["client_name"] is None
 
 
 def test_list_clients_filters_by_client_id(two_clients) -> None:
@@ -449,7 +448,7 @@ def test_get_client_detail_returns_the_same_bucket_shape(two_clients) -> None:
     assert body["client_id"] == first_id
     assert body["value_band"] == "High"
     assert body["message_angle"] == "onboarding_retry"
-    assert "client_name" not in body
+    assert body["client_name"] is None
     assert "name" not in body
 
 
@@ -698,6 +697,32 @@ def named_client(two_clients):
     with SessionLocal() as session:
         session.execute(delete(PiiVault).where(PiiVault.client_id == first_id))
         session.commit()
+
+
+def test_list_clients_includes_the_pii_vault_name_when_present(named_client) -> None:
+    response = client.get(CLIENTS, params={"client_id": named_client})
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert len(items) == 1
+    assert items[0]["client_name"] == "Jane Doe"
+
+
+def test_list_clients_name_read_is_audited(named_client) -> None:
+    response = client.get(CLIENTS, params={"client_id": named_client})
+    assert response.status_code == 200
+
+    with SessionLocal() as session:
+        rows = session.scalars(
+            select(AuditLog)
+            .where(
+                AuditLog.entity_type == "pii_vault",
+                AuditLog.entity_id == str(named_client),
+                AuditLog.action == "read",
+            )
+            .order_by(AuditLog.log_id.desc())
+        ).all()
+    assert rows, "expected a pii_vault audit row for this read"
+    assert rows[0].actor_id == "fa-1"
 
 
 def test_client_name_returns_the_real_name_with_a_valid_key(

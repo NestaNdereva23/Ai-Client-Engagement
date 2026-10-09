@@ -68,6 +68,7 @@ from app.risk.routing import RoutableRow, RouteResult, route_population
 from app.risk.scoring import ScoreResult, compose_score
 from app.risk.signals import SIGNAL_ORDER
 from app.risk.store import active_config_version
+from app.routing.sides import active_client_ids
 from app.transform.active_features import ActiveFeatureMeasures, derive_active_measures
 from app.transform.active_flatten import flatten_active_run
 from app.transform.active_load import persist_active_result
@@ -260,7 +261,16 @@ class RiskDetectionWorker:
                 system_fee_max=config_row.thresholds["SYSTEM_FEE_MAX"],
                 fee_per_month=config_row.thresholds["FEE_PER_MONTH"],
             )
-            logger.info("risk_detection.transformed", run_id=run.run_id, client_funds=len(measures))
+            active_ids = active_client_ids(session)
+            scored = {key: m for key, m in measures.items() if m.client_id in active_ids}
+            held_out = len(measures) - len(scored)
+            measures = scored
+            logger.info(
+                "risk_detection.transformed",
+                run_id=run.run_id,
+                client_funds=len(measures),
+                held_out_inactive=held_out,
+            )
 
             client_ids = sorted({m.client_id for m in measures.values()})
             complaints_source = self._complaints_source or get_complaints_source()
@@ -583,6 +593,7 @@ class RiskDetectionWorker:
             client_model=config.client_model,
             schema_drift_fn=config.schema_drift_fn,
             count_field=config.count_field,
+            page_size=config.page_size,
         )
         ingestion_result = worker.run(run_id=run.run_id)
         logger.info(

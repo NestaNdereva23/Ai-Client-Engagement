@@ -26,6 +26,12 @@ from app.config import Settings, get_settings
 
 logger = structlog.get_logger(__name__)
 
+CYTONN_EMAIL_SUFFIX = "@cytonn.com"
+
+
+def is_cytonn_address(email: str) -> bool:
+    return email.lower().endswith(CYTONN_EMAIL_SUFFIX)
+
 
 @dataclass(frozen=True)
 class EmailMessage:

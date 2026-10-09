@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
+from psycopg.types.json import Jsonb
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
@@ -15,6 +16,7 @@ from app.agents.signals import (
     SINGLE_FUND_HELD,
     SMALL_BALANCE,
 )
+from app.db.bulk import copy_insert, copy_upsert
 from app.db.models.risk import ClientRiskFeatures
 from app.db.models.signals import (
     ClientSignalSnapshot,
@@ -101,18 +103,15 @@ def _combine(
     return combined
 
 
-def _existing_situation_state(
-    session: Session, situation_code: str, keys: list[tuple[int, int]]
-) -> dict[tuple[int, int], ClientSituationState]:
-    if not keys:
-        return {}
-    rows = session.scalars(
-        select(ClientSituationState).where(
-            ClientSituationState.situation_code == situation_code,
-            ClientSituationState.client_id.in_({key[0] for key in keys}),
-        )
-    )
-    return {(row.client_id, row.unit_fund_id): row for row in rows}
+# since only moves when a situation flips; an unchanged situation keeps its date.
+_SITUATION_STATE_SET_SQL = (
+    "is_active = EXCLUDED.is_active, "
+    "signal_codes = EXCLUDED.signal_codes, "
+    "run_id = EXCLUDED.run_id, "
+    "updated_at = now(), "
+    "since = CASE WHEN client_situation_state.is_active <> EXCLUDED.is_active "
+    "THEN EXCLUDED.since ELSE client_situation_state.since END"
+)
 
 
 def _recompute_situation(
@@ -124,45 +123,44 @@ def _recompute_situation(
     required_codes: tuple[str, ...],
     excluded_codes: tuple[str, ...] = (),
 ) -> None:
-    existing = _existing_situation_state(session, situation_code, list(facts.keys()))
-
+    snapshots: list[dict] = []
+    states: list[dict] = []
     for (client_id, unit_fund_id), values in facts.items():
         active_codes = [code for code in required_codes if values.get(code)]
         is_active = len(active_codes) == len(required_codes) and not any(
             values.get(code) for code in excluded_codes
         )
-
-        session.add(
-            ClientSituationSnapshot(
-                run_id=run_id,
-                client_id=client_id,
-                unit_fund_id=unit_fund_id,
-                situation_code=situation_code,
-                is_active=is_active,
-                signal_codes=active_codes,
-            )
+        codes_json = Jsonb(active_codes)
+        snapshots.append(
+            {
+                "run_id": run_id,
+                "client_id": client_id,
+                "unit_fund_id": unit_fund_id,
+                "situation_code": situation_code,
+                "is_active": is_active,
+                "signal_codes": codes_json,
+            }
+        )
+        states.append(
+            {
+                "client_id": client_id,
+                "unit_fund_id": unit_fund_id,
+                "situation_code": situation_code,
+                "is_active": is_active,
+                "signal_codes": codes_json,
+                "since": as_of,
+                "run_id": run_id,
+            }
         )
 
-        prior = existing.get((client_id, unit_fund_id))
-        if prior is None:
-            session.add(
-                ClientSituationState(
-                    client_id=client_id,
-                    unit_fund_id=unit_fund_id,
-                    situation_code=situation_code,
-                    is_active=is_active,
-                    signal_codes=active_codes,
-                    since=as_of,
-                    run_id=run_id,
-                )
-            )
-        else:
-            if prior.is_active != is_active:
-                prior.since = as_of
-            prior.is_active = is_active
-            prior.signal_codes = active_codes
-            prior.run_id = run_id
-
+    copy_insert(session, ClientSituationSnapshot.__tablename__, snapshots)
+    copy_upsert(
+        session,
+        ClientSituationState.__tablename__,
+        states,
+        ["client_id", "unit_fund_id", "situation_code"],
+        _SITUATION_STATE_SET_SQL,
+    )
     session.commit()
 
 

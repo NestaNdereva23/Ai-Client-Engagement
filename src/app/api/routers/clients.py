@@ -42,6 +42,7 @@ from app.services.clients import (
     enrollment_summary,
     get_client,
     get_client_name,
+    get_client_names,
     get_client_profile,
     latest_call_brief,
     list_clients,
@@ -53,7 +54,9 @@ from app.services.clients_overview import ClientsOverview, clients_overview
 router = APIRouter(tags=["clients"], dependencies=[Depends(get_current_reviewer_id)])
 
 
-def _to_summary(row, *, call_brief: str | None = None) -> ClientSummaryOut:
+def _to_summary(
+    row, *, call_brief: str | None = None, client_name: str | None = None
+) -> ClientSummaryOut:
     return ClientSummaryOut(
         client_id=row.client_id,
         unit_fund_id=row.unit_fund_id,
@@ -66,6 +69,7 @@ def _to_summary(row, *, call_brief: str | None = None) -> ClientSummaryOut:
         priority_tier=row.priority_tier,
         high_value=row.high_value,
         call_brief=call_brief,
+        client_name=client_name,
     )
 
 
@@ -84,6 +88,7 @@ def get_clients(
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
+    reviewer_id: str = Depends(get_current_reviewer_id),
 ) -> Page[ClientSummaryOut]:
     try:
         rows, next_cursor = list_clients(
@@ -103,7 +108,11 @@ def get_clients(
         )
     except InvalidCursor:
         raise HTTPException(status_code=400, detail="invalid cursor") from None
-    return Page(items=[_to_summary(r) for r in rows], next_cursor=next_cursor)
+    names = get_client_names([r.client_id for r in rows], reviewer_id=reviewer_id)
+    return Page(
+        items=[_to_summary(r, client_name=names.get(r.client_id)) for r in rows],
+        next_cursor=next_cursor,
+    )
 
 
 @router.get("/clients/summary", response_model=ClientBookSummaryOut)
@@ -136,7 +145,9 @@ def get_clients_suppression_summary(
     )
 
 
-def _to_overview_out(overview: ClientsOverview) -> ClientsOverviewOut:
+def _to_overview_out(
+    overview: ClientsOverview, *, names: dict[int, str | None]
+) -> ClientsOverviewOut:
     segments = overview.segments
     enrollment = overview.enrollment
     return ClientsOverviewOut(
@@ -179,13 +190,10 @@ def _to_overview_out(overview: ClientsOverview) -> ClientsOverviewOut:
             reengaged_count=enrollment.reengaged_count,
             reengagement_rate=enrollment.reengagement_rate,
         ),
-        angles=[
-            AngleStatusOut(angle=a, version=v, valid_from=vf, valid_to=vt, held=held)
-            for a, v, vf, vt, held in overview.angles
-        ],
+        angles=[AngleStatusOut(**row._mapping) for row in overview.angles],
         records_rejected=overview.records_rejected,
         roster=Page(
-            items=[_to_summary(r) for r in overview.roster],
+            items=[_to_summary(r, client_name=names.get(r.client_id)) for r in overview.roster],
             next_cursor=overview.roster_next_cursor,
         ),
     )
@@ -195,6 +203,7 @@ def _to_overview_out(overview: ClientsOverview) -> ClientsOverviewOut:
 def get_clients_overview(
     roster_limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
+    reviewer_id: str = Depends(get_current_reviewer_id),
 ) -> ClientsOverviewOut:
     """Open the Clients and Segments tab in one call.
 
@@ -204,7 +213,9 @@ def get_clients_overview(
     unchanged; this collapses the opening read into a single request so the
     browser is not queueing eight of them behind its per-host limit.
     """
-    return _to_overview_out(clients_overview(session, roster_limit=roster_limit))
+    overview = clients_overview(session, roster_limit=roster_limit)
+    names = get_client_names([r.client_id for r in overview.roster], reviewer_id=reviewer_id)
+    return _to_overview_out(overview, names=names)
 
 
 @router.get("/clients/{client_id}", response_model=ClientSummaryOut)

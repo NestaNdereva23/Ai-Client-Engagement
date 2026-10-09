@@ -31,7 +31,7 @@ from app.db.models.active_clients import ActiveClientFund
 from app.db.models.models import ClientFund, PiiVault
 from app.db.models.outreach import OutreachMessage
 from app.db.session import SessionLocal, restricted_session
-from app.delivery.mailer import EmailMessage, Mailer, get_mailer
+from app.delivery.mailer import EmailMessage, Mailer, get_mailer, is_cytonn_address
 from app.delivery.test_recipients import ensure_test_recipient, pick_test_recipient
 
 logger = structlog.get_logger(__name__)
@@ -63,7 +63,13 @@ def _advisor_emails(client_id: int) -> tuple[str, ...]:
     )
     with SessionLocal() as session:
         addresses = session.scalars(union(inactive, active)).all()
-    return tuple(sorted(address for address in addresses if _EMAIL_SHAPE.match(address)))
+    return tuple(
+        sorted(
+            address
+            for address in addresses
+            if _EMAIL_SHAPE.match(address) and is_cytonn_address(address)
+        )
+    )
 
 
 def build_email_sender(

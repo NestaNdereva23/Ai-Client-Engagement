@@ -8,6 +8,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, TypedDict
 
+import structlog
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy import select
@@ -15,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.email_agent import build_system_prompt, resolve_allowed_placeholders
 from app.agents.guardrails import DEFAULT_GUARDRAIL_CHECKS, GuardrailFailure
+from app.db.models.models import ClientFeatures
 from app.db.models.rules import ClientMessageIndicators
 from app.db.models.views import (
     llm_active_client_facts,
@@ -33,6 +35,8 @@ from app.rules.catalog import load_angle
 from app.rules.tier_contract import load_tier
 from app.schemas.email_draft import DraftValidationError, parse_email_draft
 from app.transform.flatten import latest_reference_date
+
+logger = structlog.get_logger(__name__)
 
 PromptBuilder = Callable[..., str]
 ConfigResolver = Callable[..., Any]
@@ -75,6 +79,9 @@ class ClientContext:
     contract: Any | None = None
     facts: Mapping[str, Any] | None = None
     priority_tier: str | None = None
+    balance_band: str | None = None
+    has_balance: bool | None = None
+    high_value: bool | None = None
     rule_version: int | None = None
     angle_catalog_version: int | None = None
     tier_contract_version: int | None = None
@@ -146,15 +153,23 @@ def load_client_facts(
     *,
     extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    numeric = (
+    numeric_rows = (
         session.execute(
             select(llm_client_numeric_facts).where(
                 llm_client_numeric_facts.c.client_id == client_id
             )
         )
         .mappings()
-        .one_or_none()
+        .all()
     )
+    if len(numeric_rows) > 1:
+        # More than one primary contact row for this client; degrade instead of failing the batch.
+        logger.warning(
+            "load_client_facts.duplicate_primary_contact_row",
+            client_id=client_id,
+            row_count=len(numeric_rows),
+        )
+    numeric = numeric_rows[0] if numeric_rows else None
     if numeric is None and not extra:
         return None
 
@@ -223,6 +238,7 @@ def load_client_context(
     on = at or date.today()
     brief = load_angle(session, indicators.message_angle, on)
     contract = load_tier(session, indicators.priority_tier, on)
+    features = session.get(ClientFeatures, client_id)
     return ClientContext(
         raw_context=dict(row),
         angle=indicators.message_angle,
@@ -237,6 +253,9 @@ def load_client_context(
             extra=_active_book_extra_facts(session, client_id),
         ),
         priority_tier=indicators.priority_tier,
+        balance_band=features.balance_band if features is not None else None,
+        has_balance=features.has_balance if features is not None else None,
+        high_value=features.high_value if features is not None else None,
         rule_version=indicators.rule_version,
         angle_catalog_version=brief.version if brief is not None else None,
         tier_contract_version=contract.version if contract is not None else None,
