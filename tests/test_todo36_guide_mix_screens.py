@@ -91,7 +91,22 @@ def performance_rows(db: None):
         session.commit()
 
 
-def test_results_by_mix_aggregates_each_mix(performance_rows):
+def _pin_min_group_size(monkeypatch, size):
+    from app.agents import results_summary
+
+    real = results_summary.get_settings()
+
+    class Pinned:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        agent_query_min_group_size = size
+
+    monkeypatch.setattr(results_summary, "get_settings", lambda: Pinned())
+
+
+def test_results_by_mix_aggregates_each_mix(monkeypatch, performance_rows):
+    _pin_min_group_size(monkeypatch, 1)
     with SessionLocal() as session:
         results = read_results_by_mix(session, lookback_hours=PERIOD_HOURS * 4, now=NOW)
 
@@ -112,17 +127,7 @@ def test_results_by_mix_aggregates_each_mix(performance_rows):
 
 
 def test_results_by_mix_honours_min_group_size(monkeypatch, performance_rows):
-    from app.agents import results_summary
-
-    real = results_summary.get_settings()
-
-    class Bumped:
-        def __getattr__(self, name):
-            return getattr(real, name)
-
-        agent_query_min_group_size = 5
-
-    monkeypatch.setattr(results_summary, "get_settings", lambda: Bumped())
+    _pin_min_group_size(monkeypatch, 5)
     with SessionLocal() as session:
         results = read_results_by_mix(session, lookback_hours=PERIOD_HOURS * 4, now=NOW)
 
