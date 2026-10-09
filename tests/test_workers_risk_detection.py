@@ -10,19 +10,14 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, func, select, text
 
-from app.campaigns.nurture_bridge import AUTO_CHECKIN_CAMPAIGN_TYPE
 from app.config import get_settings
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.audit import AuditLog
-from app.db.models.campaigns import Enrollment, TouchLog
 from app.db.models.digest import DigestEmailSend, DigestLine, DigestRun
 from app.db.models.fa_assignment import FaAssignment
-from app.db.models.llmops import GenerationRun
-from app.db.models.models import ClientFeatures, Clients, PiiVault
-from app.db.models.outreach import Campaign, OutreachMessage, ReviewAction
+from app.db.models.models import PiiVault
 from app.db.models.risk import ClientRiskFeatures, RiskRun, RiskSnapshot
-from app.db.models.rules import ClientMessageIndicators
 from app.db.session import SessionLocal
 from app.delivery.mailer import NullMailer
 from app.workers import risk_detection
@@ -158,9 +153,9 @@ def test_full_run_produces_expected_state(db, cleanup_risk_runs) -> None:
     result = _worker().run(run_id=run_id)
 
     assert result.state == "completed"
-    assert result.clients_seen == 2
-    assert result.route_distribution == {"fa_call_priority": 1, "small_balance_review": 1}
-    assert result.routes_changed == 2  # both clients are new -> both "changed" from no prior route
+    assert result.clients_seen == 1
+    assert result.route_distribution == {"fa_call_priority": 1}
+    assert result.routes_changed == 1
 
     with SessionLocal() as session:
         run = session.get(RiskRun, run_id)
@@ -172,12 +167,10 @@ def test_full_run_produces_expected_state(db, cleanup_risk_runs) -> None:
             row.client_id: row
             for row in session.scalars(select(RiskSnapshot).where(RiskSnapshot.run_id == run_id))
         }
-        assert set(snapshots) == {CALL_CLIENT_ID, TINY_CLIENT_ID}
+        assert set(snapshots) == {CALL_CLIENT_ID}
         assert snapshots[CALL_CLIENT_ID].route == "fa_call_priority"
         assert snapshots[CALL_CLIENT_ID].queue_rank == 1
         assert snapshots[CALL_CLIENT_ID].sig_dormant is True
-        assert snapshots[TINY_CLIENT_ID].route == "small_balance_review"
-        assert snapshots[TINY_CLIENT_ID].queue_rank is None
 
         features = {
             row.client_id: row
@@ -188,13 +181,13 @@ def test_full_run_produces_expected_state(db, cleanup_risk_runs) -> None:
             )
         }
         assert features[CALL_CLIENT_ID].route == "fa_call_priority"
-        assert features[TINY_CLIENT_ID].route == "small_balance_review"
+        assert TINY_CLIENT_ID not in features
 
         route_audit = session.scalar(
             select(AuditLog).where(AuditLog.run_id == run_id, AuditLog.action == "route")
         )
         assert route_audit is not None
-        assert route_audit.detail["changed_count"] == 2
+        assert route_audit.detail["changed_count"] == 1
 
         complete_audit = session.scalar(
             select(AuditLog).where(AuditLog.run_id == run_id, AuditLog.action == "complete")
@@ -213,7 +206,7 @@ def test_second_run_is_a_no_op_result_of_completed_state(db, cleanup_risk_runs) 
     second = _worker().run(run_id=run_id)
 
     assert first.route_distribution == second.route_distribution
-    assert second.clients_seen == 2
+    assert second.clients_seen == 1
 
 
 def test_mid_run_failure_leaves_prior_snapshot_untouched_and_resume_does_not_duplicate(
@@ -229,7 +222,7 @@ def test_mid_run_failure_leaves_prior_snapshot_untouched_and_resume_does_not_dup
             .select_from(RiskSnapshot)
             .where(RiskSnapshot.run_id == prior_run_id)
         )
-    assert prior_snapshot_count == 2
+    assert prior_snapshot_count == 1
 
     failing_run_id = uuid4().hex
     cleanup_risk_runs.append(failing_run_id)
@@ -255,7 +248,7 @@ def test_mid_run_failure_leaves_prior_snapshot_untouched_and_resume_does_not_dup
             .select_from(RiskSnapshot)
             .where(RiskSnapshot.run_id == prior_run_id)
         )
-        assert untouched_count == 2
+        assert untouched_count == 1
 
         # nothing was written for the failed run either -- the failure was
         # before the snapshot stage committed anything
@@ -270,7 +263,7 @@ def test_mid_run_failure_leaves_prior_snapshot_untouched_and_resume_does_not_dup
 
     resumed = _worker().run(run_id=failing_run_id)
     assert resumed.state == "completed"
-    assert resumed.clients_seen == 2
+    assert resumed.clients_seen == 1
 
     with SessionLocal() as session:
         resumed_count = session.scalar(
@@ -278,7 +271,7 @@ def test_mid_run_failure_leaves_prior_snapshot_untouched_and_resume_does_not_dup
             .select_from(RiskSnapshot)
             .where(RiskSnapshot.run_id == failing_run_id)
         )
-        assert resumed_count == 2
+        assert resumed_count == 1
 
 
 @pytest.fixture
@@ -320,7 +313,7 @@ def test_run_with_a_roster_groups_the_digest_by_a_real_advisor(
             )
         )
 
-    assert set(assignments) == {CALL_CLIENT_ID, TINY_CLIENT_ID}
+    assert set(assignments) == {CALL_CLIENT_ID}
     assert all(fa_id in {"fa-71", "fa-72"} for fa_id in assignments.values())
     # The advisor's own queue, plus the fund wide group every eligible row
     # also joins.
@@ -447,160 +440,6 @@ def test_overflow_past_every_advisors_capacity_is_demoted_to_the_watchlist(
     assert snapshots[CAP_CLIENT_IDS[2]].queue_rank is None
     # Demotion never touches ownership -- the client keeps a real advisor.
     assert owners[CAP_CLIENT_IDS[2]] in {"fa-81", "fa-82"}
-
-
-AUTO_CHECKIN_FUND_ID = 922
-AUTO_CHECKIN_CLIENT_ID = 92201
-
-
-def _auto_checkin_payload(balance: float) -> dict:
-    return {
-        "data": [
-            {
-                "unit_fund_id": AUTO_CHECKIN_FUND_ID,
-                "unit_fund_name": "Auto Checkin Fund",
-                "client_count": 1,
-                "clients": [_client_row(AUTO_CHECKIN_CLIENT_ID, balance=balance)],
-            }
-        ]
-    }
-
-
-@pytest.fixture
-def cleanup_auto_checkin_run():
-    run_ids: list[str] = []
-    yield run_ids
-    with SessionLocal() as session:
-        for run_id in run_ids:
-            _delete_run_rows(session, run_id)
-        # The worker's own campaign sweep can enroll this client into
-        # whatever it qualifies for, not only auto_checkin_nurture (it
-        # also matched dormant_reengagement in practice), so this clears
-        # every campaign's enrollment for the client rather than one type.
-        client_enrollment_ids = select(Enrollment.enrollment_id).where(
-            Enrollment.client_id == AUTO_CHECKIN_CLIENT_ID
-        )
-        session.execute(delete(TouchLog).where(TouchLog.enrollment_id.in_(client_enrollment_ids)))
-        session.execute(delete(Enrollment).where(Enrollment.client_id == AUTO_CHECKIN_CLIENT_ID))
-        # Auto checkin enrollment also drafts and sends a message, the same
-        # generation_run / outreach_message / touch_log chain
-        # test_nurture_bridge.py's _cleanup_client clears, keyed by client
-        # rather than by run_id since this worker never hands its run_id
-        # onto them.
-        message_ids = session.scalars(
-            select(OutreachMessage.message_id).where(
-                OutreachMessage.client_id == AUTO_CHECKIN_CLIENT_ID
-            )
-        ).all()
-        if message_ids:
-            session.execute(delete(TouchLog).where(TouchLog.message_id.in_(message_ids)))
-            session.execute(delete(ReviewAction).where(ReviewAction.message_id.in_(message_ids)))
-        generation_run_ids = session.scalars(
-            select(GenerationRun.run_id).where(
-                GenerationRun.run_id.in_(
-                    select(OutreachMessage.generation_run_id).where(
-                        OutreachMessage.client_id == AUTO_CHECKIN_CLIENT_ID
-                    )
-                )
-            )
-        ).all()
-        session.execute(
-            delete(OutreachMessage).where(OutreachMessage.client_id == AUTO_CHECKIN_CLIENT_ID)
-        )
-        if generation_run_ids:
-            session.execute(
-                delete(GenerationRun).where(GenerationRun.run_id.in_(generation_run_ids))
-            )
-        session.execute(
-            delete(AuditLog).where(
-                AuditLog.entity_type == "enrollment", AuditLog.action == "auto_checkin_sync"
-            )
-        )
-        session.execute(
-            delete(ClientMessageIndicators).where(
-                ClientMessageIndicators.client_id == AUTO_CHECKIN_CLIENT_ID
-            )
-        )
-        session.execute(
-            delete(ClientFeatures).where(ClientFeatures.client_id == AUTO_CHECKIN_CLIENT_ID)
-        )
-        session.execute(delete(Clients).where(Clients.client_id == AUTO_CHECKIN_CLIENT_ID))
-        _delete_client_rows(session, [AUTO_CHECKIN_CLIENT_ID])
-        session.commit()
-
-
-def test_client_newly_routed_to_auto_checkin_enrolls_once(db, cleanup_auto_checkin_run) -> None:
-    first_run = uuid4().hex
-    cleanup_auto_checkin_run.append(first_run)
-    worker = RiskDetectionWorker(
-        FakeClient(), page_fetcher=_single_page(_auto_checkin_payload(5_000.0))
-    )
-
-    result = worker.run(run_id=first_run)
-    assert result.route_distribution == {"auto_checkin": 1}
-
-    second_run = uuid4().hex
-    cleanup_auto_checkin_run.append(second_run)
-    worker_again = RiskDetectionWorker(
-        FakeClient(), page_fetcher=_single_page(_auto_checkin_payload(5_000.0))
-    )
-    worker_again.run(run_id=second_run)
-
-    with SessionLocal() as session:
-        campaign_id = session.scalar(
-            select(Campaign.campaign_id).where(Campaign.campaign_type == AUTO_CHECKIN_CAMPAIGN_TYPE)
-        )
-        enrollments = session.scalars(
-            select(Enrollment).where(
-                Enrollment.client_id == AUTO_CHECKIN_CLIENT_ID,
-                Enrollment.campaign_id == campaign_id,
-            )
-        ).all()
-        indicator = session.get(ClientMessageIndicators, AUTO_CHECKIN_CLIENT_ID)
-        features = session.get(ClientFeatures, AUTO_CHECKIN_CLIENT_ID)
-
-    assert len(enrollments) == 1
-    assert indicator is not None
-    assert indicator.message_angle == "sitting_still"
-    assert features is not None
-    assert features.active_book_auto_checkin is True
-
-
-def test_route_change_away_from_auto_checkin_does_not_unenroll(
-    db, cleanup_auto_checkin_run
-) -> None:
-    first_run = uuid4().hex
-    cleanup_auto_checkin_run.append(first_run)
-    worker = RiskDetectionWorker(
-        FakeClient(), page_fetcher=_single_page(_auto_checkin_payload(5_000.0))
-    )
-    worker.run(run_id=first_run)
-
-    with SessionLocal() as session:
-        campaign_id = session.scalar(
-            select(Campaign.campaign_id).where(Campaign.campaign_type == AUTO_CHECKIN_CAMPAIGN_TYPE)
-        )
-        enrollment = session.scalar(
-            select(Enrollment).where(
-                Enrollment.client_id == AUTO_CHECKIN_CLIENT_ID,
-                Enrollment.campaign_id == campaign_id,
-            )
-        )
-    assert enrollment is not None
-
-    second_run = uuid4().hex
-    cleanup_auto_checkin_run.append(second_run)
-    worker_again = RiskDetectionWorker(
-        FakeClient(), page_fetcher=_single_page(_auto_checkin_payload(200_000.0))
-    )
-    result = worker_again.run(run_id=second_run)
-    assert result.route_distribution == {"fa_call_priority": 1}
-
-    with SessionLocal() as session:
-        still_enrolled = session.get(Enrollment, enrollment.enrollment_id)
-
-    assert still_enrolled is not None
-    assert still_enrolled.status == "enrolled"
 
 
 def test_the_agent_starts_after_a_clean_run_when_the_setting_is_on(

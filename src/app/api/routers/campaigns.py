@@ -52,6 +52,7 @@ from app.schemas.campaigns import (
     OutreachBucketOut,
     OutreachTrendOut,
     OutreachTrendPointOut,
+    SentMessageOut,
     TouchOutcomeOut,
     TouchSendOutcomeOut,
 )
@@ -92,6 +93,7 @@ from app.services.campaigns import (
     list_campaign_steps,
     list_campaigns,
     list_generation_cost_models,
+    list_sent_touches,
     outreach_analytics,
     outreach_trend,
     preview_cohort,
@@ -101,6 +103,7 @@ from app.services.campaigns import (
     start_bulk_instantiate,
     submit_campaign_batch,
 )
+from app.services.clients import get_client_names
 from app.services.review import TemplateNotApproved
 from app.services.template_review import TemplateNotFound
 from app.workers.batch_ingest import poll_batch_until_done
@@ -429,6 +432,7 @@ def get_campaign_enrollments(
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
+    reviewer_id: str = Depends(get_current_reviewer_id),
 ) -> Page[EnrollmentOut]:
     try:
         rows, next_cursor = list_campaign_enrollments(
@@ -438,11 +442,13 @@ def get_campaign_enrollments(
         raise HTTPException(status_code=404, detail="campaign not found") from None
     except InvalidCursor:
         raise HTTPException(status_code=400, detail="invalid cursor") from None
+    names = get_client_names([r.client_id for r in rows], reviewer_id=reviewer_id)
     items = [
         EnrollmentOut(
             enrollment_id=r.enrollment_id,
             campaign_id=r.campaign_id,
             client_id=r.client_id,
+            client_name=names.get(r.client_id),
             status=r.status,
             current_step=r.current_step,
             next_due_at=r.next_due_at,
@@ -450,6 +456,36 @@ def get_campaign_enrollments(
             message_angle=r.message_angle,
             value_band=r.value_band,
             recency_band=r.recency_band,
+        )
+        for r in rows
+    ]
+    return Page(items=items, next_cursor=next_cursor)
+
+
+@router.get("/{campaign_id}/sent", response_model=Page[SentMessageOut])
+def get_campaign_sent_messages(
+    campaign_id: int,
+    cursor: str | None = None,
+    limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    session: Session = Depends(get_session),
+    reviewer_id: str = Depends(get_current_reviewer_id),
+) -> Page[SentMessageOut]:
+    try:
+        rows, next_cursor = list_sent_touches(session, campaign_id, cursor=cursor, limit=limit)
+    except CampaignNotFound:
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    except InvalidCursor:
+        raise HTTPException(status_code=400, detail="invalid cursor") from None
+    names = get_client_names([r.client_id for r in rows], reviewer_id=reviewer_id)
+    items = [
+        SentMessageOut(
+            touch_id=r.touch_id,
+            message_id=r.message_id,
+            client_id=r.client_id,
+            client_name=names.get(r.client_id),
+            channel=r.channel,
+            sent_at=r.sent_at,
+            delivery_status=r.delivery_status,
         )
         for r in rows
     ]

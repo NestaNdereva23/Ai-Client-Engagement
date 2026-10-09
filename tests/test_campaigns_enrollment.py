@@ -232,3 +232,108 @@ def test_enroll_cohort_with_no_clients_is_a_no_op(campaign: int, db: None) -> No
     with SessionLocal() as session:
         created = enroll_cohort(session, campaign_id=campaign, client_ids=[])
     assert created == []
+
+
+@pytest.fixture
+def two_clients_with_no_name_on_file(two_funds):
+    fund_a, fund_b = two_funds
+    client_a, client_b = 98009, 98010
+    with SessionLocal() as session:
+        _add_client(session, client_a, fund_a, None, total_purchase_amount=10_000)
+        _add_client(session, client_b, fund_b, None, total_purchase_amount=20_000)
+        session.commit()
+
+    yield client_a, client_b
+
+    with SessionLocal() as session:
+        session.execute(delete(Enrollment).where(Enrollment.client_id.in_((client_a, client_b))))
+        session.execute(delete(PiiVault).where(PiiVault.client_id.in_((client_a, client_b))))
+        session.execute(delete(Clients).where(Clients.client_id.in_((client_a, client_b))))
+        session.commit()
+
+
+def test_two_clients_with_no_name_on_file_are_both_primary(
+    campaign: int, two_clients_with_no_name_on_file: tuple[int, int]
+) -> None:
+    client_a, client_b = two_clients_with_no_name_on_file
+    with SessionLocal() as session:
+        created = enroll_cohort(session, campaign_id=campaign, client_ids=[client_a, client_b])
+        session.commit()
+
+    primary_ids = {row.client_id for row in created if row.is_primary_contact_row}
+    assert primary_ids == {client_a, client_b}
+
+
+_LARGE_COHORT_FUND = 97000
+_LARGE_COHORT_BASE = 970000
+_LARGE_COHORT_SIZE = 500
+_LARGE_COHORT_NAMES = 50
+
+
+@pytest.fixture
+def large_cohort_with_shared_names(db: None):
+    client_ids = [_LARGE_COHORT_BASE + i for i in range(_LARGE_COHORT_SIZE)]
+    with SessionLocal() as session:
+        session.add(Funds(unit_fund_id=_LARGE_COHORT_FUND, unit_fund_name="Large Cohort Fund"))
+        session.commit()
+        for i, client_id in enumerate(client_ids):
+            _add_client(
+                session,
+                client_id,
+                _LARGE_COHORT_FUND,
+                f"Large Cohort Name {i % _LARGE_COHORT_NAMES}",
+                total_purchase_amount=float(i),
+            )
+        session.commit()
+
+    yield client_ids
+
+    with SessionLocal() as session:
+        session.execute(delete(Enrollment).where(Enrollment.client_id.in_(client_ids)))
+        session.execute(delete(PiiVault).where(PiiVault.client_id.in_(client_ids)))
+        session.execute(delete(Clients).where(Clients.client_id.in_(client_ids)))
+        session.execute(delete(Funds).where(Funds.unit_fund_id == _LARGE_COHORT_FUND))
+        session.commit()
+
+
+def test_enroll_cohort_dedups_a_large_cohort_of_shared_names(
+    campaign: int, large_cohort_with_shared_names: list[int]
+) -> None:
+    client_ids = large_cohort_with_shared_names
+    with SessionLocal() as session:
+        created = enroll_cohort(session, campaign_id=campaign, client_ids=client_ids)
+        session.commit()
+
+    assert len(created) == _LARGE_COHORT_SIZE
+    primary_ids = {row.client_id for row in created if row.is_primary_contact_row}
+    expected = {
+        _LARGE_COHORT_BASE + i
+        for i in range(_LARGE_COHORT_SIZE - _LARGE_COHORT_NAMES, _LARGE_COHORT_SIZE)
+    }
+    assert primary_ids == expected
+
+
+def test_enroll_cohort_batches_in_clauses_under_the_postgres_bind_param_limit(
+    campaign: int,
+    same_person_unequal_relationships: tuple[int, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for the real limit (65535): force tiny batches with a
+    handful of rows instead of needing tens of thousands of real clients.
+    """
+    from app.campaigns import enrollment as enrollment_module
+
+    monkeypatch.setattr(enrollment_module, "_MAX_BIND_PARAMS", 1)
+    smaller_id_smaller_value, larger_id_larger_value = same_person_unequal_relationships
+
+    with SessionLocal() as session:
+        created = enroll_cohort(
+            session,
+            campaign_id=campaign,
+            client_ids=[smaller_id_smaller_value, larger_id_larger_value],
+        )
+        session.commit()
+
+    primary_ids = {row.client_id for row in created if row.is_primary_contact_row}
+    assert primary_ids == {larger_id_larger_value}
+    assert len(created) == 2

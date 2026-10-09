@@ -12,7 +12,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import Row, func, select, tuple_
+from sqlalchemy import BigInteger, Row, any_, cast, func, select, tuple_
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session
 
 from app.agents.orchestrator import Orchestrator
@@ -166,6 +167,46 @@ def list_campaign_enrollments(
     if len(rows) > limit:
         rows = rows[:limit]
         next_cursor = encode_id_cursor(rows[-1].enrollment_id)
+    return rows, next_cursor
+
+
+def list_sent_touches(
+    session: Session,
+    campaign_id: int,
+    *,
+    cursor: str | None = None,
+    limit: int = DEFAULT_LIMIT,
+) -> tuple[list[Row], str | None]:
+    if session.get(Campaign, campaign_id) is None:
+        raise CampaignNotFound(campaign_id)
+
+    limit = clamp_limit(limit)
+    query = (
+        select(
+            TouchLog.touch_id,
+            TouchLog.message_id,
+            Enrollment.client_id,
+            OutreachMessage.channel,
+            TouchLog.sent_at,
+            TouchLog.delivery_status,
+        )
+        .select_from(TouchLog)
+        .join(Enrollment, Enrollment.enrollment_id == TouchLog.enrollment_id)
+        .join(OutreachMessage, OutreachMessage.message_id == TouchLog.message_id)
+        .where(Enrollment.campaign_id == campaign_id, TouchLog.sent_at.isnot(None))
+    )
+    key = tuple_(TouchLog.sent_at, TouchLog.touch_id)
+    if cursor is not None:
+        after_sent_at, after_id = decode_cursor(cursor)
+        query = query.where(key < (after_sent_at, int(after_id)))
+    query = query.order_by(TouchLog.sent_at.desc(), TouchLog.touch_id.desc()).limit(limit + 1)
+
+    rows = list(session.execute(query).all())
+    next_cursor = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        next_cursor = encode_cursor(last.sent_at, str(last.touch_id))
     return rows, next_cursor
 
 
@@ -353,6 +394,12 @@ def _enrollment_cap(is_test: bool) -> int:
     return settings.live_campaign_max_clients
 
 
+def _already_enrolled_client_ids(session: Session, client_ids: Sequence[int]) -> set[int]:
+    ids_array = cast(list(client_ids), ARRAY(BigInteger))
+    stmt = select(Enrollment.client_id).where(Enrollment.client_id == any_(ids_array))
+    return set(session.scalars(stmt))
+
+
 def create_campaign(
     session: Session,
     *,
@@ -378,6 +425,8 @@ def create_campaign(
     session.flush()
 
     client_ids = resolve_cohort_client_ids(session, **cohort_filters)
+    already_enrolled = _already_enrolled_client_ids(session, client_ids)
+    client_ids = [cid for cid in client_ids if cid not in already_enrolled]
     cap = _enrollment_cap(is_test)
     if cap:
         client_ids = sorted(client_ids)[:cap]

@@ -6,9 +6,14 @@ from dataclasses import dataclass
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.campaigns.enrollment import resolve_primary_client_ids
+from app.campaigns.enrollment import (
+    fetch_client_names,
+    in_batches,
+    primary_flags_from_maps,
+    resolve_primary_client_ids,
+)
 from app.db.models.models import Clients
-from app.services.clients import resolve_cohort_client_ids
+from app.services.clients import resolve_cohort_client_ids, resolve_cohort_members
 
 
 @dataclass(frozen=True)
@@ -51,12 +56,17 @@ def _preview_from_client_ids(session: Session, client_ids: Sequence[int]) -> Coh
         )
 
     primary_ids = resolve_primary_client_ids(session, client_ids)
-    valued_count, estimated_value = session.execute(
-        select(
-            func.count(Clients.client_id),
-            func.coalesce(func.sum(Clients.total_purchase_amount), 0.0),
-        ).where(Clients.client_id.in_(primary_ids))
-    ).one()
+    valued_count = 0
+    estimated_value = 0.0
+    for batch in in_batches(list(primary_ids)):
+        batch_count, batch_value = session.execute(
+            select(
+                func.count(Clients.client_id),
+                func.coalesce(func.sum(Clients.total_purchase_amount), 0.0),
+            ).where(Clients.client_id.in_(batch))
+        ).one()
+        valued_count += batch_count
+        estimated_value += float(batch_value)
 
     return CohortPreview(
         matched_count=matched_count,
@@ -75,21 +85,38 @@ def preview_cohort(session: Session, cohort_filters: dict) -> CohortPreview:
 def preview_cohort_batch(
     session: Session, narrow_filters: dict, angles: Sequence[str]
 ) -> BatchCohortPreview:
-    narrow_client_ids = resolve_cohort_client_ids(session, **narrow_filters)
-    narrow_preview = _preview_from_client_ids(session, narrow_client_ids)
-    narrow = NarrowPreview(
-        matched_count=narrow_preview.matched_count,
-        estimated_value=narrow_preview.estimated_value,
-    )
+    members = resolve_cohort_members(session, **narrow_filters)
+    all_ids = [row.client_id for row in members]
+    values = {row.client_id: float(row.total_purchase_amount or 0.0) for row in members}
+    names = fetch_client_names(all_ids)
+
+    def preview_of(client_ids: list[int]) -> tuple[int, float]:
+        matched_count = len(client_ids)
+        if matched_count == 0:
+            return 0, 0.0
+        flags = primary_flags_from_maps(client_ids, names, values, already_claimed_names=set())
+        estimated_value = sum(
+            values.get(cid, 0.0) for cid, is_primary in flags.items() if is_primary
+        )
+        return matched_count, estimated_value
+
+    narrow_matched, narrow_value = preview_of(all_ids)
+    narrow = NarrowPreview(matched_count=narrow_matched, estimated_value=narrow_value)
+
+    ids_by_angle: dict[str, list[int]] = {angle: [] for angle in angles}
+    for row in members:
+        bucket = ids_by_angle.get(row.message_angle)
+        if bucket is not None:
+            bucket.append(row.client_id)
 
     angle_previews = []
     for angle in angles:
-        angle_preview = preview_cohort(session, {**narrow_filters, "message_angle": angle})
+        matched_count, estimated_value = preview_of(ids_by_angle[angle])
         angle_previews.append(
             AnglePreview(
                 message_angle=angle,
-                matched_count=angle_preview.matched_count,
-                estimated_value=angle_preview.estimated_value,
+                matched_count=matched_count,
+                estimated_value=estimated_value,
             )
         )
 

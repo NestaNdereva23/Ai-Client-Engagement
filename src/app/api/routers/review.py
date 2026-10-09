@@ -27,6 +27,7 @@ from app.schemas.review import (
     ReviewActionOut,
     ReviewOrder,
 )
+from app.services.clients import get_client_names
 from app.services.review import (
     CohortNotFound,
     CohortNotReady,
@@ -60,6 +61,7 @@ def list_reviews(
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
+    reviewer_id: str = Depends(get_current_reviewer_id),
 ) -> Page[OutreachMessageSummary]:
     try:
         messages, next_cursor = list_pending_messages(
@@ -83,8 +85,14 @@ def list_reviews(
         only_sampled=only_sampled,
         channel=channel,
     )
+    names = get_client_names([m.client_id for m in messages], reviewer_id=reviewer_id)
     return Page(
-        items=[OutreachMessageSummary.model_validate(m) for m in messages],
+        items=[
+            OutreachMessageSummary.model_validate(m).model_copy(
+                update={"client_name": names.get(m.client_id)}
+            )
+            for m in messages
+        ],
         next_cursor=next_cursor,
         total_count=total_count,
     )

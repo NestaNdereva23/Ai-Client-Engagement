@@ -3,14 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.campaigns.eligibility import _vault_signals
 from app.campaigns.estimation import _bulk_vault_signals
 from app.campaigns.touch import SendBlocked
 from app.config import get_settings
-from app.db.models.models import PiiVault
-from app.db.models.outreach import OutreachMessage
+from app.db.models.campaigns import Enrollment
+from app.db.models.models import Clients, Funds, PiiVault
+from app.db.models.outreach import Campaign, OutreachMessage
 from app.db.models.test_recipient import TestRecipient
 from app.db.session import SessionLocal, restricted_session
 from app.delivery.mailer import EmailMessage
@@ -378,3 +379,72 @@ def test_a_live_campaign_enrolls_everyone_when_the_live_cap_is_zero(db: None, mo
     )
     assert count == 5
     assert sorted(enrolled) == [1, 2, 3, 4, 5]
+
+
+def test_a_second_campaign_against_the_same_cohort_picks_up_where_the_first_left_off(
+    db: None, monkeypatch
+):
+    fund_id = 997796
+    cohort = [9977965, 9977964, 9977963, 9977962, 9977961]
+    monkeypatch.setenv("TEST_CAMPAIGN_MAX_CLIENTS", "3")
+    get_settings.cache_clear()
+    monkeypatch.setattr("app.services.campaigns.resolve_cohort_client_ids", lambda *_, **__: cohort)
+
+    with SessionLocal() as session:
+        session.add(Funds(unit_fund_id=fund_id, unit_fund_name="Cohort Pagination Test Fund"))
+        session.flush()
+        for client_id in cohort:
+            session.add(
+                Clients(
+                    client_id=client_id,
+                    unit_fund_id=fund_id,
+                    n_purchases_returned=0,
+                    n_sales_returned=0,
+                )
+            )
+        session.commit()
+
+    campaign_ids: list[int] = []
+    with SessionLocal() as session:
+        first, first_count, _ = create_campaign(
+            session,
+            name="first batch",
+            campaign_type="dormant_reengagement",
+            cohort_filters={},
+            is_test=True,
+        )
+        session.commit()
+        campaign_ids.append(first.campaign_id)
+        first_enrolled = sorted(
+            session.scalars(
+                select(Enrollment.client_id).where(Enrollment.campaign_id == first.campaign_id)
+            )
+        )
+
+        second, second_count, _ = create_campaign(
+            session,
+            name="second batch",
+            campaign_type="dormant_reengagement",
+            cohort_filters={},
+            is_test=True,
+        )
+        session.commit()
+        campaign_ids.append(second.campaign_id)
+        second_enrolled = sorted(
+            session.scalars(
+                select(Enrollment.client_id).where(Enrollment.campaign_id == second.campaign_id)
+            )
+        )
+
+    assert first_count == 3
+    assert first_enrolled == [9977961, 9977962, 9977963]
+    assert second_count == 2
+    assert second_enrolled == [9977964, 9977965]
+
+    with SessionLocal() as session:
+        session.execute(delete(Enrollment).where(Enrollment.campaign_id.in_(campaign_ids)))
+        session.execute(delete(Campaign).where(Campaign.campaign_id.in_(campaign_ids)))
+        session.execute(delete(Clients).where(Clients.client_id.in_(cohort)))
+        session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
+        session.commit()
+    get_settings.cache_clear()

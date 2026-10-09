@@ -192,7 +192,7 @@ class ClientsOverview:
     segments: SegmentRollup
     enrollment: EnrollmentCounts
     suppression: SuppressionCounts
-    angles: list[tuple[str, int, date, date | None, bool]]
+    angles: list[Row]
     records_rejected: int | None
     roster: list[Row]
     roster_next_cursor: str | None

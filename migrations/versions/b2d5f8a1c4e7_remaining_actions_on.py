@@ -18,18 +18,21 @@ from app.agents.situation_action_mapping import (
     load_active_mappings,
     save_situation_action_mapping_version,
 )
-from app.rules.catalog import AngleSpec, load_active_angles, save_catalog_version
+from app.rules.catalog import (
+    AngleSpec,
+    active_catalog_version,
+    load_active_angles,
+    save_catalog_version,
+)
 
 revision: str = "b2d5f8a1c4e7"
 down_revision: str | Sequence[str] | None = "c8e4a1b6d2f7"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_VERSION = 7
-_PREVIOUS = 6
-_MAPPING_VERSION = 5
-_PREVIOUS_MAPPING = 4
-_VALID_FROM = date(2026, 10, 3)
+_EARLIEST_VALID_FROM = date(2026, 10, 3)
+_TABLES = ("message_angle_catalog", "agent_action_catalog", "situation_action_mapping")
+_MARKER = "follow_up_when_no_one_called"
 
 _NEW_ANGLES = [
     AngleSpec(
@@ -190,11 +193,14 @@ _SITUATION_ANGLES = {
     "very_small_and_quiet": "start_win_back",
 }
 
-_PREVIOUS_VERSIONS = (
-    ("message_angle_catalog", _PREVIOUS),
-    ("agent_action_catalog", _PREVIOUS),
-    ("situation_action_mapping", _PREVIOUS_MAPPING),
-)
+
+def _next_version(session: Session, table: str) -> int:
+    return session.scalar(sa.text(f"SELECT COALESCE(MAX(version), 0) + 1 FROM {table}"))
+
+
+def _start_date(session: Session) -> date:
+    latest = [session.scalar(sa.text(f"SELECT MAX(valid_from) FROM {table}")) for table in _TABLES]
+    return max([_EARLIEST_VALID_FROM, *[day for day in latest if day is not None]])
 
 
 def _angle_spec(row) -> AngleSpec:
@@ -252,60 +258,76 @@ def _action_spec(row) -> ActionSpec:
 
 def upgrade() -> None:
     session = Session(bind=op.get_bind())
+    valid_from = _start_date(session)
 
-    angles = [_angle_spec(row) for row in load_active_angles(session, _VALID_FROM).values()]
-    save_catalog_version(session, _VERSION, [*angles, *_NEW_ANGLES], valid_from=_VALID_FROM)
+    angle_version = _next_version(session, "message_angle_catalog")
+    previous_angle_version = active_catalog_version(session, valid_from)
+    angles = [_angle_spec(row) for row in load_active_angles(session, valid_from).values()]
+    save_catalog_version(session, angle_version, [*angles, *_NEW_ANGLES], valid_from=valid_from)
     session.execute(
         sa.text(
             "UPDATE message_angle_catalog SET valid_to = :valid_from "
             "WHERE version = :previous AND valid_to IS NULL"
-        ).bindparams(previous=_PREVIOUS, valid_from=_VALID_FROM)
+        ).bindparams(previous=previous_angle_version, valid_from=valid_from)
     )
 
-    actions = [_action_spec(row) for row in load_active_actions(session, _VALID_FROM).values()]
-    save_action_catalog_version(session, _VERSION, actions, valid_from=_VALID_FROM)
+    action_version = _next_version(session, "agent_action_catalog")
+    actions = [_action_spec(row) for row in load_active_actions(session, valid_from).values()]
+    save_action_catalog_version(session, action_version, actions, valid_from=valid_from)
 
-    mappings = [_mapping_spec(row) for row in load_active_mappings(session, _VALID_FROM)]
-    save_situation_action_mapping_version(
-        session, _MAPPING_VERSION, mappings, valid_from=_VALID_FROM
-    )
+    mapping_version = _next_version(session, "situation_action_mapping")
+    mappings = [_mapping_spec(row) for row in load_active_mappings(session, valid_from)]
+    save_situation_action_mapping_version(session, mapping_version, mappings, valid_from=valid_from)
     session.flush()
 
 
-def downgrade() -> None:
-    for table, version in (
-        ("message_angle_catalog", _VERSION),
-        ("agent_action_catalog", _VERSION),
-        ("situation_action_mapping", _MAPPING_VERSION),
-    ):
-        op.execute(sa.text(f"DELETE FROM {table} WHERE version = {version}"))
-
-    op.execute(
-        sa.text(
-            "UPDATE message_angle_catalog SET valid_to = NULL "
-            "WHERE version = :previous AND valid_to = :valid_from"
-        ).bindparams(previous=_PREVIOUS, valid_from=_VALID_FROM)
-    )
-    op.execute(
-        sa.text(
-            "UPDATE agent_action_catalog SET valid_to = NULL "
-            "WHERE version = :previous AND valid_to = :valid_from"
-        ).bindparams(previous=_PREVIOUS, valid_from=_VALID_FROM)
-    )
-    op.execute(
-        sa.text(
-            "UPDATE situation_action_mapping SET valid_to = NULL "
-            "WHERE version = :previous AND valid_to = :valid_from"
-        ).bindparams(previous=_PREVIOUS_MAPPING, valid_from=_VALID_FROM)
-    )
-
-    for component_type, previous in _PREVIOUS_VERSIONS:
-        op.execute(
-            sa.text(
-                "UPDATE active_configuration SET active_version = :previous "
-                "WHERE component_type = :component_type AND active_version > :previous"
-            ).bindparams(previous=previous, component_type=component_type)
+def _version_added(table: str, column: str) -> int | None:
+    return op.get_bind().scalar(
+        sa.text(f"SELECT MIN(version) FROM {table} WHERE {column} = :marker").bindparams(
+            marker=_MARKER
         )
+    )
+
+
+def _undo_version(table: str, version: int) -> None:
+    bind = op.get_bind()
+    previous = bind.scalar(
+        sa.text(f"SELECT MAX(version) FROM {table} WHERE version < :version").bindparams(
+            version=version
+        )
+    )
+    valid_from = bind.scalar(
+        sa.text(f"SELECT MIN(valid_from) FROM {table} WHERE version = :version").bindparams(
+            version=version
+        )
+    )
+    op.execute(sa.text(f"DELETE FROM {table} WHERE version = {version}"))
+    if previous is None:
+        return
+    op.execute(
+        sa.text(
+            f"UPDATE {table} SET valid_to = NULL "
+            "WHERE version = :previous AND valid_to = :valid_from"
+        ).bindparams(previous=previous, valid_from=valid_from)
+    )
+    op.execute(
+        sa.text(
+            "UPDATE active_configuration SET active_version = :previous "
+            "WHERE component_type = :table AND active_version > :previous"
+        ).bindparams(previous=previous, table=table)
+    )
+
+
+def downgrade() -> None:
+    angle_version = _version_added("message_angle_catalog", "angle")
+    action_version = op.get_bind().scalar(
+        sa.text(
+            "SELECT MIN(version) FROM agent_action_catalog "
+            "WHERE action_code = :marker AND message_angle = :marker"
+        ).bindparams(marker=_MARKER)
+    )
+    mapping_version = _version_added("situation_action_mapping", "angle")
+
     new_angles = ", ".join(f"'{angle.angle}'" for angle in _NEW_ANGLES)
     op.execute(
         sa.text(
@@ -313,3 +335,10 @@ def downgrade() -> None:
             f"AND component_key IN ({new_angles})"
         )
     )
+    for table, version in (
+        ("message_angle_catalog", angle_version),
+        ("agent_action_catalog", action_version),
+        ("situation_action_mapping", mapping_version),
+    ):
+        if version is not None:
+            _undo_version(table, version)

@@ -134,10 +134,21 @@ class CampaignDetailOut(BaseModel):
     created_at: datetime
 
 
+class SentMessageOut(BaseModel):
+    touch_id: int
+    message_id: str | None
+    client_id: int
+    client_name: str | None = None
+    channel: str
+    sent_at: datetime
+    delivery_status: str | None
+
+
 class EnrollmentOut(BaseModel):
     enrollment_id: int
     campaign_id: int
     client_id: int
+    client_name: str | None = None
     status: str
     current_step: int
     next_due_at: datetime | None

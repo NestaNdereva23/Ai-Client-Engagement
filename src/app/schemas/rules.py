@@ -16,8 +16,8 @@ class RuleVersionOut(BaseModel):
 
 
 class AngleStatusOut(BaseModel):
-    """One message angle's current hold state, independent of any rule
-    version's deploy -- held is flipped live by ops (see
+    """One message angle's current brief and hold state, independent of any
+    rule version's deploy -- held is flipped live by ops (see
     app.rules.catalog.angle_is_held).
     """
 
@@ -26,6 +26,12 @@ class AngleStatusOut(BaseModel):
     valid_from: date
     valid_to: date | None
     held: bool
+    headline: str
+    who: str
+    claim: str
+    ask: str
+    never: str
+    use: str
 
 
 class RulePreviewRequest(BaseModel):

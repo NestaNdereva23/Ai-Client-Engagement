@@ -18,22 +18,48 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import date
+import time
+from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
+from sqlalchemy import select  # noqa: E402
+
 from app.config import get_settings  # noqa: E402
+from app.db.models.models import IngestionStatus  # noqa: E402
 from app.db.session import SessionLocal  # noqa: E402
 from app.ingestion.api_client import CytonnClient  # noqa: E402
 from app.ingestion.endpoints import resolve_endpoint  # noqa: E402
 from app.logging_config import configure_logging  # noqa: E402
 from app.retention import prune_raw_staging  # noqa: E402
+from app.routing.materialize import materialize_inactive_from_active  # noqa: E402
+from app.routing.sides import assign_sides  # noqa: E402
 from app.rules.indicators import populate_indicators  # noqa: E402
 from app.transform.load import transform_run  # noqa: E402
 from app.workers.ingestion import IngestionAborted, IngestionWorker  # noqa: E402
 
 ENDPOINT = "inactive-clients"
+
+
+def _active_reference(session) -> datetime:
+    reference = session.scalar(
+        select(IngestionStatus.reference_ts)
+        .where(
+            IngestionStatus.endpoint == "active-clients",
+            IngestionStatus.state == "completed",
+        )
+        .order_by(IngestionStatus.reference_ts.desc())
+        .limit(1)
+    )
+    return reference or datetime.now()
+
+
+def _fmt(seconds: float) -> str:
+    minutes, secs = divmod(seconds, 60)
+    if minutes:
+        return f"{int(minutes)}m {secs:.1f}s"
+    return f"{secs:.1f}s"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -81,8 +107,11 @@ def main(argv: list[str] | None = None) -> int:
         client_model=config.client_model,
         schema_drift_fn=config.schema_drift_fn,
         count_field=config.count_field,
+        page_size=config.page_size,
     )
 
+    started = time.perf_counter()
+    ingest_start = started
     try:
         if args.fast:
             ingest_result = worker.run_bulk(max_workers=args.workers)
@@ -93,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     finally:
         client.close()
+    ingest_secs = time.perf_counter() - ingest_start
 
     print(
         f"ingest: run {ingest_result.run_id} {ingest_result.state}: "
@@ -107,6 +137,9 @@ def main(argv: list[str] | None = None) -> int:
             f"records_seen {ingest_result.records_seen}, gap {ingest_result.population_gap}."
         )
 
+    print(f"ingest: took {_fmt(ingest_secs)}")
+
+    transform_start = time.perf_counter()
     with SessionLocal() as session:
         print(f"transform: transforming run {ingest_result.run_id}")
         counts = transform_run(session, ingest_result.run_id)
@@ -121,15 +154,42 @@ def main(argv: list[str] | None = None) -> int:
                 f"transform: {held} clients hold more than one fund; "
                 "each is contacted on their largest"
             )
+    transform_secs = time.perf_counter() - transform_start
+    print(f"transform: took {_fmt(transform_secs)}")
 
+    routing_start = time.perf_counter()
+    with SessionLocal() as session:
+        sides = assign_sides(session)
+        print(f"routing: active={sides['active']} inactive={sides['inactive']}")
+        materialized = materialize_inactive_from_active(
+            session, reference=_active_reference(session)
+        )
+        print(f"routing: materialized {materialized} active-origin inactive client(s)")
+    routing_secs = time.perf_counter() - routing_start
+    print(f"routing: took {_fmt(routing_secs)}")
+
+    resolve_start = time.perf_counter()
     with SessionLocal() as session:
         resolved = populate_indicators(session, at=args.at)
         print(f"resolve_indicators: resolved {resolved} client(s) as of {args.at.isoformat()}")
+    resolve_secs = time.perf_counter() - resolve_start
+    print(f"resolve_indicators: took {_fmt(resolve_secs)}")
 
+    retention_start = time.perf_counter()
     with SessionLocal() as session:
         pruned = prune_raw_staging(session)
         session.commit()
         print(f"retention: removed {pruned} old raw page(s)")
+    retention_secs = time.perf_counter() - retention_start
+    print(f"retention: took {_fmt(retention_secs)}")
+
+    total_secs = time.perf_counter() - started
+    print(
+        f"pipeline: done in {_fmt(total_secs)} "
+        f"(ingest {_fmt(ingest_secs)}, transform {_fmt(transform_secs)}, "
+        f"routing {_fmt(routing_secs)}, resolve {_fmt(resolve_secs)}, "
+        f"retention {_fmt(retention_secs)})"
+    )
 
     return 0
 

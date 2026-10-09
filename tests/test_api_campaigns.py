@@ -1219,6 +1219,33 @@ def test_dispatch_404s_for_an_unknown_campaign(db: None) -> None:
     assert response.status_code == 404
 
 
+def test_get_campaign_sent_messages_lists_only_what_was_actually_sent(
+    campaign_with_an_approved_touch: int, no_mailer: None
+) -> None:
+    campaign_id = campaign_with_an_approved_touch
+    before = client.get(f"{CAMPAIGNS}/{campaign_id}/sent")
+    assert before.status_code == 200
+    assert before.json()["items"] == []
+
+    client.post(f"{CAMPAIGNS}/{campaign_id}/dispatch")
+
+    after = client.get(f"{CAMPAIGNS}/{campaign_id}/sent")
+    assert after.status_code == 200
+    body = after.json()
+    assert body["next_cursor"] is None
+    assert len(body["items"]) == 1
+    row = body["items"][0]
+    assert row["client_id"] == 97740
+    assert row["channel"] == "email"
+    assert row["delivery_status"] == "sent"
+    assert row["sent_at"] is not None
+
+
+def test_get_campaign_sent_messages_404s_for_an_unknown_campaign(db: None) -> None:
+    response = client.get(f"{CAMPAIGNS}/999999999/sent")
+    assert response.status_code == 404
+
+
 @pytest.fixture
 def campaign_with_email_and_sms_approved_touches(db: None):
     """One campaign, one email touch and one sms touch, both approved and unsent."""
