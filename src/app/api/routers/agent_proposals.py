@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.agents import card_copy
@@ -17,6 +17,7 @@ from app.schemas.agent_proposals import (
     ProposalDecisionRequest,
     ProposalDecisionResultOut,
     ProposalStopRequest,
+    ProposalVersionsOut,
 )
 from app.services.agent_proposals import (
     ProposalNotFound,
@@ -26,8 +27,11 @@ from app.services.agent_proposals import (
     get_proposal_included_count,
     list_proposal_clients,
     list_proposals,
+    proposal_needs_enrollment,
+    run_proposal_in_background,
     stop_proposal,
 )
+from app.services.proposal_versions import ProposalNotSplit, compare_versions
 
 router = APIRouter(
     prefix="/agent/proposals",
@@ -79,6 +83,7 @@ def list_agent_proposals(
                 skip_reason_counts=p.skip_reason_counts,
                 status=p.status,
                 permission_applied=p.permission_applied,
+                content_mix=p.content_mix,
                 created_at=p.created_at,
                 decided_at=p.decided_at,
                 card_title=copy.card_title,
@@ -157,10 +162,26 @@ def list_agent_proposal_clients(
     )
 
 
+@router.get("/{proposal_id}/versions", response_model=ProposalVersionsOut)
+def compare_agent_proposal_versions(
+    proposal_id: int,
+    window_days: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+) -> ProposalVersionsOut:
+    try:
+        comparison = compare_versions(session, proposal_id, window_days=window_days)
+    except ProposalNotFound:
+        raise HTTPException(status_code=404, detail="proposal not found") from None
+    except ProposalNotSplit as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    return ProposalVersionsOut.model_validate(comparison)
+
+
 @router.post("/{proposal_id}/decision", response_model=ProposalDecisionResultOut)
 def decide_agent_proposal(
     proposal_id: int,
     body: ProposalDecisionRequest,
+    background_tasks: BackgroundTasks,
     reviewer_id: str = Depends(get_current_reviewer_id),
     session: Session = Depends(get_session),
 ) -> ProposalDecisionResultOut:
@@ -179,6 +200,9 @@ def decide_agent_proposal(
     except InvalidTransition as exc:
         session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from None
+
+    if proposal_needs_enrollment(proposal):
+        background_tasks.add_task(run_proposal_in_background, proposal_id)
 
     return ProposalDecisionResultOut.model_validate(proposal)
 

@@ -12,12 +12,13 @@ the latest valid_from that has started and not ended.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
+from app.audit.log import record_audit
 from app.db.models.agent import (
     CONTENT_MIXES,
     PERMISSION_LEVELS,
@@ -205,3 +206,59 @@ def action_is_paused(session: Session, action_code: str, at: date) -> bool:
 def selectable_actions(session: Session, at: date) -> dict[str, AgentActionCatalog]:
     """The actions the agent may choose from on `at`, with paused ones removed."""
     return {code: row for code, row in load_active_actions(session, at).items() if not row.paused}
+
+
+def _spec_of(row: AgentActionCatalog) -> ActionSpec:
+    return ActionSpec(
+        action_code=row.action_code,
+        title=row.title,
+        who=row.who,
+        evidence_required=row.evidence_required,
+        response_kind=row.response_kind,
+        content_mix=row.content_mix,
+        default_permission=row.default_permission,
+        message_angle=row.message_angle,
+        channel=row.channel,
+        money_ceiling_kes=row.money_ceiling_kes,
+        paused=row.paused,
+    )
+
+
+def set_action_content_mix(
+    session: Session,
+    action_code: str,
+    content_mix: str,
+    *,
+    changed_by: str,
+    valid_from: date | None = None,
+) -> int:
+    if content_mix not in CONTENT_MIXES:
+        raise ActionCatalogValidationError(f"'{content_mix}' is not a known content mix")
+    start = valid_from or date.today()
+    current = load_active_actions(session, start)
+    if action_code not in current:
+        raise ActionCatalogValidationError(f"there is no action '{action_code}' in force")
+    before = current[action_code]
+    if before.content_mix == content_mix:
+        return before.version
+
+    specs = [
+        replace(_spec_of(row), content_mix=content_mix) if code == action_code else _spec_of(row)
+        for code, row in current.items()
+    ]
+    version = (session.scalar(select(func.max(AgentActionCatalog.version))) or 0) + 1
+    save_action_catalog_version(session, version, specs, valid_from=start)
+    record_audit(
+        session,
+        entity_type="agent_action_catalog",
+        action="set_content_mix",
+        entity_id=str(version),
+        actor_id=changed_by,
+        detail={
+            "action_code": action_code,
+            "from": before.content_mix,
+            "to": content_mix,
+            "previous_version": before.version,
+        },
+    )
+    return version

@@ -6,7 +6,7 @@ drafting prompt.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import delete, select
@@ -21,6 +21,8 @@ from app.agents.action_brief import insight_prohibitions
 from app.agents.email_agent import build_system_prompt
 from app.agents.propose import DO_NOTHING_ACTION, ON_DO_NOT_CONTACT_LIST
 from app.agents.watchlist import FEE_PRESSURE_GONE_QUIET, WatchlistThresholds
+from app.config import get_settings
+from app.db.models.action_performance import ActionPerformance
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.agent_insight import AgentInsight
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
@@ -65,6 +67,16 @@ class FakeConversingLLMClient:
         if not self._turns:
             raise AssertionError("the fake model was asked for more turns than scripted")
         return self._turns.pop(0)
+
+
+class RecordingLLMClient(FakeConversingLLMClient):
+    def __init__(self, turns: list[ConversationTurn]) -> None:
+        super().__init__(turns)
+        self.systems: list[str] = []
+
+    def converse(self, *, system, messages, tools=()):
+        self.systems.append(system)
+        return super().converse(system=system, messages=messages, tools=tools)
 
 
 def _final_answer(text: str) -> ConversationTurn:
@@ -248,6 +260,67 @@ def test_an_accepted_finding_becomes_a_proposal_that_names_it() -> None:
             )
         ).all()
     assert [(row.client_id, row.included) for row in clients] == [(ELIGIBLE_CLIENT, True)]
+
+
+def test_the_choose_step_is_shown_what_earlier_messages_led_to() -> None:
+    _seed_client(ELIGIBLE_CLIENT)
+    insight_id = _write_insight(state="accepted")
+    settings = get_settings()
+    now = datetime.now(UTC)
+    with SessionLocal() as session:
+        session.add(
+            ActionPerformance(
+                period_start=now - timedelta(days=10),
+                period_end=now - timedelta(days=3),
+                period_hours=settings.action_performance_period_hours,
+                window_days=settings.action_performance_read_window_days,
+                action_code="fee_warning",
+                angle="fee_warning",
+                priority_tier="unknown",
+                risk_band="unknown",
+                content_mix="none",
+                variant="none",
+                sent_count=40,
+                replied_count=4,
+                opted_out_count=2,
+                edited_count=8,
+                deposited_count=6,
+                reply_rate=0.1,
+                opt_out_rate=0.05,
+                edit_rate=0.2,
+                deposit_rate=0.15,
+                money_in_kes=120000.0,
+                computed_at=now,
+            )
+        )
+        session.commit()
+    llm_client = RecordingLLMClient(_fee_warning_reply())
+
+    try:
+        with SessionLocal() as session:
+            run = run_action_agent(session, insight_id, llm_client=llm_client, as_of=AS_OF)
+            run_id = run.run_id
+        with SessionLocal() as session:
+            detail = session.scalar(
+                select(AuditLog.detail).where(
+                    AuditLog.run_id == str(run_id), AuditLog.action == "choose"
+                )
+            )
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(ActionPerformance).where(ActionPerformance.action_code == "fee_warning")
+            )
+            session.commit()
+
+    system = llm_client.systems[0]
+    assert (
+        "fee_warning with the angle fee_warning: 40 sent, 10% replied, 5% opted out, "
+        "20% edited by a reviewer, 15% deposited, 120,000 KES came in." in system
+    )
+    assert "name the numbers that made you pick your response" in system
+    assert [line["action_code"] for line in detail["results_shown"]] == ["fee_warning"]
+    assert detail["results_shown"][0]["sent_count"] == 40
 
 
 def test_a_client_who_may_not_be_contacted_is_dropped_with_the_reason() -> None:

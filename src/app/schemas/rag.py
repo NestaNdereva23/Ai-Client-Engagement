@@ -36,3 +36,24 @@ class RetrievedChunkOut(BaseModel):
     metadata: dict
     score: float
     version_id: int
+    doc_type: str = "report"
+
+
+class GuideIn(BaseModel):
+    title: str
+    topic: str
+    text: str
+    action_codes: list[str] = []
+
+
+class GuideOut(BaseModel):
+    doc_id: int
+    version_id: int
+    version_no: int
+    title: str
+    topic: str
+    text: str
+    action_codes: list[str]
+    status: str
+    approved_by: str | None
+    approved_at: datetime | None

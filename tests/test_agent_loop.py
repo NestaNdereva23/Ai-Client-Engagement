@@ -6,7 +6,7 @@ proposal, and a run where the gates drop everyone the model chose.
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -19,7 +19,9 @@ from app.agents.agent_loop import (
     CHOOSE_ACTION_TOOL_NAME,
     NOT_SELECTED_TONIGHT,
     AgentRunInProgress,
+    fail_stale_runs,
     run_nightly_agent,
+    start_agent_run,
 )
 from app.agents.propose import DO_NOTHING_ACTION, ON_DO_NOT_CONTACT_LIST
 from app.agents.situations import SMALL_BALANCE_INACTIVE
@@ -705,3 +707,61 @@ def test_a_second_start_is_refused_while_one_is_running() -> None:
             select(AgentRun).where(AgentRun.state == "running", AgentRun.trigger == "manual")
         ).all()
     assert len(still_one_running) == 1
+
+
+def test_fail_stale_runs_reclaims_a_run_left_running_too_long() -> None:
+    with SessionLocal() as session:
+        old = AgentRun(
+            trigger="manual",
+            state="running",
+            started_at=datetime.now(UTC) - timedelta(hours=5),
+        )
+        session.add(old)
+        session.commit()
+        old_id = old.run_id
+
+        reclaimed = fail_stale_runs(session, max_runtime_minutes=120)
+
+        assert old_id in reclaimed
+        reclaimed_run = session.get(AgentRun, old_id)
+        assert reclaimed_run.state == "failed"
+        assert reclaimed_run.finished_at is not None
+        assert reclaimed_run.failure_reason is not None
+
+
+def test_fail_stale_runs_leaves_a_fresh_run_alone() -> None:
+    with SessionLocal() as session:
+        fresh = AgentRun(trigger="manual", state="running")
+        session.add(fresh)
+        session.commit()
+        fresh_id = fresh.run_id
+
+        reclaimed = fail_stale_runs(session, max_runtime_minutes=120)
+
+        assert fresh_id not in reclaimed
+        assert session.get(AgentRun, fresh_id).state == "running"
+
+
+def test_a_new_run_starts_once_a_stale_run_is_reclaimed(monkeypatch) -> None:
+    monkeypatch.setattr(
+        agent_loop_module,
+        "get_settings",
+        lambda: SimpleNamespace(agent_run_stale_after_minutes=120),
+    )
+    with SessionLocal() as session:
+        session.add(
+            AgentRun(
+                trigger="manual",
+                state="running",
+                started_at=datetime.now(UTC) - timedelta(hours=5),
+            )
+        )
+        session.commit()
+
+        run = start_agent_run(session, trigger="manual", as_of=AS_OF)
+
+        assert run.state == "running"
+        running = session.scalars(
+            select(AgentRun).where(AgentRun.state == "running", AgentRun.trigger == "manual")
+        ).all()
+    assert len(running) == 1

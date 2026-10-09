@@ -36,9 +36,16 @@ from app.agents.insight_tools import (
     insight_tool_specs,
     make_insight_tools,
 )
+from app.agents.lifecycle_rules import run_lifecycle_rules
+from app.agents.lifecycle_tools import (
+    WRITE_LIFECYCLE_CHANGE,
+    lifecycle_tool_specs,
+    make_lifecycle_tools,
+)
 from app.agents.prompt_versioning import INTELLIGENCE_INVESTIGATION, active_prompt
 from app.agents.query_fields import FIELD_NAMES, MEASURES
 from app.agents.query_tools import QUERY_TOOL_SPECS
+from app.agents.results_summary import read_results, results_prompt_text
 from app.agents.run_cost import run_cost_kes
 from app.agents.tool_runtime import (
     CallBudget,
@@ -85,6 +92,12 @@ RECENT_FINDINGS_SHOWN = 8
 
 STATES_WAITING_ON_A_PERSON = ("new", "accepted")
 
+RESULTS_ASK = (
+    "Read these numbers before you write anything down. When you suggest a response, "
+    "name the numbers here that support it, in your suggestion or in why you are that "
+    "sure. If nothing has been measured for it, say so."
+)
+
 
 @dataclass(frozen=True)
 class GroupBrief:
@@ -124,6 +137,7 @@ class GatheredContext:
     waiting_on_a_person: int
     prompt_template: str
     prompt_version: int
+    results_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -240,6 +254,7 @@ def gather_context(session: Session, as_of: date) -> GatheredContext:
         waiting_on_a_person=waiting,
         prompt_template=prompt_row.template,
         prompt_version=prompt_row.version,
+        results_text=results_prompt_text(read_results(session), ask=RESULTS_ASK),
     )
 
 
@@ -287,7 +302,7 @@ def _size_lines(brief: GroupBrief, context: GatheredContext) -> str:
 
 
 def build_investigation_system_prompt(*, brief: GroupBrief, context: GatheredContext) -> str:
-    return context.prompt_template.format(
+    prompt = context.prompt_template.format(
         as_of=context.as_of.isoformat(),
         group_name=brief.name,
         question=brief.question,
@@ -298,11 +313,12 @@ def build_investigation_system_prompt(*, brief: GroupBrief, context: GatheredCon
         field_names=", ".join(FIELD_NAMES),
         measures=", ".join(MEASURES),
     )
+    return f"{prompt}\n\n{context.results_text}" if context.results_text else prompt
 
 
 def investigation_tool_specs() -> tuple[ToolSpec, ...]:
     """Everything one investigation may call: read, ask, and write down."""
-    return (*TOOL_SPECS, *QUERY_TOOL_SPECS, *insight_tool_specs())
+    return (*TOOL_SPECS, *QUERY_TOOL_SPECS, *insight_tool_specs(), *lifecycle_tool_specs())
 
 
 def _counting_converse(
@@ -350,15 +366,19 @@ async def investigate_group(
     write_tools = make_insight_tools(
         run_id=run_id, dismissals=dismissals, budget=budget, events=events
     )
-    inner_write = write_tools[WRITE_INSIGHT]
+    write_tools.update(make_lifecycle_tools(run_id=run_id, budget=budget, events=events))
 
-    def write_insight(session: Session, **arguments: Any) -> dict[str, Any]:
-        result = inner_write(session, **arguments)
-        if result.get("status") == "written":
-            written_ids.append(result["insight_id"])
-        return result
+    def collecting(inner):
+        def write(session: Session, **arguments: Any) -> dict[str, Any]:
+            result = inner(session, **arguments)
+            if result.get("status") == "written":
+                written_ids.append(result["insight_id"])
+            return result
 
-    write_tools[WRITE_INSIGHT] = write_insight
+        return write
+
+    for name in (WRITE_INSIGHT, WRITE_LIFECYCLE_CHANGE):
+        write_tools[name] = collecting(write_tools[name])
 
     blocking_session = SessionLocal()
     tally = ModelCallTally()
@@ -636,6 +656,7 @@ def build_intelligence_graph(
                 run_id=str(run_id),
                 detail=_outcome_detail(outcome),
             )
+        run_lifecycle_rules(session, run_id=run_id)
         session.commit()
         logger.info(
             "intelligence.record",

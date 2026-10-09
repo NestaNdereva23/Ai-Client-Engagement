@@ -12,6 +12,8 @@ import structlog
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.durations import parse_hours
+
 
 @dataclass(frozen=True)
 class FaRecord:
@@ -144,6 +146,9 @@ class Settings(BaseSettings):
     agent_llm_temperature: float | None = None
     agent_llm_max_tokens: int = 2048
     agent_run_after_risk_detection: bool = False
+    agent_resume_campaigns_enabled: bool = True
+    agent_run_stale_after_minutes: int = 120
+    agent_report_recipients: str = ""
 
     langfuse_base_url: str = ""
     langfuse_public_key: str = ""
@@ -222,6 +227,42 @@ class Settings(BaseSettings):
     agent_investigation_max_turns: int = 8
     agent_investigation_concurrency: int = 3
 
+    # How many turns one chat question may take before it must answer, so a
+    # single question cannot loop on the tools without end.
+    agent_chat_max_turns: int = 10
+
+    action_result_window_days: str = "7,30,90"
+
+    @property
+    def action_result_windows(self) -> tuple[int, ...]:
+        days = {int(part) for part in self.action_result_window_days.split(",") if part.strip()}
+        return tuple(sorted(day for day in days if day > 0))
+
+    metrics_lookback_days: int = 90
+    metrics_window_days: int = 30
+    metrics_stay_balance_kes: float = 1000.0
+
+    action_performance_period: str = "7d"
+    action_performance_lookback: str = "90d"
+    action_performance_read_window_days: int = 30
+
+    @property
+    def action_performance_period_hours(self) -> int:
+        return parse_hours(self.action_performance_period, setting="ACTION_PERFORMANCE_PERIOD")
+
+    @property
+    def action_performance_lookback_hours(self) -> int:
+        return parse_hours(self.action_performance_lookback, setting="ACTION_PERFORMANCE_LOOKBACK")
+
+    pattern_min_group_size: int = 30
+    pattern_min_gap_points: float = 5.0
+    pattern_min_z: float = 3.0
+    pattern_max_features: int = 3
+    pattern_max_per_run: int = 10
+
+    lifecycle_insight_max_clients: int = 5000
+    lifecycle_auto_max_clients: int = 100
+
     tier_sampling_enabled: bool = True
 
     prompt_config_source: Literal["hardcoded", "db"] = "hardcoded"
@@ -275,6 +316,11 @@ class Settings(BaseSettings):
         default="dev-only-console-secret",
         validation_alias=AliasChoices("CONSOLE_SESSION_SECRET_KEY"),
     )
+
+    @property
+    def agent_report_recipient_list(self) -> tuple[str, ...]:
+        addresses = (part.strip() for part in self.agent_report_recipients.split(","))
+        return tuple(dict.fromkeys(address for address in addresses if "@" in address))
 
     @property
     def is_production(self) -> bool:

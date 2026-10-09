@@ -215,6 +215,7 @@ def load_client_context(
     *,
     at: date | None = None,
     use_rag: bool = True,
+    extra_chunks: Sequence[GroundingChunk] = (),
 ) -> ClientContext:
     row = (
         session.execute(
@@ -235,6 +236,7 @@ def load_client_context(
         if use_rag
         else ()
     )
+    chunks = (*chunks, *extra_chunks)
     on = at or date.today()
     brief = load_angle(session, indicators.message_angle, on)
     contract = load_tier(session, indicators.priority_tier, on)

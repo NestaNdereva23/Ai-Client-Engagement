@@ -4,6 +4,8 @@ Importing this package registers every model on ``Base.metadata`` so migrations
 and ``create_all`` see them.
 """
 
+from app.db.models.action_performance import ActionPerformance
+from app.db.models.action_result import ActionResult
 from app.db.models.active_clients import (
     INTERACTION_TYPES,
     ActiveClientFund,
@@ -26,7 +28,12 @@ from app.db.models.agent_insight import (
 )
 from app.db.models.agent_permission import DEFAULT_PERMISSION, AgentPermission
 from app.db.models.agent_prompt import AgentPrompt
-from app.db.models.agent_proposal import PROPOSAL_STATUSES, AgentProposal, AgentProposalClient
+from app.db.models.agent_proposal import (
+    PROPOSAL_STATUSES,
+    AgentProposal,
+    AgentProposalClient,
+    AgentProposalVariant,
+)
 from app.db.models.agent_run import AGENT_RUN_STATES, AGENT_RUN_TRIGGERS, AgentRun, AgentToolCall
 from app.db.models.api import IdempotencyKey
 from app.db.models.app_setting import AppSetting
@@ -40,6 +47,15 @@ from app.db.models.campaigns import (
     ContactEvent,
     Enrollment,
     TouchLog,
+)
+from app.db.models.chat import ChatSession, ChatTurn
+from app.db.models.client_lifecycle import (
+    LIFECYCLE_OUTCOMES,
+    LIFECYCLE_STATES,
+    POLICY_MODES,
+    AgentInsightLifecycle,
+    ClientLifecycle,
+    LifecyclePolicy,
 )
 from app.db.models.complaints import (
     COMPLAINT_CATEGORIES,
@@ -75,6 +91,13 @@ from app.db.models.models import (
     PiiVault,
     RawStaging,
     Transactions,
+)
+from app.db.models.observed_pattern import (
+    PATTERN_COMPARISONS,
+    PATTERN_DIRECTIONS,
+    PATTERN_OUTCOMES,
+    PATTERN_STATUSES,
+    ObservedPattern,
 )
 from app.db.models.outreach import (
     CAMPAIGN_STATUSES,
@@ -139,14 +162,23 @@ __all__ = [
     "INSIGHT_STATES",
     "INSTANTIATION_BATCH_STATUSES",
     "INTERACTION_TYPES",
+    "LIFECYCLE_OUTCOMES",
+    "LIFECYCLE_STATES",
     "MESSAGE_STATUSES",
     "MESSAGE_TEMPLATE_STATUSES",
+    "PATTERN_COMPARISONS",
+    "PATTERN_DIRECTIONS",
+    "PATTERN_OUTCOMES",
+    "PATTERN_STATUSES",
     "PERMISSION_LEVELS",
+    "POLICY_MODES",
     "PROPOSAL_STATUSES",
     "REVIEWER_ROLES",
     "REVIEW_OUTCOMES",
     "SIGNAL_RUN_STATES",
     "TEMPLATE_REVIEW_OUTCOMES",
+    "ActionPerformance",
+    "ActionResult",
     "ActiveClientFund",
     "ActiveClientInteraction",
     "ActiveConfiguration",
@@ -156,11 +188,13 @@ __all__ = [
     "AgentInsight",
     "AgentInsightClient",
     "AgentInsightFact",
+    "AgentInsightLifecycle",
     "AgentPermission",
     "AgentPrompt",
     "AppSetting",
     "AgentProposal",
     "AgentProposalClient",
+    "AgentProposalVariant",
     "AgentRun",
     "AgentToolCall",
     "AuditLog",
@@ -169,9 +203,12 @@ __all__ = [
     "Campaign",
     "CampaignStep",
     "CampaignTemplatePolicy",
+    "ChatSession",
+    "ChatTurn",
     "ClientComplaint",
     "ClientFeatures",
     "ClientFund",
+    "ClientLifecycle",
     "ClientMessageIndicators",
     "ClientRiskFeatures",
     "ClientSide",
@@ -194,9 +231,11 @@ __all__ = [
     "IngestionReject",
     "IngestionStatus",
     "InstantiationBatch",
+    "LifecyclePolicy",
     "MessageAngleCatalog",
     "MessageTemplate",
     "ModelVersion",
+    "ObservedPattern",
     "OutputPolicy",
     "OutreachMessage",
     "PersonalizationPolicy",

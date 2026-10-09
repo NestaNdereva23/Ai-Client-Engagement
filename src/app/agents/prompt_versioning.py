@@ -14,6 +14,7 @@ ACTION_AGENT_CHOOSE = "action_agent_choose"
 EMAIL_BASE_INSTRUCTIONS = "email_base_instructions"
 SMS_BASE_INSTRUCTIONS = "sms_base_instructions"
 INTELLIGENCE_INVESTIGATION = "intelligence_investigation"
+AGENT_CHAT = "agent_chat"
 
 PROMPT_KEYS = (
     AGENT_LOOP_PLAN,
@@ -22,6 +23,7 @@ PROMPT_KEYS = (
     EMAIL_BASE_INSTRUCTIONS,
     SMS_BASE_INSTRUCTIONS,
     INTELLIGENCE_INVESTIGATION,
+    AGENT_CHAT,
 )
 
 PROMPT_PLACEHOLDERS: dict[str, frozenset[str]] = {
@@ -59,10 +61,17 @@ PROMPT_PLACEHOLDERS: dict[str, frozenset[str]] = {
             "measures",
         }
     ),
+    AGENT_CHAT: frozenset({"as_of", "question", "field_names", "measures"}),
 }
 
 FORMATTED_PROMPTS = frozenset(
-    {AGENT_LOOP_PLAN, AGENT_LOOP_CHOOSE, ACTION_AGENT_CHOOSE, INTELLIGENCE_INVESTIGATION}
+    {
+        AGENT_LOOP_PLAN,
+        AGENT_LOOP_CHOOSE,
+        ACTION_AGENT_CHOOSE,
+        INTELLIGENCE_INVESTIGATION,
+        AGENT_CHAT,
+    }
 )
 
 
