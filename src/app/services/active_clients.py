@@ -11,22 +11,25 @@ a name is never re-attached on any of these reads.
 from __future__ import annotations
 
 import calendar
-from dataclasses import dataclass
-from datetime import date, datetime
+from dataclasses import asdict, dataclass
+from datetime import date, datetime, timedelta
 
-from sqlalchemy import Date, func, select, tuple_
+from sqlalchemy import Date, and_, func, select, true, tuple_
 from sqlalchemy.orm import Session
 
 from app.audit.log import record_audit
 from app.db.models.active_clients import (
+    AI_ACTION_INTERACTION_TYPES,
     ActiveClientFund,
     ActiveClientInteraction,
     ActiveTransaction,
 )
 from app.db.models.audit import AuditLog
 from app.db.models.complaints import ClientComplaint
+from app.db.models.fa_assignment import FaAssignment
 from app.db.models.models import Funds
 from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion, RiskSnapshot
+from app.db.models.routing import ClientTier
 from app.pagination import (
     DEFAULT_LIMIT,
     clamp_limit,
@@ -40,7 +43,25 @@ from app.pagination import (
 from app.risk.magnitude import primary_signal_magnitude
 from app.risk.routing import route_direction
 from app.risk.signals import SIGNAL_ORDER, fired_signal_tags
+from app.routing.sides import not_on_inactive_side
+from app.routing.tier_playbook import tier_tag_fields
+from app.routing.tiers import load_tier_thresholds_in_force
 from app.services.briefing import briefing_available_keys
+from app.services.client_ai_actions import (
+    ClientAiAction,
+    open_ai_actions_for,
+    require_open_ai_action,
+)
+from app.services.client_touchpoints import (
+    check_touchpoint_is_open,
+    mark_touchpoint_done,
+    require_not_in_past,
+    stage_follow_up,
+    stage_snooze_reminder,
+    today_in_nairobi,
+)
+from app.services.fund_names import short_fund_name
+from app.services.roster_ranking import RANKED_SORTS, SORT_CLIENT_ID, build_roster_ranking
 
 
 class ActiveClientNotFound(Exception):
@@ -52,6 +73,30 @@ def _fund_name(session: Session, unit_fund_id: int) -> str:
     return name if name is not None else f"Fund {unit_fund_id}"
 
 
+def _stage_follow_up_touchpoint(
+    session: Session, interaction: ActiveClientInteraction, follow_up_on: date | None
+) -> None:
+    if follow_up_on is None:
+        return
+    if interaction.type == "snoozed":
+        stage_snooze_reminder(
+            session,
+            interaction.client_id,
+            interaction.unit_fund_id,
+            due_date=follow_up_on,
+            created_by=interaction.reviewer_id,
+        )
+        return
+    stage_follow_up(
+        session,
+        interaction.client_id,
+        interaction.unit_fund_id,
+        interaction_type=interaction.type,
+        due_date=follow_up_on,
+        created_by=interaction.reviewer_id,
+    )
+
+
 def record_interaction(
     session: Session,
     client_id: int,
@@ -60,6 +105,10 @@ def record_interaction(
     type: str,
     note: str | None,
     reviewer_id: str,
+    proposal_id: int | None = None,
+    outcome: str | None = None,
+    follow_up_on: date | None = None,
+    touchpoint_id: int | None = None,
 ) -> ActiveClientInteraction:
     """Log one FA action against a client-fund, or raise ActiveClientNotFound.
 
@@ -76,6 +125,12 @@ def record_interaction(
     """
     if session.get(ActiveClientFund, (client_id, unit_fund_id)) is None:
         raise ActiveClientNotFound(f"{client_id}/{unit_fund_id}")
+    if type in AI_ACTION_INTERACTION_TYPES:
+        require_open_ai_action(session, proposal_id, client_id, unit_fund_id)
+    if follow_up_on is not None:
+        require_not_in_past(follow_up_on)
+    if touchpoint_id is not None:
+        check_touchpoint_is_open(session, client_id, unit_fund_id, touchpoint_id)
 
     risk_band = session.scalar(
         select(ClientRiskFeatures.risk_band).where(
@@ -88,19 +143,36 @@ def record_interaction(
         client_id=client_id,
         unit_fund_id=unit_fund_id,
         type=type,
+        outcome=outcome,
         note=note,
         reviewer_id=reviewer_id,
         risk_band_at_interaction=risk_band,
+        proposal_id=proposal_id,
     )
     session.add(row)
     session.flush()
+    if touchpoint_id is not None:
+        mark_touchpoint_done(
+            session,
+            client_id,
+            unit_fund_id,
+            touchpoint_id,
+            interaction_id=row.id,
+            actor_id=reviewer_id,
+        )
+    _stage_follow_up_touchpoint(session, row, follow_up_on)
+    audit_detail = {"note": note} if note else {}
+    if outcome is not None:
+        audit_detail["outcome"] = outcome
+    if proposal_id is not None:
+        audit_detail["proposal_id"] = proposal_id
     record_audit(
         session,
         entity_type="active_client_interaction",
         action=type,
         entity_id=f"{client_id}/{unit_fund_id}",
         actor_id=reviewer_id,
-        detail={"note": note} if note else None,
+        detail=audit_detail or None,
     )
     session.commit()
     return row
@@ -153,6 +225,34 @@ def list_transactions(
 
 
 @dataclass(frozen=True)
+class ReviewPeriodActivity:
+    review_period_days: int
+    deposits: int
+    withdrawals: int
+
+
+def review_period_activity(
+    session: Session, client_id: int, unit_fund_id: int
+) -> ReviewPeriodActivity | None:
+    today = today_in_nairobi()
+    try:
+        days = load_tier_thresholds_in_force(session, today).review_period_days
+    except LookupError:
+        return None
+    deposits, withdrawals = session.execute(
+        select(
+            func.count().filter(ActiveTransaction.txn_type == "purchase"),
+            func.count().filter(ActiveTransaction.txn_type == "sale"),
+        ).where(
+            ActiveTransaction.client_id == client_id,
+            ActiveTransaction.unit_fund_id == unit_fund_id,
+            ActiveTransaction.txn_date >= today - timedelta(days=days),
+        )
+    ).one()
+    return ReviewPeriodActivity(review_period_days=days, deposits=deposits, withdrawals=withdrawals)
+
+
+@dataclass(frozen=True)
 class ActiveClientProfile:
     """Every non-PII fact this codebase holds about one active-client-fund
     relationship, gathered from the tables get_active_client_profile is
@@ -167,6 +267,9 @@ class ActiveClientProfile:
     complaints: list[ClientComplaint]
     interactions: list[ActiveClientInteraction]
     transactions: list[ActiveTransaction]
+    client_tier: ClientTier | None
+    ai_action: ClientAiAction | None
+    review_activity: ReviewPeriodActivity | None
 
 
 def _signals_dict(risk: ClientRiskFeatures) -> dict[str, bool]:
@@ -231,6 +334,11 @@ def get_active_client_profile(
         complaints=complaints,
         interactions=list_interactions(session, client_id, unit_fund_id),
         transactions=list_transactions(session, client_id, unit_fund_id),
+        client_tier=session.get(ClientTier, client_id),
+        ai_action=open_ai_actions_for(session, [(client_id, unit_fund_id)]).get(
+            (client_id, unit_fund_id)
+        ),
+        review_activity=review_period_activity(session, client_id, unit_fund_id),
     )
 
 
@@ -285,6 +393,7 @@ def deposit_percentile(session: Session, client_id: int, unit_fund_id: int) -> D
             (totals.c.client_id == ActiveClientFund.client_id)
             & (totals.c.unit_fund_id == ActiveClientFund.unit_fund_id),
         )
+        .where(not_on_inactive_side(ActiveClientFund.client_id))
         .subquery()
     )
 
@@ -314,12 +423,21 @@ def deposit_percentile(session: Session, client_id: int, unit_fund_id: int) -> D
     )
 
 
+def _ai_action_dict(action: ClientAiAction | None) -> dict | None:
+    return asdict(action) if action is not None else None
+
+
 def list_active_roster(
     session: Session,
     *,
     client_id: int | None = None,
     risk_band: str | None = None,
     route: str | None = None,
+    segment: str | None = None,
+    tier: str | None = None,
+    fa_id: str | None = None,
+    worklist_only: bool = False,
+    sort: str = SORT_CLIENT_ID,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ):
@@ -365,6 +483,8 @@ def list_active_roster(
             ClientRiskFeatures.sig_going_dormant,
             ClientRiskFeatures.sig_never_repeated,
             RiskConfigVersion.weights,
+            ClientTier.tier,
+            ClientTier.segment,
         )
         .select_from(ActiveClientFund)
         .join(
@@ -378,6 +498,7 @@ def list_active_roster(
             RiskConfigVersion.version == ClientRiskFeatures.config_version,
             isouter=True,
         )
+        .join(ClientTier, ClientTier.client_id == ActiveClientFund.client_id, isouter=True)
     )
     if client_id is not None:
         query = query.where(ActiveClientFund.client_id == client_id)
@@ -385,21 +506,48 @@ def list_active_roster(
         query = query.where(ClientRiskFeatures.risk_band == risk_band)
     if route is not None:
         query = query.where(ClientRiskFeatures.route == route)
-    if cursor is not None:
-        after_client_id, after_unit_fund_id = decode_pair_cursor(cursor)
-        query = query.where(
-            tuple_(ActiveClientFund.client_id, ActiveClientFund.unit_fund_id)
-            > (after_client_id, after_unit_fund_id)
+    if segment is not None:
+        query = query.where(ClientTier.segment == segment)
+    if tier is not None:
+        query = query.where(ClientTier.tier == tier)
+    if worklist_only:
+        query = query.where(ClientTier.segment.is_not(None))
+    if fa_id is not None:
+        query = query.join(
+            FaAssignment,
+            and_(
+                FaAssignment.client_id == ActiveClientFund.client_id,
+                FaAssignment.unit_fund_id == ActiveClientFund.unit_fund_id,
+            ),
+        ).where(FaAssignment.fa_id == fa_id)
+
+    ranking = build_roster_ranking(sort) if sort in RANKED_SORTS else None
+    if ranking is not None:
+        query = query.add_columns(*ranking.select_columns()).join(
+            ranking.latest_handled_interaction, true(), isouter=True
         )
-    query = query.order_by(ActiveClientFund.client_id, ActiveClientFund.unit_fund_id).limit(
-        limit + 1
-    )
+        if cursor is not None:
+            query = query.where(ranking.rows_after(cursor))
+        query = query.order_by(*ranking.order_by_clauses())
+    else:
+        if cursor is not None:
+            after_client_id, after_unit_fund_id = decode_pair_cursor(cursor)
+            query = query.where(
+                tuple_(ActiveClientFund.client_id, ActiveClientFund.unit_fund_id)
+                > (after_client_id, after_unit_fund_id)
+            )
+        query = query.order_by(ActiveClientFund.client_id, ActiveClientFund.unit_fund_id)
+    query = query.limit(limit + 1)
 
     rows = list(session.execute(query).all())
     next_cursor = None
     if len(rows) > limit:
         rows = rows[:limit]
-        next_cursor = encode_pair_cursor(rows[-1].client_id, rows[-1].unit_fund_id)
+        next_cursor = (
+            ranking.cursor_after(rows[-1])
+            if ranking is not None
+            else encode_pair_cursor(rows[-1].client_id, rows[-1].unit_fund_id)
+        )
     if not rows:
         return [], next_cursor
 
@@ -429,21 +577,26 @@ def list_active_roster(
             .group_by(ActiveClientInteraction.client_id, ActiveClientInteraction.unit_fund_id)
         ).all()
     }
-    fund_names = dict(
+    known_fund_names = dict(
         session.execute(
             select(Funds.unit_fund_id, Funds.unit_fund_name).where(
                 Funds.unit_fund_id.in_(page_fund_ids)
             )
         ).all()
     )
+    fund_names = {
+        fund_id: known_fund_names.get(fund_id, f"Fund {fund_id}") for fund_id in page_fund_ids
+    }
     briefing_available = briefing_available_keys(session, page_keys)
+    ai_actions = open_ai_actions_for(session, page_keys)
 
     items = [
         {
             "client_id": r.client_id,
             "unit_fund_id": r.unit_fund_id,
             "client_code": r.client_code,
-            "fund_name": fund_names.get(r.unit_fund_id, f"Fund {r.unit_fund_id}"),
+            "fund_name": fund_names[r.unit_fund_id],
+            "fund_short_name": short_fund_name(fund_names[r.unit_fund_id]),
             "balance": r.balance,
             "risk_band": r.risk_band,
             "risk_score": r.risk_score,
@@ -463,6 +616,8 @@ def list_active_roster(
             "risk_reason_tags": fired_signal_tags(r),
             "complaint_caveat": r.client_id in open_complaint_ids,
             "last_interaction_at": last_interaction.get((r.client_id, r.unit_fund_id)),
+            "ai_action": _ai_action_dict(ai_actions.get((r.client_id, r.unit_fund_id))),
+            **tier_tag_fields(r.tier, r.segment),
         }
         for r in rows
     ]

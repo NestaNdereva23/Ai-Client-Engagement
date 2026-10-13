@@ -63,7 +63,7 @@ from app.db.models.active_clients import FLAGGED_FOR_ACCOUNT_MANAGER, ActiveClie
 from app.db.models.agent_insight import AgentInsight
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.campaigns import CampaignStep, Enrollment
-from app.db.models.outreach import Campaign, OutreachMessage
+from app.db.models.outreach import AGENT_PROPOSAL_CAMPAIGN_TYPE, Campaign, OutreachMessage
 from app.privacy.llm_client import ToolSpec
 from app.services.active_clients import ActiveClientNotFound, record_interaction
 
@@ -88,7 +88,7 @@ NO_ACTION_DECIDED = "no_action_decided"
 
 AGENT_ACTOR = "agent"
 
-CAMPAIGN_TYPE = "agent_proposal"
+CAMPAIGN_TYPE = AGENT_PROPOSAL_CAMPAIGN_TYPE
 
 Drafter = Callable[..., int]
 

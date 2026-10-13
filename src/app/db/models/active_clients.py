@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 
 from sqlalchemy import (
     BigInteger,
@@ -9,9 +9,11 @@ from sqlalchemy import (
     Date,
     DateTime,
     Float,
+    ForeignKey,
     Index,
     Integer,
     Text,
+    Time,
     func,
     text,
 )
@@ -20,19 +22,41 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
 FLAGGED_FOR_ACCOUNT_MANAGER = "flagged_for_account_manager"
+AI_ACTION_TAKEN = "ai_action_taken"
+AI_ACTION_SET_ASIDE = "ai_action_set_aside"
+AI_ACTION_INTERACTION_TYPES = (AI_ACTION_TAKEN, AI_ACTION_SET_ASIDE)
+
+CHANNEL_BY_INTERACTION_TYPE = {
+    "call_logged": "call",
+    "email_sent": "email",
+    "meeting_logged": "meeting",
+    "whatsapp_logged": "whatsapp",
+}
+CONTACT_INTERACTION_TYPES = tuple(CHANNEL_BY_INTERACTION_TYPE)
+INTERACTION_OUTCOMES = ("connected", "follow_up", "no_answer")
 
 INTERACTION_TYPES = (
-    "call_logged",
+    *CONTACT_INTERACTION_TYPES,
     "snoozed",
     "dismissed",
-    "email_sent",
     FLAGGED_FOR_ACCOUNT_MANAGER,
+    *AI_ACTION_INTERACTION_TYPES,
 )
 
-# The types that mean a person has already dealt with this client fund. A
-# flag is a note asking someone to look, so it is deliberately not one of
-# them: a flagged client stays where the morning list can see it.
-HANDLED_INTERACTION_TYPES = ("call_logged", "snoozed", "dismissed", "email_sent")
+# A flag is a note asking someone to look, so it is deliberately not handled:
+# a flagged client stays where the morning list can see it.
+HANDLED_INTERACTION_TYPES = (
+    *CONTACT_INTERACTION_TYPES,
+    "snoozed",
+    "dismissed",
+    *AI_ACTION_INTERACTION_TYPES,
+)
+
+TOUCHPOINT_KINDS = ("call", "meeting", "email", "reminder")
+TOUCHPOINT_OPEN = "open"
+TOUCHPOINT_DONE = "done"
+TOUCHPOINT_REMOVED = "removed"
+TOUCHPOINT_STATUSES = (TOUCHPOINT_OPEN, TOUCHPOINT_DONE, TOUCHPOINT_REMOVED)
 
 
 class ActiveClientFund(Base):
@@ -85,13 +109,20 @@ class ActiveClientFund(Base):
     )
 
 
+def _quoted(values: tuple[str, ...]) -> str:
+    return ", ".join(f"'{value}'" for value in values)
+
+
 class ActiveClientInteraction(Base):
     __tablename__ = "active_client_interaction"
     __table_args__ = (
         CheckConstraint(
-            "type IN ('call_logged', 'snoozed', 'dismissed', 'email_sent', "
-            "'flagged_for_account_manager')",
+            f"type IN ({_quoted(INTERACTION_TYPES)})",
             name="ck_active_client_interaction_type",
+        ),
+        CheckConstraint(
+            f"outcome IN ({_quoted(INTERACTION_OUTCOMES)})",
+            name="ck_active_client_interaction_outcome",
         ),
         Index(
             "ix_active_client_interaction_client_fund", "client_id", "unit_fund_id", "created_at"
@@ -102,11 +133,60 @@ class ActiveClientInteraction(Base):
     client_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     unit_fund_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     type: Mapped[str] = mapped_column(Text, nullable=False)
+    outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     reviewer_id: Mapped[str] = mapped_column(Text, nullable=False)
     risk_band_at_interaction: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proposal_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("agent_proposal.proposal_id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ActiveClientTouchpoint(Base):
+    __tablename__ = "active_client_touchpoint"
+    __table_args__ = (
+        CheckConstraint(
+            f"kind IN ({_quoted(TOUCHPOINT_KINDS)})", name="ck_active_client_touchpoint_kind"
+        ),
+        CheckConstraint(
+            f"status IN ({_quoted(TOUCHPOINT_STATUSES)})",
+            name="ck_active_client_touchpoint_status",
+        ),
+        Index(
+            "ix_active_client_touchpoint_client_fund_status",
+            "client_id",
+            "unit_fund_id",
+            "status",
+            "due_date",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    client_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    unit_fund_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    due_date: Mapped[date] = mapped_column(Date, nullable=False)
+    due_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=TOUCHPOINT_OPEN)
+    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    done_by_interaction_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("active_client_interaction.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
 

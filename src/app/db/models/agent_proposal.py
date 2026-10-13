@@ -18,6 +18,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     Text,
     UniqueConstraint,
@@ -128,6 +129,7 @@ class AgentProposalClient(Base):
             "included OR skip_reason IS NOT NULL",
             name="ck_agent_proposal_client_skip_reason_required",
         ),
+        Index("ix_agent_proposal_client_client_fund", "client_id", "unit_fund_id"),
     )
 
     proposal_client_id: Mapped[int] = mapped_column(

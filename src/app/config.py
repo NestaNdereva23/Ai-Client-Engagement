@@ -140,6 +140,7 @@ class Settings(BaseSettings):
     briefing_llm_temperature: float | None = None
     briefing_llm_max_tokens: int = 1024
     briefing_prewarm_limit: int = 200
+    client_email_draft_daily_cap: int = 20
 
     agent_llm_provider: str = ""
     agent_llm_model: str = ""

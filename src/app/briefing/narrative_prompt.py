@@ -35,6 +35,7 @@ ROUTE_PHRASES = {
     "fa_watchlist": "keep this client on the watchlist",
     "auto_checkin": "let the automated check in handle the follow-up",
     "monitor_only": "no action is needed yet; continue monitoring",
+    "fa_action": "work this client through the advisor's tier worklist",
 }
 
 

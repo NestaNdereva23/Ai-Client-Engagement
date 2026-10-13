@@ -34,7 +34,7 @@ from app.agents.watchlist import (
 )
 from app.audit.log import record_audit
 from app.config import get_settings
-from app.db.models.active_clients import ActiveClientInteraction
+from app.db.models.active_clients import CONTACT_INTERACTION_TYPES, ActiveClientInteraction
 from app.db.models.agent import AgentActionCatalog
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.complaints import ClientComplaint
@@ -54,8 +54,6 @@ GROUP_ACTIONS: dict[str, str] = {
     WAITING_ON_A_CALL: "follow_up_when_no_one_called",
     MORE_URGENT_BUT_NOT_CALLED: "check_in_rising_risk",
 }
-
-_CONTACT_TYPES = ("email_sent", "call_logged")
 
 ON_DO_NOT_CONTACT_LIST = "on_do_not_contact_list"
 OPEN_COMPLAINT = "open_complaint"
@@ -289,7 +287,7 @@ def _contacted_recently(
             .where(
                 ActiveClientInteraction.client_id == member.client_id,
                 ActiveClientInteraction.unit_fund_id == member.unit_fund_id,
-                ActiveClientInteraction.type.in_(_CONTACT_TYPES),
+                ActiveClientInteraction.type.in_(CONTACT_INTERACTION_TYPES),
                 ActiveClientInteraction.created_at >= cutoff,
             )
             .limit(1)

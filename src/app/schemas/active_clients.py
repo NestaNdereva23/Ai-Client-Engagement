@@ -2,33 +2,129 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
-InteractionType = Literal["call_logged", "snoozed", "dismissed", "email_sent"]
+from app.db.models.active_clients import (
+    AI_ACTION_INTERACTION_TYPES,
+    CHANNEL_BY_INTERACTION_TYPE,
+    CONTACT_INTERACTION_TYPES,
+)
+from app.schemas.client_tiers import ClientTierDetailOut, ClientTierTagOut
+
+InteractionType = Literal[
+    "call_logged",
+    "email_sent",
+    "meeting_logged",
+    "whatsapp_logged",
+    "snoozed",
+    "dismissed",
+    "ai_action_taken",
+    "ai_action_set_aside",
+]
+InteractionOutcome = Literal["connected", "follow_up", "no_answer"]
+TouchpointKind = Literal["call", "meeting", "email", "reminder"]
+AiActionChoice = Literal["taken", "set_aside"]
+AiActionNextStep = Literal["log_call", "client_record", "none"]
 
 
 class InteractionCreate(BaseModel):
-    """One FA action logged against an active-client digest line."""
-
     type: InteractionType
+    outcome: InteractionOutcome | None = None
     note: str | None = None
+    proposal_id: int | None = None
+    follow_up_on: date | None = None
+    touchpoint_id: int | None = None
+
+    @model_validator(mode="after")
+    def _proposal_goes_with_an_ai_action_choice(self) -> InteractionCreate:
+        is_ai_action_choice = self.type in AI_ACTION_INTERACTION_TYPES
+        if is_ai_action_choice and self.proposal_id is None:
+            raise ValueError("an AI Action choice needs the proposal_id it answers")
+        if not is_ai_action_choice and self.proposal_id is not None:
+            raise ValueError("proposal_id is only for an AI Action choice")
+        return self
+
+    @model_validator(mode="after")
+    def _contact_fields_go_with_a_contact(self) -> InteractionCreate:
+        is_contact = self.type in CONTACT_INTERACTION_TYPES
+        if not is_contact and (self.outcome is not None or self.touchpoint_id is not None):
+            raise ValueError("outcome and touchpoint_id are only for a logged contact")
+        return self
+
+    @model_validator(mode="after")
+    def _follow_up_day_goes_with_a_snooze_or_follow_up(self) -> InteractionCreate:
+        needs_day = self.type == "snoozed" or self.outcome == "follow_up"
+        if self.follow_up_on is not None and not needs_day:
+            raise ValueError("follow_up_on is only for a snooze or a follow-up outcome")
+        return self
 
 
 class InteractionOut(BaseModel):
-    """One logged interaction, as stored."""
-
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     client_id: int
     unit_fund_id: int
     type: str
+    outcome: str | None
     note: str | None
     reviewer_id: str
     risk_band_at_interaction: str | None
+    proposal_id: int | None
+    created_at: datetime
+
+    @computed_field
+    @property
+    def channel(self) -> str | None:
+        return CHANNEL_BY_INTERACTION_TYPE.get(self.type)
+
+
+class TouchpointCreate(BaseModel):
+    kind: TouchpointKind
+    title: str = Field(min_length=1, max_length=200)
+    due_date: date
+    due_time: time | None = None
+    minutes: int | None = Field(default=None, ge=5, le=480)
+
+    @model_validator(mode="after")
+    def _minutes_only_for_a_call_or_meeting(self) -> TouchpointCreate:
+        if self.minutes is not None and self.kind not in ("call", "meeting"):
+            raise ValueError("minutes is only for a call or a meeting")
+        return self
+
+
+class TouchpointOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    client_id: int
+    unit_fund_id: int
+    kind: str
+    title: str
+    due_date: date
+    due_time: time | None
+    minutes: int | None
+    status: str
+    created_by: str
+    created_at: datetime
+
+
+class AiActionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    proposal_id: int
+    action_code: str
+    title: str
+    response_kind: str | None
+    response_label: str
+    why_now: str
+    group_label: str
+    group_clients: int
+    next_step: AiActionNextStep
+    choice: AiActionChoice | None
     created_at: datetime
 
 
@@ -39,6 +135,7 @@ class ActiveClientIdentityOut(BaseModel):
     unit_fund_id: int
     client_code: str | None
     fund_name: str
+    fund_short_name: str
     balance: float | None
     # Whether even the most recent pull was itself capped at "last 5
     # purchases" / "last 2 sales" -- the caveat a ledger/money view needs
@@ -75,6 +172,7 @@ class ActiveClientBandsOut(BaseModel):
     # balance withdrawn at once". None when there is no risk row yet or
     # nothing fired -- see app.risk.magnitude.primary_signal_magnitude.
     primary_signal_magnitude: str | None
+    deposit_trend_band: str | None = None
 
 
 class ActiveClientRiskHistoryEntryOut(BaseModel):
@@ -137,7 +235,7 @@ class DepositPercentileOut(BaseModel):
     deposit_count_capped: bool
 
 
-class ActiveClientRosterLineOut(BaseModel):
+class ActiveClientRosterLineOut(ClientTierTagOut):
     """One row of the paginated active-book roster. Null risk fields mean
     no nightly run has scored this client-fund yet, not a gap.
     """
@@ -148,6 +246,7 @@ class ActiveClientRosterLineOut(BaseModel):
     unit_fund_id: int
     client_code: str | None
     fund_name: str
+    fund_short_name: str
     balance: float | None
     risk_band: str | None
     risk_score: int | None
@@ -171,6 +270,8 @@ class ActiveClientRosterLineOut(BaseModel):
     # client-fund right now -- the same cheap existence check
     # DigestLineOut.briefing_available uses.
     briefing_available: bool
+    # The agent's open suggestion for this client-fund, or None.
+    ai_action: AiActionOut | None = None
 
 
 class RouteChangeRunOut(BaseModel):
@@ -231,6 +332,12 @@ class RouteChangeDetailsOut(BaseModel):
     next_cursor: str | None = None
 
 
+class ReviewPeriodActivityOut(BaseModel):
+    review_period_days: int
+    deposits: int
+    withdrawals: int
+
+
 class ActiveClientProfileOut(BaseModel):
     """Everything this codebase holds about one active-client-fund
     relationship, short of a name -- the active-book counterpart of
@@ -243,6 +350,9 @@ class ActiveClientProfileOut(BaseModel):
     complaints: list[ActiveClientComplaintOut]
     interactions: list[InteractionOut]
     transactions: list[ActiveTransactionOut]
+    segment_and_tier: ClientTierDetailOut
+    ai_action: AiActionOut | None = None
+    review_activity: ReviewPeriodActivityOut | None = None
 
 
 class TransactionMonthOut(BaseModel):

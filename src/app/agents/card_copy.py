@@ -104,3 +104,32 @@ def suggested_owner_for(response_kind: str | None) -> str | None:
         raise UnknownResponseKind(
             f"no suggested owner for response kind '{response_kind}'"
         ) from None
+
+
+RESPONSE_KIND_LABEL: dict[str, str] = {
+    "automated_email": "Email",
+    "campaign_enrolment": "Campaign",
+    "product_teaching": "Product guide",
+    "advisor_task": "Advisor task",
+    "phone_call": "Phone call",
+    "monitor_only": "Monitor only",
+    "escalate": "Escalate",
+    "change_client_state": "Update client status",
+    "ask_a_person_first": "Ask a person first",
+}
+
+NEXT_STEP_BY_RESPONSE_KIND: dict[str, str] = {
+    "phone_call": "log_call",
+    "automated_email": "client_record",
+    "campaign_enrolment": "client_record",
+}
+
+NO_NEXT_STEP = "none"
+
+
+def response_label_for(response_kind: str | None) -> str:
+    return RESPONSE_KIND_LABEL.get(response_kind or "", "Suggestion")
+
+
+def next_step_for(response_kind: str | None) -> str:
+    return NEXT_STEP_BY_RESPONSE_KIND.get(response_kind or "", NO_NEXT_STEP)

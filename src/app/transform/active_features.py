@@ -1,15 +1,5 @@
-"""Derive the active-book behavioural dimensions from flattened active_client_fund rows.
-
-These are the measures the risk signals need: how recently and how regularly a
-client contributes, whether their deposit size is trending down, how deep their
-last real withdrawal cut into their balance, and how long their balance covers
-the fees being taken from it. Derivation is a pure function of the flattened
-result (plus a reference date for recency), so the same input always gives the
-same output.
-
-Measures are computed per client and fund, matching how one active_client_fund
-row already represents one client-fund relationship.
-"""
+"""Derive the active-book behavioural measures from flattened active_client_fund rows.
+A pure function of the flattened result and a reference date, per client and fund."""
 
 from __future__ import annotations
 
@@ -21,18 +11,9 @@ from statistics import median
 
 from app.transform.active_flatten import ActiveFlattenResult, ActiveTxnRow
 
-# The source has no transaction type code for withdrawals yet, so a real
-# client withdrawal can't be told apart from a system fee posting directly.
-# This threshold is a stand-in: any withdrawal at or under it is treated as
-# a fee posting, anything above it as a real withdrawal. It is a guess, not
-# a measurement -- the day the real transaction type code is available,
-# this rule of thumb should be deleted, not retuned.
-#
-# This is already a KES figure, not a USD one converted like
-# VALUE_BAND_CUTOFFS: the observed automatic fee postings sit around KES 50,
-# so KES 100 is a cap set just above that, read directly off the KES
-# withdrawal amounts.
-SYSTEM_FEE_MAX = 100.0
+# Any withdrawal at or under this KES amount is a fee posting, anything above is real.
+# The monthly fee is exactly this amount; delete the rule if the source adds a type code.
+SYSTEM_FEE_MAX = 50.0
 
 # The observed recurring deduction, KES, same reasoning as SYSTEM_FEE_MAX:
 # read directly off the KES withdrawal amounts, not a per-client average.
@@ -73,11 +54,7 @@ VALUE_TIERS = ("Low", "Medium", "High", "Top")
 @dataclass
 class ActiveFeatureMeasures:
     """One client-fund's derived behaviour, before any bucketing.
-
-    balance and n_deposits are carried straight through from the flattened
-    row, alongside the derived measures, so the risk signals have everything
-    they need from one object.
-    """
+    Balance and deposit count are carried through so the signals read one object."""
 
     client_id: int
     unit_fund_id: int
@@ -103,12 +80,8 @@ class ActiveFeatureMeasures:
 
 
 def _typical_gap_days(dates: list[date]) -> float | None:
-    """Median gap between deposits, in days.
-
-    Deposits booked on the same date are deduplicated first, so a same-day
-    batch of top-ups never counts as a gap of zero. Needs at least two
-    distinct dates to mean anything.
-    """
+    """Median gap between deposits in days, counting same-day deposits once.
+    Needs at least two distinct dates."""
     unique = sorted(set(dates))
     if len(unique) < 2:
         return None
@@ -117,12 +90,8 @@ def _typical_gap_days(dates: list[date]) -> float | None:
 
 
 def _log_slope(amounts: list[float]) -> float | None:
-    """Trend in deposit size across deposits, on a log10 scale.
-
-    Positive means each deposit was bigger than the last. Needs three or
-    more points before a trend means anything; a move from KES 100k to 10k
-    and one from 10k to 1k register the same slope, since both are a 10x drop.
-    """
+    """Trend in deposit size on a log10 scale, positive when deposits grow.
+    Needs three or more deposits."""
     if len(amounts) < 3:
         return None
     ys = [math.log10(max(a, 1.0)) for a in amounts]
@@ -137,31 +106,19 @@ def _log_slope(amounts: list[float]) -> float | None:
 
 
 def _largest_withdrawal(withdrawals: list[ActiveTxnRow], system_fee_max: float) -> float | None:
-    """The largest withdrawal worth more than system_fee_max, or None if
-    every visible withdrawal is at or under it -- a system fee posting, not
-    something the client asked for.
-    """
+    """The largest withdrawal above system_fee_max, or None if all are fee postings."""
     real = [w.amount for w in withdrawals if w.amount > system_fee_max]
     return max(real) if real else None
 
 
 def _last_withdrawal_date(withdrawals: list[ActiveTxnRow], system_fee_max: float) -> date | None:
-    """The most recent date among real withdrawals, or None if none is visible.
-
-    Independent of _largest_withdrawal: the most recent real withdrawal is
-    not necessarily the largest one, and a briefing reports both facts as
-    they are, not as if they were the same transaction.
-    """
+    """The most recent date among real withdrawals, or None if none is visible."""
     dates = [w.date for w in withdrawals if w.amount > system_fee_max and w.date is not None]
     return max(dates) if dates else None
 
 
 def _withdrawal_pct(largest_withdrawal: float | None, balance: float | None) -> float | None:
-    """The largest withdrawal as a share of the balance implied before it happened.
-
-    There is no observed prior balance, only the current one, so it is
-    reconstructed by adding the withdrawal back: balance + largest_withdrawal.
-    """
+    """The largest withdrawal as a share of the balance before it, rebuilt as balance plus it."""
     if largest_withdrawal is None or balance is None:
         return None
     balance_before_withdrawal = balance + largest_withdrawal
@@ -185,23 +142,14 @@ def _last_deposit_amount(deposits: list[ActiveTxnRow]) -> float | None:
 
 
 def _days_since_deposit(last_deposit: date | None, reference_date: date | None) -> int | None:
-    """Days since the client's last deposit, never since any transaction.
-
-    A withdrawal doesn't reset this: a client who only ever withdraws is not
-    "recently active" in the sense that matters for a win-back signal.
-    Clipped at zero, so a deposit dated after the reference point (a data
-    quirk, not a real future deposit) never reads as negative.
-    """
+    """Days since the last deposit, never since any transaction, and never below zero."""
     if last_deposit is None or reference_date is None:
         return None
     return max(0, (reference_date - last_deposit).days)
 
 
 def _bucket(value: float | None, cutoffs: tuple[float, ...], labels: tuple[str, ...]) -> str:
-    """Right-closed bucketing shared by balance_tier/recency_band/value_tier.
-
-    "Unknown" when value is missing -- never guessed into a real tier.
-    """
+    """Right-closed bucketing for the three band helpers; "Unknown" when value is missing."""
     if value is None:
         return "Unknown"
     for cutoff, label in zip(cutoffs, labels, strict=False):
@@ -229,12 +177,7 @@ def derive_active_measures(
     fee_per_month: float = FEE_PER_MONTH,
 ) -> dict[tuple[int, int], ActiveFeatureMeasures]:
     """Measure each client-fund relationship in the active book.
-
-    reference_date is optional: the measures persisted to active_client_fund
-    don't need it, but a caller anchoring a risk run's recency signal can pass
-    it to get days_since_deposit back as well. Transactions with no date are
-    ignored, since a date we could not parse can't be placed in the sequence.
-    """
+    reference_date adds days_since_deposit. Transactions with no date are ignored."""
     ref = reference_date.date() if reference_date is not None else None
 
     deposits: dict[tuple[int, int], list[ActiveTxnRow]] = defaultdict(list)

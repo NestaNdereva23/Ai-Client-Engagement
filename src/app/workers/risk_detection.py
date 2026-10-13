@@ -10,10 +10,8 @@ Stages, in order:
     2. Transform into active_client_fund and derive the behavioural measures.
     3. Fetch open complaints and FA assignments for this run's population.
     4. Evaluate the six signals and compose a score for every client-fund.
-    5. Route, then assign each client to an account manager and lend out
-       any call-queue overflow for the night. A client over their advisor's
-       capacity with nobody free to take the call is demoted to the
-       watchlist route instead of piling onto that advisor's list.
+    5. Route every scored client to fa_action, then assign each client to
+       an account manager.
     6. Write one risk_snapshot row per client-fund and upsert
        client_risk_features to the latest values.
     7. Email each rostered account manager their morning call list. Best
@@ -56,7 +54,6 @@ from app.campaigns.nurture_bridge import enroll_auto_checkin_clients
 from app.config import get_settings
 from app.db.models.digest import DigestRun
 from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion, RiskRun, RiskSnapshot
-from app.db.models.suppression import Suppression
 from app.db.session import SessionLocal
 from app.ingestion.complaints_source import ComplaintsSource, get_complaints_source
 from app.ingestion.endpoints import resolve_endpoint
@@ -65,11 +62,12 @@ from app.privacy.llm_client import get_agent_llm_client, get_briefing_llm_client
 from app.retention import prune_raw_staging, prune_risk_snapshots, prune_signal_snapshots
 from app.risk.fa_allocation import ClientLoad
 from app.risk.history import write_snapshot
-from app.risk.routing import RoutableRow, RouteResult, route_population
+from app.risk.routing import route_for_active_client
 from app.risk.scoring import ScoreResult, compose_score
 from app.risk.signals import SIGNAL_ORDER
 from app.risk.store import active_config_version
 from app.routing.sides import active_client_ids
+from app.routing.tiers import write_client_tiers
 from app.transform.active_features import ActiveFeatureMeasures, derive_active_measures
 from app.transform.active_flatten import flatten_active_run
 from app.transform.active_load import persist_active_result
@@ -163,22 +161,17 @@ def _feature_row(
 def _client_loads(
     measures: dict[tuple[int, int], ActiveFeatureMeasures],
     scores: dict[tuple[int, int], ScoreResult],
-    routes: dict[tuple[int, int], Any],
 ) -> list[ClientLoad]:
     """One ClientLoad per client, summed across every fund they hold.
 
     An advisor owns a person, not a relationship, so the money at risk that
-    decides who carries what is the client's total, and a client counts
-    against a call queue once however many of their funds landed in it.
+    decides who carries what is the client's total.
     """
     totals: dict[int, float] = {}
-    in_queue: set[int] = set()
     for key, m in measures.items():
         totals[m.client_id] = totals.get(m.client_id, 0.0) + scores[key].fund_at_risk
-        if routes[key].route == "fa_call_priority":
-            in_queue.add(m.client_id)
     return [
-        ClientLoad(client_id=client_id, fund_at_risk=total, in_call_queue=client_id in in_queue)
+        ClientLoad(client_id=client_id, fund_at_risk=total)
         for client_id, total in sorted(totals.items())
     ]
 
@@ -190,25 +183,6 @@ def _signal_counts(scores: dict[tuple[int, int], ScoreResult]) -> dict[str, int]
             if score.signals[name]:
                 counts[name] += 1
     return counts
-
-
-def _demote_over_capacity(routes: dict[tuple[int, int], RouteResult], demoted: set[int]) -> int:
-    """Move a demoted client's call-queue lines to the watchlist route.
-
-    Called after allocate_and_persist decides which clients are over their
-    advisor's capacity with nobody else to take the call -- see
-    risk/fa_allocation.py::_lend_overflow. A client's whole call queue for
-    the night moves, not just one fund, since capacity measures calls to
-    the person, not to a fund. Mutates routes in place so every read after
-    this point, snapshots and features included, sees the demotion.
-    """
-    moved = 0
-    for (client_id, _), route in routes.items():
-        if client_id in demoted and route.route == "fa_call_priority":
-            route.route = "fa_watchlist"
-            route.queue_rank = None
-            moved += 1
-    return moved
 
 
 class RiskDetectionWorker:
@@ -262,6 +236,7 @@ class RiskDetectionWorker:
                 system_fee_max=config_row.thresholds["SYSTEM_FEE_MAX"],
                 fee_per_month=config_row.thresholds["FEE_PER_MONTH"],
             )
+            fund_measures_for_every_client_in_feed = list(measures.values())
             active_ids = active_client_ids(session)
             scored = {key: m for key, m in measures.items() if m.client_id in active_ids}
             held_out = len(measures) - len(scored)
@@ -279,36 +254,20 @@ class RiskDetectionWorker:
             complaint_ids = {c.client_id for c in complaints}
             fa_source = self._fa_assignment_source or get_fa_assignment_source(session=session)
             fa_assignments = fa_source.fetch_assignments(client_ids)
-            suppressed_ids = set(
-                session.scalars(
-                    select(Suppression.client_id).where(Suppression.client_id.in_(client_ids))
-                )
-            )
             logger.info(
                 "risk_detection.context_fetched",
                 run_id=run.run_id,
                 open_complaints=len(complaint_ids),
                 fa_assignments=len(fa_assignments),
-                suppressed=len(suppressed_ids),
             )
 
-            scores: dict[tuple[int, int], ScoreResult] = {}
-            routable: list[RoutableRow] = []
-            for key, m in measures.items():
-                score = compose_score(m, config_row)
-                scores[key] = score
-                routable.append(
-                    RoutableRow(
-                        key=key,
-                        balance=m.balance,
-                        risk_score=score.risk_score,
-                        sig_dormant=score.signals["sig_dormant"],
-                        fund_at_risk=score.fund_at_risk,
-                        has_open_complaint=m.client_id in complaint_ids,
-                        suppressed=m.client_id in suppressed_ids,
-                    )
-                )
-            routes = route_population(routable, config_row)
+            scores: dict[tuple[int, int], ScoreResult] = {
+                key: compose_score(m, config_row) for key, m in measures.items()
+            }
+            routes = {
+                key: route_for_active_client(has_open_complaint=m.client_id in complaint_ids)
+                for key, m in measures.items()
+            }
             signal_counts = _signal_counts(scores)
 
             roster = get_settings().fa_records
@@ -316,11 +275,10 @@ class RiskDetectionWorker:
                 session,
                 run.run_id,
                 roster=roster,
-                clients=_client_loads(measures, scores, routes),
+                clients=_client_loads(measures, scores),
                 keys=list(measures),
                 source_emails={c.client_id: c.fa_email for c in flat.clients if c.fa_email},
             )
-            demoted_count = _demote_over_capacity(routes, allocation.demoted)
 
             route_distribution = Counter(r.route for r in routes.values())
             logger.info(
@@ -328,7 +286,6 @@ class RiskDetectionWorker:
                 run_id=run.run_id,
                 signals_fired=signal_counts,
                 route_distribution=dict(route_distribution),
-                capacity_demoted=demoted_count,
             )
 
             prior_rows = {
@@ -437,6 +394,7 @@ class RiskDetectionWorker:
             )
             session.commit()
 
+            self._write_client_tiers(fund_measures_for_every_client_in_feed, run)
             self._enroll_auto_checkin(changes)
             self._send_digest_emails(digest_run.digest_run_id, allocation.covering)
             self._warm_narratives(digest_run.digest_run_id)
@@ -461,6 +419,19 @@ class RiskDetectionWorker:
             raise
         finally:
             session.close()
+
+    def _write_client_tiers(self, fund_measures: list[ActiveFeatureMeasures], run: RiskRun) -> None:
+        try:
+            with self._session_factory() as session:
+                write_client_tiers(
+                    session,
+                    fund_measures,
+                    reference_date=run.reference_ts.date(),
+                    run_id=run.run_id,
+                )
+                session.commit()
+        except Exception:
+            logger.exception("risk_detection.client_tier_failed", run_id=run.run_id)
 
     def _enroll_auto_checkin(self, changes: list[dict[str, Any]]) -> None:
         client_ids = sorted({c["client_id"] for c in changes if c["route"] == "auto_checkin"})

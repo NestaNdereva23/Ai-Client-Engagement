@@ -548,6 +548,7 @@ def _pending_messages_filters(
     only_sampled: bool,
     channel: str | None = None,
     campaign_type: str | None = None,
+    exclude_campaign_type: str | None = None,
 ) -> list[Any]:
     """The where-clauses list_pending_messages and count_pending_messages
     both filter on -- kept in one place so a count can never drift from
@@ -560,6 +561,12 @@ def _pending_messages_filters(
         clauses.append(
             OutreachMessage.campaign_id.in_(
                 select(Campaign.campaign_id).where(Campaign.campaign_type == campaign_type)
+            )
+        )
+    if exclude_campaign_type is not None:
+        clauses.append(
+            OutreachMessage.campaign_id.not_in(
+                select(Campaign.campaign_id).where(Campaign.campaign_type == exclude_campaign_type)
             )
         )
     if channel is not None:
@@ -579,6 +586,7 @@ def list_pending_messages(
     only_sampled: bool = True,
     channel: str | None = None,
     campaign_type: str | None = None,
+    exclude_campaign_type: str | None = None,
     order: ReviewOrder = "oldest_first",
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
@@ -606,6 +614,7 @@ def list_pending_messages(
         only_sampled=only_sampled,
         channel=channel,
         campaign_type=campaign_type,
+        exclude_campaign_type=exclude_campaign_type,
     )
     query = select(OutreachMessage).where(*filters)
     key = tuple_(OutreachMessage.created_at, OutreachMessage.message_id)
@@ -692,6 +701,7 @@ def count_pending_messages(
     only_sampled: bool = True,
     channel: str | None = None,
     campaign_type: str | None = None,
+    exclude_campaign_type: str | None = None,
 ) -> int:
     """How many messages list_pending_messages' filters would return in
     total, across every page -- what a queue badge shows.
@@ -706,6 +716,7 @@ def count_pending_messages(
                 only_sampled=only_sampled,
                 channel=channel,
                 campaign_type=campaign_type,
+                exclude_campaign_type=exclude_campaign_type,
             )
         )
     )

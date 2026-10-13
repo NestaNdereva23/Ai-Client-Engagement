@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.reviewer_auth import get_current_reviewer_id
+from app.db.models.routing import ClientTier
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.risk.signals import fired_signal_tags
+from app.routing.tier_playbook import SEGMENT_PLAYBOOK, TIER_PLAYBOOK, tier_tag_fields
+from app.routing.tiers import (
+    ACTIVE_TIERS_IN_DISPLAY_ORDER,
+    BELOW_CAPITAL_PRESERVATION_THRESHOLD,
+    NO_TRANSACTIONS_IN_REVIEW_PERIOD,
+    SEGMENT_BY_TIER,
+)
 from app.schemas.active_clients import (
     ActiveClientBandsOut,
     ActiveClientComplaintOut,
@@ -17,15 +26,26 @@ from app.schemas.active_clients import (
     ActiveClientRiskHistoryEntryOut,
     ActiveClientRosterLineOut,
     ActiveTransactionOut,
+    AiActionOut,
     DepositPercentileOut,
     InteractionCreate,
     InteractionOut,
+    ReviewPeriodActivityOut,
     RouteChangeDetailOut,
     RouteChangeDetailsOut,
     RouteChangeRunOut,
     SaleTypeBucketOut,
+    TouchpointCreate,
+    TouchpointOut,
     TransactionAnalyticsOut,
     TransactionMonthOut,
+)
+from app.schemas.client_tiers import (
+    ClientTierDetailOut,
+    HeldOutCountOut,
+    SegmentCountOut,
+    TierCountOut,
+    TierSummaryOut,
 )
 from app.services.active_clients import (
     ActiveClientNotFound,
@@ -40,6 +60,19 @@ from app.services.active_clients import (
     route_change_details,
     transaction_analytics,
 )
+from app.services.briefing import deposit_trend_band_of
+from app.services.client_ai_actions import AiActionNotFound, AiActionNotOpen
+from app.services.client_tiers import TierSummary, summarize_client_tiers
+from app.services.client_touchpoints import (
+    NotTheOwner,
+    TouchpointClientNotFound,
+    TouchpointDateInPast,
+    TouchpointNotFound,
+    add_touchpoint,
+    list_open_touchpoints,
+    remove_touchpoint,
+)
+from app.services.fund_names import short_fund_name
 
 router = APIRouter(
     prefix="/active-clients",
@@ -53,6 +86,11 @@ def get_roster(
     client_id: int | None = None,
     risk_band: str | None = None,
     route: str | None = None,
+    segment: str | None = None,
+    tier: str | None = None,
+    fa_id: str | None = None,
+    worklist_only: bool = False,
+    sort: Literal["client_id", "risk_score", "fund_at_risk"] = "client_id",
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
@@ -63,6 +101,11 @@ def get_roster(
             client_id=client_id,
             risk_band=risk_band,
             route=route,
+            segment=segment,
+            tier=tier,
+            fa_id=fa_id,
+            worklist_only=worklist_only,
+            sort=sort,
             cursor=cursor,
             limit=limit,
         )
@@ -71,6 +114,56 @@ def get_roster(
     return Page(
         items=[ActiveClientRosterLineOut.model_validate(r) for r in rows], next_cursor=next_cursor
     )
+
+
+def _to_tier_summary_out(summary: TierSummary) -> TierSummaryOut:
+    tiers = [
+        TierCountOut(
+            tier=tier,
+            tier_label=TIER_PLAYBOOK[tier].label,
+            segment=SEGMENT_BY_TIER[tier],
+            segment_label=SEGMENT_PLAYBOOK[SEGMENT_BY_TIER[tier]].label,
+            tier_goal=TIER_PLAYBOOK[tier].goal,
+            tier_action=TIER_PLAYBOOK[tier].fa_action,
+            clients=summary.active_clients_by_tier[tier],
+        )
+        for tier in ACTIVE_TIERS_IN_DISPLAY_ORDER
+    ]
+    segments = [
+        SegmentCountOut(
+            segment=segment,
+            segment_label=segment_playbook.label,
+            segment_goal=segment_playbook.goal,
+            clients=sum(row.clients for row in tiers if row.segment == segment),
+        )
+        for segment, segment_playbook in SEGMENT_PLAYBOOK.items()
+    ]
+    held_out = [
+        HeldOutCountOut(
+            tier=NO_TRANSACTIONS_IN_REVIEW_PERIOD,
+            tier_label=TIER_PLAYBOOK[NO_TRANSACTIONS_IN_REVIEW_PERIOD].label,
+            clients=summary.active_clients_with_no_transactions,
+        ),
+        HeldOutCountOut(
+            tier=BELOW_CAPITAL_PRESERVATION_THRESHOLD,
+            tier_label=TIER_PLAYBOOK[BELOW_CAPITAL_PRESERVATION_THRESHOLD].label,
+            clients=summary.inactive_clients_below_threshold,
+        ),
+    ]
+    return TierSummaryOut(
+        active_clients=summary.active_clients,
+        inactive_clients=summary.inactive_clients,
+        segments=segments,
+        tiers=tiers,
+        held_out=held_out,
+        active_clients_not_yet_tiered=summary.active_clients_not_yet_tiered,
+        computed_at=summary.computed_at,
+    )
+
+
+@router.get("/tier-summary", response_model=TierSummaryOut)
+def get_tier_summary(session: Session = Depends(get_session)) -> TierSummaryOut:
+    return _to_tier_summary_out(summarize_client_tiers(session))
 
 
 @router.get("/analytics/route-changes", response_model=Page[RouteChangeRunOut])
@@ -149,9 +242,23 @@ def post_interaction(
             type=body.type,
             note=body.note,
             reviewer_id=username,
+            proposal_id=body.proposal_id,
+            outcome=body.outcome,
+            follow_up_on=body.follow_up_on,
+            touchpoint_id=body.touchpoint_id,
         )
     except ActiveClientNotFound:
         raise HTTPException(status_code=404, detail="active client-fund not found") from None
+    except TouchpointNotFound:
+        raise HTTPException(status_code=404, detail="no open touchpoint with that id") from None
+    except TouchpointDateInPast:
+        raise HTTPException(status_code=422, detail="the follow-up day is in the past") from None
+    except AiActionNotFound:
+        raise HTTPException(
+            status_code=404, detail="no AI Action from that proposal for this client"
+        ) from None
+    except AiActionNotOpen:
+        raise HTTPException(status_code=409, detail="that AI Action is no longer open") from None
     return InteractionOut.model_validate(row)
 
 
@@ -166,6 +273,72 @@ def get_interactions(
 ) -> list[InteractionOut]:
     rows = list_interactions(session, client_id, unit_fund_id, since=since)
     return [InteractionOut.model_validate(r) for r in rows]
+
+
+@router.get("/{client_id}/{unit_fund_id}/touchpoints", response_model=list[TouchpointOut])
+def get_touchpoints(
+    client_id: int, unit_fund_id: int, session: Session = Depends(get_session)
+) -> list[TouchpointOut]:
+    rows = list_open_touchpoints(session, client_id, unit_fund_id)
+    return [TouchpointOut.model_validate(r) for r in rows]
+
+
+@router.post(
+    "/{client_id}/{unit_fund_id}/touchpoints",
+    response_model=TouchpointOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def post_touchpoint(
+    client_id: int,
+    unit_fund_id: int,
+    body: TouchpointCreate,
+    username: str = Query(..., description="The advisor adding it. Must own the client."),
+    session: Session = Depends(get_session),
+) -> TouchpointOut:
+    try:
+        row = add_touchpoint(
+            session,
+            client_id,
+            unit_fund_id,
+            username=username,
+            kind=body.kind,
+            title=body.title,
+            due_date=body.due_date,
+            due_time=body.due_time,
+            minutes=body.minutes,
+        )
+    except TouchpointClientNotFound:
+        raise HTTPException(status_code=404, detail="active client-fund not found") from None
+    except NotTheOwner:
+        raise HTTPException(
+            status_code=403, detail="only the client's advisor can do this"
+        ) from None
+    except TouchpointDateInPast:
+        raise HTTPException(status_code=422, detail="the day is in the past") from None
+    return TouchpointOut.model_validate(row)
+
+
+@router.delete(
+    "/{client_id}/{unit_fund_id}/touchpoints/{touchpoint_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_touchpoint(
+    client_id: int,
+    unit_fund_id: int,
+    touchpoint_id: int,
+    username: str = Query(..., description="The advisor removing it. Must own the client."),
+    session: Session = Depends(get_session),
+) -> None:
+    try:
+        remove_touchpoint(session, client_id, unit_fund_id, touchpoint_id, username=username)
+    except TouchpointClientNotFound:
+        raise HTTPException(status_code=404, detail="active client-fund not found") from None
+    except NotTheOwner:
+        raise HTTPException(
+            status_code=403, detail="only the client's advisor can do this"
+        ) from None
+    except TouchpointNotFound:
+        raise HTTPException(status_code=404, detail="no open touchpoint with that id") from None
 
 
 @router.get("/{client_id}/{unit_fund_id}/transactions", response_model=list[ActiveTransactionOut])
@@ -199,6 +372,19 @@ def get_deposit_percentile(
     )
 
 
+def _to_tier_detail_out(client_tier: ClientTier | None) -> ClientTierDetailOut:
+    if client_tier is None:
+        return ClientTierDetailOut()
+    tier_playbook = TIER_PLAYBOOK.get(client_tier.tier)
+    return ClientTierDetailOut(
+        **tier_tag_fields(client_tier.tier, client_tier.segment),
+        success_measure=tier_playbook.success_measure if tier_playbook else None,
+        purchased_recently=client_tier.purchased_recently,
+        real_withdrawer=client_tier.real_withdrawer,
+        computed_at=client_tier.computed_at,
+    )
+
+
 def _to_profile_out(profile: ActiveClientProfile) -> ActiveClientProfileOut:
     active = profile.active
     risk = profile.risk
@@ -208,6 +394,7 @@ def _to_profile_out(profile: ActiveClientProfile) -> ActiveClientProfileOut:
             unit_fund_id=active.unit_fund_id,
             client_code=active.client_code,
             fund_name=profile.fund_name,
+            fund_short_name=short_fund_name(profile.fund_name),
             balance=active.balance,
             deposit_count_capped=active.deposit_count_capped,
             withdrawal_history_hidden=active.withdrawal_history_hidden,
@@ -224,6 +411,7 @@ def _to_profile_out(profile: ActiveClientProfile) -> ActiveClientProfileOut:
             route=risk.route if risk else None,
             fund_at_risk=risk.fund_at_risk if risk else None,
             primary_signal_magnitude=profile.primary_signal_magnitude,
+            deposit_trend_band=deposit_trend_band_of(active.deposit_trend),
         ),
         risk_history=[
             ActiveClientRiskHistoryEntryOut(
@@ -250,6 +438,17 @@ def _to_profile_out(profile: ActiveClientProfile) -> ActiveClientProfileOut:
         ],
         interactions=[InteractionOut.model_validate(i) for i in profile.interactions],
         transactions=[ActiveTransactionOut.model_validate(t) for t in profile.transactions],
+        segment_and_tier=_to_tier_detail_out(profile.client_tier),
+        ai_action=AiActionOut.model_validate(profile.ai_action) if profile.ai_action else None,
+        review_activity=(
+            ReviewPeriodActivityOut(
+                review_period_days=profile.review_activity.review_period_days,
+                deposits=profile.review_activity.deposits,
+                withdrawals=profile.review_activity.withdrawals,
+            )
+            if profile.review_activity
+            else None
+        ),
     )
 
 

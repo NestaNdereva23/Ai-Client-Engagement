@@ -118,6 +118,7 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
     _whole("agent_daily_send_limit", 0, 10000, optional=True),
     _switch("agent_force_approve_each"),
     _switch("ai_briefing_enabled"),
+    _whole("client_email_draft_daily_cap", 1, 500),
     _whole("agent_query_call_budget", 1, 50),
     _whole("agent_investigation_max_turns", 1, 20),
     _whole("agent_investigation_concurrency", 1, 8),

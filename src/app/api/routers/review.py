@@ -55,6 +55,7 @@ def list_reviews(
     status: str = "pending_review",
     campaign_id: int | None = None,
     campaign_type: str | None = None,
+    exclude_campaign_type: str | None = None,
     only_sampled: bool = True,
     channel: str | None = None,
     order: ReviewOrder = "oldest_first",
@@ -69,6 +70,7 @@ def list_reviews(
             status=status,
             campaign_id=campaign_id,
             campaign_type=campaign_type,
+            exclude_campaign_type=exclude_campaign_type,
             only_sampled=only_sampled,
             channel=channel,
             order=order,
@@ -82,6 +84,7 @@ def list_reviews(
         status=status,
         campaign_id=campaign_id,
         campaign_type=campaign_type,
+        exclude_campaign_type=exclude_campaign_type,
         only_sampled=only_sampled,
         channel=channel,
     )

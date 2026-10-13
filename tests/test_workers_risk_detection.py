@@ -5,6 +5,7 @@ resume after failure that does not duplicate.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -18,14 +19,21 @@ from app.db.models.digest import DigestEmailSend, DigestLine, DigestRun
 from app.db.models.fa_assignment import FaAssignment
 from app.db.models.models import PiiVault
 from app.db.models.risk import ClientRiskFeatures, RiskRun, RiskSnapshot
+from app.db.models.routing import ClientTier
+from app.db.models.signals import (
+    ClientSignalSnapshot,
+    ClientSignalState,
+    ClientSituationSnapshot,
+    ClientSituationState,
+)
 from app.db.session import SessionLocal
 from app.delivery.mailer import NullMailer
 from app.workers import risk_detection
 from app.workers.risk_detection import RiskDetectionWorker
 
 FUND_ID = 920
-CALL_CLIENT_ID = 92001  # worth-a-call balance, dormant, no pattern -> fa_call_priority
-TINY_CLIENT_ID = 92002  # tiny balance, dormant -> small_balance_review
+CALL_CLIENT_ID = 92001  # scored: balance above the preservation line, dormant, no pattern
+TINY_CLIENT_ID = 92002  # below the preservation line, so held out of scoring
 
 # Well past DORMANT_DAYS (365) before any real "now" this suite runs against.
 OLD_DEPOSIT_DATE = "2020-01-01T00:00:00"
@@ -41,13 +49,13 @@ class FakeClient:
         return {"data": []}
 
 
-def _client_row(client_id: int, balance: float) -> dict:
+def _client_row(client_id: int, balance: float, deposit_date: str = OLD_DEPOSIT_DATE) -> dict:
     return {
         "client_id": client_id,
         "client_code": f"C{client_id}",
         "client_name": "Test Client",
         "balance": balance,
-        "last_5_purchases": [{"id": client_id * 10, "number": "500", "date": OLD_DEPOSIT_DATE}],
+        "last_5_purchases": [{"id": client_id * 10, "number": "500", "date": deposit_date}],
         "last_2_sales": [],
     }
 
@@ -126,7 +134,15 @@ def _delete_agent_proposal_rows(session, client_ids: list[int]) -> None:
 def _delete_client_rows(session, client_ids: list[int]) -> None:
     """Everything the fixture writes for a batch of client ids."""
     _delete_agent_proposal_rows(session, client_ids)
+    for signal_model in (
+        ClientSituationSnapshot,
+        ClientSituationState,
+        ClientSignalSnapshot,
+        ClientSignalState,
+    ):
+        session.execute(delete(signal_model).where(signal_model.client_id.in_(client_ids)))
     session.execute(delete(ClientRiskFeatures).where(ClientRiskFeatures.client_id.in_(client_ids)))
+    session.execute(delete(ClientTier).where(ClientTier.client_id.in_(client_ids)))
     session.execute(delete(ActiveClientFund).where(ActiveClientFund.client_id.in_(client_ids)))
     session.execute(delete(PiiVault).where(PiiVault.client_id.in_(client_ids)))
     session.execute(delete(FaAssignment).where(FaAssignment.client_id.in_(client_ids)))
@@ -154,7 +170,7 @@ def test_full_run_produces_expected_state(db, cleanup_risk_runs) -> None:
 
     assert result.state == "completed"
     assert result.clients_seen == 1
-    assert result.route_distribution == {"fa_call_priority": 1}
+    assert result.route_distribution == {"fa_action": 1}
     assert result.routes_changed == 1
 
     with SessionLocal() as session:
@@ -168,8 +184,8 @@ def test_full_run_produces_expected_state(db, cleanup_risk_runs) -> None:
             for row in session.scalars(select(RiskSnapshot).where(RiskSnapshot.run_id == run_id))
         }
         assert set(snapshots) == {CALL_CLIENT_ID}
-        assert snapshots[CALL_CLIENT_ID].route == "fa_call_priority"
-        assert snapshots[CALL_CLIENT_ID].queue_rank == 1
+        assert snapshots[CALL_CLIENT_ID].route == "fa_action"
+        assert snapshots[CALL_CLIENT_ID].queue_rank is None
         assert snapshots[CALL_CLIENT_ID].sig_dormant is True
 
         features = {
@@ -180,7 +196,7 @@ def test_full_run_produces_expected_state(db, cleanup_risk_runs) -> None:
                 )
             )
         }
-        assert features[CALL_CLIENT_ID].route == "fa_call_priority"
+        assert features[CALL_CLIENT_ID].route == "fa_action"
         assert TINY_CLIENT_ID not in features
 
         route_audit = session.scalar(
@@ -193,6 +209,43 @@ def test_full_run_produces_expected_state(db, cleanup_risk_runs) -> None:
             select(AuditLog).where(AuditLog.run_id == run_id, AuditLog.action == "complete")
         )
         assert complete_audit is not None
+
+
+def test_the_run_writes_a_tier_row_for_every_client_in_the_feed(db, cleanup_risk_runs) -> None:
+    run_id = uuid4().hex
+    cleanup_risk_runs.append(run_id)
+
+    _worker().run(run_id=run_id)
+
+    with SessionLocal() as session:
+        tiers = {
+            row.client_id: row.tier
+            for row in session.scalars(
+                select(ClientTier).where(ClientTier.client_id.in_([CALL_CLIENT_ID, TINY_CLIENT_ID]))
+            )
+        }
+        assert tiers == {
+            CALL_CLIENT_ID: "no_transactions_in_review_period",
+            TINY_CLIENT_ID: "below_capital_preservation_threshold",
+        }
+        audit = session.scalar(
+            select(AuditLog).where(AuditLog.run_id == run_id, AuditLog.entity_type == "client_tier")
+        )
+        assert audit is not None
+        assert audit.detail["clients"] == 2
+
+
+def test_a_failed_tier_write_does_not_fail_the_run(db, cleanup_risk_runs, monkeypatch) -> None:
+    def boom(*args, **kwargs):
+        raise RuntimeError("tier write failed")
+
+    monkeypatch.setattr(risk_detection, "write_client_tiers", boom)
+    run_id = uuid4().hex
+    cleanup_risk_runs.append(run_id)
+
+    result = _worker().run(run_id=run_id)
+
+    assert result.state == "completed"
 
 
 def test_second_run_is_a_no_op_result_of_completed_state(db, cleanup_risk_runs) -> None:
@@ -232,7 +285,7 @@ def test_mid_run_failure_leaves_prior_snapshot_untouched_and_resume_does_not_dup
     def _boom(*args, **kwargs):
         raise RuntimeError("simulated mid-run failure")
 
-    monkeypatch.setattr(risk_detection_mod, "route_population", _boom)
+    monkeypatch.setattr(risk_detection_mod, "route_for_active_client", _boom)
 
     with pytest.raises(RuntimeError, match="simulated mid-run failure"):
         _worker().run(run_id=failing_run_id)
@@ -289,7 +342,7 @@ def seeded_roster(monkeypatch):
     get_settings.cache_clear()
 
 
-def test_run_with_a_roster_groups_the_digest_by_a_real_advisor(
+def test_run_with_a_roster_gives_every_scored_client_a_real_advisor_and_keeps_them(
     db, cleanup_risk_runs, seeded_roster
 ) -> None:
     first_run = uuid4().hex
@@ -305,19 +358,9 @@ def test_run_with_a_roster_groups_the_digest_by_a_real_advisor(
                 )
             )
         }
-        group_keys = set(
-            session.scalars(
-                select(DigestLine.group_key)
-                .join(DigestRun, DigestRun.digest_run_id == DigestLine.digest_run_id)
-                .where(DigestRun.risk_run_id == first_run)
-            )
-        )
 
     assert set(assignments) == {CALL_CLIENT_ID}
     assert all(fa_id in {"fa-71", "fa-72"} for fa_id in assignments.values())
-    # The advisor's own queue, plus the fund wide group every eligible row
-    # also joins.
-    assert group_keys == {f"fa:{assignments[CALL_CLIENT_ID]}", f"fund:{FUND_ID}"}
 
     second_run = uuid4().hex
     cleanup_risk_runs.append(second_run)
@@ -364,54 +407,33 @@ def test_a_run_with_a_roster_mails_each_advisor_once(
     }
 
 
-CAP_CLIENT_IDS = [92011, 92012, 92013]  # three call-eligible clients, biggest balance first
+BAND_CLIENT_IDS = [92011, 92012]
 
 
 @pytest.fixture
-def tight_roster(monkeypatch):
-    """Two account managers with room for one call each, so the smallest of
-    three call-queue clients has nowhere to be lent.
-    """
-    monkeypatch.setenv(
-        "ACE_FA_ROSTER",
-        "fa-81:FA Eighty One:fa81@example.com:1,fa-82:FA Eighty Two:fa82@example.com:1",
-    )
-    get_settings.cache_clear()
-    yield
-    monkeypatch.delenv("ACE_FA_ROSTER", raising=False)
-    get_settings.cache_clear()
-
-
-@pytest.fixture
-def cleanup_capacity_run():
+def cleanup_band_run():
     run_ids: list[str] = []
     yield run_ids
     with SessionLocal() as session:
         for run_id in run_ids:
             _delete_run_rows(session, run_id)
-        _delete_client_rows(session, CAP_CLIENT_IDS)
+        _delete_client_rows(session, BAND_CLIENT_IDS)
         session.commit()
 
 
-def test_overflow_past_every_advisors_capacity_is_demoted_to_the_watchlist(
-    db, cleanup_capacity_run, tight_roster
-) -> None:
-    """Two advisors with capacity for one call each cannot cover a third
-    call-queue client between them, so that client's line moves to the
-    watchlist route instead of piling onto its own advisor's list.
-    """
+def test_every_scored_client_goes_to_fa_action_whatever_their_band(db, cleanup_band_run) -> None:
     run_id = uuid4().hex
-    cleanup_capacity_run.append(run_id)
+    cleanup_band_run.append(run_id)
+    recent_deposit = (datetime.now(UTC) - timedelta(days=2)).strftime("%Y-%m-%dT00:00:00")
     payload = {
         "data": [
             {
                 "unit_fund_id": FUND_ID,
                 "unit_fund_name": "Fund",
-                "client_count": len(CAP_CLIENT_IDS),
+                "client_count": len(BAND_CLIENT_IDS),
                 "clients": [
-                    _client_row(CAP_CLIENT_IDS[0], balance=30_000.0),
-                    _client_row(CAP_CLIENT_IDS[1], balance=20_000.0),
-                    _client_row(CAP_CLIENT_IDS[2], balance=10_000.0),
+                    _client_row(BAND_CLIENT_IDS[0], balance=30_000.0),
+                    _client_row(BAND_CLIENT_IDS[1], balance=30_000.0, deposit_date=recent_deposit),
                 ],
             }
         ]
@@ -420,26 +442,25 @@ def test_overflow_past_every_advisors_capacity_is_demoted_to_the_watchlist(
 
     result = worker.run(run_id=run_id)
 
-    assert result.route_distribution == {"fa_call_priority": 2, "fa_watchlist": 1}
+    assert result.route_distribution == {"fa_action": 2}
 
     with SessionLocal() as session:
         snapshots = {
             row.client_id: row
             for row in session.scalars(select(RiskSnapshot).where(RiskSnapshot.run_id == run_id))
         }
-        owners = {
-            row.client_id: row.fa_id
+        features = {
+            row.client_id: row
             for row in session.scalars(
-                select(FaAssignment).where(FaAssignment.client_id.in_(CAP_CLIENT_IDS))
+                select(ClientRiskFeatures).where(ClientRiskFeatures.client_id.in_(BAND_CLIENT_IDS))
             )
         }
 
-    assert snapshots[CAP_CLIENT_IDS[0]].route == "fa_call_priority"
-    assert snapshots[CAP_CLIENT_IDS[1]].route == "fa_call_priority"
-    assert snapshots[CAP_CLIENT_IDS[2]].route == "fa_watchlist"
-    assert snapshots[CAP_CLIENT_IDS[2]].queue_rank is None
-    # Demotion never touches ownership -- the client keeps a real advisor.
-    assert owners[CAP_CLIENT_IDS[2]] in {"fa-81", "fa-82"}
+    dormant, recent = (snapshots[client_id] for client_id in BAND_CLIENT_IDS)
+    assert dormant.risk_band != recent.risk_band
+    assert {dormant.route, recent.route} == {"fa_action"}
+    assert {dormant.queue_rank, recent.queue_rank} == {None}
+    assert {features[client_id].route for client_id in BAND_CLIENT_IDS} == {"fa_action"}
 
 
 def test_the_agent_starts_after_a_clean_run_when_the_setting_is_on(

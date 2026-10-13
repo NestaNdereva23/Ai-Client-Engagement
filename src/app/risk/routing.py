@@ -15,12 +15,15 @@ from dataclasses import dataclass
 
 from app.db.models.risk import RiskConfigVersion
 
+ROUTE_FA_ACTION = "fa_action"
+
 ROUTES = (
     "small_balance_review",
     "fa_call_priority",
     "fa_watchlist",
     "auto_checkin",
     "monitor_only",
+    ROUTE_FA_ACTION,
 )
 
 # How urgent each route is for a human to act on, lowest to highest. Used
@@ -29,12 +32,13 @@ ROUTES = (
 # balance is too small to be worth an FA's time even though a signal fired,
 # so leaving any other route for small_balance_review is always an
 # improvement, never a regression.
-ROUTE_SEVERITY = {
+ROUTE_SEVERITY: dict[str, int | None] = {
     "small_balance_review": 0,
     "monitor_only": 1,
     "auto_checkin": 2,
     "fa_watchlist": 3,
     "fa_call_priority": 4,
+    ROUTE_FA_ACTION: None,  # no urgency of its own, so moves into or out of it are never labelled
 }
 
 # Route names as spelled before the terminology rename (see migration
@@ -51,7 +55,7 @@ _RETIRED_ROUTE_NAMES = {
 }
 
 
-def _severity(route: str) -> int:
+def _severity(route: str) -> int | None:
     return ROUTE_SEVERITY[_RETIRED_ROUTE_NAMES.get(route, route)]
 
 
@@ -69,6 +73,8 @@ def route_direction(from_route: str | None, to_route: str) -> str | None:
         return None
     before = _severity(from_route)
     after = _severity(to_route)
+    if before is None or after is None:
+        return None
     if after > before:
         return "more_urgent"
     if after < before:
@@ -152,6 +158,7 @@ def _base_route(row: RoutableRow, config: RiskConfigVersion, in_call_queue: bool
     return "monitor_only"
 
 
+# The nightly run no longer calls this; it stays until the old queue names are retired.
 def route_population(
     rows: list[RoutableRow], config: RiskConfigVersion
 ) -> dict[tuple[int, int], RouteResult]:
@@ -189,3 +196,7 @@ def route_population(
             complaint_caveat=row.has_open_complaint,
         )
     return results
+
+
+def route_for_active_client(has_open_complaint: bool) -> RouteResult:
+    return RouteResult(route=ROUTE_FA_ACTION, queue_rank=None, complaint_caveat=has_open_complaint)

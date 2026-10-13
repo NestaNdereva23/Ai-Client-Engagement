@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import structlog
-from sqlalchemy import bindparam, text
+from sqlalchemy import ColumnElement, bindparam, select, text
 from sqlalchemy.orm import Session
 
 from app.db.bulk import copy_upsert
+from app.db.models.routing import ClientSide
 
 logger = structlog.get_logger(__name__)
 
@@ -31,7 +32,14 @@ _CLIENT_BALANCE = """
 
 _BALANCE_BY_CLIENT = text(_CLIENT_BALANCE)
 
+_SIDE_IS_CHANGING = "client_side.side <> EXCLUDED.side"
+
+# Every right hand side reads the row as it was before this update, so the order below is free.
 _SET_CLAUSE = (
+    f"previous_side = CASE WHEN {_SIDE_IS_CHANGING} "
+    "THEN client_side.side ELSE client_side.previous_side END, "
+    f"side_changed_at = CASE WHEN {_SIDE_IS_CHANGING} "
+    "THEN now() ELSE client_side.side_changed_at END, "
     "side = EXCLUDED.side, "
     "balance = EXCLUDED.balance, "
     "threshold_kes = EXCLUDED.threshold_kes, "
@@ -46,6 +54,11 @@ _ACTIVE_CLIENT_IDS = text(
 
 def active_client_ids(session: Session, *, threshold: float = CAPITAL_PRESERVATION_KES) -> set[int]:
     return set(session.scalars(_ACTIVE_CLIENT_IDS, {"threshold": threshold}))
+
+
+def not_on_inactive_side(client_id_column: ColumnElement) -> ColumnElement[bool]:
+    inactive = select(ClientSide.client_id).where(ClientSide.side == SIDE_INACTIVE)
+    return client_id_column.not_in(inactive)
 
 
 def _source_feed(in_active: bool, in_inactive: bool) -> str:

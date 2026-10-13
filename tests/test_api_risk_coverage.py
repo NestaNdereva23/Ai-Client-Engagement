@@ -17,6 +17,7 @@ from sqlalchemy import delete
 
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.risk import RiskRun, RiskSnapshot
+from app.db.models.routing import ClientSide
 from app.db.session import SessionLocal
 from app.main import app
 from app.risk.history import write_snapshot
@@ -95,28 +96,42 @@ def cleanup():
             session.execute(
                 delete(ActiveClientFund).where(ActiveClientFund.client_id.in_(client_ids))
             )
+            session.execute(delete(ClientSide).where(ClientSide.client_id.in_(client_ids)))
         session.execute(delete(RiskSnapshot).where(RiskSnapshot.run_id.in_(run_ids)))
         session.execute(delete(RiskRun).where(RiskRun.run_id.in_(run_ids)))
         session.commit()
 
 
-def test_book_size_counts_every_active_client_fund_row(db, cleanup) -> None:
+def _add_client_fund(session, client_id: int, side: str) -> None:
+    session.add(
+        ActiveClientFund(client_id=client_id, unit_fund_id=FUND_ID, n_deposits=1, n_withdrawals=0)
+    )
+    session.add(
+        ClientSide(
+            client_id=client_id,
+            side=side,
+            balance=10_000.0 if side == "active" else 100.0,
+            threshold_kes=6_000.0,
+            source_feed="active",
+        )
+    )
+
+
+def test_book_size_counts_only_clients_on_the_active_side(db, cleanup) -> None:
     client_ids, _ = cleanup
-    ids = [94401, 94402]
-    client_ids.extend(ids)
+    active_ids, inactive_ids = [94401, 94402], [94408, 94409]
+    client_ids.extend(active_ids + inactive_ids)
 
     before = _coverage()
     with SessionLocal() as session:
-        for client_id in ids:
-            session.add(
-                ActiveClientFund(
-                    client_id=client_id, unit_fund_id=FUND_ID, n_deposits=1, n_withdrawals=0
-                )
-            )
+        for client_id in active_ids:
+            _add_client_fund(session, client_id, "active")
+        for client_id in inactive_ids:
+            _add_client_fund(session, client_id, "inactive")
         session.commit()
 
     after = _coverage()
-    assert after["book_size"] == before["book_size"] + len(ids)
+    assert after["book_size"] == before["book_size"] + len(active_ids)
 
 
 def test_scored_count_is_the_latest_completed_runs_snapshot_count(db, cleanup) -> None:

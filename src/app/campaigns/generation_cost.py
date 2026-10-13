@@ -1,24 +1,4 @@
-"""What one campaign's drafting would cost, at the active RAG-enabled rate.
-
-One generation call costs the same rate whether it drafts one client's
-message or one bucket's template -- both make exactly one call through the
-same generation graph (app.agents.graph, app.campaigns.template_generation)
--- so estimate_generation_cost multiplies the same per-generation rate by
-two different counts: enrolled clients for single generation, estimated
-templates for the subgroup-template path.
-
-The rate itself depends on which model would draft: MODEL_LABELS lists the
-models a campaign could be pointed at, each with its own versioned rate (see
-app.db.models.generation_cost). Picking a pricier model is the "maximum per
-generation" lever -- Fable 5 prices the same campaign roughly ten times over
-Haiku 4.5, and that comparison is the point of exposing the model at all.
-
-Per-step and total-for-sequence figures assume every enrolled client reaches
-every step in the campaign's sequence, and that each future step's template
-count looks like the current due batch's. Neither is a promise -- it is the
-same upper-bound, planning-only assumption campaign_value already applies to
-cohort value, applied here to cost instead of revenue.
-"""
+"""What one campaign's drafting would cost, at the active RAG-enabled rate."""
 
 from __future__ import annotations
 

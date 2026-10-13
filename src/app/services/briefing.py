@@ -235,7 +235,7 @@ def get_briefing(
     )
 
 
-def _deposit_trend_band(deposit_trend: float | None) -> str:
+def deposit_trend_band_of(deposit_trend: float | None) -> str:
     if deposit_trend is None:
         return "unknown"
     if abs(deposit_trend) < MIN_TREND_CHANGE:
@@ -250,7 +250,7 @@ def to_risk_fact_block(facts: BriefingFacts) -> RiskFactBlock:
         balance_tier=facts.balance_tier if facts.balance_tier in BALANCE_TIERS else None,
         recency_band=facts.recency_band,
         value_tier=facts.value_tier,
-        deposit_trend_band=_deposit_trend_band(facts.deposit_trend),
+        deposit_trend_band=deposit_trend_band_of(facts.deposit_trend),
         fund_name=FUND_DISPLAY_NAMES.get(classify_fund_type(facts.fund_name)),
         sig_heavy_withdrawal=facts.signals.get("sig_heavy_withdrawal"),
         sig_dormant=facts.signals.get("sig_dormant"),

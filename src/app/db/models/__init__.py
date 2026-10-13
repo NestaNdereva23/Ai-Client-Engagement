@@ -10,6 +10,7 @@ from app.db.models.active_clients import (
     INTERACTION_TYPES,
     ActiveClientFund,
     ActiveClientInteraction,
+    ActiveClientTouchpoint,
     ActiveTransaction,
 )
 from app.db.models.agent import (
@@ -120,7 +121,7 @@ from app.db.models.prompt_config import (
 )
 from app.db.models.rag import RagChunk, RagDocument, RagDocumentVersion
 from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion, RiskRun, RiskSnapshot
-from app.db.models.routing import ClientSide
+from app.db.models.routing import ClientSide, ClientTier, ClientTierThresholds
 from app.db.models.rules import (
     BusinessRule,
     ClientMessageIndicators,
@@ -181,6 +182,7 @@ __all__ = [
     "ActionResult",
     "ActiveClientFund",
     "ActiveClientInteraction",
+    "ActiveClientTouchpoint",
     "ActiveConfiguration",
     "ActiveTransaction",
     "AgentActionCatalog",
@@ -212,6 +214,8 @@ __all__ = [
     "ClientMessageIndicators",
     "ClientRiskFeatures",
     "ClientSide",
+    "ClientTier",
+    "ClientTierThresholds",
     "ClientSignalSnapshot",
     "ClientSignalState",
     "Clients",

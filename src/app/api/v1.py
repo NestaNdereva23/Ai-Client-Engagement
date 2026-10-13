@@ -21,6 +21,7 @@ from app.api.routers import (
     data_quality,
     delivery,
     digest,
+    fa_action,
     ingestion,
     integration,
     prompt_config,
@@ -53,6 +54,7 @@ router.include_router(risk.router)
 router.include_router(digest.router)
 router.include_router(briefing.router)
 router.include_router(active_clients.router)
+router.include_router(fa_action.router)
 router.include_router(delivery.router)
 router.include_router(situations.router)
 router.include_router(agent_studio.router)

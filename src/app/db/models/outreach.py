@@ -28,6 +28,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
+AGENT_PROPOSAL_CAMPAIGN_TYPE = "agent_proposal"
 CAMPAIGN_STATUSES = ("draft", "running", "paused", "completed")
 MESSAGE_STATUSES = ("pending_review", "approved", "rejected", "escalated", "held")
 REVIEW_OUTCOMES = ("approve", "edit_approve", "reject", "escalate", "hold")

@@ -20,6 +20,7 @@ from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion, RiskRun, R
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_pair_cursor, encode_pair_cursor
 from app.risk.magnitude import pick_primary_signal
 from app.risk.signals import SIGNAL_ORDER
+from app.routing.sides import not_on_inactive_side
 
 SMALL_BALANCE_REVIEW_ROUTE = "small_balance_review"
 
@@ -66,19 +67,14 @@ class CoverageView:
 
 
 def book_coverage(session: Session) -> CoverageView:
-    """How much of the active book the most recent completed nightly run
-    actually scored.
-
-    book_size is every client-fund relationship active_client_fund
-    currently holds -- the whole active book as ingestion last saw it.
-    scored_count is how many of those the latest completed risk_run wrote a
-    risk_snapshot row for; as_of is that run's finished_at. A run still
-    "running" never counts here, only a completed one -- the same
-    completed-only reads risk_detection.py's own resume logic relies on.
-    With no completed run yet at all, scored_count is 0 and as_of is None,
-    not a guess.
-    """
-    book_size = session.scalar(select(func.count()).select_from(ActiveClientFund)) or 0
+    book_size = (
+        session.scalar(
+            select(func.count())
+            .select_from(ActiveClientFund)
+            .where(not_on_inactive_side(ActiveClientFund.client_id))
+        )
+        or 0
+    )
 
     latest_run = session.scalar(
         select(RiskRun)
@@ -104,14 +100,6 @@ def book_coverage(session: Session) -> CoverageView:
 
 @dataclass(frozen=True)
 class RiskAnalytics:
-    """Coverage plus book-wide cuts over client_risk_features: band, route,
-    balance-tier, value-tier, and recency-band distribution, how often each
-    signal fires, and which signal most often drives the score -- the
-    candidate cuts the active-book analytics page was scoped around. Plus
-    total_fund_at_risk, the book-wide sum of the same column
-    DigestGroupData.total_fund_at_risk sums per FA/fund group.
-    """
-
     book_size: int
     scored_count: int
     as_of: datetime | None
@@ -137,7 +125,7 @@ def _primary_signal_distribution(session: Session) -> list[tuple[str, int]]:
         select(
             ClientRiskFeatures.config_version,
             *(getattr(ClientRiskFeatures, name) for name in SIGNAL_ORDER),
-        )
+        ).where(not_on_inactive_side(ClientRiskFeatures.client_id))
     ).all()
     if not rows:
         return [(name.removeprefix("sig_"), 0) for name in SIGNAL_ORDER]
@@ -162,13 +150,6 @@ def _primary_signal_distribution(session: Session) -> list[tuple[str, int]]:
 
 
 def risk_analytics(session: Session) -> RiskAnalytics:
-    """Book-wide risk analytics: coverage (see book_coverage) plus the
-    band/route/tier/band cuts, signal fire frequency, and primary-signal
-    distribution, all read from client_risk_features -- the always-current
-    cache, not a latest-run-only slice, same population book_coverage's
-    scored_count counts against but every one of these cuts is over the
-    whole current-state table.
-    """
     coverage = book_coverage(session)
 
     def _counts(column) -> list[tuple]:
@@ -176,6 +157,7 @@ def risk_analytics(session: Session) -> RiskAnalytics:
             session.execute(
                 select(column, func.count())
                 .select_from(ClientRiskFeatures)
+                .where(not_on_inactive_side(ClientRiskFeatures.client_id))
                 .group_by(column)
                 .order_by(func.count().desc())
             ).all()
@@ -188,6 +170,7 @@ def risk_analytics(session: Session) -> RiskAnalytics:
                 select(func.count())
                 .select_from(ClientRiskFeatures)
                 .where(getattr(ClientRiskFeatures, name))
+                .where(not_on_inactive_side(ClientRiskFeatures.client_id))
             )
             or 0,
         )
@@ -195,7 +178,12 @@ def risk_analytics(session: Session) -> RiskAnalytics:
     ]
 
     total_fund_at_risk = (
-        session.scalar(select(func.coalesce(func.sum(ClientRiskFeatures.fund_at_risk), 0.0))) or 0.0
+        session.scalar(
+            select(func.coalesce(func.sum(ClientRiskFeatures.fund_at_risk), 0.0)).where(
+                not_on_inactive_side(ClientRiskFeatures.client_id)
+            )
+        )
+        or 0.0
     )
 
     return RiskAnalytics(

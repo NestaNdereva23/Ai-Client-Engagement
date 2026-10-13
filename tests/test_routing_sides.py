@@ -185,3 +185,66 @@ def test_active_client_ids_returns_only_clients_at_or_above_the_line(db) -> None
         assert 924003 not in ids
         assert 924004 not in ids
         _purge(session)
+
+
+def _set_active_balance(session, client_id: int, balance_kes: float) -> None:
+    session.execute(
+        ActiveClientFund.__table__.update()
+        .where(ActiveClientFund.client_id == client_id)
+        .values(balance=balance_kes)
+    )
+    session.commit()
+
+
+def test_the_first_run_leaves_previous_side_and_change_time_empty(db) -> None:
+    with SessionLocal() as session:
+        _purge(session)
+        _active(session, 924000, 20000.0)
+        _active(session, 924001, 100.0)
+        session.commit()
+
+        assign_sides(session)
+
+        for client_id in (924000, 924001):
+            row = _side(session, client_id)
+            assert row.previous_side is None
+            assert row.side_changed_at is None
+        _purge(session)
+
+
+def test_a_drop_below_the_line_records_the_old_side_and_the_change_time(db) -> None:
+    with SessionLocal() as session:
+        _purge(session)
+        _active(session, 924000, 20000.0)
+        session.commit()
+        assign_sides(session)
+
+        _set_active_balance(session, 924000, 100.0)
+        assign_sides(session)
+
+        row = _side(session, 924000)
+        assert row.side == SIDE_INACTIVE
+        assert row.previous_side == SIDE_ACTIVE
+        assert row.side_changed_at is not None
+        _purge(session)
+
+
+def test_a_run_with_no_change_keeps_the_previous_side_and_the_change_time(db) -> None:
+    with SessionLocal() as session:
+        _purge(session)
+        _active(session, 924000, 100.0)
+        session.commit()
+        assign_sides(session)
+        _set_active_balance(session, 924000, 20000.0)
+        assign_sides(session)
+        changed_row = _side(session, 924000)
+        change_time_after_the_move = changed_row.side_changed_at
+        assert changed_row.previous_side == SIDE_INACTIVE
+
+        assign_sides(session)
+
+        unchanged_row = _side(session, 924000)
+        assert unchanged_row.side == SIDE_ACTIVE
+        assert unchanged_row.previous_side == SIDE_INACTIVE
+        assert unchanged_row.side_changed_at == change_time_after_the_move
+        _purge(session)
