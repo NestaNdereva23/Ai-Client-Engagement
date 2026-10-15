@@ -233,7 +233,7 @@ def _to_agent_activity(
     return ClientAgentActivityOut(
         proposal_id=proposal.proposal_id,
         action_code=proposal.action_code,
-        card_title=card_copy.copy_for(proposal.group_name).card_title,
+        card_title=card_copy.copy_for_history(proposal.group_name).card_title,
         included=proposal_client.included,
         skip_reason=proposal_client.skip_reason,
         status=proposal.status,

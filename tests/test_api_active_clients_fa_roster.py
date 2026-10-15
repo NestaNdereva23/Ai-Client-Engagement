@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 
 from app.db.models.active_clients import ActiveClientFund, ActiveClientInteraction
 from app.db.models.fa_assignment import FaAssignment
@@ -179,6 +179,24 @@ def _ids(params: dict) -> list[int]:
 def test_fa_id_returns_only_that_advisors_client_funds(seeded_book) -> None:
     assert set(_ids({})) == set(BOOK) - {OTHER_ADVISORS_CLIENT}
     assert _ids({"fa_id": OTHER_ADVISOR}) == [OTHER_ADVISORS_CLIENT]
+
+
+def test_unassigned_lists_clients_with_a_blank_advisor_or_no_advisor_row(seeded_book) -> None:
+    with SessionLocal() as session:
+        session.execute(
+            update(FaAssignment)
+            .where(FaAssignment.client_id == UNSCORED_CLIENT)
+            .values(fa_id=None, fa_name=None, source="unassigned")
+        )
+        session.execute(delete(FaAssignment).where(FaAssignment.client_id == NOT_TIERED_CLIENT))
+        session.commit()
+
+    response = client.get(ROSTER, params={"unassigned": True, "limit": 200})
+
+    assert response.status_code == 200
+    listed = {row["client_id"] for row in response.json()["items"]}
+    assert {UNSCORED_CLIENT, NOT_TIERED_CLIENT} <= listed
+    assert not listed & {CRITICAL_HIGH_SCORE_CLIENT, OTHER_ADVISORS_CLIENT}
 
 
 def test_worklist_only_leaves_out_held_out_and_untiered_clients(seeded_book) -> None:

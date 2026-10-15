@@ -1,9 +1,5 @@
 """Pattern and literal blocking on the inbound and outbound scanners.
-
-Inbound blocks a real value that slipped into an allow-listed field; outbound
-blocks a draft that echoes an identifier. The full bucket vocabulary must pass
-so the detectors never false-fire on legitimate context.
-"""
+The full bucket vocabulary must pass so the detectors never false-fire."""
 
 from __future__ import annotations
 
@@ -224,7 +220,7 @@ def test_outbound_allows_a_tool_result_with_a_large_group_total() -> None:
     # own figure.
     rendered = (
         '{"client_count": 15009, "fund_count": 3, '
-        '"group_name": "healthy_one_fund", "money_total_kes": 123456789.5}'
+        '"group_name": "frequent_depositor_one_fund", "money_total_kes": 123456789.5}'
     )
     assert scan_outbound(rendered) is None
 

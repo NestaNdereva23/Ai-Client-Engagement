@@ -6,11 +6,11 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from app.api.reviewer_auth import get_current_reviewer_id
+from app.api.access import Access, book_fa_id, get_access, require_client_in_book
 from app.db.models.routing import ClientTier
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
-from app.risk.signals import fired_signal_tags
+from app.risk.signals import advisor_signal_tags, fired_signal_tags
 from app.routing.tier_playbook import SEGMENT_PLAYBOOK, TIER_PLAYBOOK, tier_tag_fields
 from app.routing.tiers import (
     ACTIVE_TIERS_IN_DISPLAY_ORDER,
@@ -64,7 +64,6 @@ from app.services.briefing import deposit_trend_band_of
 from app.services.client_ai_actions import AiActionNotFound, AiActionNotOpen
 from app.services.client_tiers import TierSummary, summarize_client_tiers
 from app.services.client_touchpoints import (
-    NotTheOwner,
     TouchpointClientNotFound,
     TouchpointDateInPast,
     TouchpointNotFound,
@@ -77,7 +76,7 @@ from app.services.fund_names import short_fund_name
 router = APIRouter(
     prefix="/active-clients",
     tags=["active-clients"],
-    dependencies=[Depends(get_current_reviewer_id)],
+    dependencies=[Depends(get_access)],
 )
 
 
@@ -89,11 +88,13 @@ def get_roster(
     segment: str | None = None,
     tier: str | None = None,
     fa_id: str | None = None,
+    unassigned: bool = False,
     worklist_only: bool = False,
     sort: Literal["client_id", "risk_score", "fund_at_risk"] = "client_id",
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
+    access: Access = Depends(get_access),
 ) -> Page[ActiveClientRosterLineOut]:
     try:
         rows, next_cursor = list_active_roster(
@@ -103,7 +104,8 @@ def get_roster(
             route=route,
             segment=segment,
             tier=tier,
-            fa_id=fa_id,
+            fa_id=book_fa_id(access, fa_id),
+            unassigned=unassigned and access.sees_every_book,
             worklist_only=worklist_only,
             sort=sort,
             cursor=cursor,
@@ -229,9 +231,7 @@ def post_interaction(
     client_id: int,
     unit_fund_id: int,
     body: InteractionCreate,
-    username: str = Query(
-        ..., description="The logging user's identifier, recorded on the log entry."
-    ),
+    access: Access = Depends(require_client_in_book),
     session: Session = Depends(get_session),
 ) -> InteractionOut:
     try:
@@ -241,7 +241,8 @@ def post_interaction(
             unit_fund_id,
             type=body.type,
             note=body.note,
-            reviewer_id=username,
+            reviewer_id=access.email,
+            on_behalf_of=access.on_behalf_of,
             proposal_id=body.proposal_id,
             outcome=body.outcome,
             follow_up_on=body.follow_up_on,
@@ -262,7 +263,11 @@ def post_interaction(
     return InteractionOut.model_validate(row)
 
 
-@router.get("/{client_id}/{unit_fund_id}/interactions", response_model=list[InteractionOut])
+@router.get(
+    "/{client_id}/{unit_fund_id}/interactions",
+    response_model=list[InteractionOut],
+    dependencies=[Depends(require_client_in_book)],
+)
 def get_interactions(
     client_id: int,
     unit_fund_id: int,
@@ -275,7 +280,11 @@ def get_interactions(
     return [InteractionOut.model_validate(r) for r in rows]
 
 
-@router.get("/{client_id}/{unit_fund_id}/touchpoints", response_model=list[TouchpointOut])
+@router.get(
+    "/{client_id}/{unit_fund_id}/touchpoints",
+    response_model=list[TouchpointOut],
+    dependencies=[Depends(require_client_in_book)],
+)
 def get_touchpoints(
     client_id: int, unit_fund_id: int, session: Session = Depends(get_session)
 ) -> list[TouchpointOut]:
@@ -292,7 +301,7 @@ def post_touchpoint(
     client_id: int,
     unit_fund_id: int,
     body: TouchpointCreate,
-    username: str = Query(..., description="The advisor adding it. Must own the client."),
+    access: Access = Depends(require_client_in_book),
     session: Session = Depends(get_session),
 ) -> TouchpointOut:
     try:
@@ -300,7 +309,8 @@ def post_touchpoint(
             session,
             client_id,
             unit_fund_id,
-            username=username,
+            actor=access.email,
+            on_behalf_of=access.on_behalf_of,
             kind=body.kind,
             title=body.title,
             due_date=body.due_date,
@@ -309,10 +319,6 @@ def post_touchpoint(
         )
     except TouchpointClientNotFound:
         raise HTTPException(status_code=404, detail="active client-fund not found") from None
-    except NotTheOwner:
-        raise HTTPException(
-            status_code=403, detail="only the client's advisor can do this"
-        ) from None
     except TouchpointDateInPast:
         raise HTTPException(status_code=422, detail="the day is in the past") from None
     return TouchpointOut.model_validate(row)
@@ -326,22 +332,29 @@ def delete_touchpoint(
     client_id: int,
     unit_fund_id: int,
     touchpoint_id: int,
-    username: str = Query(..., description="The advisor removing it. Must own the client."),
+    access: Access = Depends(require_client_in_book),
     session: Session = Depends(get_session),
 ) -> None:
     try:
-        remove_touchpoint(session, client_id, unit_fund_id, touchpoint_id, username=username)
+        remove_touchpoint(
+            session,
+            client_id,
+            unit_fund_id,
+            touchpoint_id,
+            actor=access.email,
+            on_behalf_of=access.on_behalf_of,
+        )
     except TouchpointClientNotFound:
         raise HTTPException(status_code=404, detail="active client-fund not found") from None
-    except NotTheOwner:
-        raise HTTPException(
-            status_code=403, detail="only the client's advisor can do this"
-        ) from None
     except TouchpointNotFound:
         raise HTTPException(status_code=404, detail="no open touchpoint with that id") from None
 
 
-@router.get("/{client_id}/{unit_fund_id}/transactions", response_model=list[ActiveTransactionOut])
+@router.get(
+    "/{client_id}/{unit_fund_id}/transactions",
+    response_model=list[ActiveTransactionOut],
+    dependencies=[Depends(require_client_in_book)],
+)
 def get_transactions(
     client_id: int,
     unit_fund_id: int,
@@ -355,6 +368,7 @@ def get_transactions(
 @router.get(
     "/{client_id}/{unit_fund_id}/deposit-percentile",
     response_model=DepositPercentileOut,
+    dependencies=[Depends(require_client_in_book)],
 )
 def get_deposit_percentile(
     client_id: int, unit_fund_id: int, session: Session = Depends(get_session)
@@ -407,7 +421,9 @@ def _to_profile_out(profile: ActiveClientProfile) -> ActiveClientProfileOut:
             risk_score=risk.risk_score if risk else None,
             risk_band=risk.risk_band if risk else None,
             risk_reasons=risk.risk_reasons if risk else None,
-            risk_reason_tags=fired_signal_tags(risk) if risk else [],
+            risk_reason_tags=(
+                advisor_signal_tags(risk, profile.near_preservation_line) if risk else []
+            ),
             route=risk.route if risk else None,
             fund_at_risk=risk.fund_at_risk if risk else None,
             primary_signal_magnitude=profile.primary_signal_magnitude,
@@ -452,7 +468,11 @@ def _to_profile_out(profile: ActiveClientProfile) -> ActiveClientProfileOut:
     )
 
 
-@router.get("/{client_id}/{unit_fund_id}/profile", response_model=ActiveClientProfileOut)
+@router.get(
+    "/{client_id}/{unit_fund_id}/profile",
+    response_model=ActiveClientProfileOut,
+    dependencies=[Depends(require_client_in_book)],
+)
 def get_profile(
     client_id: int, unit_fund_id: int, session: Session = Depends(get_session)
 ) -> ActiveClientProfileOut:

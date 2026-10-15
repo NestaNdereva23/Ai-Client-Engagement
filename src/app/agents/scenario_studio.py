@@ -1,10 +1,5 @@
-"""Test one hypothetical client fund against the real situation rules.
-
-A scenario never touches the database: it takes plain numbers, runs them
-through the same boundary checks watchlist.py uses, the same priority order
-propose.py uses to pick one winner, and the same permission gate
-write_tools.py checks before anything sends. Nothing is written anywhere.
-"""
+"""Test one hypothetical client against the real situation rules, never touching the database.
+It uses the same tier rules, priority order and permission gate as a real run."""
 
 from __future__ import annotations
 
@@ -17,20 +12,25 @@ from app.agents.action_catalog import load_action
 from app.agents.permissions import effective_permission
 from app.agents.propose import GROUP_ACTIONS, SITUATION_PRIORITY
 from app.agents.situation_action_mapping import action_code_for_situation
-from app.agents.situations import HEALTHY_BANDS
-from app.agents.watchlist import (
-    FEE_PRESSURE_ACTIVE_CONTRIBUTOR,
-    FEE_PRESSURE_GONE_QUIET,
-    GETTING_SMALLER,
-    GROUP_TO_SITUATION,
-    HEALTHY_ONE_FUND,
-    MORE_URGENT_BUT_NOT_CALLED,
-    SIGNED_UP_RECENTLY,
-    VERY_SMALL_AND_QUIET,
-    WAITING_ON_A_CALL,
-    WatchlistThresholds,
+from app.agents.situations import (
+    APPROACHING_PRESERVATION_LINE,
+    DEPOSIT_SIZE_FALLING,
+    FA_CALL_OVERDUE,
+    FIRST_DEPOSIT_NO_REPEAT,
+    FREQUENT_DEPOSITOR_ONE_FUND,
+    FREQUENT_DEPOSITOR_WITHDRAWING,
+    GRADUAL_DEPOSITOR_DUE,
+    GRADUAL_DEPOSITOR_WITHDRAWING,
+    RISK_ROSE_NO_CALL,
 )
+from app.agents.watchlist import GROUP_TO_SITUATION, WatchlistThresholds
 from app.config import get_settings
+from app.routing.tiers import (
+    ClientActivity,
+    TierThresholds,
+    classify_client_tier,
+    load_tier_thresholds_in_force,
+)
 
 ACT_ALONE = "act_alone"
 
@@ -41,20 +41,20 @@ NO_SITUATION_MATCHED = "no_situation_matched"
 
 @dataclass(frozen=True)
 class ScenarioInput:
-    """One client fund's numbers, standing in for a real ActiveClientFund row."""
+    """One client's numbers, standing in for a real client in the active book."""
 
     balance: float
+    days_since_last_deposit: int | None = None
+    typical_gap_days: float | None = None
+    real_withdrawer: bool = False
+    net_flow_negative: bool = False
+    funds_held: int = 1
     n_deposits: int = 1
     first_deposit_days_ago: int | None = None
-    months_until_empty: float | None = None
-    sig_dormant: bool = False
     sig_shrinking: bool = False
-    risk_band: str = "Watch"
-    funds_held: int = 1
-    days_since_call_flagged: int | None = None
-    call_logged_since_flagged: bool = False
-    route_moved_more_urgent: bool = False
-    on_call_list: bool = False
+    advisor_call_overdue: bool = False
+    risk_band_rose: bool = False
+    near_preservation_line: bool = False
 
 
 @dataclass(frozen=True)
@@ -69,38 +69,48 @@ class ScenarioResult:
     reason: str
 
 
-def matched_situations(scenario: ScenarioInput, thresholds: WatchlistThresholds) -> tuple[str, ...]:
+def matched_situations(
+    scenario: ScenarioInput, thresholds: WatchlistThresholds, tier_thresholds: TierThresholds
+) -> tuple[str, ...]:
     """Every situation this scenario's numbers satisfy, in no particular order."""
+    activity = ClientActivity(
+        client_id=0,
+        total_balance_kes=scenario.balance,
+        days_since_newest_deposit=scenario.days_since_last_deposit,
+        days_since_newest_real_withdrawal=1 if scenario.real_withdrawer else None,
+    )
+    tier = classify_client_tier(activity, tier_thresholds)
+    if tier.segment is None:
+        return ()
+
     matched: list[str] = []
+    past_gap = (
+        scenario.typical_gap_days is not None
+        and scenario.days_since_last_deposit is not None
+        and scenario.days_since_last_deposit > scenario.typical_gap_days
+    )
+    if not tier.purchased_recently and not tier.real_withdrawer and past_gap:
+        matched.append(GRADUAL_DEPOSITOR_DUE)
+    if not tier.purchased_recently and tier.real_withdrawer:
+        matched.append(GRADUAL_DEPOSITOR_WITHDRAWING)
+    if tier.purchased_recently and not tier.real_withdrawer and scenario.funds_held == 1:
+        matched.append(FREQUENT_DEPOSITOR_ONE_FUND)
+    if tier.purchased_recently and tier.real_withdrawer and scenario.net_flow_negative:
+        matched.append(FREQUENT_DEPOSITOR_WITHDRAWING)
+    if scenario.sig_shrinking:
+        matched.append(DEPOSIT_SIZE_FALLING)
     if (
         scenario.n_deposits == 1
         and scenario.first_deposit_days_ago is not None
         and scenario.first_deposit_days_ago <= thresholds.new_client_days
     ):
-        matched.append(SIGNED_UP_RECENTLY)
-    if (
-        scenario.months_until_empty is not None
-        and scenario.months_until_empty < thresholds.months_until_empty
-        and scenario.balance > 0
-    ):
-        if scenario.sig_dormant:
-            matched.append(FEE_PRESSURE_GONE_QUIET)
-        else:
-            matched.append(FEE_PRESSURE_ACTIVE_CONTRIBUTOR)
-    if scenario.balance < thresholds.small_balance and scenario.sig_dormant:
-        matched.append(VERY_SMALL_AND_QUIET)
-    if scenario.sig_shrinking:
-        matched.append(GETTING_SMALLER)
-    if scenario.risk_band in HEALTHY_BANDS and scenario.funds_held == 1:
-        matched.append(HEALTHY_ONE_FUND)
-    if (
-        scenario.days_since_call_flagged is not None
-        and scenario.days_since_call_flagged >= thresholds.awaiting_call_days
-        and not scenario.call_logged_since_flagged
-    ):
-        matched.append(WAITING_ON_A_CALL)
-    if scenario.route_moved_more_urgent and not scenario.on_call_list:
-        matched.append(MORE_URGENT_BUT_NOT_CALLED)
+        matched.append(FIRST_DEPOSIT_NO_REPEAT)
+    if scenario.advisor_call_overdue:
+        matched.append(FA_CALL_OVERDUE)
+    if scenario.risk_band_rose:
+        matched.append(RISK_ROSE_NO_CALL)
+    if scenario.near_preservation_line:
+        matched.append(APPROACHING_PRESERVATION_LINE)
     return tuple(matched)
 
 
@@ -121,7 +131,9 @@ def evaluate_scenario(
     money_ceiling_kes: float | None = None,
 ) -> ScenarioResult:
     """Run one scenario through matching, consolidation and the permission gate."""
-    matched = matched_situations(scenario, thresholds)
+    matched = matched_situations(
+        scenario, thresholds, load_tier_thresholds_in_force(session, as_of)
+    )
     winner = consolidation_winner(matched)
     if winner is None:
         return ScenarioResult(

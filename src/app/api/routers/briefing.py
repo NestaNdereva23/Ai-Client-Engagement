@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.api.access import Access, get_access, require_client_in_book
 from app.api.errors import ApiError
-from app.api.reviewer_auth import get_current_reviewer_id
 from app.config import get_settings
 from app.db.session import get_session
 from app.privacy.llm_client import get_briefing_llm_client
@@ -23,9 +23,7 @@ from app.services.client_email_draft import (
     draft_email_for_client,
 )
 
-router = APIRouter(
-    prefix="/briefing", tags=["briefing"], dependencies=[Depends(get_current_reviewer_id)]
-)
+router = APIRouter(prefix="/briefing", tags=["briefing"], dependencies=[Depends(get_access)])
 
 
 def _narrative_disabled() -> ApiError:
@@ -48,13 +46,17 @@ def _email_draft_disabled() -> ApiError:
 def get_client_briefing(
     client_id: int,
     unit_fund_id: int,
-    username: str = Query(
-        ..., description="The viewing user's identifier, recorded on the audit row."
-    ),
+    access: Access = Depends(require_client_in_book),
     session: Session = Depends(get_session),
 ) -> BriefingOut:
     try:
-        view = get_briefing(session, client_id, unit_fund_id, viewing_fa_id=username)
+        view = get_briefing(
+            session,
+            client_id,
+            unit_fund_id,
+            viewer_id=access.email,
+            on_behalf_of=access.on_behalf_of,
+        )
     except BriefingNotFound:
         raise HTTPException(
             status_code=404, detail="no briefing available for this client"
@@ -66,9 +68,7 @@ def get_client_briefing(
 def get_client_briefing_narrative(
     client_id: int,
     unit_fund_id: int,
-    username: str = Query(
-        ..., description="The viewing user's identifier, recorded on the audit row."
-    ),
+    access: Access = Depends(require_client_in_book),
     session: Session = Depends(get_session),
 ) -> BriefingOut:
     settings = get_settings()
@@ -79,7 +79,8 @@ def get_client_briefing_narrative(
             session,
             client_id,
             unit_fund_id,
-            viewing_fa_id=username,
+            viewer_id=access.email,
+            on_behalf_of=access.on_behalf_of,
             llm_client=get_briefing_llm_client(settings),
         )
     except NarrativeDisabled:
@@ -95,7 +96,7 @@ def get_client_briefing_narrative(
 def post_client_email_draft(
     client_id: int,
     unit_fund_id: int,
-    username: str = Query(..., description="The advisor asking. Counted toward the daily cap."),
+    access: Access = Depends(require_client_in_book),
     session: Session = Depends(get_session),
 ) -> ClientEmailDraftOut:
     settings = get_settings()
@@ -106,7 +107,8 @@ def post_client_email_draft(
             session,
             client_id,
             unit_fund_id,
-            username=username,
+            username=access.email,
+            on_behalf_of=access.on_behalf_of,
             llm_client=get_briefing_llm_client(settings),
         )
     except EmailDraftDisabled:

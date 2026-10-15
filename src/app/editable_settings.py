@@ -117,6 +117,9 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
     _whole("agent_contact_cooldown_days", 0, 90),
     _whole("agent_daily_send_limit", 0, 10000, optional=True),
     _switch("agent_force_approve_each"),
+    _switch("fa_least_loaded_fallback"),
+    _choice("digest_mode", "off", "selected", "all"),
+    EditableSetting("digest_redirect_to", "text", optional=True, max_length=200),
     _switch("ai_briefing_enabled"),
     _whole("client_email_draft_daily_cap", 1, 500),
     _whole("agent_query_call_budget", 1, 50),
@@ -125,7 +128,6 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
     _whole("agent_insight_write_cap", 1, 100),
     _whole("agent_query_min_group_size", 3, 50),
     _choice("prompt_config_source", "hardcoded", "db"),
-    _choice("signal_situation_source", "legacy", "situations"),
 )
 
 EDITABLE_SETTINGS_BY_KEY: dict[str, EditableSetting] = {s.key: s for s in EDITABLE_SETTINGS}

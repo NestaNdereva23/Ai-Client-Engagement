@@ -10,7 +10,7 @@ from app.main import app
 
 client = TestClient(app)
 
-AS_OF = "2026-09-15"
+AS_OF = "2026-10-13"
 
 BASE = "/api/v1/agent-studio"
 
@@ -22,17 +22,15 @@ def _authed(configured_reviewers, reviewer_1_headers):
     client.headers.pop("Authorization", None)
 
 
-def test_scenario_with_full_threshold_overrides_needs_no_live_config() -> None:
+def test_scenario_for_a_regular_depositor_with_one_fund_needs_approval_above_the_ceiling() -> None:
     response = client.post(
         f"{BASE}/scenario",
         json={
             "balance": 500_000.0,
-            "risk_band": "Low",
+            "days_since_last_deposit": 30,
+            "n_deposits": 4,
             "funds_held": 1,
             "new_client_days": 30,
-            "months_until_empty_threshold": 6.0,
-            "small_balance_kes": 100.0,
-            "awaiting_call_days": 2,
             "money_ceiling_kes": 250_000.0,
             "as_of": AS_OF,
         },
@@ -40,7 +38,7 @@ def test_scenario_with_full_threshold_overrides_needs_no_live_config() -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["winner"] == "healthy_one_fund"
+    assert body["winner"] == "frequent_depositor_one_fund"
     assert body["outcome"] == "needs_approval"
 
 
@@ -49,12 +47,10 @@ def test_scenario_matching_nothing_reports_no_situation() -> None:
         f"{BASE}/scenario",
         json={
             "balance": 200_000.0,
-            "risk_band": "High",
+            "days_since_last_deposit": 30,
+            "n_deposits": 4,
             "funds_held": 3,
             "new_client_days": 30,
-            "months_until_empty_threshold": 6.0,
-            "small_balance_kes": 100.0,
-            "awaiting_call_days": 2,
             "as_of": AS_OF,
         },
     )
@@ -72,14 +68,15 @@ def test_batch_simulation_returns_a_row_per_situation() -> None:
     body = response.json()
     situations = {row["situation"] for row in body["by_situation"]}
     assert situations == {
-        "signed_up_recently",
-        "fee_pressure_gone_quiet",
-        "fee_pressure_active_contributor",
-        "very_small_and_quiet",
-        "getting_smaller",
-        "healthy_one_fund",
-        "waiting_on_a_call",
-        "more_urgent_but_not_called",
+        "gradual_depositor_due",
+        "gradual_depositor_withdrawing",
+        "frequent_depositor_one_fund",
+        "frequent_depositor_withdrawing",
+        "deposit_size_falling",
+        "first_deposit_no_repeat",
+        "fa_call_overdue",
+        "risk_rose_no_call",
+        "approaching_preservation_line",
     }
 
 
@@ -89,7 +86,7 @@ def test_replay_compares_two_dates() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["date_a"] == "2026-08-18"
-    assert len(body["rows"]) == 8
+    assert len(body["rows"]) == 9
 
 
 def test_situation_mapping_returns_the_seeded_rows() -> None:
@@ -98,7 +95,7 @@ def test_situation_mapping_returns_the_seeded_rows() -> None:
     assert response.status_code == 200
     body = response.json()
     situations = {row["situation"] for row in body["rows"]}
-    assert "more_urgent_but_not_called" in situations
+    assert "risk_rose_no_call" in situations
     assert body["pending_version"] is None
 
 
@@ -107,7 +104,7 @@ def test_configuration_reports_the_priority_order() -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["situation_priority"][0] == "more_urgent_but_not_called"
+    assert body["situation_priority"][0] == "risk_rose_no_call"
 
 
 def test_angle_brief_for_a_real_seeded_angle() -> None:
@@ -131,7 +128,7 @@ def test_situation_mapping_draft_is_refused_when_invalid() -> None:
         json={
             "rows": [
                 {
-                    "situation": "healthy_one_fund",
+                    "situation": "frequent_depositor_one_fund",
                     "action_code": "suggest_second_fund",
                     "objective": "not_a_real_objective",
                     "angle": "wrong_shelf",
@@ -151,7 +148,7 @@ def test_situation_mapping_draft_stage_and_discard() -> None:
         json={
             "rows": [
                 {
-                    "situation": "healthy_one_fund",
+                    "situation": "frequent_depositor_one_fund",
                     "action_code": "suggest_second_fund",
                     "objective": "encourage",
                     "angle": "wrong_shelf",

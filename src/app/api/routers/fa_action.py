@@ -3,9 +3,13 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.api.reviewer_auth import get_current_reviewer_id
+from app.api.access import Access, book_fa_id, get_access
+from app.api.errors import ApiError
+from app.briefing.book import render_book_briefing
+from app.config import get_settings
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor
+from app.privacy.llm_client import get_briefing_llm_client
 from app.risk.routing import ROUTE_FA_ACTION
 from app.routing.tier_playbook import SEGMENT_PLAYBOOK, TIER_PLAYBOOK, tier_tag_fields
 from app.routing.tiers import (
@@ -15,19 +19,28 @@ from app.routing.tiers import (
 )
 from app.schemas.fa_action import (
     FaActionBookOut,
+    FaActionBriefingOut,
     FaActionClientOut,
     FaActionGroupOut,
     FaActionHeldOutOut,
 )
+from app.services.book_briefing import book_facts_for, get_book_narrative
+from app.services.briefing import NarrativeDisabled
 from app.services.fa_action import (
     FaActionBook,
     NotAWorklistTier,
     load_fa_action_book,
 )
 
-router = APIRouter(
-    prefix="/fa-action", tags=["fa-action"], dependencies=[Depends(get_current_reviewer_id)]
-)
+router = APIRouter(prefix="/fa-action", tags=["fa-action"], dependencies=[Depends(get_access)])
+
+
+def _narrative_disabled() -> ApiError:
+    return ApiError(
+        status_code=404,
+        code="narrative_disabled",
+        detail="AI-narrated briefings are not enabled",
+    )
 
 
 def _to_book_out(book: FaActionBook) -> FaActionBookOut:
@@ -70,16 +83,47 @@ def _to_book_out(book: FaActionBook) -> FaActionBookOut:
     )
 
 
+@router.get("/{fa_id}/briefing", response_model=FaActionBriefingOut)
+def get_fa_action_briefing(
+    fa_id: str,
+    access: Access = Depends(get_access),
+    session: Session = Depends(get_session),
+) -> FaActionBriefingOut:
+    fa_id = book_fa_id(access, fa_id)
+    return FaActionBriefingOut(
+        fa_id=fa_id, text=render_book_briefing(book_facts_for(session, fa_id))
+    )
+
+
+@router.get("/{fa_id}/briefing/narrative", response_model=FaActionBriefingOut)
+def get_fa_action_briefing_narrative(
+    fa_id: str,
+    access: Access = Depends(get_access),
+    session: Session = Depends(get_session),
+) -> FaActionBriefingOut:
+    fa_id = book_fa_id(access, fa_id)
+    settings = get_settings()
+    if not settings.ai_briefing_enabled:
+        raise _narrative_disabled()
+    try:
+        result = get_book_narrative(session, fa_id, llm_client=get_briefing_llm_client(settings))
+    except NarrativeDisabled:
+        raise _narrative_disabled() from None
+    return FaActionBriefingOut(fa_id=fa_id, text=result.text, mode=result.mode)
+
+
 @router.get("/{fa_id}", response_model=FaActionBookOut)
 def get_fa_action_book(
     fa_id: str,
     tier: str | None = None,
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    access: Access = Depends(get_access),
     session: Session = Depends(get_session),
 ) -> FaActionBookOut:
     if cursor is not None and tier is None:
         raise HTTPException(status_code=400, detail="a cursor needs a tier")
+    fa_id = book_fa_id(access, fa_id)
     try:
         book = load_fa_action_book(session, fa_id, tier=tier, cursor=cursor, limit=limit)
     except InvalidCursor:

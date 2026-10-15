@@ -3,21 +3,28 @@ from __future__ import annotations
 from datetime import date, timedelta
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.orm import Session
 
 from app.agents.signal_config import active_threshold
 from app.db.bulk import copy_insert, copy_upsert
 from app.db.models.active_clients import (
+    CONTACT_INTERACTION_TYPES,
+    HANDLED_INTERACTION_TYPES,
+    TOUCHPOINT_OPEN,
     ActiveClientFund,
     ActiveClientInteraction,
+    ActiveClientTouchpoint,
     ActiveTransaction,
 )
 from app.db.models.digest import DigestLine, DigestRun
+from app.db.models.risk import RiskSnapshot
 from app.db.models.routing import ClientSide, ClientTier
 from app.db.models.signals import ClientSignalSnapshot, ClientSignalState, SignalRun
 from app.risk.history import latest_completed_run_id, routes_before_run, routes_for_run
 from app.risk.routing import route_direction
+from app.risk.scoring import band_rank
+from app.risk.signals import NEAR_PRESERVATION_LINE
 from app.risk.store import load_active_config
 from app.routing.sides import SIDE_ACTIVE, SIDE_INACTIVE
 from app.routing.tiers import (
@@ -42,9 +49,10 @@ PURCHASED_THIS_PERIOD = "purchased_this_period"
 REAL_WITHDRAWER = "real_withdrawer"
 PAST_TYPICAL_GAP = "past_typical_gap"
 NET_FLOW_NEGATIVE = "net_flow_negative"
-NEAR_PRESERVATION_LINE = "near_preservation_line"
 SIDE_CHANGED_DOWNWARD = "side_changed_downward"
 SEGMENT_MOVED_UP = "segment_moved_up"
+ADVISOR_CALL_OVERDUE = "advisor_call_overdue"
+RISK_BAND_ROSE = "risk_band_rose"
 
 SIGNAL_CODES = (
     SINGLE_DEPOSIT,
@@ -62,6 +70,8 @@ SIGNAL_CODES = (
     NEAR_PRESERVATION_LINE,
     SIDE_CHANGED_DOWNWARD,
     SEGMENT_MOVED_UP,
+    ADVISOR_CALL_OVERDUE,
+    RISK_BAND_ROSE,
 )
 
 ONE_DEPOSIT = 1
@@ -372,6 +382,32 @@ def _recompute_client_level(
     return run_to_use
 
 
+def _recompute_fund_level(
+    session: Session,
+    as_of: date,
+    run: SignalRun | None,
+    signal_code: str,
+    fund_keys: set[tuple[int, int]],
+) -> SignalRun:
+    run_to_use = run or _open_run(session)
+
+    funds = session.execute(select(ActiveClientFund.client_id, ActiveClientFund.unit_fund_id)).all()
+
+    writes = _SignalWrites(run_to_use.run_id, as_of)
+    for fund in funds:
+        writes.add(
+            fund.client_id,
+            fund.unit_fund_id,
+            signal_code,
+            (fund.client_id, fund.unit_fund_id) in fund_keys,
+        )
+    writes.flush(session)
+
+    if run is None:
+        return _close_run(session, run_to_use)
+    return run_to_use
+
+
 def _threshold_or_raise(session: Session, signal_code: str, name: str, as_of: date) -> float:
     value = active_threshold(session, signal_code, name, as_of)
     if value is None:
@@ -379,6 +415,21 @@ def _threshold_or_raise(session: Session, signal_code: str, name: str, as_of: da
             f"no {name} threshold for {signal_code} is in force on {as_of}"
         )
     return value
+
+
+def keys_with_active_signal(
+    session: Session, signal_code: str, keys: list[tuple[int, int]]
+) -> set[tuple[int, int]]:
+    if not keys:
+        return set()
+    rows = session.execute(
+        select(ClientSignalState.client_id, ClientSignalState.unit_fund_id).where(
+            ClientSignalState.signal_code == signal_code,
+            ClientSignalState.is_active.is_(True),
+            tuple_(ClientSignalState.client_id, ClientSignalState.unit_fund_id).in_(keys),
+        )
+    ).all()
+    return {(row.client_id, row.unit_fund_id) for row in rows}
 
 
 def recompute_tier_signals(
@@ -556,6 +607,114 @@ def recompute_segment_moved_up_signal(
     return _recompute_client_level(session, as_of, run, {SEGMENT_MOVED_UP: moved_up})
 
 
+def recompute_advisor_call_overdue_signal(
+    session: Session, as_of: date, run: SignalRun | None = None
+) -> SignalRun:
+    contact_logged_since = (
+        select(ActiveClientInteraction.id)
+        .where(
+            ActiveClientInteraction.client_id == ActiveClientTouchpoint.client_id,
+            ActiveClientInteraction.unit_fund_id == ActiveClientTouchpoint.unit_fund_id,
+            ActiveClientInteraction.type.in_(CONTACT_INTERACTION_TYPES),
+            ActiveClientInteraction.created_at >= ActiveClientTouchpoint.created_at,
+        )
+        .exists()
+    )
+    overdue = session.execute(
+        select(ActiveClientTouchpoint.client_id, ActiveClientTouchpoint.unit_fund_id)
+        .where(
+            ActiveClientTouchpoint.kind == "call",
+            ActiveClientTouchpoint.status == TOUCHPOINT_OPEN,
+            ActiveClientTouchpoint.due_date < as_of,
+            ~contact_logged_since,
+        )
+        .distinct()
+    ).all()
+    keys = {(row.client_id, row.unit_fund_id) for row in overdue}
+    return _recompute_fund_level(session, as_of, run, ADVISOR_CALL_OVERDUE, keys)
+
+
+def _bands_for_run(session: Session, run_id: str) -> dict[tuple[int, int], str]:
+    rows = session.execute(
+        select(RiskSnapshot.client_id, RiskSnapshot.unit_fund_id, RiskSnapshot.risk_band).where(
+            RiskSnapshot.run_id == run_id
+        )
+    )
+    return {(row.client_id, row.unit_fund_id): row.risk_band for row in rows}
+
+
+def _bands_before_run(session: Session, run_id: str) -> dict[tuple[int, int], str]:
+    first_snapshot = (
+        select(func.min(RiskSnapshot.snapshot_id))
+        .where(RiskSnapshot.run_id == run_id)
+        .scalar_subquery()
+    )
+    rows = session.execute(
+        select(RiskSnapshot.client_id, RiskSnapshot.unit_fund_id, RiskSnapshot.risk_band)
+        .where(RiskSnapshot.snapshot_id < first_snapshot)
+        .distinct(RiskSnapshot.client_id, RiskSnapshot.unit_fund_id)
+        .order_by(
+            RiskSnapshot.client_id, RiskSnapshot.unit_fund_id, RiskSnapshot.snapshot_id.desc()
+        )
+    )
+    return {(row.client_id, row.unit_fund_id): row.risk_band for row in rows}
+
+
+def _already_actioned(
+    session: Session, current_bands: dict[tuple[int, int], str]
+) -> set[tuple[int, int]]:
+    if not current_bands:
+        return set()
+    latest_handled = session.execute(
+        select(
+            ActiveClientInteraction.client_id,
+            ActiveClientInteraction.unit_fund_id,
+            ActiveClientInteraction.risk_band_at_interaction,
+        )
+        .where(
+            ActiveClientInteraction.type.in_(HANDLED_INTERACTION_TYPES),
+            tuple_(ActiveClientInteraction.client_id, ActiveClientInteraction.unit_fund_id).in_(
+                list(current_bands)
+            ),
+        )
+        .distinct(ActiveClientInteraction.client_id, ActiveClientInteraction.unit_fund_id)
+        .order_by(
+            ActiveClientInteraction.client_id,
+            ActiveClientInteraction.unit_fund_id,
+            ActiveClientInteraction.id.desc(),
+        )
+    ).all()
+    return {
+        (row.client_id, row.unit_fund_id)
+        for row in latest_handled
+        if row.risk_band_at_interaction is None
+        or band_rank(current_bands[(row.client_id, row.unit_fund_id)])
+        <= band_rank(row.risk_band_at_interaction)
+    }
+
+
+def recompute_risk_band_rose_signal(
+    session: Session,
+    as_of: date,
+    risk_run_id: str | None = None,
+    run: SignalRun | None = None,
+) -> SignalRun:
+    if risk_run_id is None:
+        risk_run_id = latest_completed_run_id(session)
+
+    rose_without_a_response: set[tuple[int, int]] = set()
+    if risk_run_id is not None:
+        current = _bands_for_run(session, risk_run_id)
+        previous = _bands_before_run(session, risk_run_id)
+        rose = {
+            key: band
+            for key, band in current.items()
+            if key in previous and band_rank(band) > band_rank(previous[key])
+        }
+        rose_without_a_response = set(rose) - _already_actioned(session, rose)
+    return _recompute_fund_level(session, as_of, run, RISK_BAND_ROSE, rose_without_a_response)
+
+
 def recompute_all_signals(
     session: Session,
     as_of: date,
@@ -577,4 +736,6 @@ def recompute_all_signals(
     recompute_near_preservation_line_signal(session, as_of, run)
     recompute_side_changed_downward_signal(session, as_of, run)
     recompute_segment_moved_up_signal(session, as_of, run)
+    recompute_advisor_call_overdue_signal(session, as_of, run)
+    recompute_risk_band_rose_signal(session, as_of, risk_run_id, run)
     return _close_run(session, run)

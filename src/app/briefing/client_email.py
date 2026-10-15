@@ -30,6 +30,8 @@ QUIET_FOR_BY_RECENCY_BAND = {
 
 _DIGIT = re.compile(r"\d")
 _TOKEN = re.compile(r"\{\{[^{}]*\}\}")
+_LOOSE_TOKEN = re.compile(r"[\[{]{1,2}\s*(first_name|fund_name)\s*[\]}]{1,2}")
+_GREETING = re.compile(r"^(?:Dear|Hi|Hello)\s+[^,\n{}]{1,40},", re.IGNORECASE)
 
 INSTRUCTIONS = (
     "Write one short email from a client's financial advisor to that client. It is a warm, "
@@ -91,12 +93,23 @@ def _json_object(text: str) -> dict[str, Any]:
     return parsed
 
 
+def _fix_token_braces(text: str) -> str:
+    return _LOOSE_TOKEN.sub(lambda match: "{{" + match.group(1) + "}}", text)
+
+
+def _restore_first_name(body: str) -> str:
+    if FIRST_NAME_PLACEHOLDER in body:
+        return body
+    return _GREETING.sub(f"Dear {FIRST_NAME_PLACEHOLDER},", body, count=1)
+
+
 def parse_email_draft(text: str) -> EmailDraft:
     parsed = _json_object(text)
     subject, body = parsed.get("subject"), parsed.get("body")
     if not isinstance(subject, str) or not isinstance(body, str):
         raise DraftRejected("subject and body must both be text")
-    subject, body = subject.strip(), body.strip()
+    subject = _fix_token_braces(subject.strip())
+    body = _restore_first_name(_fix_token_braces(body.strip()))
     if not subject or not body:
         raise DraftRejected("subject or body was empty")
     if len(subject) > MAX_SUBJECT_CHARS:
@@ -119,9 +132,15 @@ def draft_client_email(
 ) -> EmailDraft:
     allowed = email_facts(facts)
     model_call = as_model_call(llm_client, system=build_email_prompt(allowed))
+    text = ""
     try:
         text = run_model_boundary(allowed, model_call, entity_id=entity_id, audit=audit)
         return parse_email_draft(text)
     except (InboundLeak, OutboundLeak, LLMClientError, DraftRejected) as exc:
-        logger.warning("client_email_draft_failed", entity_id=entity_id, reason=str(exc))
+        logger.warning(
+            "client_email_draft_failed",
+            entity_id=entity_id,
+            reason=str(exc),
+            reply=text[:600],
+        )
         raise DraftRejected(str(exc)) from exc

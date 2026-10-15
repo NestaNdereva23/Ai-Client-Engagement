@@ -19,6 +19,7 @@ from app.db.session import SessionLocal
 # The two that went live are set so a person reads every message; the rest
 # stay at the safest level.
 LIVE_ACTIONS = ("welcome_and_top_up", "fee_warning")
+SUGGEST_ONLY_FOR_THE_ACTIVE_BOOK = ("welcome_and_top_up",)
 
 SEEDED_ACTIONS = (
     *LIVE_ACTIONS,
@@ -53,7 +54,10 @@ def test_every_seeded_action_has_a_setting(db: None) -> None:
         ).all()
     settings = {row.action_code: row.permission for row in rows}
     for action_code in SEEDED_ACTIONS:
-        expected = "approve_each" if action_code in LIVE_ACTIONS else "suggest_only"
+        needs_each_message_reviewed = (
+            action_code in LIVE_ACTIONS and action_code not in SUGGEST_ONLY_FOR_THE_ACTIVE_BOOK
+        )
+        expected = "approve_each" if needs_each_message_reviewed else "suggest_only"
         assert settings[action_code] == expected
 
 

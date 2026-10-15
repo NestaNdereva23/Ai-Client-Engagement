@@ -262,3 +262,41 @@ def set_action_content_mix(
         },
     )
     return version
+
+
+def set_action_paused(
+    session: Session,
+    action_code: str,
+    paused: bool,
+    *,
+    changed_by: str,
+    valid_from: date | None = None,
+) -> int:
+    start = valid_from or date.today()
+    current = load_active_actions(session, start)
+    if action_code not in current:
+        raise ActionCatalogValidationError(f"there is no action '{action_code}' in force")
+    before = current[action_code]
+    if before.paused == paused:
+        return before.version
+
+    specs = [
+        replace(_spec_of(row), paused=paused) if code == action_code else _spec_of(row)
+        for code, row in current.items()
+    ]
+    version = (session.scalar(select(func.max(AgentActionCatalog.version))) or 0) + 1
+    save_action_catalog_version(session, version, specs, valid_from=start)
+    record_audit(
+        session,
+        entity_type="agent_action_catalog",
+        action="set_paused",
+        entity_id=str(version),
+        actor_id=changed_by,
+        detail={
+            "action_code": action_code,
+            "from": before.paused,
+            "to": paused,
+            "previous_version": before.version,
+        },
+    )
+    return version

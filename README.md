@@ -58,11 +58,11 @@ Everything that sends mail goes through `app.delivery.mailer.get_mailer()`, whic
 
 ### Morning digest emails
 
-Each account manager on `ACE_FA_ROSTER` gets one email at the end of the nightly risk run: how many clients are at risk, what is at stake, and what is driving it, plus a link to the full call list in the console. The email carries counts and money only, never a client name, so it sends the moment the risk run commits rather than waiting on the AI narration warm-up. `CONSOLE_BASE_URL` is where the link points; leave it blank and the email renders without one. Summary counts come from the run's whole snapshot population, not the capped digest lines, so the email never understates the morning.
+Each advisor chosen for the digest gets one email at the end of the nightly risk run (see "Who can see client data" for how they are chosen): how many clients are at risk, what is at stake, and what is driving it, plus a link to the full call list in the console. The email carries counts and money only, never a client name, so it sends the moment the risk run commits rather than waiting on the AI narration warm-up. `CONSOLE_BASE_URL` is where the link points; leave it blank and the email renders without one. Summary counts come from the run's whole snapshot population, not the capped digest lines, so the email never understates the morning.
 
-Each client belongs to the account manager Cytonn names for them. The active feed sends `fa_name` and `fa_email` with every client, and the nightly run matches `fa_email` to the email on `ACE_FA_ROSTER` (ignoring case). A match makes that manager the owner, and if Cytonn moves a client to another manager, the next run follows. A client with no manager in the feed, or one whose manager is not on the roster, keeps their current owner or is shared out to the manager with the lightest load. The audit entry for each run says how many clients were placed by the feed and how many did not match.
+Each client belongs to the account manager Cytonn names for them. The active feed sends `fa_name` and `fa_email` with every client, and the nightly run matches `fa_email` to the email of an advisor in User Access (ignoring case). A match makes that manager the owner, and if Cytonn moves a client to another manager, the next run follows. A client with no manager in the feed, or one whose manager is not an active advisor, keeps their current owner or is shared out to the manager with the lightest load. The audit entry for each run says how many clients were placed by the feed and how many did not match.
 
-Each advisor's `daily_capacity` (the fourth field in `ACE_FA_ROSTER`) is the real cap on their call queue. A client over that cap is first offered to another advisor with room for the night; if nobody has room, that client's line moves to the watchlist instead of piling onto an advisor's already-full list. Ownership never changes either way -- only the loan, or the move to the watchlist, is for that one night.
+Each advisor's `daily_capacity` (set in User Access) is the real cap on their call queue. A client over that cap is first offered to another advisor with room for the night; if nobody has room, that client's line moves to the watchlist instead of piling onto an advisor's already-full list. Ownership never changes either way -- only the loan, or the move to the watchlist, is for that one night.
 
 A marker table records each advisor's send for each digest run, so a re-run or a retry cannot mail the same person twice. One advisor's send failing leaves the others sent, and audits.
 
@@ -86,6 +86,24 @@ Phase 2 adds risk scoring for the active client book, on top of the same ingesti
 - `briefing/` — a deterministic, on-demand briefing for one client, plus an optional model-narrated version (off by default, `AI_BRIEFING_ENABLED`) that falls back to the deterministic text on any doubt. An accepted narration is stored against a hash of the facts it was written from, so it is served instantly next time and dropped the moment those facts change. The nightly run pre-drafts one for the clients the digest surfaced (`BRIEFING_PREWARM_LIMIT`); every other client is narrated on request.
 
 They follow existing conventions: `db/models/` gets one file per new table group (`active_clients.py`, `risk.py`, `fa_assignment.py`, `complaints.py`, `digest.py`), and `api/routers/` plus `schemas/` get one file per new domain (`risk.py`, `digest.py`, `briefing.py`), mounted the same way the Phase 1 routers are.
+
+## Who can see client data
+
+Ticketing signs the person in. This API decides what they may see. The email in Ticketing's signed token is the only identity it trusts. A value sent by the browser, such as `username` or `fa_id`, never widens what a person can read.
+
+The `user_access` table holds one row per person:
+
+- An **advisor** sees only their own book. Any advisor id the browser sends is ignored, and opening a client outside their book is a 403.
+- An **admin** sees every book, and can view as one advisor to see exactly what that advisor sees. A write made while viewing as is recorded under the admin's own email, with the advisor viewed noted beside it.
+- An email with no row, or with `active` switched off, gets a 403 on client data.
+
+No admin is built in. Add the first one, and any later ones, in the admin screen under Access & Audit, User Access. The same screen switches an advisor on for the digest and can set who an admin views as. Every change made there is written to the audit log. Rows are never deleted there: switch `active` off instead, so the nightly run does not add the person back.
+
+User Access is also the list of account managers that clients are shared out to. There is no roster setting. The nightly run adds an advisor row for every account manager email that has clients on the active side, named from the feed, and never changes a row that already exists. Each client then goes to the advisor whose email matches the one in the feed. An advisor's id is their email unless the row sets another one, and `daily_capacity` defaults to 19. Switch `active` off on an address that is not a real advisor, such as a shared mailbox, so it is not handed clients by the lightest load rule.
+
+An admin can also switch from the console with `PUT /api/v1/access/view-as` (body `{"email": "advisor@example.com"}`) and `DELETE /api/v1/access/view-as`. `GET /api/v1/access/me` says who the caller is and who they are viewing as. Each switch is audited under the admin's real email.
+
+Who gets the morning digest is set by two settings, editable in Settings: `digest_mode` (`off`, `selected` for advisors switched on in User Access, or `all`) and `digest_redirect_to`, which sends every digest to one address for testing. An advisor with no clients gets no digest. Viewing as never changes who gets one.
 
 ## Which database session to use
 

@@ -1,12 +1,5 @@
-"""Console reads and writes for the active-client (risk/digest) population.
-
-Everything here is keyed by (client_id, unit_fund_id), the active book's own
-key -- distinct from the dormant client_fund population app.services.clients
-covers. The active-client population has no campaign, enrollment, or
-outreach_message path in this codebase yet: the interaction log below is
-manual FA bookkeeping, never a send trigger. No query here reads pii_vault;
-a name is never re-attached on any of these reads.
-"""
+"""Console reads and writes for the active-client population, keyed by (client_id, unit_fund_id).
+No query here reads pii_vault; the interaction log is manual bookkeeping, never a send trigger."""
 
 from __future__ import annotations
 
@@ -17,7 +10,8 @@ from datetime import date, datetime, timedelta
 from sqlalchemy import Date, and_, func, select, true, tuple_
 from sqlalchemy.orm import Session
 
-from app.audit.log import record_audit
+from app.agents.signals import keys_with_active_signal
+from app.audit.log import record_audit, with_on_behalf_of
 from app.db.models.active_clients import (
     AI_ACTION_INTERACTION_TYPES,
     ActiveClientFund,
@@ -42,7 +36,12 @@ from app.pagination import (
 )
 from app.risk.magnitude import primary_signal_magnitude
 from app.risk.routing import route_direction
-from app.risk.signals import SIGNAL_ORDER, fired_signal_tags
+from app.risk.signals import (
+    GOING_DORMANT,
+    NEAR_PRESERVATION_LINE,
+    SIGNAL_ORDER,
+    advisor_signal_tags,
+)
 from app.routing.sides import not_on_inactive_side
 from app.routing.tier_playbook import tier_tag_fields
 from app.routing.tiers import load_tier_thresholds_in_force
@@ -85,6 +84,7 @@ def _stage_follow_up_touchpoint(
             interaction.unit_fund_id,
             due_date=follow_up_on,
             created_by=interaction.reviewer_id,
+            on_behalf_of=interaction.on_behalf_of,
         )
         return
     stage_follow_up(
@@ -94,6 +94,7 @@ def _stage_follow_up_touchpoint(
         interaction_type=interaction.type,
         due_date=follow_up_on,
         created_by=interaction.reviewer_id,
+        on_behalf_of=interaction.on_behalf_of,
     )
 
 
@@ -105,24 +106,14 @@ def record_interaction(
     type: str,
     note: str | None,
     reviewer_id: str,
+    on_behalf_of: str | None = None,
     proposal_id: int | None = None,
     outcome: str | None = None,
     follow_up_on: date | None = None,
     touchpoint_id: int | None = None,
 ) -> ActiveClientInteraction:
     """Log one FA action against a client-fund, or raise ActiveClientNotFound.
-
-    reviewer_id names who logged it. As of 2026-08-18 the caller
-    (api/routers/active_clients.py::post_interaction) passes its required
-    fa_id query param here, not an X-Reviewer-Key-resolved identity -- this
-    write path deliberately isn't gated, see that router's module
-    docstring for why. Still audited the same as every other write path in
-    this codebase, just self-reported rather than server-resolved.
-
-    Stamps the client-fund's current risk_band onto the row (null if it has
-    never been scored), so a later digest build can tell whether the risk
-    got worse after this was logged -- see digest/build.py.
-    """
+    Stamps the current risk band on the row so a later digest can tell if risk got worse."""
     if session.get(ActiveClientFund, (client_id, unit_fund_id)) is None:
         raise ActiveClientNotFound(f"{client_id}/{unit_fund_id}")
     if type in AI_ACTION_INTERACTION_TYPES:
@@ -146,6 +137,7 @@ def record_interaction(
         outcome=outcome,
         note=note,
         reviewer_id=reviewer_id,
+        on_behalf_of=on_behalf_of,
         risk_band_at_interaction=risk_band,
         proposal_id=proposal_id,
     )
@@ -159,6 +151,7 @@ def record_interaction(
             touchpoint_id,
             interaction_id=row.id,
             actor_id=reviewer_id,
+            on_behalf_of=on_behalf_of,
         )
     _stage_follow_up_touchpoint(session, row, follow_up_on)
     audit_detail = {"note": note} if note else {}
@@ -172,7 +165,7 @@ def record_interaction(
         action=type,
         entity_id=f"{client_id}/{unit_fund_id}",
         actor_id=reviewer_id,
-        detail=audit_detail or None,
+        detail=with_on_behalf_of(audit_detail or None, on_behalf_of),
     )
     session.commit()
     return row
@@ -203,14 +196,8 @@ def list_transactions(
     *,
     limit: int | None = None,
 ) -> list[ActiveTransaction]:
-    """This client-fund's observed deposits and withdrawals, most recent
-    first, a row with no parsed date last rather than dropped. Accumulated
-    across every nightly transform run -- see
-    app.db.models.active_clients.ActiveTransaction -- so this can hold more
-    than the feed's own "last 5 purchases" / "last 2 sales" per-pull cap,
-    though never a claim of full lifetime history: see
-    ActiveClientFund.deposit_count_capped / withdrawal_history_hidden.
-    """
+    """This client-fund's observed deposits and withdrawals, most recent first, undated rows last.
+    Accumulated across nightly runs, so never a claim of full lifetime history."""
     query = (
         select(ActiveTransaction)
         .where(
@@ -254,10 +241,8 @@ def review_period_activity(
 
 @dataclass(frozen=True)
 class ActiveClientProfile:
-    """Every non-PII fact this codebase holds about one active-client-fund
-    relationship, gathered from the tables get_active_client_profile is
-    allowed to read (see module docstring).
-    """
+    """Every non-PII fact held about one active-client-fund relationship.
+    Gathered only from the tables get_active_client_profile is allowed to read."""
 
     active: ActiveClientFund
     risk: ClientRiskFeatures | None
@@ -270,10 +255,11 @@ class ActiveClientProfile:
     client_tier: ClientTier | None
     ai_action: ClientAiAction | None
     review_activity: ReviewPeriodActivity | None
+    near_preservation_line: bool
 
 
 def _signals_dict(risk: ClientRiskFeatures) -> dict[str, bool]:
-    return {name: getattr(risk, name) for name in SIGNAL_ORDER}
+    return {name: getattr(risk, name) for name in SIGNAL_ORDER if name != GOING_DORMANT}
 
 
 def _config_weights(session: Session, config_version: int) -> dict[str, float]:
@@ -286,12 +272,8 @@ def _config_weights(session: Session, config_version: int) -> dict[str, float]:
 def get_active_client_profile(
     session: Session, client_id: int, unit_fund_id: int
 ) -> ActiveClientProfile:
-    """The fuller active-client profile: identity, current bands, risk
-    history, and complaint/interaction/transaction history. Raises
-    ActiveClientNotFound when there is no active_client_fund row at all; a
-    client_risk_features row missing (no nightly run has scored it yet) is
-    not that -- bands come back null instead.
-    """
+    """The fuller active-client profile: identity, bands, risk history, complaints, interactions.
+    Raises ActiveClientNotFound with no fund row; a missing risk row only nulls the bands."""
     active = session.get(ActiveClientFund, (client_id, unit_fund_id))
     if active is None:
         raise ActiveClientNotFound(f"{client_id}/{unit_fund_id}")
@@ -339,14 +321,15 @@ def get_active_client_profile(
             (client_id, unit_fund_id)
         ),
         review_activity=review_period_activity(session, client_id, unit_fund_id),
+        near_preservation_line=bool(
+            keys_with_active_signal(session, NEAR_PRESERVATION_LINE, [(client_id, unit_fund_id)])
+        ),
     )
 
 
 @dataclass(frozen=True)
 class DepositPercentile:
-    """Where one client-fund's observed lifetime deposit total ranks
-    against the whole active book's.
-    """
+    """Where one client-fund's observed lifetime deposit total ranks against the active book's."""
 
     total_deposits: float
     book_size: int
@@ -356,17 +339,8 @@ class DepositPercentile:
 
 
 def deposit_percentile(session: Session, client_id: int, unit_fund_id: int) -> DepositPercentile:
-    """Rank this client-fund's observed deposit total against every
-    active_client_fund row -- the same "book" book_coverage() uses.
-
-    "Observed" deposit total, summed from active_transaction, not a claim
-    of full lifetime history -- deposit_count_capped carries the same
-    caveat ActiveClientIdentityOut already attaches to the raw transaction
-    list. Raises ActiveClientNotFound when there is no active_client_fund
-    row. No SQL window function: a book-wide count-below/count-above
-    comparison, the same plain-aggregate idiom every other query in this
-    module uses.
-    """
+    """Rank this client-fund's observed deposit total against every active_client_fund row.
+    Raises ActiveClientNotFound when there is no active_client_fund row."""
     active = session.get(ActiveClientFund, (client_id, unit_fund_id))
     if active is None:
         raise ActiveClientNotFound(f"{client_id}/{unit_fund_id}")
@@ -436,30 +410,14 @@ def list_active_roster(
     segment: str | None = None,
     tier: str | None = None,
     fa_id: str | None = None,
+    unassigned: bool = False,
     worklist_only: bool = False,
     sort: str = SORT_CLIENT_ID,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ):
-    """Every active_client_fund row, left-joined to its current risk row,
-    keyset-paginated on (client_id, unit_fund_id) -- the same composite
-    cursor app.services.risk.list_small_balance_review_queue already uses. A
-    client-fund with no client_risk_features row yet (unscored) still
-    appears here, with null risk fields, not a gap in the roster.
-
-    client_id, when given, is an exact match against the same "Find by ID"
-    box app.services.clients.list_clients already exposes on the dormant
-    roster. risk_reason_tags is computed the same way
-    ActiveClientBandsOut.risk_reason_tags is, via
-    app.risk.signals.fired_signal_tags -- empty for an unscored row rather
-    than a gap. primary_signal_magnitude is the same computation
-    ActiveClientBandsOut.primary_signal_magnitude uses, via
-    app.risk.magnitude.primary_signal_magnitude. fund_name,
-    complaint_caveat, last_interaction_at, and briefing_available are
-    looked up in extra queries scoped to just this page's rows, not the
-    whole book, so the roster stays one page-sized read regardless of how
-    big the book gets.
-    """
+    """Every active_client_fund row with its risk row, keyset-paginated on the fund key.
+    An unscored row still appears with null risk fields; extra lookups are scoped to the page."""
     limit = clamp_limit(limit)
     query = (
         select(
@@ -512,7 +470,16 @@ def list_active_roster(
         query = query.where(ClientTier.tier == tier)
     if worklist_only:
         query = query.where(ClientTier.segment.is_not(None))
-    if fa_id is not None:
+    if unassigned:
+        query = query.join(
+            FaAssignment,
+            and_(
+                FaAssignment.client_id == ActiveClientFund.client_id,
+                FaAssignment.unit_fund_id == ActiveClientFund.unit_fund_id,
+            ),
+            isouter=True,
+        ).where(FaAssignment.fa_id.is_(None))
+    elif fa_id is not None:
         query = query.join(
             FaAssignment,
             and_(
@@ -589,6 +556,7 @@ def list_active_roster(
     }
     briefing_available = briefing_available_keys(session, page_keys)
     ai_actions = open_ai_actions_for(session, page_keys)
+    near_line = keys_with_active_signal(session, NEAR_PRESERVATION_LINE, page_keys)
 
     items = [
         {
@@ -603,7 +571,7 @@ def list_active_roster(
             "fund_at_risk": r.fund_at_risk,
             "route": r.route,
             "primary_signal_magnitude": primary_signal_magnitude(
-                signals={name: getattr(r, name) for name in SIGNAL_ORDER},
+                signals={name: getattr(r, name) for name in SIGNAL_ORDER if name != GOING_DORMANT},
                 weights=r.weights or {},
                 last_deposit=r.last_deposit_date,
                 overdue_multiple=r.overdue_multiple,
@@ -613,7 +581,7 @@ def list_active_roster(
                 months_until_empty=r.months_until_empty,
             ),
             "briefing_available": (r.client_id, r.unit_fund_id) in briefing_available,
-            "risk_reason_tags": fired_signal_tags(r),
+            "risk_reason_tags": advisor_signal_tags(r, (r.client_id, r.unit_fund_id) in near_line),
             "complaint_caveat": r.client_id in open_complaint_ids,
             "last_interaction_at": last_interaction.get((r.client_id, r.unit_fund_id)),
             "ai_action": _ai_action_dict(ai_actions.get((r.client_id, r.unit_fund_id))),
@@ -625,13 +593,8 @@ def list_active_roster(
 
 
 def _direction_counts(session: Session, run_ids: list[str]) -> dict[str, tuple[int, int]]:
-    """(more_urgent_count, less_urgent_count) per run_id, from each run's
-    "risk_snapshot"/"route" audit_log entry -- the one that actually carries
-    the per-client from_route/to_route pairs, a different entry from the
-    "risk_run"/"complete" one list_route_change_history reads for its other
-    fields. A run with no such entry (nothing changed, or it predates
-    from_route being recorded) contributes (0, 0).
-    """
+    """(more_urgent_count, less_urgent_count) per run_id, from each run's route audit entry.
+    A run with no such entry contributes (0, 0)."""
     if not run_ids:
         return {}
     rows = session.scalars(
@@ -657,15 +620,8 @@ def _direction_counts(session: Session, run_ids: list[str]) -> dict[str, tuple[i
 def list_route_change_history(
     session: Session, *, cursor: str | None = None, limit: int = DEFAULT_LIMIT
 ) -> tuple[list[dict], str | None]:
-    """Route-churn summary per completed nightly risk run, newest first.
-
-    Reads app.workers.risk_detection's own "risk_run"/"complete" audit_log
-    entry -- the same routes_changed and route_distribution figures the
-    worker itself logs -- rather than a dedicated table. more_urgent_count/
-    less_urgent_count come from a second, per-run lookup (see
-    _direction_counts) rather than this entry, which never carried them. No
-    schema change either way, since audit_log is already the durable record.
-    """
+    """Route-churn summary per completed nightly risk run, newest first, read from the audit log.
+    The more and less urgent counts come from a second per-run lookup."""
     limit = clamp_limit(limit)
     query = select(AuditLog).where(
         AuditLog.entity_type == "risk_run", AuditLog.action == "complete"
@@ -704,16 +660,8 @@ def list_route_change_history(
 def route_change_details(
     session: Session, *, run_id: str | None = None, cursor: str | None = None, limit: int = 10
 ) -> tuple[str | None, datetime | None, list[dict], str | None]:
-    """The individual client route moves behind one nightly run's
-    routes_changed count -- the latest completed run with any changes by
-    default, or a specific run_id.
-
-    Reads the same "risk_snapshot"/"route" audit_log entry the worker
-    writes when changes is non-empty. That entry's "changed" list is fixed
-    once written, so it's paginated in memory with a plain offset cursor
-    (encode_id_cursor/decode_id_cursor) -- safe here even though the rest of
-    this module avoids offset pagination for live, growing queries.
-    """
+    """The individual client route moves behind one nightly run's routes_changed count.
+    Defaults to the latest run with changes; paginated in memory with an offset cursor."""
     limit = clamp_limit(limit)
     query = select(AuditLog).where(
         AuditLog.entity_type == "risk_snapshot", AuditLog.action == "route"
@@ -768,10 +716,7 @@ def route_change_details(
 
 
 def _months_ago(reference: date, months: int) -> date:
-    """reference's own day-of-month, `months` calendar months earlier,
-    clamped to the shorter month's last day when the day doesn't exist
-    there (e.g. March 31 minus one month is not Feb 31).
-    """
+    """reference's day of month, `months` months earlier, clamped to that month's last day."""
     month_index = reference.month - 1 - months
     year = reference.year + month_index // 12
     month = month_index % 12 + 1
@@ -781,27 +726,16 @@ def _months_ago(reference: date, months: int) -> date:
 
 @dataclass(frozen=True)
 class TransactionAnalytics:
-    """Book-wide transaction patterns over the trailing window: deposit and
-    withdrawal volume by month, and a breakdown of sale_type among
-    withdrawals -- the only two cuts active_transaction supports without a
-    client-fund scope.
-    """
+    """Book-wide transaction patterns over the trailing window: by month and by sale_type.
+    The only two cuts active_transaction supports without a client-fund scope."""
 
     by_month: list[tuple[date, str, int, float, float | None]]
     by_sale_type: list[tuple[str | None, int, float]]
 
 
 def transaction_analytics(session: Session, *, months: int = 12) -> TransactionAnalytics:
-    """Book-wide deposit/withdrawal volume by month (trailing `months`
-    months) and a sale_type breakdown among withdrawals, both read from
-    active_transaction -- the accumulated observed history, same table
-    deposit_percentile reads, not the feed's own capped
-    last_5_purchases/last_2_sales window.
-
-    Rows with no txn_date (an ingestion gap, see ActiveTransaction's own
-    docstring) are excluded from by_month, since they cannot be placed on
-    the timeline, but nothing here raises on them.
-    """
+    """Book-wide deposit and withdrawal volume by month and a sale_type breakdown among withdrawals.
+    Rows with no txn_date are left out of by_month and never raise."""
     cutoff = _months_ago(date.today(), months)
     month_expr = func.cast(func.date_trunc("month", ActiveTransaction.txn_date), Date).label(
         "month"

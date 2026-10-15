@@ -1,10 +1,5 @@
 """ModelFactBlock: the closed, typed set of real figures the model may see.
-
-Every band is checked against the same vocabulary the derivation produces,
-and every free-text field is checked against a reviewed closed list, so
-nothing here can carry text the schema did not explicitly anticipate.
-Amounts round to two significant figures at construction.
-"""
+Bands and free text are checked against closed lists; amounts round to two significant figures."""
 
 from __future__ import annotations
 
@@ -13,7 +8,7 @@ import re
 from collections.abc import Iterable, Sequence
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.risk.routing import ROUTES
 from app.risk.scoring import RISK_BANDS
@@ -36,6 +31,15 @@ MODEL_FACT_BLOCK_VERSION = 3
 
 # Same purpose as MODEL_FACT_BLOCK_VERSION, for RiskFactBlock.
 RISK_FACT_BLOCK_VERSION = 1
+
+BOOK_FACT_BLOCK_VERSION = 1
+
+BOOK_TIERS = (
+    "gradual_depositor",
+    "gradual_depositor_withdrawer",
+    "frequent_depositor",
+    "frequent_depositor_withdrawer",
+)
 
 # A deposit trend's direction, band-only. Mirrors transform/features.py's own
 # _trend_band split of the same MIN_TREND_CHANGE constant -- briefing/render.py
@@ -126,16 +130,46 @@ class ModelFactBlock(BaseModel):
 
     def to_dict(self, permitted_keys: Sequence[str] | None = None) -> dict[str, Any]:
         """Every present fact, or only the given subset when narrowing further.
-
-        permitted_keys only ever narrows: it filters an already-validated,
-        closed instance, so a key outside this schema can never appear here
-        however permitted_keys is set.
-        """
+        permitted_keys only ever narrows an already-validated, closed instance."""
         raw = self.model_dump(exclude_none=True)
         if permitted_keys is None:
             return raw
         allowed = set(permitted_keys)
         return {key: value for key, value in raw.items() if key in allowed}
+
+
+def _must_be_rounded(value: int | float) -> int | float:
+    if round_sig_figs(value) != value:
+        raise ValueError("an amount must be rounded to two significant figures")
+    return value
+
+
+class BookTierFact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tier: _band(BOOK_TIERS)
+    clients: int = Field(ge=0)
+    balance_kes: int | float = Field(ge=0)
+    at_risk_kes: int | float = Field(ge=0)
+
+    @field_validator("balance_kes", "at_risk_kes")
+    @classmethod
+    def _check_rounded(cls, value: int | float) -> int | float:
+        return _must_be_rounded(value)
+
+
+class BookFactBlock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    assigned_clients: int = Field(ge=0)
+    held_out_clients: int = Field(ge=0)
+    not_yet_tiered_clients: int = Field(ge=0)
+    tiers: list[BookTierFact]
+    month_end_usual_clients: int | None = Field(default=None, ge=0)
+    month_end_not_yet_clients: int | None = Field(default=None, ge=0)
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump(exclude_none=True)
 
 
 class RiskFactBlock(BaseModel):
@@ -153,7 +187,7 @@ class RiskFactBlock(BaseModel):
     sig_dormant: bool | None = None
     sig_broken_pattern: bool | None = None
     sig_shrinking: bool | None = None
-    sig_going_dormant: bool | None = None
+    near_preservation_line: bool | None = None
     sig_never_repeated: bool | None = None
 
     deposit_count_capped: bool | None = None

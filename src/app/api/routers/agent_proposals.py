@@ -71,7 +71,7 @@ def list_agent_proposals(
     )
     items = []
     for p, included_count in proposals:
-        copy = card_copy.copy_for(p.group_name)
+        copy = card_copy.copy_for_history(p.group_name)
         items.append(
             AgentProposalSummaryOut(
                 proposal_id=p.proposal_id,
@@ -109,7 +109,7 @@ def get_agent_proposal(
         raise HTTPException(status_code=404, detail="proposal not found") from None
 
     included_count = get_proposal_included_count(session, proposal_id)
-    copy = card_copy.copy_for(proposal.group_name)
+    copy = card_copy.copy_for_history(proposal.group_name)
     return AgentProposalDetailOut(
         proposal_id=proposal.proposal_id,
         action_code=proposal.action_code,

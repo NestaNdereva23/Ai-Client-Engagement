@@ -1,17 +1,11 @@
-"""Golden-file tests for briefing/render.py.
-
-The two fixture rows originally matched active_eda_out's own rendered
-output verbatim (see the 2026-08-12 changelog entry for why that superseded
-the earlier eda3_out reference); as of the FA-readability pass the wording
-diverges from the notebook on purpose (plain percentages instead of raw
-log10 slopes, no unexplained jargon) and these goldens were updated to
-match render.py's new output, not the notebook's. Plus one test per
-independently-triggered caveat.
-"""
+"""Golden-file tests for briefing/render.py, plus one test per independently-triggered caveat.
+The wording diverges from the notebook on purpose, so the goldens follow render.py."""
 
 from __future__ import annotations
 
+from app.briefing.narrative_prompt import build_narrative_prompt
 from app.briefing.render import BriefingFacts, render_briefing
+from app.services.briefing import to_risk_fact_block
 
 _NO_SIGNALS = {
     "sig_broken_pattern": False,
@@ -208,3 +202,56 @@ def test_all_caveats_can_fire_together() -> None:
         "open complaint",
     ):
         assert caveat in text
+
+
+def test_a_balance_heading_below_the_line_shows_as_a_reason() -> None:
+    facts = _base(signals={**_NO_SIGNALS, "near_preservation_line": True})
+    assert "Balance heading below the active line" in render_briefing(facts)
+
+
+def test_the_tier_goal_action_and_ai_action_show_when_known() -> None:
+    facts = _base(
+        tier_label="Gradual Depositors",
+        tier_goal="Raise deposit frequency",
+        tier_action="Call to review goals",
+        ai_action="Phone call: usually tops up by now",
+    )
+    text = render_briefing(facts)
+
+    assert "Tier         Gradual Depositors" in text
+    assert "Goal         Raise deposit frequency" in text
+    assert "Action       Call to review goals" in text
+    assert "AI Action    Phone call: usually tops up by now" in text
+
+
+def test_no_tier_lines_show_without_a_tier() -> None:
+    text = render_briefing(_base())
+
+    assert "Tier " not in text
+    assert "AI Action" not in text
+
+
+def test_the_tier_and_ai_action_text_never_reach_the_model() -> None:
+    facts = _base(
+        tier_label="Gradual Depositors",
+        tier_action="Call to review goals",
+        ai_action="Phone call: usually tops up by now",
+    )
+    prompt = build_narrative_prompt(to_risk_fact_block(facts))
+
+    assert "Gradual Depositors" not in prompt
+    assert "Call to review goals" not in prompt
+    assert "usually tops up by now" not in prompt
+
+
+def test_the_fee_runway_reason_is_no_longer_shown() -> None:
+    facts = _base(signals={**_NO_SIGNALS, "sig_going_dormant": True})
+    assert "Fees will empty the account" not in render_briefing(facts)
+
+
+def test_the_model_sees_the_near_line_flag_and_not_the_fee_runway() -> None:
+    signals = {**_NO_SIGNALS, "near_preservation_line": True, "sig_going_dormant": True}
+    block = to_risk_fact_block(_base(signals=signals))
+    assert block.near_preservation_line is True
+    assert "sig_going_dormant" not in block.to_dict()
+    assert "drop below the level that keeps them active" in build_narrative_prompt(block)

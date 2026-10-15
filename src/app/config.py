@@ -5,7 +5,6 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any, Literal
 
 import structlog
@@ -15,20 +14,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.durations import parse_hours
 
 
-@dataclass(frozen=True)
-class FaRecord:
-    fa_id: str
-    name: str
-    email: str
-    daily_capacity: int
-
-
 class Settings(BaseSettings):
     """Runtime configuration, read from the environment and a local .env file.
-
-    Environment variables are matched case-insensitively, so ``APP_ENV`` in the
-    environment populates ``app_env`` here.
-    """
+    Environment variables are matched case-insensitively."""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -157,33 +145,9 @@ class Settings(BaseSettings):
 
     complaints_source: str = "stub"
     fa_assignment_source: str = ""
-    fa_roster: str = Field(default="", validation_alias=AliasChoices("ACE_FA_ROSTER", "fa_roster"))
-
-    @property
-    def fa_records(self) -> tuple[FaRecord, ...]:
-        """`fa_roster`, parsed into records in the order given. Malformed
-        entries (wrong field count, empty id, name, or email, unparseable
-        capacity) and repeats of an id already seen are dropped rather than
-        raising, so one typo does not take the whole roster down.
-        """
-        records: list[FaRecord] = []
-        seen: set[str] = set()
-        for entry in self.fa_roster.split(","):
-            parts = [part.strip() for part in entry.split(":")]
-            if len(parts) != 4:
-                continue
-            fa_id, name, email, raw_capacity = parts
-            if not fa_id or not name or not email:
-                continue
-            try:
-                capacity = int(raw_capacity)
-            except ValueError:
-                continue
-            if capacity <= 0 or fa_id in seen:
-                continue
-            seen.add(fa_id)
-            records.append(FaRecord(fa_id=fa_id, name=name, email=email, daily_capacity=capacity))
-        return tuple(records)
+    fa_least_loaded_fallback: bool = True
+    digest_mode: str = "selected"
+    digest_redirect_to: str | None = None
 
     ai_outreach_jwt_secret: str = Field(
         default="", validation_alias=AliasChoices("AI_OUTREACH_JWT_SECRET")
@@ -198,8 +162,6 @@ class Settings(BaseSettings):
     agent_daily_send_limit: int | None = None
     agent_first_run_limit: int = 50
     agent_force_approve_each: bool = False
-
-    signal_situation_source: Literal["legacy", "situations"] = "situations"
 
     # What one investigation of a group may spend on its own queries.
     agent_query_call_budget: int = 12

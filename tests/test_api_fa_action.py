@@ -6,6 +6,8 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
 
+from app.api.routers import fa_action as fa_action_router
+from app.config import get_settings
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.fa_assignment import FaAssignment
 from app.db.models.risk import ClientRiskFeatures
@@ -185,6 +187,70 @@ def test_every_assigned_active_client_appears_once_in_its_tier_group(seeded_book
     }
     listed = _all_listed_ids(book)
     assert len(listed) == len(set(listed)) == 5
+
+
+def test_the_book_briefing_reads_the_advisors_tier_totals(seeded_books) -> None:
+    response = client.get(f"/api/v1/fa-action/{ADVISOR}/briefing")
+
+    assert response.status_code == 200
+    text = response.json()["text"]
+    assert "BOOK BRIEFING  |  Test Advisor" in text
+    assert "8 clients assigned   5 on your worklist" in text
+    assert "! Not on the worklist: 2 clients" in text
+    assert "! No tier yet: 1 client." in text
+
+
+class _ScriptedClient:
+    model = "scripted"
+
+    def __init__(self, reply: str) -> None:
+        self.reply = reply
+
+    def generate(self, *, system: str, user: str) -> str:
+        return self.reply
+
+
+def _switch_ai_briefing(monkeypatch, enabled: bool, reply: str = "") -> None:
+    monkeypatch.setenv("AI_BRIEFING_ENABLED", "true" if enabled else "false")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        fa_action_router, "get_briefing_llm_client", lambda settings: _ScriptedClient(reply)
+    )
+
+
+def test_the_book_summary_is_off_when_ai_briefing_is_off(seeded_books, monkeypatch) -> None:
+    _switch_ai_briefing(monkeypatch, False)
+
+    response = client.get(f"/api/v1/fa-action/{ADVISOR}/briefing/narrative")
+
+    get_settings.cache_clear()
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "narrative_disabled"
+
+
+def test_the_book_summary_returns_the_model_text_when_it_stays_inside_the_facts(
+    seeded_books, monkeypatch
+) -> None:
+    _switch_ai_briefing(monkeypatch, True, "You have 5 clients on your worklist today.")
+
+    response = client.get(f"/api/v1/fa-action/{ADVISOR}/briefing/narrative")
+
+    get_settings.cache_clear()
+    assert response.status_code == 200
+    assert response.json()["mode"] == "narrative"
+    assert response.json()["text"] == "You have 5 clients on your worklist today."
+
+
+def test_the_book_summary_falls_back_to_the_plain_briefing_on_an_invented_figure(
+    seeded_books, monkeypatch
+) -> None:
+    _switch_ai_briefing(monkeypatch, True, "Seven hundred and 42% of clients left.")
+
+    response = client.get(f"/api/v1/fa-action/{ADVISOR}/briefing/narrative")
+
+    get_settings.cache_clear()
+    assert response.json()["mode"] == "deterministic_fallback"
+    assert response.json()["text"].startswith("BOOK BRIEFING  |  Test Advisor")
 
 
 def test_a_client_with_two_funds_is_one_item_with_the_balances_added(seeded_books) -> None:

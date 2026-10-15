@@ -119,10 +119,10 @@ def book(db: None):
         )
         session.add_all(
             [
-                _state(CALL_URGENT_CLIENT, "follow_up_overdue"),
-                _state(HEALTHY_CLIENT, "single_fund_healthy"),
-                _state(MULTI_MATCH_CLIENT, "fee_pressure_gone_quiet"),
-                _state(MULTI_MATCH_CLIENT, "contribution_decline"),
+                _state(CALL_URGENT_CLIENT, "fa_call_overdue"),
+                _state(HEALTHY_CLIENT, "frequent_depositor_one_fund"),
+                _state(MULTI_MATCH_CLIENT, "first_deposit_no_repeat"),
+                _state(MULTI_MATCH_CLIENT, "deposit_size_falling"),
             ]
         )
         session.commit()
@@ -140,11 +140,11 @@ def test_batch_simulation_counts_client_funds_and_consolidates_multi_matches(boo
     assert result.matched == 3
     assert result.multi_match_consolidated == 1
     by_name = {row.situation: row.client_funds for row in result.by_situation}
-    assert by_name["waiting_on_a_call"] == 1
-    assert by_name["healthy_one_fund"] == 1
+    assert by_name["fa_call_overdue"] == 1
+    assert by_name["frequent_depositor_one_fund"] == 1
     # the multi-match client is counted once, under its higher-priority situation only
-    assert by_name["fee_pressure_gone_quiet"] == 1
-    assert by_name["getting_smaller"] == 0
+    assert by_name["deposit_size_falling"] == 1
+    assert by_name["first_deposit_no_repeat"] == 0
 
 
 def test_batch_simulation_everyone_needs_approval_without_a_permission_row(book: None) -> None:
@@ -215,11 +215,9 @@ def snapshot_dates(db: None):
         session.flush()
         session.add_all(
             [
+                SituationRunCount(run_id=RUN_ID, situation_code="fa_call_overdue", active_count=1),
                 SituationRunCount(
-                    run_id=RUN_ID, situation_code="follow_up_overdue", active_count=1
-                ),
-                SituationRunCount(
-                    run_id=LATE_RUN_ID, situation_code="follow_up_overdue", active_count=2
+                    run_id=LATE_RUN_ID, situation_code="fa_call_overdue", active_count=2
                 ),
             ]
         )
@@ -237,7 +235,7 @@ def test_replay_compares_situation_counts_between_two_dates(snapshot_dates) -> N
     with SessionLocal() as session:
         comparison = compare_situation_snapshots(session, date_a, date_b)
 
-    row = next(r for r in comparison.rows if r.situation == "waiting_on_a_call")
+    row = next(r for r in comparison.rows if r.situation == "fa_call_overdue")
     assert row.count_a == 1
     assert row.count_b == 2
 
@@ -278,7 +276,7 @@ def test_current_configuration_reads_the_live_risk_config(risk_config) -> None:
     assert summary.risk_config_version == _CONFIG_VERSION
     assert summary.months_until_empty == _THRESHOLDS["MONTHS_UNTIL_EMPTY"]
     assert summary.small_balance_kes == _THRESHOLDS["TINY_BALANCE"]
-    assert summary.situation_priority[0] == "more_urgent_but_not_called"
+    assert summary.situation_priority[0] == "risk_rose_no_call"
 
 
 def test_current_configuration_reports_the_kill_switch(risk_config, monkeypatch) -> None:
@@ -300,7 +298,7 @@ def test_current_configuration_reports_the_kill_switch(risk_config, monkeypatch)
 
 _VALID_ROWS = [
     MappingSpec(
-        situation="healthy_one_fund",
+        situation="frequent_depositor_one_fund",
         action_code="suggest_second_fund",
         objective="encourage",
         angle="wrong_shelf",
@@ -313,7 +311,7 @@ _VALID_ROWS = [
 def test_staging_an_invalid_draft_is_refused(db: None) -> None:
     bad_rows = [
         MappingSpec(
-            situation="healthy_one_fund",
+            situation="frequent_depositor_one_fund",
             action_code="suggest_second_fund",
             objective="not_a_real_objective",
             angle="wrong_shelf",

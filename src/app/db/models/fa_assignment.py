@@ -24,7 +24,7 @@ class FaAssignment(Base):
     client_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     unit_fund_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     # The advisor's login username on the console calling this API, not an
-    # arbitrary roster number -- see config.FaRecord.
+    # The advisor's user_access fa_id, which is their email unless the row sets another.
     fa_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Display only, never sent to a model.
     fa_name: Mapped[str | None] = mapped_column(Text, nullable=True)

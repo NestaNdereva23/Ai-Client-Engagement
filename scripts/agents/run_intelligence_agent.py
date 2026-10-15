@@ -4,7 +4,7 @@ import argparse
 import asyncio
 import sys
 import time
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 # Make the app package importable when run as a plain script.
@@ -14,9 +14,10 @@ from sqlalchemy import select  # noqa: E402
 
 from app.agents.intelligence import run_intelligence_agent  # noqa: E402
 from app.agents.run_report_email import announce_run_finished  # noqa: E402
+from app.audit.log import record_audit  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.db.models.agent_insight import AgentInsight, AgentInsightFact  # noqa: E402
-from app.db.models.agent_run import AgentToolCall  # noqa: E402
+from app.db.models.agent_run import AgentRun, AgentToolCall  # noqa: E402
 from app.db.models.audit import AuditLog  # noqa: E402
 from app.db.session import SessionLocal  # noqa: E402
 from app.llmops.tracing import get_tracer  # noqa: E402
@@ -70,7 +71,51 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override how many groups are investigated at the same time.",
     )
+    parser.add_argument(
+        "--stop-run",
+        action="store_true",
+        help="List the runs still marked running, for when a run was stopped by hand "
+        "and left its row behind. Add --yes to mark them failed. Starts no run.",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="With --stop-run, mark the listed runs as failed.",
+    )
     return parser
+
+
+def _stop_runs(confirm: bool) -> int:
+    with SessionLocal() as session:
+        running = session.scalars(
+            select(AgentRun).where(AgentRun.state == "running").order_by(AgentRun.run_id)
+        ).all()
+        if not running:
+            print("no run is marked running")
+            return 0
+        for run in running:
+            print(
+                f"run_id={run.run_id} kind={run.agent_kind!r} trigger={run.trigger!r} "
+                f"started_at={run.started_at:%Y-%m-%d %H:%M}"
+            )
+        if not confirm:
+            print("\nNothing changed. Add --yes to mark these runs as failed.")
+            return 0
+        for run in running:
+            run.state = "failed"
+            run.finished_at = datetime.now(UTC)
+            run.failure_reason = "stopped by hand"
+            record_audit(
+                session,
+                entity_type="agent_run",
+                action="failed",
+                entity_id=str(run.run_id),
+                run_id=str(run.run_id),
+                detail={"reason": "stopped_by_hand"},
+            )
+        session.commit()
+        print(f"\nmarked {len(running)} run(s) as failed")
+    return 0
 
 
 async def _run(args, llm_client, tracer):
@@ -111,10 +156,15 @@ async def _run(args, llm_client, tracer):
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if args.yes and not args.stop_run:
+        parser.error("--yes only goes with --stop-run")
 
     settings = get_settings()
     configure_logging(settings.log_level)
+    if args.stop_run:
+        return _stop_runs(args.yes)
 
     overrides = {}
     if args.provider is not None:

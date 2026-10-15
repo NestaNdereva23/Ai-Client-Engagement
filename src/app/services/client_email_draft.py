@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.audit.log import record_audit
+from app.audit.log import record_audit, with_on_behalf_of
 from app.briefing.client_email import INSTRUCTIONS, DraftRejected, EmailDraft, draft_client_email
 from app.campaigns.nurture_bridge import ensure_active_client_row
 from app.config import get_settings
@@ -167,6 +167,7 @@ def draft_email_for_client(
     *,
     username: str,
     llm_client: LLMClient,
+    on_behalf_of: str | None = None,
 ) -> ClientEmailDraft:
     settings = get_settings()
     if not settings.ai_briefing_enabled:
@@ -204,7 +205,7 @@ def draft_email_for_client(
         action=DRAFT_MADE,
         entity_id=f"{client_id}/{unit_fund_id}",
         actor_id=username,
-        detail={"message_id": message_id},
+        detail=with_on_behalf_of({"message_id": message_id}, on_behalf_of),
     )
     session.commit()
     return ClientEmailDraft(message_id=message_id, drafts_left_today=cap - made_today - 1)

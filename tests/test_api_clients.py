@@ -1,6 +1,5 @@
-"""The client segment console API: browse buckets, never a name -- except
-GET /clients/{id}/name, gated behind the reviewer key stopgap.
-"""
+"""The client segment console API: browse buckets, never a name,
+except GET /clients/{id}/name, gated behind the reviewer key."""
 
 from __future__ import annotations
 
@@ -11,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select, text
 
-from app.agents.watchlist import VERY_SMALL_AND_QUIET
+from app.agents.situations import DEPOSIT_SIZE_FALLING
 from app.config import Settings
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.audit import AuditLog
@@ -191,10 +190,8 @@ def approved_call_brief(two_clients):
 
 @pytest.fixture
 def profile_client(two_clients):
-    """Adds a campaign, enrollment, touch, outreach_message, contact_event,
-    and suppression row for the first of two_clients, so the profile read
-    has something in every section to return.
-    """
+    """Adds a campaign, enrollment, touch, message, contact event and suppression row
+    so the profile read has something in every section."""
     first_id, _second_id, _fund_id = two_clients
     with SessionLocal() as session:
         campaign = Campaign(name="client profile test campaign")
@@ -349,7 +346,7 @@ def client_with_agent_activity(two_clients):
         proposal = AgentProposal(
             action_code="start_win_back",
             catalog_version=1,
-            group_name=VERY_SMALL_AND_QUIET,
+            group_name=DEPOSIT_SIZE_FALLING,
             client_count=1,
             evidence="one dormant client with a small, quiet balance",
             reason="win back before they close the account",
@@ -386,7 +383,7 @@ def test_get_client_profile_includes_agent_activity(client_with_agent_activity) 
     assert len(activity) == 1
     assert activity[0]["proposal_id"] == proposal_id
     assert activity[0]["action_code"] == "start_win_back"
-    assert activity[0]["card_title"] == "Reconnect with clients who have gone quiet"
+    assert activity[0]["card_title"] == "Check in on clients whose contributions are shrinking"
     assert activity[0]["included"] is True
     assert activity[0]["skip_reason"] is None
 
@@ -756,9 +753,7 @@ def test_client_name_read_is_audited(
 def test_get_client_profile_still_needs_no_key_and_never_includes_a_name(
     named_client,
 ) -> None:
-    """The profile endpoint (item 13) must stay exactly as it was: no
-    auth, no name, even for a client the name endpoint can now identify.
-    """
+    """The profile endpoint must stay as it was: no auth and no name."""
     response = client.get(f"{CLIENTS}/{named_client}/profile")
     assert response.status_code == 200
     assert "Jane Doe" not in response.text

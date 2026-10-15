@@ -1,7 +1,5 @@
-"""The nightly agent loop, against a fake model: a full run that ends in a
-proposal, a run where a step raises and the run ends failed with no
-proposal, and a run where the gates drop everyone the model chose.
-"""
+"""The nightly agent loop, against a fake model: a full run, a step that raises,
+and a run where the gates drop everyone the model chose."""
 
 from __future__ import annotations
 
@@ -13,7 +11,6 @@ import pytest
 from sqlalchemy import delete, select
 
 from app.agents import agent_loop as agent_loop_module
-from app.agents import watchlist
 from app.agents.action_catalog import load_action
 from app.agents.agent_loop import (
     CHOOSE_ACTION_TOOL_NAME,
@@ -24,12 +21,11 @@ from app.agents.agent_loop import (
     start_agent_run,
 )
 from app.agents.propose import DO_NOTHING_ACTION, ON_DO_NOT_CONTACT_LIST
-from app.agents.situations import SMALL_BALANCE_INACTIVE
-from app.agents.watchlist import (
-    FEE_PRESSURE_GONE_QUIET,
-    VERY_SMALL_AND_QUIET,
-    WatchlistThresholds,
+from app.agents.situations import (
+    DEPOSIT_SIZE_FALLING,
+    FIRST_DEPOSIT_NO_REPEAT,
 )
+from app.agents.watchlist import WatchlistThresholds
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.agent_run import AgentRun, AgentToolCall
@@ -147,7 +143,7 @@ def _stalling_choose_turn() -> ConversationTurn:
     return _choose_calls(
         [
             {
-                "group_name": FEE_PRESSURE_GONE_QUIET,
+                "group_name": FIRST_DEPOSIT_NO_REPEAT,
                 "action_code": "not_a_real_action",
                 "angle": None,
                 "reason": "trying",
@@ -202,7 +198,7 @@ def _fixed_thresholds(monkeypatch, clean: None):
     monkeypatch.setattr(agent_loop_module, "load_thresholds", lambda session, as_of: THRESHOLDS)
 
 
-def _seed_fee_pressure_gone_quiet_client(client_id: int) -> None:
+def _seed_first_deposit_client(client_id: int) -> None:
     with SessionLocal() as session:
         session.add(
             ActiveClientFund(
@@ -238,7 +234,7 @@ def _seed_fee_pressure_gone_quiet_client(client_id: int) -> None:
             ClientSituationState(
                 client_id=client_id,
                 unit_fund_id=FUND_ID,
-                situation_code=FEE_PRESSURE_GONE_QUIET,
+                situation_code=FIRST_DEPOSIT_NO_REPEAT,
                 is_active=True,
                 signal_codes=["fee_pressure_close"],
                 since=AS_OF,
@@ -248,7 +244,7 @@ def _seed_fee_pressure_gone_quiet_client(client_id: int) -> None:
         session.commit()
 
 
-def _seed_very_small_and_quiet_client(client_id: int) -> None:
+def _seed_falling_deposits_client(client_id: int) -> None:
     with SessionLocal() as session:
         session.add(
             ActiveClientFund(
@@ -266,7 +262,7 @@ def _seed_very_small_and_quiet_client(client_id: int) -> None:
             ClientSituationState(
                 client_id=client_id,
                 unit_fund_id=FUND_ID,
-                situation_code=SMALL_BALANCE_INACTIVE,
+                situation_code=DEPOSIT_SIZE_FALLING,
                 is_active=True,
                 signal_codes=["small_balance"],
                 since=AS_OF,
@@ -277,14 +273,14 @@ def _seed_very_small_and_quiet_client(client_id: int) -> None:
 
 
 def test_a_full_run_produces_a_proposal_chosen_by_the_model() -> None:
-    _seed_fee_pressure_gone_quiet_client(ELIGIBLE_CLIENT)
+    _seed_first_deposit_client(ELIGIBLE_CLIENT)
     llm_client = FakeConversingLLMClient(
         [
             _final_answer("The fee warning group matters tonight. Nothing else does."),
             *_choose_reply(
                 [
                     {
-                        "group_name": FEE_PRESSURE_GONE_QUIET,
+                        "group_name": FIRST_DEPOSIT_NO_REPEAT,
                         "action_code": "fee_warning",
                         "angle": "sitting_still",
                         "reason": "their balance will run out within a few months",
@@ -315,7 +311,7 @@ def test_a_full_run_produces_a_proposal_chosen_by_the_model() -> None:
 
     assert len(proposals) == 1
     proposal = proposals[0]
-    assert proposal.group_name == FEE_PRESSURE_GONE_QUIET
+    assert proposal.group_name == FIRST_DEPOSIT_NO_REPEAT
     assert proposal.action_code == "fee_warning"
     assert proposal.angle == "sitting_still"
     assert proposal.reason == "their balance will run out within a few months"
@@ -332,18 +328,15 @@ def test_a_full_run_produces_a_proposal_chosen_by_the_model() -> None:
     assert clients[0].skip_reason is None
 
 
-def test_a_must_reach_out_group_is_not_left_on_watch_for_now(monkeypatch) -> None:
-    monkeypatch.setattr(
-        watchlist, "get_settings", lambda: SimpleNamespace(signal_situation_source="situations")
-    )
-    _seed_very_small_and_quiet_client(MUST_REACH_CLIENT)
+def test_a_must_reach_out_group_is_not_left_on_watch_for_now() -> None:
+    _seed_falling_deposits_client(MUST_REACH_CLIENT)
     llm_client = FakeConversingLLMClient(
         [
             _final_answer("Nothing urgent tonight; a quiet group can just be watched."),
             *_choose_reply(
                 [
                     {
-                        "group_name": VERY_SMALL_AND_QUIET,
+                        "group_name": DEPOSIT_SIZE_FALLING,
                         "action_code": "watch_for_now",
                         "angle": None,
                         "reason": "small quiet group, no pressing trigger tonight",
@@ -356,7 +349,7 @@ def test_a_must_reach_out_group_is_not_left_on_watch_for_now(monkeypatch) -> Non
     with SessionLocal() as session:
         run = run_nightly_agent(session, trigger="manual", llm_client=llm_client, as_of=AS_OF)
         run_id = run.run_id
-        expected_action = load_action(session, "start_win_back", AS_OF)
+        expected_action = load_action(session, "ask_what_changed", AS_OF)
 
     with SessionLocal() as session:
         proposals = session.scalars(
@@ -365,7 +358,7 @@ def test_a_must_reach_out_group_is_not_left_on_watch_for_now(monkeypatch) -> Non
 
     assert len(proposals) == 1
     proposal = proposals[0]
-    assert proposal.group_name == VERY_SMALL_AND_QUIET
+    assert proposal.group_name == DEPOSIT_SIZE_FALLING
     assert proposal.action_code == expected_action.action_code
     assert proposal.angle == expected_action.message_angle
     assert "required outreach action" in proposal.reason
@@ -382,18 +375,15 @@ def test_a_must_reach_out_group_is_not_left_on_watch_for_now(monkeypatch) -> Non
     assert clients[0].skip_reason is None
 
 
-FEE_PRESSURE_SPLIT_AS_OF = date(2026, 9, 17)
-
-
-def test_a_fee_pressure_group_is_not_left_on_do_nothing() -> None:
-    _seed_fee_pressure_gone_quiet_client(ELIGIBLE_CLIENT)
+def test_a_must_reach_out_group_is_not_left_on_do_nothing() -> None:
+    _seed_falling_deposits_client(ELIGIBLE_CLIENT)
     llm_client = FakeConversingLLMClient(
         [
             _final_answer("This client already has a message in flight; leave it alone."),
             *_choose_reply(
                 [
                     {
-                        "group_name": FEE_PRESSURE_GONE_QUIET,
+                        "group_name": DEPOSIT_SIZE_FALLING,
                         "action_code": "do_nothing",
                         "angle": None,
                         "reason": "this client already has a fee warning proposed elsewhere",
@@ -404,13 +394,9 @@ def test_a_fee_pressure_group_is_not_left_on_do_nothing() -> None:
     )
 
     with SessionLocal() as session:
-        run = run_nightly_agent(
-            session, trigger="manual", llm_client=llm_client, as_of=FEE_PRESSURE_SPLIT_AS_OF
-        )
+        run = run_nightly_agent(session, trigger="manual", llm_client=llm_client, as_of=AS_OF)
         run_id = run.run_id
-        expected_action = load_action(
-            session, "fee_pressure_warning_dormant", FEE_PRESSURE_SPLIT_AS_OF
-        )
+        expected_action = load_action(session, "ask_what_changed", AS_OF)
 
     with SessionLocal() as session:
         proposals = session.scalars(
@@ -419,7 +405,7 @@ def test_a_fee_pressure_group_is_not_left_on_do_nothing() -> None:
 
     assert len(proposals) == 1
     proposal = proposals[0]
-    assert proposal.group_name == FEE_PRESSURE_GONE_QUIET
+    assert proposal.group_name == DEPOSIT_SIZE_FALLING
     assert proposal.action_code == expected_action.action_code
     assert proposal.angle == expected_action.message_angle
     assert "required outreach action" in proposal.reason
@@ -437,14 +423,14 @@ def test_a_fee_pressure_group_is_not_left_on_do_nothing() -> None:
 
 
 def test_every_step_traces_a_real_input_and_output_without_a_client_id() -> None:
-    _seed_fee_pressure_gone_quiet_client(ELIGIBLE_CLIENT)
+    _seed_first_deposit_client(ELIGIBLE_CLIENT)
     llm_client = FakeConversingLLMClient(
         [
             _final_answer("The fee warning group matters tonight. Nothing else does."),
             *_choose_reply(
                 [
                     {
-                        "group_name": FEE_PRESSURE_GONE_QUIET,
+                        "group_name": FIRST_DEPOSIT_NO_REPEAT,
                         "action_code": "fee_warning",
                         "angle": "sitting_still",
                         "reason": "their balance will run out within a few months",
@@ -490,7 +476,7 @@ def test_every_step_traces_a_real_input_and_output_without_a_client_id() -> None
 
 
 def test_a_failing_step_leaves_the_run_failed_and_writes_no_proposal() -> None:
-    _seed_fee_pressure_gone_quiet_client(ELIGIBLE_CLIENT)
+    _seed_first_deposit_client(ELIGIBLE_CLIENT)
     llm_client = RaisingLLMClient()
 
     with SessionLocal() as session:
@@ -517,7 +503,7 @@ def test_a_failing_step_leaves_the_run_failed_and_writes_no_proposal() -> None:
 
 
 def test_a_run_where_the_gates_drop_everyone_still_completes_with_do_nothing() -> None:
-    _seed_fee_pressure_gone_quiet_client(SUPPRESSED_CLIENT)
+    _seed_first_deposit_client(SUPPRESSED_CLIENT)
     with SessionLocal() as session:
         session.add(Suppression(client_id=SUPPRESSED_CLIENT, reason="asked not to be contacted"))
         session.commit()
@@ -528,7 +514,7 @@ def test_a_run_where_the_gates_drop_everyone_still_completes_with_do_nothing() -
             *_choose_reply(
                 [
                     {
-                        "group_name": FEE_PRESSURE_GONE_QUIET,
+                        "group_name": FIRST_DEPOSIT_NO_REPEAT,
                         "action_code": "fee_warning",
                         "angle": "sitting_still",
                         "reason": "their balance will run out within a few months",
@@ -567,14 +553,14 @@ def test_a_run_where_the_gates_drop_everyone_still_completes_with_do_nothing() -
 
 
 def test_a_wrong_action_is_corrected_on_the_next_turn() -> None:
-    _seed_fee_pressure_gone_quiet_client(ELIGIBLE_CLIENT)
+    _seed_first_deposit_client(ELIGIBLE_CLIENT)
     llm_client = FakeConversingLLMClient(
         [
             _final_answer("The fee warning group matters tonight. Nothing else does."),
             _choose_calls(
                 [
                     {
-                        "group_name": FEE_PRESSURE_GONE_QUIET,
+                        "group_name": FIRST_DEPOSIT_NO_REPEAT,
                         "action_code": "not_a_real_action",
                         "angle": None,
                         "reason": "their balance will run out within a few months",
@@ -584,7 +570,7 @@ def test_a_wrong_action_is_corrected_on_the_next_turn() -> None:
             _choose_calls(
                 [
                     {
-                        "group_name": FEE_PRESSURE_GONE_QUIET,
+                        "group_name": FIRST_DEPOSIT_NO_REPEAT,
                         "action_code": "fee_warning",
                         "angle": "sitting_still",
                         "reason": "their balance will run out within a few months",
@@ -617,7 +603,7 @@ def test_a_wrong_action_is_corrected_on_the_next_turn() -> None:
 
 
 def test_the_turn_cap_falls_back_to_do_nothing_and_records_the_last_refusal() -> None:
-    _seed_fee_pressure_gone_quiet_client(ELIGIBLE_CLIENT)
+    _seed_first_deposit_client(ELIGIBLE_CLIENT)
     llm_client = FakeConversingLLMClient(
         [
             _final_answer("The fee warning group matters tonight."),

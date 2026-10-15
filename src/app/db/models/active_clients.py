@@ -136,6 +136,8 @@ class ActiveClientInteraction(Base):
     outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     reviewer_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # Set only when an admin logs this while viewing as an advisor.
+    on_behalf_of: Mapped[str | None] = mapped_column(Text, nullable=True)
     risk_band_at_interaction: Mapped[str | None] = mapped_column(Text, nullable=True)
     proposal_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("agent_proposal.proposal_id", ondelete="SET NULL"), nullable=True
@@ -174,6 +176,8 @@ class ActiveClientTouchpoint(Base):
     minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=TOUCHPOINT_OPEN)
     created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    # Set only when an admin adds this while viewing as an advisor.
+    on_behalf_of: Mapped[str | None] = mapped_column(Text, nullable=True)
     done_by_interaction_id: Mapped[int | None] = mapped_column(
         BigInteger,
         ForeignKey("active_client_interaction.id", ondelete="SET NULL"),

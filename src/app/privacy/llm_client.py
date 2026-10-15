@@ -143,9 +143,14 @@ def _openai_tool_specs(tools: Sequence[ToolSpec]) -> list[dict[str, Any]]:
     ]
 
 
-def _openai_messages(system: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _openai_messages(
+    system: str, messages: list[dict[str, Any]], *, arguments_as_object: bool = False
+) -> list[dict[str, Any]]:
     """The Anthropic content block messages run_conversation_boundary builds,
     translated into the plain chat messages Ollama and llama.cpp expect.
+
+    llama.cpp wants a tool call's arguments as a JSON string. Ollama's own chat
+    endpoint wants them as an object and answers 400 to a string.
     """
     translated: list[dict[str, Any]] = [{"role": "system", "content": system}]
     for message in messages:
@@ -162,7 +167,12 @@ def _openai_messages(system: str, messages: list[dict[str, Any]]) -> list[dict[s
                 {
                     "id": block["id"],
                     "type": "function",
-                    "function": {"name": block["name"], "arguments": json.dumps(block["input"])},
+                    "function": {
+                        "name": block["name"],
+                        "arguments": block["input"]
+                        if arguments_as_object
+                        else json.dumps(block["input"]),
+                    },
                 }
                 for block in content
                 if block.get("type") == "tool_use"
@@ -485,7 +495,7 @@ class OllamaLLMClient:
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": self.model,
-            "messages": _openai_messages(system, messages),
+            "messages": _openai_messages(system, messages, arguments_as_object=True),
             "stream": False,
             "think": False,
             "options": self._options(),

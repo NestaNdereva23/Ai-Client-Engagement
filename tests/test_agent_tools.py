@@ -1,11 +1,5 @@
-"""Read only tools the agent can call: one test per tool, plus an empty
-result and a refusal case for each, wherever the tool has one.
-
-The watch list itself already has its own tests, so most tools here get
-their groups from a monkeypatched build_watchlist rather than a seeded
-active book. describe_group and get_client_facts read the risk tables
-directly, so those two seed real rows.
-"""
+"""Read only tools the agent can call: one test per tool, plus an empty and a refusal case.
+Most tools get groups from a monkeypatched build_watchlist."""
 
 from __future__ import annotations
 
@@ -15,6 +9,7 @@ import pytest
 from sqlalchemy import delete
 
 from app.agents import tools as tools_module
+from app.agents.situations import FIRST_DEPOSIT_NO_REPEAT
 from app.agents.tools import (
     check_allowance,
     describe_group,
@@ -26,7 +21,6 @@ from app.agents.tools import (
     search_knowledge,
 )
 from app.agents.watchlist import (
-    FEE_PRESSURE_GONE_QUIET,
     GroupMember,
     WatchGroup,
     WatchlistConfigMissing,
@@ -58,7 +52,7 @@ def _member(client_id: int, unit_fund_id: int = FUND_ID, balance: float = 100_00
 
 
 def _stub_watchlist(monkeypatch, members: tuple[GroupMember, ...]) -> None:
-    group = WatchGroup(name=FEE_PRESSURE_GONE_QUIET, definition={}, members=members)
+    group = WatchGroup(name=FIRST_DEPOSIT_NO_REPEAT, definition={}, members=members)
     monkeypatch.setattr(tools_module, "load_thresholds", lambda session, as_of: THRESHOLDS)
     monkeypatch.setattr(
         tools_module, "build_watchlist", lambda session, as_of, thresholds: (group,)
@@ -76,7 +70,7 @@ def test_list_groups_reports_counts_and_money(db: None, monkeypatch) -> None:
         result = list_groups(session, as_of=AS_OF.isoformat())
     assert result["as_of"] == AS_OF.isoformat()
     [group] = result["groups"]
-    assert group["group_name"] == FEE_PRESSURE_GONE_QUIET
+    assert group["group_name"] == FIRST_DEPOSIT_NO_REPEAT
     assert group["client_count"] == 2
     assert group["fund_count"] == 2
     assert group["money_total_kes"] == 500_000.0
@@ -182,7 +176,7 @@ def test_describe_group_reports_bands_and_fund_spread(risk_book: None, monkeypat
     )
     with SessionLocal() as session:
         result = describe_group(
-            session, group_name=FEE_PRESSURE_GONE_QUIET, as_of=AS_OF.isoformat()
+            session, group_name=FIRST_DEPOSIT_NO_REPEAT, as_of=AS_OF.isoformat()
         )
 
     assert result["client_count"] == 3
@@ -196,7 +190,7 @@ def test_describe_group_is_empty_when_nobody_is_in_it(db: None, monkeypatch) -> 
     _stub_watchlist(monkeypatch, ())
     with SessionLocal() as session:
         result = describe_group(
-            session, group_name=FEE_PRESSURE_GONE_QUIET, as_of=AS_OF.isoformat()
+            session, group_name=FIRST_DEPOSIT_NO_REPEAT, as_of=AS_OF.isoformat()
         )
     assert result["client_count"] == 0
     assert result["risk_bands"] == {}
@@ -338,7 +332,7 @@ def contact_history_proposal(db: None):
         proposal = AgentProposal(
             action_code="fee_warning",
             catalog_version=1,
-            group_name=FEE_PRESSURE_GONE_QUIET,
+            group_name=FIRST_DEPOSIT_NO_REPEAT,
             client_count=1,
             money_total_kes=250_000.0,
             evidence="one client fits the fee warning group",
@@ -373,7 +367,7 @@ def test_get_contact_history_reports_the_most_recent_proposal(
     contact_history_proposal: int,
 ) -> None:
     with SessionLocal() as session:
-        result = get_contact_history(session, group_name=FEE_PRESSURE_GONE_QUIET)
+        result = get_contact_history(session, group_name=FIRST_DEPOSIT_NO_REPEAT)
     assert result["ever_proposed"] is True
     assert result["action_code"] == "fee_warning"
     assert result["status"] == "proposed"
@@ -382,8 +376,8 @@ def test_get_contact_history_reports_the_most_recent_proposal(
 
 def test_get_contact_history_is_empty_when_the_group_was_never_proposed(db: None) -> None:
     with SessionLocal() as session:
-        result = get_contact_history(session, group_name="waiting_on_a_call")
-    assert result == {"group_name": "waiting_on_a_call", "ever_proposed": False}
+        result = get_contact_history(session, group_name="fa_call_overdue")
+    assert result == {"group_name": "fa_call_overdue", "ever_proposed": False}
 
 
 def test_get_contact_history_refuses_an_unknown_group(db: None) -> None:
@@ -470,7 +464,7 @@ def test_estimate_cost_prices_the_whole_group(db: None, monkeypatch) -> None:
     _stub_watchlist(monkeypatch, (_member(CLIENT_A), _member(CLIENT_B), _member(CLIENT_C)))
     with SessionLocal() as session:
         config = active_generation_cost_config(session, DEFAULT_MODEL, AS_OF)
-        result = estimate_cost(session, group_name=FEE_PRESSURE_GONE_QUIET, as_of=AS_OF.isoformat())
+        result = estimate_cost(session, group_name=FIRST_DEPOSIT_NO_REPEAT, as_of=AS_OF.isoformat())
 
     assert result["client_count"] == 3
     assert result["model"] == DEFAULT_MODEL
@@ -480,7 +474,7 @@ def test_estimate_cost_prices_the_whole_group(db: None, monkeypatch) -> None:
 def test_estimate_cost_is_zero_for_an_empty_group(db: None, monkeypatch) -> None:
     _stub_watchlist(monkeypatch, ())
     with SessionLocal() as session:
-        result = estimate_cost(session, group_name=FEE_PRESSURE_GONE_QUIET, as_of=AS_OF.isoformat())
+        result = estimate_cost(session, group_name=FIRST_DEPOSIT_NO_REPEAT, as_of=AS_OF.isoformat())
     assert result["client_count"] == 0
     assert result["total_cost_kes"] == 0
 
@@ -496,7 +490,7 @@ def test_estimate_cost_refuses_an_unpriced_model(db: None, monkeypatch) -> None:
     with SessionLocal() as session:
         result = estimate_cost(
             session,
-            group_name=FEE_PRESSURE_GONE_QUIET,
+            group_name=FIRST_DEPOSIT_NO_REPEAT,
             model="claude-mythos-5",
             as_of=AS_OF.isoformat(),
         )

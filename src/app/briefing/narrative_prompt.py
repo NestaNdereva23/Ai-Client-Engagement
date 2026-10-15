@@ -1,8 +1,5 @@
-"""System prompt and fact rendering
-The model receives a closed set of client facts rendered in plain English.
-It must stay strictly within those facts and turn them into a useful,
-natural sounding pointer for the advisor.
-"""
+"""System prompt and fact rendering for the advisor briefing.
+The model gets a closed set of client facts in plain English and must stay within them."""
 
 from __future__ import annotations
 
@@ -60,8 +57,8 @@ SIGNAL_PHRASES: tuple[tuple[str, str], ...] = (
         "each deposit has been smaller than the one before",
     ),
     (
-        "sig_going_dormant",
-        "fees will use up what is left before long",
+        "near_preservation_line",
+        "at their current pace their balance may soon drop below the level that keeps them active",
     ),
     (
         "sig_never_repeated",
@@ -191,26 +188,14 @@ _BASE_INSTRUCTIONS = (
 
 
 def narrative_facts(facts: RiskFactBlock) -> dict[str, Any]:
-    """Return only facts the narrative is allowed to draw on.
-
-    False boolean values are removed because a signal that did not fire is
-    not useful information for the narrative. Sending false signals to the
-    model can encourage it to mention or reason about events that did not
-    happen.
-
-    Present bands and true boolean values are retained exactly as carried
-    by the RiskFactBlock.
-    """
+    """Return only facts the narrative may draw on, with false booleans removed.
+    A signal that did not fire would only invite the model to mention it."""
     return {key: value for key, value in facts.to_dict().items() if value is not False}
 
 
 def _render_facts(payload: dict[str, Any]) -> str:
     """Render the closed fact set in plain language for the model.
-
-    Internal field names are translated into descriptions that explain the
-    meaning of each fact. This gives the model useful context without asking
-    it to interpret internal schema terminology.
-    """
+    Internal field names become descriptions of what each fact means."""
     lines: list[str] = []
 
     # Render band-level facts in an order that supports a natural briefing:
@@ -248,12 +233,7 @@ def _render_facts(payload: dict[str, Any]) -> str:
 
 def build_narrative_prompt(facts: RiskFactBlock) -> str:
     """Build the complete system prompt for one advisor briefing.
-
-    The model receives a plain-language rendering of the closed fact set.
-    The same payload may also be passed through the model boundary as a
-    scanned user turn. That second representation is still the same fact
-    set and must not be treated as additional information.
-    """
+    The same fact set may also go through the boundary as a scanned user turn; it adds nothing."""
     rendered_facts = _render_facts(narrative_facts(facts))
 
     return (

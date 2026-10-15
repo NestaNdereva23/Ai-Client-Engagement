@@ -1,8 +1,5 @@
-"""Turn tonight's watch list groups into proposed actions, using a fixed
-rule table. No model is involved: every group maps to exactly one action,
-and the whole point of this stage is to prove the shape works before any
-model risk is taken on.
-"""
+"""Turn tonight's watch list groups into proposed actions with a fixed rule table.
+No model is involved: every group maps to exactly one action."""
 
 from __future__ import annotations
 
@@ -16,16 +13,19 @@ from app.agents.action_catalog import action_is_paused, load_action
 from app.agents.action_rules import already_offered, lacks_an_approved_guide
 from app.agents.permissions import effective_permission
 from app.agents.situation_action_mapping import action_code_for_situation
+from app.agents.situations import (
+    APPROACHING_PRESERVATION_LINE,
+    DEPOSIT_SIZE_FALLING,
+    FA_CALL_OVERDUE,
+    FIRST_DEPOSIT_NO_REPEAT,
+    FREQUENT_DEPOSITOR_ONE_FUND,
+    FREQUENT_DEPOSITOR_WITHDRAWING,
+    GRADUAL_DEPOSITOR_DUE,
+    GRADUAL_DEPOSITOR_WITHDRAWING,
+    RISK_ROSE_NO_CALL,
+)
 from app.agents.watchlist import (
-    FEE_PRESSURE_ACTIVE_CONTRIBUTOR,
-    FEE_PRESSURE_GONE_QUIET,
-    GETTING_SMALLER,
     GROUP_TO_SITUATION,
-    HEALTHY_ONE_FUND,
-    MORE_URGENT_BUT_NOT_CALLED,
-    SIGNED_UP_RECENTLY,
-    VERY_SMALL_AND_QUIET,
-    WAITING_ON_A_CALL,
     GroupMember,
     WatchGroup,
     WatchlistThresholds,
@@ -45,14 +45,15 @@ DO_NOTHING_ACTION = "do_nothing"
 WATCH_FOR_NOW_ACTION = "watch_for_now"
 
 GROUP_ACTIONS: dict[str, str] = {
-    SIGNED_UP_RECENTLY: "welcome_and_top_up",
-    FEE_PRESSURE_GONE_QUIET: "fee_pressure_warning_dormant",
-    FEE_PRESSURE_ACTIVE_CONTRIBUTOR: "fee_pressure_encourage_active",
-    VERY_SMALL_AND_QUIET: "start_win_back",
-    GETTING_SMALLER: "ask_what_changed",
-    HEALTHY_ONE_FUND: "suggest_second_fund",
-    WAITING_ON_A_CALL: "follow_up_when_no_one_called",
-    MORE_URGENT_BUT_NOT_CALLED: "check_in_rising_risk",
+    GRADUAL_DEPOSITOR_DUE: "give_advisor_a_task",
+    GRADUAL_DEPOSITOR_WITHDRAWING: "give_advisor_a_task",
+    FREQUENT_DEPOSITOR_ONE_FUND: "suggest_second_fund",
+    FREQUENT_DEPOSITOR_WITHDRAWING: "send_learning_note",
+    DEPOSIT_SIZE_FALLING: "ask_what_changed",
+    FIRST_DEPOSIT_NO_REPEAT: "welcome_and_top_up",
+    FA_CALL_OVERDUE: "follow_up_when_no_one_called",
+    RISK_ROSE_NO_CALL: "check_in_rising_risk",
+    APPROACHING_PRESERVATION_LINE: "give_advisor_a_task",
 }
 
 ON_DO_NOT_CONTACT_LIST = "on_do_not_contact_list"
@@ -65,14 +66,15 @@ ALREADY_OFFERED = "already_offered"
 CONSOLIDATED_INTO_ANOTHER_SITUATION = "consolidated_into_another_situation"
 
 SITUATION_PRIORITY: tuple[str, ...] = (
-    MORE_URGENT_BUT_NOT_CALLED,
-    WAITING_ON_A_CALL,
-    FEE_PRESSURE_GONE_QUIET,
-    FEE_PRESSURE_ACTIVE_CONTRIBUTOR,
-    GETTING_SMALLER,
-    VERY_SMALL_AND_QUIET,
-    SIGNED_UP_RECENTLY,
-    HEALTHY_ONE_FUND,
+    RISK_ROSE_NO_CALL,
+    FA_CALL_OVERDUE,
+    GRADUAL_DEPOSITOR_WITHDRAWING,
+    FREQUENT_DEPOSITOR_WITHDRAWING,
+    DEPOSIT_SIZE_FALLING,
+    GRADUAL_DEPOSITOR_DUE,
+    FIRST_DEPOSIT_NO_REPEAT,
+    FREQUENT_DEPOSITOR_ONE_FUND,
+    APPROACHING_PRESERVATION_LINE,
 )
 
 
@@ -88,10 +90,8 @@ def propose_watchlist(
     thresholds: WatchlistThresholds | None = None,
     cooldown_days: int | None = None,
 ) -> list[AgentProposal]:
-    """Run tonight's watch list and write one proposal per group that has
-    someone in it. Groups with nobody in them tonight are skipped: there is
-    no situation to record a decision about.
-    """
+    """Run tonight's watch list and write one proposal per group that has someone in it.
+    Groups with nobody in them are skipped."""
     if thresholds is None:
         thresholds = load_thresholds(session, as_of)
     groups = build_watchlist(session, as_of, thresholds)
@@ -114,11 +114,7 @@ def propose_watchlist(
 
 def situation_winners(groups: Sequence[WatchGroup]) -> dict[tuple[int, int], str]:
     """Which one situation wins for each client fund carrying more than one.
-
-    A client fund sitting in several groups on the same night gets exactly
-    one action, the most urgent situation's, rather than one action per
-    situation it happens to qualify for.
-    """
+    A fund in several groups gets one action, the most urgent situation's."""
     by_name = {group.name: group for group in groups}
     winners: dict[tuple[int, int], str] = {}
     for group_name in SITUATION_PRIORITY:
@@ -132,11 +128,7 @@ def situation_winners(groups: Sequence[WatchGroup]) -> dict[tuple[int, int], str
 
 def default_action_code_for_group(session: Session, group_name: str, as_of: date) -> str | None:
     """The action a group falls back to when nothing else picks one for it.
-
-    Checked first against the situation/action mapping table, since that is
-    the live, editable source; GROUP_ACTIONS is the fixed fallback for a
-    group with no mapping published for its situation.
-    """
+    The mapping table comes first; GROUP_ACTIONS is the fallback when none is published."""
     situation_code = GROUP_TO_SITUATION.get(group_name, group_name)
     return action_code_for_situation(session, situation_code, as_of) or GROUP_ACTIONS.get(
         group_name
@@ -189,10 +181,7 @@ def propose_group(
 
 def load_action_or_raise(session: Session, action_code: str, as_of: date) -> AgentActionCatalog:
     """One action from the live catalogue, or raise ProposalActionMissing.
-
-    Shared with the model driven proposal flow, so a run fails loudly rather
-    than proposing against an action that no longer exists.
-    """
+    Shared with the model driven flow, so a run fails loudly on a missing action."""
     action = load_action(session, action_code, as_of)
     if action is None:
         raise ProposalActionMissing(
@@ -208,11 +197,7 @@ def member_key(member: GroupMember) -> tuple[int, int]:
 
 def skip_reason_counts(skip_reasons: dict[tuple[int, int], str | None]) -> dict[str, int]:
     """How many client funds were left out, tallied by reason.
-
-    Members with no reason (they were included) do not appear. Stored on
-    the proposal itself, so a group that empties itself always says which
-    check emptied it, without a separate query over agent_proposal_client.
-    """
+    Included members do not appear."""
     counts: dict[str, int] = {}
     for reason in skip_reasons.values():
         if reason is None:
@@ -229,10 +214,7 @@ def group_skip_reasons(
     cooldown_days: int | None,
 ) -> dict[tuple[int, int], str | None]:
     """Why each member of the group was left out, or None if they qualify.
-
-    Shared with the model driven proposal flow, so both ways of choosing an
-    action run the same gates before anything is proposed.
-    """
+    Shared with the model driven flow, so both run the same gates."""
     if action_is_paused(session, action.action_code, as_of):
         return {member_key(member): ACTION_PAUSED for member in members}
     if lacks_an_approved_guide(session, action):
@@ -363,44 +345,33 @@ def _save_proposal(
     return proposal
 
 
+GROUP_EVIDENCE: dict[str, str] = {
+    GRADUAL_DEPOSITOR_DUE: (
+        "have not bought recently, have not withdrawn, and are past their own usual gap "
+        "between deposits."
+    ),
+    GRADUAL_DEPOSITOR_WITHDRAWING: "have not bought recently and have taken money out.",
+    FREQUENT_DEPOSITOR_ONE_FUND: "buy regularly, have not withdrawn, and hold only one fund.",
+    FREQUENT_DEPOSITOR_WITHDRAWING: (
+        "buy regularly but have taken out as much as they put in, or more."
+    ),
+    DEPOSIT_SIZE_FALLING: "have deposits that are getting smaller over time.",
+    FIRST_DEPOSIT_NO_REPEAT: "made one deposit recently and have not come back.",
+    FA_CALL_OVERDUE: "have a call their advisor promised that is now past its date.",
+    RISK_ROSE_NO_CALL: "moved to a worse risk band in the last run with no response since.",
+    APPROACHING_PRESERVATION_LINE: (
+        "are on course to fall below the active line within a few months."
+    ),
+}
+
+
 def group_evidence(group: WatchGroup, thresholds: WatchlistThresholds) -> str:
     """The plain language evidence behind one group, shared with the model driven flow."""
     count = group.client_count
-    if group.name == SIGNED_UP_RECENTLY:
-        return (
-            f"{count} clients made exactly one deposit, within the last "
-            f"{thresholds.new_client_days} days."
-        )
-    if group.name == FEE_PRESSURE_GONE_QUIET:
-        return (
-            f"{count} clients have a balance the monthly fee will empty in under "
-            f"{thresholds.months_until_empty:.1f} months, and have gone quiet."
-        )
-    if group.name == FEE_PRESSURE_ACTIVE_CONTRIBUTOR:
-        return (
-            f"{count} clients have a balance the monthly fee will empty in under "
-            f"{thresholds.months_until_empty:.1f} months, and are still paying in."
-        )
-    if group.name == VERY_SMALL_AND_QUIET:
-        return (
-            f"{count} clients have a balance under {thresholds.small_balance:,.0f} "
-            "and have stopped moving."
-        )
-    if group.name == GETTING_SMALLER:
-        return f"{count} clients have deposits that are getting smaller over time."
-    if group.name == HEALTHY_ONE_FUND:
-        return f"{count} clients are in a healthy risk band and hold only one fund."
-    if group.name == WAITING_ON_A_CALL:
-        return (
-            f"{count} clients have sat on the call list for more than "
-            f"{thresholds.awaiting_call_days} days with nothing logged against them."
-        )
-    if group.name == MORE_URGENT_BUT_NOT_CALLED:
-        return (
-            f"{count} clients moved to a more urgent queue overnight but did not "
-            "make this morning's call list."
-        )
-    return f"{count} clients matched the '{group.name}' group."
+    evidence = GROUP_EVIDENCE.get(group.name)
+    if evidence is None:
+        return f"{count} clients matched the '{group.name}' group."
+    return f"{count} clients {evidence}"
 
 
 def _reason(

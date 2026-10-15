@@ -1,8 +1,5 @@
-"""The nightly agent loop: one graph, run once a night and on demand, that
-gathers tonight's groups, plans in plain words, chooses an action for the
-groups that matter, checks every gate, writes the proposals, and reports
-what happened.
-"""
+"""The nightly agent loop: gather tonight's groups, plan, choose an action per group,
+check every gate, write the proposals, and report."""
 
 from __future__ import annotations
 
@@ -35,15 +32,14 @@ from app.agents.propose import (
     skip_reason_counts,
 )
 from app.agents.run_cost import run_cost_kes
+from app.agents.situations import (
+    DEPOSIT_SIZE_FALLING,
+    FREQUENT_DEPOSITOR_ONE_FUND,
+    RISK_ROSE_NO_CALL,
+)
 from app.agents.tool_runtime import make_tool_executor
 from app.agents.tools import TOOL_SPECS
 from app.agents.watchlist import (
-    FEE_PRESSURE_ACTIVE_CONTRIBUTOR,
-    FEE_PRESSURE_GONE_QUIET,
-    GETTING_SMALLER,
-    HEALTHY_ONE_FUND,
-    MORE_URGENT_BUT_NOT_CALLED,
-    VERY_SMALL_AND_QUIET,
     GroupMember,
     WatchGroup,
     WatchlistThresholds,
@@ -110,12 +106,9 @@ ACTS_ALONE = "act_alone"
 # proposal already covered them.
 MUST_REACH_OUT_GROUPS = frozenset(
     {
-        VERY_SMALL_AND_QUIET,
-        GETTING_SMALLER,
-        HEALTHY_ONE_FUND,
-        MORE_URGENT_BUT_NOT_CALLED,
-        FEE_PRESSURE_GONE_QUIET,
-        FEE_PRESSURE_ACTIVE_CONTRIBUTOR,
+        DEPOSIT_SIZE_FALLING,
+        FREQUENT_DEPOSITOR_ONE_FUND,
+        RISK_ROSE_NO_CALL,
     }
 )
 NO_MESSAGE_ACTIONS = (DO_NOTHING_ACTION, WATCH_FOR_NOW_ACTION)
@@ -127,10 +120,8 @@ class AgentRunInProgress(RuntimeError):
 
 @dataclass(frozen=True)
 class GroupDecision:
-    """One group's outcome after the check step: the action that will
-    actually be proposed, and who is in or out of it, with a reason for
-    every member who is out.
-    """
+    """One group's outcome after the check step: the action to propose and who is in or out.
+    Every member who is out has a reason."""
 
     action: AgentActionCatalog
     angle: str | None
@@ -173,11 +164,8 @@ def _trace_proposal(proposal: AgentProposal) -> dict[str, Any]:
 
 
 def _trace_value(value: Any) -> Any:
-    """A value from AgentLoopState, made safe and readable for a trace.
-
-    Every group and proposal here collapses to counts and codes, never a
-    client id: the same rule the tools and the model itself already follow.
-    """
+    """A value from AgentLoopState, made safe for a trace.
+    Groups and proposals collapse to counts and codes, never a client id."""
     if isinstance(value, AgentActionCatalog):
         return _trace_action(value)
     if isinstance(value, WatchGroup):
@@ -264,10 +252,7 @@ def build_choose_action_tool_spec(
     *, actions: Mapping[str, AgentActionCatalog], candidate_group_names: Sequence[str]
 ) -> ToolSpec:
     """The tool the choose step's model calls to record one group's decision.
-
-    Offered only during choose, alongside the read tools: this is how the
-    step's answer leaves the model, so there is no reply text left to parse.
-    """
+    Offered only during choose, so there is no reply text left to parse."""
     return ToolSpec(
         name=CHOOSE_ACTION_TOOL_NAME,
         description=(
@@ -312,15 +297,7 @@ def make_choose_action_tool(
     refusals: list[str],
 ) -> Callable[..., dict[str, Any]]:
     """Build the choose_action tool function for one attempt at the choose step.
-
-    Recording happens by writing into `choices`, so the caller reads it back
-    once the conversation ends; every refusal's message is appended to
-    `refusals` too, so a run that never settles can still say what the model
-    last got wrong. Nothing here raises: a bad call comes back as a plain
-    error dict the model sees on its next turn, the same way every other
-    tool refuses, so the model can correct itself instead of the run falling
-    back straight away.
-    """
+    Choices and refusals are written into the lists passed in; a bad call returns an error dict."""
     valid_names = set(candidate_group_names)
 
     def choose_action(
@@ -952,10 +929,8 @@ def build_agent_loop_graph(
 
 
 def _latest_completed_risk_run_id(session: Session) -> str | None:
-    """The most recently finished risk run, or None if there has never been
-    one. The agent reads whatever is on file at the moment it runs; this is
-    only a record of which risk run that happened to be, not a dependency.
-    """
+    """The most recently finished risk run, or None if there has never been one.
+    A record of which run was on file, not a dependency."""
     return session.scalar(
         select(RiskRun.run_id)
         .where(RiskRun.state == "completed")
@@ -1000,14 +975,7 @@ def start_agent_run(
     insight_id: int | None = None,
 ) -> AgentRun:
     """Open a new agent_run row and commit it, ready for execute_agent_run.
-
-    A run that reads the whole book refuses with AgentRunInProgress when
-    another one of those is already under way, rather than queuing silently.
-    An action run answers one finding a person has just accepted, so it
-    starts whatever else is going and holds nothing up itself. Records which
-    risk run's data is on file right now, or that there is none -- the agent
-    never needs a risk run to exist.
-    """
+    A whole book run refuses with AgentRunInProgress when another is under way."""
     as_of = as_of or date.today()
     fail_stale_runs(session, max_runtime_minutes=get_settings().agent_run_stale_after_minutes)
     if kind in BOOK_WIDE_AGENTS:
@@ -1036,14 +1004,7 @@ def start_agent_run(
 
 def _resume_running_campaigns(session: Session, *, events: EventLog) -> dict[str, int]:
     """Draft the next batch for campaigns an earlier proposal already started.
-
-    Drafting only ever handles one batch at a time (see
-    campaigns.scheduler.DEFAULT_BATCH_LIMIT), so a cohort bigger than that is
-    never lost: whatever did not fit last time stays enrolled, waiting for
-    this call the next time the agent runs, until the whole cohort is
-    drafted. Runs before tonight's own proposing, so last night's leftovers
-    go out before anything new is decided.
-    """
+    Runs before tonight's proposing, so last night's leftovers go out first."""
     proposals = session.scalars(
         select(AgentProposal).where(
             AgentProposal.status == "running",
@@ -1104,17 +1065,8 @@ def execute_agent_run(
     audit: AuditSink | None = None,
     events: EventLog | None = None,
 ) -> AgentRun:
-    """Run the six-step graph against an agent_run row start_agent_run
-    already opened.
-
-    Always returns the agent_run row, whether it finished or failed. A step
-    that raises leaves the run in the failed state with the reason recorded,
-    and never leaves a half written proposal behind: everything a failing
-    step had not yet committed is rolled back before the run is marked
-    failed. Split out from start_agent_run so a caller that must answer
-    quickly, such as the API, can hand the run id back the moment it exists
-    and run this part in the background.
-    """
+    """Run the six-step graph against an agent_run row start_agent_run opened.
+    Always returns the row; a step that raises leaves the run failed with the reason recorded."""
     llm_client = llm_client or get_agent_llm_client()
     as_of = as_of or date.today()
     tracer = tracer or NullTracer()
@@ -1213,12 +1165,7 @@ def run_nightly_agent(
     events: EventLog | None = None,
 ) -> AgentRun:
     """Start a run and take it all the way through, in one call.
-
-    The entry point for a caller that can afford to wait: a script, the
-    optional hook after the risk run, and the tests. The API instead calls
-    start_agent_run and execute_agent_run separately, so it can answer with
-    the run id before the run has finished.
-    """
+    For a caller that can wait; the API calls start_agent_run and execute_agent_run apart."""
     run = start_agent_run(session, trigger=trigger, as_of=as_of)
     return execute_agent_run(
         session,

@@ -36,6 +36,12 @@ class FaActionHeldOutOut(HeldOutCountOut):
     balance_kes: float
 
 
+class FaActionBriefingOut(BaseModel):
+    fa_id: str
+    text: str
+    mode: str = "deterministic"
+
+
 class FaActionBookOut(BaseModel):
     route: str
     fa_id: str

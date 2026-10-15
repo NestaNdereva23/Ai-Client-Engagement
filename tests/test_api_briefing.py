@@ -1,6 +1,6 @@
 """Tests for GET /briefing/{client_id}/{unit_fund_id}: that it re-attaches
 a real name, the 404-vs-data-missing distinction, and that both audit rows
-land on every call, attributed to username rather than a reviewer key.
+land on every call, attributed to the email in the signed token.
 """
 
 from __future__ import annotations
@@ -145,11 +145,11 @@ def ai_briefing_disabled(monkeypatch):
 
 
 def _url(client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID) -> str:
-    return f"/api/v1/briefing/{client_id}/{unit_fund_id}?username=fa-77"
+    return f"/api/v1/briefing/{client_id}/{unit_fund_id}"
 
 
 def _narrative_url(client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID) -> str:
-    return f"/api/v1/briefing/{client_id}/{unit_fund_id}/narrative?username=fa-77"
+    return f"/api/v1/briefing/{client_id}/{unit_fund_id}/narrative"
 
 
 def test_missing_token_is_401(configured_reviewers) -> None:
@@ -230,7 +230,7 @@ def test_both_audit_rows_are_written_on_every_call(seeded_client) -> None:
         ).all()
 
     assert view_rows, "expected a risk_briefing view audit row"
-    assert view_rows[0].actor_id == "fa-77"
+    assert view_rows[0].actor_id == "fa-1"
     assert "reviewer_id" not in view_rows[0].detail
     assert vault_rows, "expected a pii_vault read audit row"
     assert vault_rows[0].detail["purpose"] == "risk_briefing"

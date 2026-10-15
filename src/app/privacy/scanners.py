@@ -15,7 +15,7 @@ import structlog
 from pydantic import BaseModel, ValidationError
 
 from app.config import get_settings
-from app.privacy.fact_block import ModelFactBlock, RiskFactBlock
+from app.privacy.fact_block import BookFactBlock, ModelFactBlock, RiskFactBlock
 
 logger = structlog.get_logger(__name__)
 
@@ -25,7 +25,7 @@ logger = structlog.get_logger(__name__)
 # against either is an equally strong inbound guarantee -- this is not
 # "prefer ModelFactBlock", just the set of shapes scan_inbound currently
 # knows about. Add a new FactBlock schema here, not a parallel code path.
-_FACT_BLOCK_SCHEMAS: tuple[type[BaseModel], ...] = (ModelFactBlock, RiskFactBlock)
+_FACT_BLOCK_SCHEMAS: tuple[type[BaseModel], ...] = (ModelFactBlock, BookFactBlock, RiskFactBlock)
 
 # The bucket allow-list: every non-numeric column llm_client_context exposes,
 # minus client_id. A payload shaped exactly like this is checked the same way

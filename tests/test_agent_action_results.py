@@ -110,7 +110,7 @@ def _build(session) -> dict[str, int]:
     insight = AgentInsight(
         kind="risk",
         title=TITLE,
-        group_name="getting_smaller",
+        group_name="deposit_size_falling",
         client_count=len(ALL_CLIENTS),
         confidence="high",
         confidence_reason="counted twice",
@@ -131,7 +131,7 @@ def _build(session) -> dict[str, int]:
         insight_id=insight.insight_id,
         action_code=ACTION,
         catalog_version=1,
-        group_name="getting_smaller",
+        group_name="deposit_size_falling",
         client_count=len(ALL_CLIENTS),
         evidence="evidence",
         reason="reason",

@@ -26,6 +26,7 @@ from app.db.models.signals import (
     ClientSituationSnapshot,
     ClientSituationState,
 )
+from app.db.models.user_access import ROLE_ADVISOR, UserAccess
 from app.db.session import SessionLocal
 from app.delivery.mailer import NullMailer
 from app.workers import risk_detection
@@ -327,19 +328,38 @@ def test_mid_run_failure_leaves_prior_snapshot_untouched_and_resume_does_not_dup
         assert resumed_count == 1
 
 
-@pytest.fixture
-def seeded_roster(monkeypatch):
-    """Two account managers in the environment, cleared again afterwards so
-    no other test sees a roster.
-    """
-    monkeypatch.setenv(
-        "ACE_FA_ROSTER",
-        "fa-71:FA Seventy One:fa71@example.com:19,fa-72:FA Seventy Two:fa72@example.com:19",
-    )
-    get_settings.cache_clear()
+def _delete_advisors() -> None:
+    with SessionLocal() as session:
+        session.execute(delete(UserAccess).where(UserAccess.role == ROLE_ADVISOR))
+        session.commit()
+
+
+@pytest.fixture(autouse=True)
+def _no_leftover_advisors(db):
+    """Advisors are read from user_access, and the run adds the ones it finds in
+    the feed, so every test starts and ends with none."""
+    _delete_advisors()
     yield
-    monkeypatch.delenv("ACE_FA_ROSTER", raising=False)
-    get_settings.cache_clear()
+    _delete_advisors()
+
+
+@pytest.fixture
+def seeded_roster():
+    """Two account managers in user_access, both switched on for the digest."""
+    with SessionLocal() as session:
+        session.add_all(
+            [
+                UserAccess(
+                    email=f"fa{number}@example.com",
+                    role=ROLE_ADVISOR,
+                    fa_id=f"fa-{number}",
+                    name=f"FA Seventy {number}",
+                    receives_digest=True,
+                )
+                for number in (71, 72)
+            ]
+        )
+        session.commit()
 
 
 def test_run_with_a_roster_gives_every_scored_client_a_real_advisor_and_keeps_them(
@@ -382,8 +402,8 @@ def test_run_with_a_roster_gives_every_scored_client_a_real_advisor_and_keeps_th
 def test_a_run_with_a_roster_mails_each_advisor_once(
     db, cleanup_risk_runs, seeded_roster, monkeypatch
 ) -> None:
-    """The nightly run ends by mailing the roster, and mails each advisor
-    exactly once for the digest it just built.
+    """The nightly run ends by mailing the advisors switched on for the digest,
+    and mails each exactly once for the digest it just built.
     """
     mailer = NullMailer()
     monkeypatch.setattr("app.workers.digest_email.get_mailer", lambda settings=None: mailer)
@@ -399,12 +419,15 @@ def test_a_run_with_a_roster_mails_each_advisor_once(
         markers = session.scalars(
             select(DigestEmailSend).where(DigestEmailSend.digest_run_id == digest_run_id)
         ).all()
+        owner = session.scalar(
+            select(FaAssignment.fa_id).where(FaAssignment.client_id == CALL_CLIENT_ID)
+        )
 
-    assert {marker.fa_id for marker in markers} == {"fa-71", "fa-72"}
-    assert {message.to for message in mailer.sent_messages} == {
-        "fa71@example.com",
-        "fa72@example.com",
-    }
+    assert owner in {"fa-71", "fa-72"}
+    assert {marker.fa_id for marker in markers} == {owner}
+    assert [message.to for message in mailer.sent_messages] == [
+        f"{owner.replace('-', '')}@example.com"
+    ]
 
 
 BAND_CLIENT_IDS = [92011, 92012]

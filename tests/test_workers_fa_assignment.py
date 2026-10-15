@@ -12,7 +12,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, select
 
-from app.config import FaRecord
+from app.advisors import FaRecord
 from app.db.models.audit import AuditLog
 from app.db.models.fa_assignment import FaAssignment
 from app.db.models.risk import RiskRun
@@ -105,6 +105,38 @@ def test_a_feed_advisor_is_kept_and_recorded_as_the_source(db, cleanup) -> None:
     assert {row.source for row in other} == {"roster"}
     assert entry.detail["placed_by_feed"] == 1
     assert entry.detail["feed_clients_not_matched"] == 1
+
+
+def test_with_the_fallback_off_clients_without_an_advisor_are_written_as_unassigned(
+    db, cleanup
+) -> None:
+    with SessionLocal() as session:
+        run_id = _run(session, cleanup)
+        allocate_and_persist(
+            session,
+            run_id,
+            roster=ROSTER,
+            clients=_loads(),
+            keys=KEYS,
+            source_emails={CLIENT_A: "fa62@example.com"},
+            least_loaded_fallback=False,
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        placed = session.scalars(select(FaAssignment).where(FaAssignment.client_id == CLIENT_A))
+        left = session.scalars(select(FaAssignment).where(FaAssignment.client_id == CLIENT_B))
+        entry = session.scalar(
+            select(AuditLog).where(
+                AuditLog.run_id == run_id, AuditLog.entity_type == "fa_assignment"
+            )
+        )
+        assert {(row.fa_id, row.source) for row in placed} == {("fa-62", "feed")}
+        assert {(row.fa_id, row.fa_name, row.source) for row in left} == {
+            (None, None, "unassigned")
+        }
+
+    assert entry.detail["unassigned"] == 1
 
 
 def test_a_second_run_leaves_ownership_alone(db, cleanup) -> None:

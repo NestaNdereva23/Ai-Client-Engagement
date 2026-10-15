@@ -68,8 +68,8 @@ def _use_model(monkeypatch, reply: str = GOOD_REPLY) -> _ScriptedLLM:
     return llm
 
 
-def _ask(username: str = "draft-advisor"):
-    return client.post(URL, params={"username": username})
+def _ask(headers: dict | None = None):
+    return client.post(URL, headers=headers)
 
 
 def _clear(session) -> None:
@@ -98,7 +98,7 @@ def _clear(session) -> None:
     session.execute(delete(Funds).where(Funds.unit_fund_id == FUND))
     session.execute(
         delete(AuditLog).where(
-            AuditLog.entity_type == "client_email_draft", AuditLog.actor_id.like("draft-%")
+            AuditLog.entity_type == "client_email_draft", AuditLog.actor_id.in_(["fa-1", "fa-2"])
         )
     )
     session.commit()
@@ -203,14 +203,16 @@ def test_the_draft_waits_in_the_active_review_queue_and_not_the_dormant_one(
     assert message_id not in [item["message_id"] for item in dormant_queue["items"]]
 
 
-def test_the_daily_cap_stops_further_drafts(monkeypatch, model_on, seeded_client) -> None:
+def test_the_daily_cap_stops_further_drafts(
+    monkeypatch, model_on, seeded_client, reviewer_2_headers
+) -> None:
     monkeypatch.setenv("CLIENT_EMAIL_DRAFT_DAILY_CAP", "1")
     get_settings.cache_clear()
     _use_model(monkeypatch)
 
     first = _ask()
     second = _ask()
-    other_advisor = _ask("draft-other-advisor")
+    other_advisor = _ask(reviewer_2_headers)
 
     assert first.status_code == 200
     assert second.status_code == 429
@@ -254,7 +256,7 @@ def test_a_reply_with_numbers_is_not_passed_on(monkeypatch, model_on, seeded_cli
     "reply",
     [
         "not json at all",
-        json.dumps({"subject": "Hi", "body": "Dear Wanjiru, hello"}),
+        json.dumps({"subject": "Hi", "body": "We hope you are well."}),
         json.dumps({"subject": "", "body": "Dear {{first_name}}, hello"}),
         json.dumps({"subject": "Hi", "body": "Dear {{first_name}}, {{typical_contribution}}"}),
     ],
@@ -262,6 +264,25 @@ def test_a_reply_with_numbers_is_not_passed_on(monkeypatch, model_on, seeded_cli
 def test_a_malformed_draft_is_rejected(reply) -> None:
     with pytest.raises(DraftRejected):
         parse_email_draft(reply)
+
+
+@pytest.mark.parametrize("greeting", ["Dear [Client Name],", "Dear Wanjiru,", "Hi Client,"])
+def test_a_greeting_without_the_placeholder_is_repaired(greeting) -> None:
+    reply = json.dumps({"subject": "Hello", "body": f"{greeting}\nHow are you?"})
+
+    draft = parse_email_draft(reply)
+
+    assert draft.body.startswith("Dear {{first_name}},")
+    assert "Wanjiru" not in draft.body
+
+
+@pytest.mark.parametrize("token", ["{first_name}", "[first_name]", "{{ first_name }}"])
+def test_a_loosely_written_placeholder_is_corrected(token) -> None:
+    reply = json.dumps({"subject": "Hello", "body": f"Dear {token}, how are you?"})
+
+    draft = parse_email_draft(reply)
+
+    assert draft.body.startswith("Dear {{first_name}},")
 
 
 def test_a_draft_wrapped_in_a_code_fence_is_still_read() -> None:

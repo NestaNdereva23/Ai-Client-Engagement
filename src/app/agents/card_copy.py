@@ -24,52 +24,56 @@ class UnknownResponseKind(LookupError):
 
 
 SITUATION_COPY: dict[str, SituationCopy] = {
-    sit.NEW_CLIENT_SINGLE_DEPOSIT: SituationCopy(
-        screen_label="New clients needing a start",
-        card_title="Welcome and encourage new clients to top up",
-        why_now="First deposit signal detected",
+    sit.GRADUAL_DEPOSITOR_DUE: SituationCopy(
+        screen_label="Overdue for a deposit",
+        card_title="Set up a regular top-up with clients who have gone quiet",
+        why_now="No recent purchase, and past their own usual gap",
     ),
-    sit.SYSTEM_FEE_PRESSURE: SituationCopy(
-        screen_label="Balance under fee pressure",
-        card_title="Prioritise clients who need a fee follow-up",
-        why_now="Fee-related signal detected",
+    sit.GRADUAL_DEPOSITOR_WITHDRAWING: SituationCopy(
+        screen_label="Taking money out, not putting any in",
+        card_title="Review cash needs with clients who are withdrawing",
+        why_now="Withdrawals with no purchase in recent months",
     ),
-    sit.SMALL_BALANCE_INACTIVE: SituationCopy(
-        screen_label="Small balances going quiet",
-        card_title="Reconnect with clients who have gone quiet",
-        why_now="Small balance and inactivity signal detected",
+    sit.FREQUENT_DEPOSITOR_ONE_FUND: SituationCopy(
+        screen_label="Regular depositors with one fund",
+        card_title="Offer a second fund to regular depositors",
+        why_now="Buying regularly, one fund held",
     ),
-    sit.CONTRIBUTION_DECLINE: SituationCopy(
+    sit.FREQUENT_DEPOSITOR_WITHDRAWING: SituationCopy(
+        screen_label="Depositing and withdrawing",
+        card_title="Show clients the benefit of staying invested",
+        why_now="Withdrawals match or exceed deposits",
+    ),
+    sit.DEPOSIT_SIZE_FALLING: SituationCopy(
         screen_label="Contributions declining",
         card_title="Check in on clients whose contributions are shrinking",
         why_now="Contribution decline signal detected",
     ),
-    sit.SINGLE_FUND_HEALTHY: SituationCopy(
-        screen_label="Healthy clients with one fund",
-        card_title="Offer a second fund to healthy single-fund clients",
-        why_now="Healthy risk band, one fund held",
+    sit.FIRST_DEPOSIT_NO_REPEAT: SituationCopy(
+        screen_label="New clients needing a start",
+        card_title="Welcome and encourage new clients to top up",
+        why_now="First deposit signal detected",
     ),
-    sit.FOLLOW_UP_OVERDUE: SituationCopy(
-        screen_label="Follow ups overdue",
-        card_title="Follow up clients already due for a call",
-        why_now="Call follow-up signal",
+    sit.FA_CALL_OVERDUE: SituationCopy(
+        screen_label="Promised calls overdue",
+        card_title="Follow up clients whose promised call has passed",
+        why_now="A scheduled call is past its date",
     ),
-    sit.RISK_ACTION_GAP: SituationCopy(
+    sit.RISK_ROSE_NO_CALL: SituationCopy(
         screen_label="Clients needing attention",
-        card_title="Prioritise clients who moved to a more urgent queue overnight",
-        why_now="Risk moved up, no call logged",
+        card_title="Check in on clients whose risk rose with no response",
+        why_now="Risk moved up, no response logged",
     ),
-    sit.FEE_PRESSURE_GONE_QUIET: SituationCopy(
-        screen_label="Fee pressure, gone quiet",
-        card_title="Warn clients under fee pressure who have stopped depositing",
-        why_now="Fee pressure and quiet deposits detected",
-    ),
-    sit.FEE_PRESSURE_ACTIVE_CONTRIBUTOR: SituationCopy(
-        screen_label="Fee pressure, still contributing",
-        card_title="Encourage clients under fee pressure who are still contributing",
-        why_now="Fee pressure detected, deposits continuing",
+    sit.APPROACHING_PRESERVATION_LINE: SituationCopy(
+        screen_label="Heading below the active line",
+        card_title="Reach out to clients whose balance is heading below the active line",
+        why_now="Balance on course to fall below the active line",
     ),
 }
+
+
+def _readable(group_name: str) -> str:
+    return group_name.replace("_", " ").capitalize()
 
 
 def copy_for(group_name: str) -> SituationCopy:
@@ -80,6 +84,15 @@ def copy_for(group_name: str) -> SituationCopy:
         raise UnknownSituation(
             f"no card copy for situation '{code}' (from group_name '{group_name}')"
         ) from None
+
+
+def copy_for_history(group_name: str) -> SituationCopy:
+    """Card copy for a stored proposal; a group no longer produced reads as earlier."""
+    try:
+        return copy_for(group_name)
+    except UnknownSituation:
+        label = _readable(group_name)
+        return SituationCopy(screen_label=label, card_title=label, why_now="Earlier suggestion")
 
 
 RESPONSE_KIND_OWNER: dict[str, str] = {

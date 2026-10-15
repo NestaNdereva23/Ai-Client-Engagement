@@ -1,12 +1,5 @@
 """The intelligence agent, against a fake model.
-
-These cover what a run has to get right: several findings written and read
-back whole, a run that looks everywhere and honestly finds nothing, a group
-that spends its turns without settling, a write tool refusing a bad call,
-and one group failing while the rest of the run finishes. One more proves
-the groups investigated side by side come out the same as one after
-another.
-"""
+Covers findings written and read back, an empty run, a group that never settles and a failure."""
 
 from __future__ import annotations
 
@@ -30,12 +23,8 @@ from app.agents.intelligence import (
     gather_context,
     run_intelligence_agent,
 )
-from app.agents.watchlist import (
-    FEE_PRESSURE_GONE_QUIET,
-    GROUP_NAMES,
-    VERY_SMALL_AND_QUIET,
-    WatchlistThresholds,
-)
+from app.agents.situations import DEPOSIT_SIZE_FALLING, FIRST_DEPOSIT_NO_REPEAT
+from app.agents.watchlist import GROUP_NAMES, WatchlistThresholds
 from app.config import get_settings
 from app.db.async_session import dispose_async_engine
 from app.db.models.action_performance import ActionPerformance
@@ -68,10 +57,7 @@ HIGH_RISK_FILTER = [{"field": "risk_band", "op": "eq", "value": "High"}]
 
 class ScriptedAsyncClient:
     """Answers each group's investigation from its own list of turns.
-
-    A group with no script of its own replies once with plain text, which
-    is how a run says it looked and had nothing to add.
-    """
+    A group with no script replies once with plain text."""
 
     model = "fake-intelligence-model"
 
@@ -350,15 +336,15 @@ def test_every_investigation_is_shown_what_earlier_messages_led_to(book: None) -
 
 async def test_a_run_writes_several_findings_and_hangs_a_fact_on_one(book: None) -> None:
     scripts = {
-        FEE_PRESSURE_GONE_QUIET: [
+        FIRST_DEPOSIT_NO_REPEAT: [
             _calls(
-                _write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET),
-                _write("A few of them still pay in", FEE_PRESSURE_GONE_QUIET, kind="opportunity"),
+                _write("The fee will empty these accounts", FIRST_DEPOSIT_NO_REPEAT),
+                _write("A few of them still pay in", FIRST_DEPOSIT_NO_REPEAT, kind="opportunity"),
             ),
             _final_answer("Two findings written."),
         ],
-        VERY_SMALL_AND_QUIET: [
-            _calls(_write("These are small enough to leave alone", VERY_SMALL_AND_QUIET)),
+        DEPOSIT_SIZE_FALLING: [
+            _calls(_write("These are small enough to leave alone", DEPOSIT_SIZE_FALLING)),
             _add_fact_for_the_insight_just_written,
             _final_answer("One finding written, with its number."),
         ],
@@ -378,8 +364,8 @@ async def test_a_run_writes_several_findings_and_hangs_a_fact_on_one(book: None)
 
     assert run.state == "completed"
     assert len(insights) == 3
-    assert outcomes[FEE_PRESSURE_GONE_QUIET] == WROTE_SOMETHING
-    assert outcomes[VERY_SMALL_AND_QUIET] == WROTE_SOMETHING
+    assert outcomes[FIRST_DEPOSIT_NO_REPEAT] == WROTE_SOMETHING
+    assert outcomes[DEPOSIT_SIZE_FALLING] == WROTE_SOMETHING
     assert len(facts) == 1
     assert facts[0].source_filter == {"conditions": HIGH_RISK_FILTER}
     assert "3 findings written" in run.summary
@@ -387,16 +373,16 @@ async def test_a_run_writes_several_findings_and_hangs_a_fact_on_one(book: None)
 
 async def test_a_group_may_produce_several_findings_and_another_none(book: None) -> None:
     scripts = {
-        FEE_PRESSURE_GONE_QUIET: [
+        FIRST_DEPOSIT_NO_REPEAT: [
             _calls(
-                _write("One", FEE_PRESSURE_GONE_QUIET),
-                _write("Two", FEE_PRESSURE_GONE_QUIET),
-                _write("Three", FEE_PRESSURE_GONE_QUIET),
+                _write("One", FIRST_DEPOSIT_NO_REPEAT),
+                _write("Two", FIRST_DEPOSIT_NO_REPEAT),
+                _write("Three", FIRST_DEPOSIT_NO_REPEAT),
             ),
             _final_answer("Three findings written."),
         ],
-        VERY_SMALL_AND_QUIET: [
-            _calls(_dismiss(VERY_SMALL_AND_QUIET, "every balance here is too small to chase")),
+        DEPOSIT_SIZE_FALLING: [
+            _calls(_dismiss(DEPOSIT_SIZE_FALLING, "every balance here is too small to chase")),
             _final_answer("Nothing worth raising."),
         ],
     }
@@ -408,8 +394,8 @@ async def test_a_group_may_produce_several_findings_and_another_none(book: None)
         outcomes = _outcome_names(session, run_id)
 
     assert len(insights) == 3
-    assert outcomes[FEE_PRESSURE_GONE_QUIET] == WROTE_SOMETHING
-    assert outcomes[VERY_SMALL_AND_QUIET] == FOUND_NOTHING
+    assert outcomes[FIRST_DEPOSIT_NO_REPEAT] == WROTE_SOMETHING
+    assert outcomes[DEPOSIT_SIZE_FALLING] == FOUND_NOTHING
 
 
 async def test_a_run_that_finds_nothing_says_so(book: None) -> None:
@@ -436,12 +422,12 @@ async def test_a_run_that_finds_nothing_says_so(book: None) -> None:
 
 async def test_a_group_that_runs_out_of_turns_does_not_stop_the_rest(book: None) -> None:
     scripts = {
-        FEE_PRESSURE_GONE_QUIET: [
+        FIRST_DEPOSIT_NO_REPEAT: [
             _calls(("list_groups", {"as_of": AS_OF.isoformat()})),
             _calls(("list_groups", {"as_of": AS_OF.isoformat()})),
         ],
-        VERY_SMALL_AND_QUIET: [
-            _calls(_write("Found while another group stalled", VERY_SMALL_AND_QUIET)),
+        DEPOSIT_SIZE_FALLING: [
+            _calls(_write("Found while another group stalled", DEPOSIT_SIZE_FALLING)),
             _final_answer("One finding written."),
         ],
     }
@@ -454,17 +440,17 @@ async def test_a_group_that_runs_out_of_turns_does_not_stop_the_rest(book: None)
         outcomes = _outcome_names(session, run_id)
 
     assert run.state == "completed"
-    assert outcomes[FEE_PRESSURE_GONE_QUIET] == RAN_OUT_OF_TURNS
-    assert outcomes[VERY_SMALL_AND_QUIET] == WROTE_SOMETHING
+    assert outcomes[FIRST_DEPOSIT_NO_REPEAT] == RAN_OUT_OF_TURNS
+    assert outcomes[DEPOSIT_SIZE_FALLING] == WROTE_SOMETHING
     assert len(insights) == 1
     assert "1 ran out of turns before finishing." in run.summary
 
 
 async def test_a_write_tool_refusing_is_recorded_and_the_group_carries_on(book: None) -> None:
     scripts = {
-        FEE_PRESSURE_GONE_QUIET: [
-            _calls(_write("A finding of an unknown kind", FEE_PRESSURE_GONE_QUIET, kind="hunch")),
-            _calls(_write("The same finding, written properly", FEE_PRESSURE_GONE_QUIET)),
+        FIRST_DEPOSIT_NO_REPEAT: [
+            _calls(_write("A finding of an unknown kind", FIRST_DEPOSIT_NO_REPEAT, kind="hunch")),
+            _calls(_write("The same finding, written properly", FIRST_DEPOSIT_NO_REPEAT)),
             _final_answer("Corrected and written."),
         ],
     }
@@ -488,9 +474,9 @@ async def test_a_write_tool_refusing_is_recorded_and_the_group_carries_on(book: 
 
 async def test_one_group_failing_leaves_the_others_finished(book: None) -> None:
     scripts = {
-        FEE_PRESSURE_GONE_QUIET: [_raising_turn],
-        VERY_SMALL_AND_QUIET: [
-            _calls(_write("Found while another group failed", VERY_SMALL_AND_QUIET)),
+        FIRST_DEPOSIT_NO_REPEAT: [_raising_turn],
+        DEPOSIT_SIZE_FALLING: [
+            _calls(_write("Found while another group failed", DEPOSIT_SIZE_FALLING)),
             _final_answer("One finding written."),
         ],
     }
@@ -507,17 +493,17 @@ async def test_one_group_failing_leaves_the_others_finished(book: None) -> None:
 
     assert run.state == "completed"
     assert run.failure_reason is None
-    assert outcomes[FEE_PRESSURE_GONE_QUIET] == FAILED
-    assert outcomes[VERY_SMALL_AND_QUIET] == WROTE_SOMETHING
+    assert outcomes[FIRST_DEPOSIT_NO_REPEAT] == FAILED
+    assert outcomes[DEPOSIT_SIZE_FALLING] == WROTE_SOMETHING
     assert len(insights) == 1
     assert {"gather", "investigate_group", "report"} <= actions
-    assert f"could not be looked at at all: {FEE_PRESSURE_GONE_QUIET}" in run.summary
+    assert f"could not be looked at at all: {FIRST_DEPOSIT_NO_REPEAT}" in run.summary
 
 
 async def test_a_failing_group_never_leaves_a_half_written_finding(book: None) -> None:
     scripts = {
-        FEE_PRESSURE_GONE_QUIET: [
-            _calls(_write("Written just before the model died", FEE_PRESSURE_GONE_QUIET)),
+        FIRST_DEPOSIT_NO_REPEAT: [
+            _calls(_write("Written just before the model died", FIRST_DEPOSIT_NO_REPEAT)),
             _raising_turn,
         ],
     }
@@ -529,20 +515,20 @@ async def test_a_failing_group_never_leaves_a_half_written_finding(book: None) -
         outcomes = _outcome_names(session, run_id)
 
     assert insights == []
-    assert outcomes[FEE_PRESSURE_GONE_QUIET] == FAILED
+    assert outcomes[FIRST_DEPOSIT_NO_REPEAT] == FAILED
 
 
 def _side_by_side_scripts() -> dict[str, list]:
     return {
-        FEE_PRESSURE_GONE_QUIET: [
+        FIRST_DEPOSIT_NO_REPEAT: [
             _calls(
-                _write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET),
-                _write("Some still pay in", FEE_PRESSURE_GONE_QUIET, kind="opportunity"),
+                _write("The fee will empty these accounts", FIRST_DEPOSIT_NO_REPEAT),
+                _write("Some still pay in", FIRST_DEPOSIT_NO_REPEAT, kind="opportunity"),
             ),
             _final_answer("Two findings written."),
         ],
-        VERY_SMALL_AND_QUIET: [
-            _calls(_dismiss(VERY_SMALL_AND_QUIET, "too small to be worth a message")),
+        DEPOSIT_SIZE_FALLING: [
+            _calls(_dismiss(DEPOSIT_SIZE_FALLING, "too small to be worth a message")),
             _final_answer("Nothing worth raising."),
         ],
         EVERYTHING_ELSE: [
@@ -590,8 +576,8 @@ async def _traced_run(scripts: dict[str, list], **kwargs) -> tuple[int, FakeTrac
 
 async def test_every_step_traces_without_a_client_id(book: None) -> None:
     scripts = {
-        FEE_PRESSURE_GONE_QUIET: [
-            _calls(_write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET)),
+        FIRST_DEPOSIT_NO_REPEAT: [
+            _calls(_write("The fee will empty these accounts", FIRST_DEPOSIT_NO_REPEAT)),
             _final_answer("One finding written."),
         ],
     }
@@ -608,8 +594,8 @@ async def test_every_step_traces_without_a_client_id(book: None) -> None:
 
 async def test_each_group_is_a_span_of_its_own_under_the_investigate_step(book: None) -> None:
     scripts = {
-        FEE_PRESSURE_GONE_QUIET: [
-            _calls(_write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET)),
+        FIRST_DEPOSIT_NO_REPEAT: [
+            _calls(_write("The fee will empty these accounts", FIRST_DEPOSIT_NO_REPEAT)),
             _final_answer("One finding written."),
         ],
     }
@@ -619,8 +605,8 @@ async def test_each_group_is_a_span_of_its_own_under_the_investigate_step(book: 
     groups = tracer.of_type("agent")
     assert {span["name"] for span in groups} == set(GROUP_QUESTIONS)
     assert {span["parent"] for span in groups} == {"investigate"}
-    fees = tracer.named(FEE_PRESSURE_GONE_QUIET)[0]
-    assert fees["input"]["question"] == question_for(FEE_PRESSURE_GONE_QUIET)
+    fees = tracer.named(FIRST_DEPOSIT_NO_REPEAT)[0]
+    assert fees["input"]["question"] == question_for(FIRST_DEPOSIT_NO_REPEAT)
     assert fees["output"]["outcome"] == WROTE_SOMETHING
     assert fees["output"]["insight_titles"] == ["The fee will empty these accounts"]
 
@@ -629,8 +615,8 @@ async def test_every_model_call_is_a_generation_span_with_its_model_and_tokens(
     book: None,
 ) -> None:
     scripts = {
-        FEE_PRESSURE_GONE_QUIET: [
-            _calls(_write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET)),
+        FIRST_DEPOSIT_NO_REPEAT: [
+            _calls(_write("The fee will empty these accounts", FIRST_DEPOSIT_NO_REPEAT)),
             _final_answer("One finding written."),
         ],
     }
@@ -638,7 +624,7 @@ async def test_every_model_call_is_a_generation_span_with_its_model_and_tokens(
     _run_id, tracer = await _traced_run(scripts)
 
     calls = [
-        span for span in tracer.of_type("generation") if span["parent"] == FEE_PRESSURE_GONE_QUIET
+        span for span in tracer.of_type("generation") if span["parent"] == FIRST_DEPOSIT_NO_REPEAT
     ]
     assert len(calls) == 2
     for span in calls:
@@ -656,10 +642,10 @@ async def test_every_model_call_is_a_generation_span_with_its_model_and_tokens(
 async def test_every_tool_call_is_a_span_carrying_what_was_asked_and_answered(book: None) -> None:
     measure = ("measure_slice", {"conditions": HIGH_RISK_FILTER, "measures": ["client_count"]})
     scripts = {
-        FEE_PRESSURE_GONE_QUIET: [
+        FIRST_DEPOSIT_NO_REPEAT: [
             _calls(
                 measure,
-                _write("A finding of an unknown kind", FEE_PRESSURE_GONE_QUIET, kind="hunch"),
+                _write("A finding of an unknown kind", FIRST_DEPOSIT_NO_REPEAT, kind="hunch"),
             ),
             _final_answer("Looked and got one refusal."),
         ],
@@ -669,7 +655,7 @@ async def test_every_tool_call_is_a_span_carrying_what_was_asked_and_answered(bo
 
     asked = tracer.named("measure_slice")[0]
     assert asked["as_type"] == "tool"
-    assert asked["parent"] == FEE_PRESSURE_GONE_QUIET
+    assert asked["parent"] == FIRST_DEPOSIT_NO_REPEAT
     assert asked["input"] == {"conditions": HIGH_RISK_FILTER, "measures": ["client_count"]}
     assert "measures" in asked["output"]
     assert asked["level"] is None
@@ -682,11 +668,11 @@ async def test_every_tool_call_is_a_span_carrying_what_was_asked_and_answered(bo
 async def test_a_failing_group_is_marked_on_the_trace_and_the_run_still_flushes(
     book: None,
 ) -> None:
-    scripts = {FEE_PRESSURE_GONE_QUIET: [_raising_turn]}
+    scripts = {FIRST_DEPOSIT_NO_REPEAT: [_raising_turn]}
 
     _run_id, tracer = await _traced_run(scripts)
 
-    failed = tracer.named(FEE_PRESSURE_GONE_QUIET)[0]
+    failed = tracer.named(FIRST_DEPOSIT_NO_REPEAT)[0]
     assert failed["level"] == "ERROR"
     assert failed["output"]["outcome"] == FAILED
     assert tracer.flushes == 1
@@ -694,8 +680,8 @@ async def test_a_failing_group_is_marked_on_the_trace_and_the_run_still_flushes(
 
 async def test_the_run_records_its_tokens_and_where_to_read_the_trace(book: None) -> None:
     scripts = {
-        FEE_PRESSURE_GONE_QUIET: [
-            _calls(_write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET)),
+        FIRST_DEPOSIT_NO_REPEAT: [
+            _calls(_write("The fee will empty these accounts", FIRST_DEPOSIT_NO_REPEAT)),
             _final_answer("One finding written."),
         ],
     }
@@ -770,7 +756,7 @@ async def test_one_group_spending_its_queries_does_not_starve_another(book: None
     measure = ("measure_slice", {"conditions": HIGH_RISK_FILTER, "measures": ["client_count"]})
     scripts = {
         name: [_calls(measure), _calls(measure), _final_answer("Counted what I could.")]
-        for name in (FEE_PRESSURE_GONE_QUIET, VERY_SMALL_AND_QUIET)
+        for name in (FIRST_DEPOSIT_NO_REPEAT, DEPOSIT_SIZE_FALLING)
     }
 
     run_id = await _run(scripts, query_budget=1)

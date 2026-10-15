@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from sqladmin import ModelView
+from wtforms import SelectField
 
 from app.db.models.active_clients import (
     ActiveClientFund,
@@ -79,6 +80,7 @@ from app.db.models.suppression import Suppression
 from app.db.models.template_generation_plan import TemplateGenerationPlan
 from app.db.models.template_policy import CampaignTemplatePolicy, TemplatePolicyConfigVersion
 from app.db.models.test_recipient import TestRecipient
+from app.db.models.user_access import SOURCE_MANUAL, USER_ROLES, UserAccess
 
 
 class _ReadOnlyView(ModelView):
@@ -647,6 +649,51 @@ class ReviewerUserAdmin(_ReadOnlyView, model=ReviewerUser):
     column_default_sort = [(ReviewerUser.created_at, True)]
 
 
+class UserAccessAdmin(ModelView, model=UserAccess):
+    """The one screen that can change data: add an admin or advisor, switch the
+    digest on, or set who an admin views as. Advisor rows are the list of account
+    managers that clients are shared out to. A row is never deleted here, switch
+    Active off instead, so the nightly feed does not add the person back."""
+
+    name = "User Access"
+    name_plural = "User Access"
+    icon = "fa-solid fa-user-lock"
+    category = "Access & Audit"
+    category_icon = "fa-solid fa-shield-halved"
+    can_delete = False
+    can_export = False
+    column_list = [
+        UserAccess.email,
+        UserAccess.name,
+        UserAccess.role,
+        UserAccess.fa_id,
+        UserAccess.daily_capacity,
+        UserAccess.active,
+        UserAccess.receives_digest,
+        UserAccess.view_as_email,
+        UserAccess.source,
+    ]
+    column_searchable_list = [UserAccess.email]
+    column_sortable_list = [UserAccess.email, UserAccess.role, UserAccess.source]
+    column_default_sort = [(UserAccess.email, False)]
+    form_columns = [
+        UserAccess.email,
+        UserAccess.name,
+        UserAccess.role,
+        UserAccess.fa_id,
+        UserAccess.daily_capacity,
+        UserAccess.active,
+        UserAccess.receives_digest,
+        UserAccess.view_as_email,
+    ]
+    form_include_pk = True
+    form_overrides = {"role": SelectField}
+    form_args = {"role": {"choices": [(role, role.title()) for role in USER_ROLES]}}
+
+    async def on_model_change(self, data: dict, model: object, is_created: bool, request) -> None:
+        data["source"] = SOURCE_MANUAL
+
+
 class AuditLogAdmin(_ReadOnlyView, model=AuditLog):
     name = "Audit Log"
     name_plural = "Audit Log"
@@ -954,6 +1001,7 @@ ADMIN_VIEWS = [
     ClientComplaintAdmin,
     BriefingNarrativeAdmin,
     ReviewerUserAdmin,
+    UserAccessAdmin,
     AuditLogAdmin,
     IdempotencyKeyAdmin,
     TestRecipientAdmin,

@@ -1,9 +1,5 @@
 """The agent proposals HTTP API: list, open one, and decide.
-
-Drives the router through TestClient against the real app, so these prove
-the wiring rather than re-testing the service logic already covered in
-test_services_agent_proposals.py.
-"""
+Drives the router through TestClient, so these prove the wiring."""
 
 from __future__ import annotations
 
@@ -11,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 
-from app.agents.watchlist import VERY_SMALL_AND_QUIET
+from app.agents.situations import DEPOSIT_SIZE_FALLING
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.audit import AuditLog
 from app.db.session import SessionLocal
@@ -39,7 +35,7 @@ def proposal(db: None):
         row = AgentProposal(
             action_code="start_win_back",
             catalog_version=1,
-            group_name=VERY_SMALL_AND_QUIET,
+            group_name=DEPOSIT_SIZE_FALLING,
             client_count=2,
             money_total_kes=4_500.0,
             evidence="two dormant clients with a small, quiet balance",
@@ -87,7 +83,7 @@ def test_list_proposals_returns_counts_and_money_never_names(proposal: int) -> N
     assert row["client_count"] == 2
     assert row["included_count"] == 1
     assert row["money_total_kes"] == 4_500.0
-    assert row["group_name"] == VERY_SMALL_AND_QUIET
+    assert row["group_name"] == DEPOSIT_SIZE_FALLING
     assert "client_id" not in row
     assert body["total_count"] >= 1
 

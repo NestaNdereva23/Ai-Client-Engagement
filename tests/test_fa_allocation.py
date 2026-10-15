@@ -7,7 +7,7 @@ tonight's overflow is lent without moving who owns whom.
 
 from __future__ import annotations
 
-from app.config import FaRecord
+from app.advisors import FaRecord
 from app.risk.fa_allocation import ClientLoad, allocate_advisors, owners_from_source
 
 ROSTER = (
@@ -51,6 +51,13 @@ def test_unassigned_client_goes_to_the_lightest_advisor():
     result = allocate_advisors(ROSTER, clients, {1: 1})
     assert result.owner[1] == 1
     assert result.owner[2] == 2
+
+
+def test_with_the_fallback_off_a_client_without_an_advisor_is_listed_not_given_one():
+    clients = _clients((1, 900.0, True), (2, 50.0, True), (3, 10.0, False))
+    result = allocate_advisors(ROSTER, clients, {1: 1, 3: 99}, least_loaded_fallback=False)
+    assert result.owner == {1: 1}
+    assert result.unassigned == {2, 3}
 
 
 def test_headcount_breaks_a_money_tie():

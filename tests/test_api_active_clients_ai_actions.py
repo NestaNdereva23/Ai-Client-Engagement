@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 
 from app.agents import card_copy
-from app.agents.watchlist import GETTING_SMALLER, SIGNED_UP_RECENTLY
+from app.agents.situations import DEPOSIT_SIZE_FALLING, FIRST_DEPOSIT_NO_REPEAT
 from app.db.models.active_clients import ActiveClientFund, ActiveClientInteraction
 from app.db.models.agent import AgentActionCatalog
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
@@ -158,7 +158,7 @@ def _proposal(
     *,
     action_code: str = CALL_ACTION,
     response_kind: str | None = "phone_call",
-    group_name: str = GETTING_SMALLER,
+    group_name: str = DEPOSIT_SIZE_FALLING,
     status: str = "proposed",
     clients: list[int] | None = None,
     left_out: list[int] | None = None,
@@ -233,7 +233,7 @@ def test_a_client_in_an_open_proposal_shows_the_ai_action(seeded_book) -> None:
 
     action = _row(HIGHER_SCORE_CLIENT)["ai_action"]
 
-    copy = card_copy.copy_for(GETTING_SMALLER)
+    copy = card_copy.copy_for(DEPOSIT_SIZE_FALLING)
     assert action == {
         "proposal_id": proposal_id,
         "action_code": CALL_ACTION,
@@ -270,7 +270,7 @@ def test_the_newest_open_proposal_wins(seeded_book) -> None:
             session,
             action_code=EMAIL_ACTION,
             response_kind="automated_email",
-            group_name=SIGNED_UP_RECENTLY,
+            group_name=FIRST_DEPOSIT_NO_REPEAT,
         )
 
     action = _row(HIGHER_SCORE_CLIENT)["ai_action"]

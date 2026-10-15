@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 from app.config import get_settings  # noqa: E402
 from app.db.session import SessionLocal  # noqa: E402
 from app.logging_config import configure_logging  # noqa: E402
+from app.services.user_access import digest_recipients  # noqa: E402
 from app.workers.digest_email import (  # noqa: E402
     DigestEmailAborted,
     build_advisor_emails,
@@ -34,7 +35,9 @@ from app.workers.digest_email import (  # noqa: E402
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Send the morning digest emails.")
     parser.add_argument("--digest-run-id", type=int, required=True, help="Which digest to send.")
-    parser.add_argument("--fa-id", type=int, help="Only this advisor, instead of the whole roster.")
+    parser.add_argument(
+        "--fa-id", help="Only this advisor, instead of every advisor set to get it."
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -44,11 +47,11 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = get_settings()
     configure_logging(settings.log_level)
-    roster = settings.fa_records
-    if not roster:
-        parser.error("ACE_FA_ROSTER must be set in the environment.")
 
     with SessionLocal() as session:
+        roster = digest_recipients(session, settings)
+        if not roster:
+            parser.error("No advisor is set to get the digest. Switch one on in User Access.")
         try:
             if args.dry_run:
                 emails = build_advisor_emails(

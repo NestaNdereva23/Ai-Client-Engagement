@@ -82,10 +82,10 @@ SECOND_FUND = "suggest_second_fund"
 ACTIONS = (FOLLOW_UP, SECOND_FUND, "ask_what_changed", "send_learning_note", "start_win_back")
 NEEDS_A_GUIDE = (SECOND_FUND, "send_learning_note")
 SITUATION_ANGLES = {
-    "waiting_on_a_call": FOLLOW_UP,
-    "healthy_one_fund": SECOND_FUND,
-    "getting_smaller": "ask_what_changed",
-    "very_small_and_quiet": "start_win_back",
+    "fa_call_overdue": FOLLOW_UP,
+    "frequent_depositor_one_fund": SECOND_FUND,
+    "deposit_size_falling": "ask_what_changed",
+    "frequent_depositor_withdrawing": "send_learning_note",
 }
 
 EMB = HashingEmbedder()

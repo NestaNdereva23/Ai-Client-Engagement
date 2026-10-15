@@ -226,7 +226,7 @@ def test_get_briefing_serves_a_stored_narration(seeded, narratives_on) -> None:
 
     with SessionLocal() as session:
         view = get_briefing(
-            session, CLIENT_ID, FUND_ID, viewing_fa_id="fa-1", reference_date=date(2026, 8, 19)
+            session, CLIENT_ID, FUND_ID, viewer_id="fa-1", reference_date=date(2026, 8, 19)
         )
     assert view.mode == "narrative"
     assert view.text == NARRATION
@@ -240,7 +240,7 @@ def test_get_briefing_ignores_a_stored_narration_whose_facts_moved(seeded, narra
 
     with SessionLocal() as session:
         view = get_briefing(
-            session, CLIENT_ID, FUND_ID, viewing_fa_id="fa-1", reference_date=date(2026, 8, 19)
+            session, CLIENT_ID, FUND_ID, viewer_id="fa-1", reference_date=date(2026, 8, 19)
         )
     assert view.mode == "deterministic"
     assert "CLIENT BRIEFING" in view.text
@@ -258,7 +258,7 @@ def test_get_briefing_stays_deterministic_when_the_feature_is_off(seeded, monkey
 
     with SessionLocal() as session:
         view = get_briefing(
-            session, CLIENT_ID, FUND_ID, viewing_fa_id="fa-1", reference_date=date(2026, 8, 19)
+            session, CLIENT_ID, FUND_ID, viewer_id="fa-1", reference_date=date(2026, 8, 19)
         )
     get_settings.cache_clear()
     assert view.mode == "deterministic"
@@ -274,7 +274,7 @@ def test_on_demand_narration_is_stored_and_not_redrafted(seeded, narratives_on) 
             session,
             CLIENT_ID,
             FUND_ID,
-            viewing_fa_id="fa-1",
+            viewer_id="fa-1",
             llm_client=llm,
             reference_date=date(2026, 8, 19),
         )
@@ -286,7 +286,7 @@ def test_on_demand_narration_is_stored_and_not_redrafted(seeded, narratives_on) 
             session,
             CLIENT_ID,
             FUND_ID,
-            viewing_fa_id="fa-1",
+            viewer_id="fa-1",
             llm_client=llm,
             reference_date=date(2026, 8, 19),
         )
@@ -305,7 +305,7 @@ def test_a_fallback_is_never_stored(seeded, narratives_on) -> None:
             session,
             CLIENT_ID,
             FUND_ID,
-            viewing_fa_id="fa-1",
+            viewer_id="fa-1",
             llm_client=llm,
             reference_date=date(2026, 8, 19),
         )
@@ -367,7 +367,7 @@ def test_warm_up_drafts_a_narration_for_every_client_on_the_digest(
     assert result.already_fresh == 0
     with SessionLocal() as session:
         view = get_briefing(
-            session, CLIENT_ID, FUND_ID, viewing_fa_id="fa-1", reference_date=date(2026, 8, 19)
+            session, CLIENT_ID, FUND_ID, viewer_id="fa-1", reference_date=date(2026, 8, 19)
         )
     assert view.mode == "narrative"
     assert view.text == NARRATION

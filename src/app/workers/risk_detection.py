@@ -68,6 +68,7 @@ from app.risk.signals import SIGNAL_ORDER
 from app.risk.store import active_config_version
 from app.routing.sides import active_client_ids
 from app.routing.tiers import write_client_tiers
+from app.services.user_access import link_advisors_from_feed, load_advisors
 from app.transform.active_features import ActiveFeatureMeasures, derive_active_measures
 from app.transform.active_flatten import flatten_active_run
 from app.transform.active_load import persist_active_result
@@ -238,6 +239,7 @@ class RiskDetectionWorker:
             )
             fund_measures_for_every_client_in_feed = list(measures.values())
             active_ids = active_client_ids(session)
+            advisors_added = link_advisors_from_feed(session)
             scored = {key: m for key, m in measures.items() if m.client_id in active_ids}
             held_out = len(measures) - len(scored)
             measures = scored
@@ -246,6 +248,7 @@ class RiskDetectionWorker:
                 run_id=run.run_id,
                 client_funds=len(measures),
                 held_out_inactive=held_out,
+                advisors_added=advisors_added,
             )
 
             client_ids = sorted({m.client_id for m in measures.values()})
@@ -270,7 +273,8 @@ class RiskDetectionWorker:
             }
             signal_counts = _signal_counts(scores)
 
-            roster = get_settings().fa_records
+            settings = get_settings()
+            roster = load_advisors(session)
             allocation = allocate_and_persist(
                 session,
                 run.run_id,
@@ -278,6 +282,7 @@ class RiskDetectionWorker:
                 clients=_client_loads(measures, scores),
                 keys=list(measures),
                 source_emails={c.client_id: c.fa_email for c in flat.clients if c.fa_email},
+                least_loaded_fallback=settings.fa_least_loaded_fallback,
             )
 
             route_distribution = Counter(r.route for r in routes.values())
@@ -396,7 +401,7 @@ class RiskDetectionWorker:
 
             self._write_client_tiers(fund_measures_for_every_client_in_feed, run)
             self._enroll_auto_checkin(changes)
-            self._send_digest_emails(digest_run.digest_run_id, allocation.covering)
+            self._send_digest_emails(digest_run.digest_run_id)
             self._warm_narratives(digest_run.digest_run_id)
             self._recompute_signals_and_situations(run.reference_ts.date(), run.run_id)
             self._prune_old_data()
@@ -470,8 +475,8 @@ class RiskDetectionWorker:
         except Exception:
             logger.exception("risk_detection.narrative_warm_failed", digest_run_id=digest_run_id)
 
-    def _send_digest_emails(self, digest_run_id: int, covering: dict[int, str]) -> None:
-        """Mail each rostered advisor their morning summary for this digest.
+    def _send_digest_emails(self, digest_run_id: int) -> None:
+        """Mail each advisor chosen for the digest their morning summary.
 
         Runs right after the risk run commits, ahead of the narration
         warm-up: the email carries counts and money only, no per-client
@@ -479,13 +484,11 @@ class RiskDetectionWorker:
         session, and swallows everything for the same reason the warm-up
         does: the run has already committed, and a mail server being down
         at 6am is not a reason to fail a pass that scored and routed the
-        whole book. Nothing happens at all without a roster.
+        whole book. Nothing is sent while no advisor is switched on.
         """
-        if not get_settings().fa_records:
-            return
         try:
             with self._session_factory() as session:
-                send_digest_emails(session, digest_run_id, covering=covering)
+                send_digest_emails(session, digest_run_id)
         except Exception:
             logger.exception("risk_detection.digest_email_failed", digest_run_id=digest_run_id)
 

@@ -816,7 +816,7 @@ def test_ollama_converse_translates_a_tool_use_reply_and_its_result_back_into_th
             {
                 "id": "call_1",
                 "type": "function",
-                "function": {"name": "list_groups", "arguments": "{}"},
+                "function": {"name": "list_groups", "arguments": {}},
             }
         ],
     }

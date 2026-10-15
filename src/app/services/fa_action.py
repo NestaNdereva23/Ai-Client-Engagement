@@ -75,7 +75,7 @@ def _funds_assigned_to(fa_id: str, *columns):
     )
 
 
-def _totals_by_tier(
+def tier_totals_for(
     session: Session, fa_id: str
 ) -> tuple[dict[str | None, TierTotals], datetime | None]:
     rows = session.execute(
@@ -155,7 +155,7 @@ def load_fa_action_book(
         raise NotAWorklistTier(tier)
 
     limit = clamp_limit(limit)
-    totals_by_tier, computed_at = _totals_by_tier(session, fa_id)
+    totals_by_tier, computed_at = tier_totals_for(session, fa_id)
 
     groups = []
     for group_tier in (tier,) if tier else ACTIVE_TIERS_IN_DISPLAY_ORDER:

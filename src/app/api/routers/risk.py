@@ -1,25 +1,18 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.api.reviewer_auth import get_current_reviewer_id
 from app.db.session import get_session
-from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.risk import (
     RiskAnalyticsOut,
     RiskBucketOut,
     RiskCoverageOut,
     RiskTrendOut,
     RiskTrendPointOut,
-    SmallBalanceReviewLineOut,
 )
-from app.services.risk import (
-    book_coverage,
-    list_small_balance_review_queue,
-    risk_analytics,
-    risk_trend,
-)
+from app.services.risk import book_coverage, risk_analytics, risk_trend
 
 router = APIRouter(prefix="/risk", tags=["risk"], dependencies=[Depends(get_current_reviewer_id)])
 
@@ -66,19 +59,4 @@ def get_risk_trend(
             )
             for p in points
         ]
-    )
-
-
-@router.get("/queues/small_balance_review", response_model=Page[SmallBalanceReviewLineOut])
-def get_small_balance_review_queue(
-    cursor: str | None = None,
-    limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
-    session: Session = Depends(get_session),
-) -> Page[SmallBalanceReviewLineOut]:
-    try:
-        rows, next_cursor = list_small_balance_review_queue(session, cursor=cursor, limit=limit)
-    except InvalidCursor:
-        raise HTTPException(status_code=400, detail="invalid cursor") from None
-    return Page(
-        items=[SmallBalanceReviewLineOut.model_validate(r) for r in rows], next_cursor=next_cursor
     )

@@ -1,12 +1,5 @@
-"""The fee warning, all the way from a finding to an email that went.
-
-One test walks the whole path: the agent writes a finding, a person accepts
-it, the response is proposed, a person approves the proposal, the group is
-enrolled and drafted, the draft waits in the review queue, a person approves
-the message, and only then does it send. The rest of the file holds the two
-places a person must stand in the way, and the briefs the two live actions
-were written against.
-"""
+"""The fee warning, all the way from a finding to an email that went, with a person
+approving the proposal and the message. The rest holds the two places a person must stand."""
 
 from __future__ import annotations
 
@@ -27,7 +20,7 @@ from app.agents.guardrails import (
 from app.agents.orchestrator import Orchestrator
 from app.agents.permissions import effective_permission
 from app.agents.proposal_state import transition_proposal
-from app.agents.watchlist import FEE_PRESSURE_GONE_QUIET
+from app.agents.situations import FIRST_DEPOSIT_NO_REPEAT
 from app.agents.write_tools import RUN_PROPOSAL, WRITE_PROPOSAL, make_write_tools
 from app.campaigns.generation import generate_for_enrollment
 from app.campaigns.touch import SendResult, run_due_enrollments, send_due_touches
@@ -79,12 +72,7 @@ TODAY = date.today()
 
 
 class ScriptedModel:
-    """Stands in for the drafting model, writing back the fact it was given.
-
-    A real model is asked to reproduce the month exactly as supplied. This
-    one does exactly that, so the draft that comes out is one a real model
-    could have written and every guardrail runs on it for real.
-    """
+    """Stands in for the drafting model, writing back the fact it was given, so guardrails run."""
 
     model = "scripted"
 
@@ -231,7 +219,7 @@ def client_fund(clean: None) -> int:
             ClientSituationState(
                 client_id=CLIENT_ID,
                 unit_fund_id=FUND_ID,
-                situation_code=FEE_PRESSURE_GONE_QUIET,
+                situation_code=FIRST_DEPOSIT_NO_REPEAT,
                 is_active=True,
                 signal_codes=["fee_pressure_close"],
                 since=TODAY,
@@ -255,7 +243,7 @@ def _accepted_insight() -> int:
         insight = AgentInsight(
             kind="risk",
             title=INSIGHT_TITLE,
-            group_name=FEE_PRESSURE_GONE_QUIET,
+            group_name=FIRST_DEPOSIT_NO_REPEAT,
             client_count=1,
             money_total_kes=8_000.0,
             confidence="high",
@@ -411,7 +399,8 @@ def test_no_action_beyond_the_known_live_ones_is_switched_on(db: None) -> None:
 def test_every_live_action_needs_every_message_reviewed(db: None) -> None:
     with SessionLocal() as session:
         for action_code in ALL_LIVE_ACTIONS:
-            assert effective_permission(session, action_code) == "approve_each"
+            expected = "suggest_only" if action_code == "welcome_and_top_up" else "approve_each"
+            assert effective_permission(session, action_code) == expected
 
 
 def test_each_live_action_has_a_brief_written_for_it(db: None) -> None:

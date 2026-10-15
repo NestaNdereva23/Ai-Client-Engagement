@@ -1,23 +1,11 @@
 """Deterministic rendering for the on-demand client briefing.
-
-Started as a direct port of the notebook's render_briefing; the wording has
-since been reworked for an FA audience (plain percentages instead of raw
-log10 slopes, no unexplained jargon), so it's no longer a byte-for-byte
-match to the notebook's own output -- see test_briefing_render.py. What the
-port kept is the discipline: every line traces to a field on BriefingFacts,
-nothing is inferred. If a fact is not on this dataclass, this renderer
-cannot assert it -- the same discipline the notebook itself calls out as
-the reason this ships before any model-assisted version of the same page.
-
-BriefingFacts carries no name: that is attached separately, after this
-renders, since a name never needs to appear inside the fact block itself.
-"""
+Every line traces to a field on BriefingFacts; nothing is inferred and the name comes later."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.risk.signals import SIGNAL_LABELS, SIGNAL_ORDER
+from app.risk.signals import ADVISOR_SIGNAL_LABELS, ADVISOR_SIGNAL_ORDER
 from app.transform.features import MIN_TREND_CHANGE
 
 _RULE = "-" * 78
@@ -26,11 +14,7 @@ _RULE = "-" * 78
 @dataclass(frozen=True)
 class BriefingFacts:
     """Everything render_briefing needs for one client-fund relationship.
-
-    The score, band, route and signals come from client_risk_features; the
-    behavioural detail comes from active_client_fund; has_open_complaint is
-    the one addition beyond the notebook's own fact set.
-    """
+    Score, band, route and signals come from the risk row, the rest from active_client_fund."""
 
     client_code: str | None
     fund_name: str
@@ -63,6 +47,20 @@ class BriefingFacts:
     # bucketed this client-fund yet.
     recency_band: str | None = None
     value_tier: str | None = None
+    tier_label: str | None = None
+    tier_goal: str | None = None
+    tier_action: str | None = None
+    ai_action: str | None = None
+
+
+def _tier_lines(facts: BriefingFacts) -> list[str]:
+    rows = (
+        ("Tier", facts.tier_label),
+        ("Goal", facts.tier_goal),
+        ("Action", facts.tier_action),
+        ("AI Action", facts.ai_action),
+    )
+    return [f"{name:<13}{value}" for name, value in rows if value]
 
 
 def render_briefing(facts: BriefingFacts) -> str:
@@ -71,6 +69,7 @@ def render_briefing(facts: BriefingFacts) -> str:
         f"CLIENT BRIEFING  |  {facts.client_code}  |  {facts.fund_name}",
         f"Risk {facts.risk_score}/100 ({facts.risk_band})   Route: {facts.route}",
         _RULE,
+        *_tier_lines(facts),
         f"Holding      KES {facts.balance:,.2f}  ({facts.balance_tier})",
     ]
 
@@ -120,9 +119,9 @@ def render_briefing(facts: BriefingFacts) -> str:
 
     lines.append("")
     lines.append("WHY THIS CLIENT SURFACED")
-    for name in SIGNAL_ORDER:
+    for name in ADVISOR_SIGNAL_ORDER:
         if facts.signals.get(name):
-            lines.append(f"  - {SIGNAL_LABELS[name]}")
+            lines.append(f"  - {ADVISOR_SIGNAL_LABELS[name]}")
 
     caveats: list[str] = []
     if facts.deposit_count_capped:

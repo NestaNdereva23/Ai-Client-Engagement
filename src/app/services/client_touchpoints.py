@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.audit.log import record_audit
+from app.audit.log import record_audit, with_on_behalf_of
 from app.config import get_settings
 from app.db.models.active_clients import (
     CHANNEL_BY_INTERACTION_TYPE,
@@ -16,7 +16,6 @@ from app.db.models.active_clients import (
     ActiveClientFund,
     ActiveClientTouchpoint,
 )
-from app.db.models.fa_assignment import FaAssignment
 
 ENTITY_TYPE = "active_client_touchpoint"
 REMINDER_KIND = "reminder"
@@ -24,10 +23,6 @@ FOLLOW_UP_KIND_BY_CHANNEL = {"call": "call", "meeting": "meeting", "email": "ema
 
 
 class TouchpointClientNotFound(LookupError):
-    pass
-
-
-class NotTheOwner(PermissionError):
     pass
 
 
@@ -50,17 +45,6 @@ def _entity_id(client_id: int, unit_fund_id: int) -> str:
 def require_client_fund(session: Session, client_id: int, unit_fund_id: int) -> None:
     if session.get(ActiveClientFund, (client_id, unit_fund_id)) is None:
         raise TouchpointClientNotFound(_entity_id(client_id, unit_fund_id))
-
-
-def require_owner(session: Session, client_id: int, unit_fund_id: int, username: str) -> None:
-    require_client_fund(session, client_id, unit_fund_id)
-    owner = session.scalar(
-        select(FaAssignment.fa_id).where(
-            FaAssignment.client_id == client_id, FaAssignment.unit_fund_id == unit_fund_id
-        )
-    )
-    if owner != username:
-        raise NotTheOwner(_entity_id(client_id, unit_fund_id))
 
 
 def list_open_touchpoints(
@@ -99,6 +83,7 @@ def _stage_touchpoint(
     due_time: time | None,
     minutes: int | None,
     created_by: str,
+    on_behalf_of: str | None = None,
 ) -> ActiveClientTouchpoint:
     require_not_in_past(due_date)
     row = ActiveClientTouchpoint(
@@ -110,6 +95,7 @@ def _stage_touchpoint(
         due_time=due_time,
         minutes=minutes,
         created_by=created_by,
+        on_behalf_of=on_behalf_of,
     )
     session.add(row)
     session.flush()
@@ -119,7 +105,10 @@ def _stage_touchpoint(
         action="create",
         entity_id=_entity_id(client_id, unit_fund_id),
         actor_id=created_by,
-        detail={"touchpoint_id": row.id, "kind": kind, "due_date": due_date.isoformat()},
+        detail=with_on_behalf_of(
+            {"touchpoint_id": row.id, "kind": kind, "due_date": due_date.isoformat()},
+            on_behalf_of,
+        ),
     )
     return row
 
@@ -129,14 +118,15 @@ def add_touchpoint(
     client_id: int,
     unit_fund_id: int,
     *,
-    username: str,
+    actor: str,
+    on_behalf_of: str | None = None,
     kind: str,
     title: str,
     due_date: date,
     due_time: time | None,
     minutes: int | None,
 ) -> ActiveClientTouchpoint:
-    require_owner(session, client_id, unit_fund_id, username)
+    require_client_fund(session, client_id, unit_fund_id)
     row = _stage_touchpoint(
         session,
         client_id,
@@ -146,16 +136,23 @@ def add_touchpoint(
         due_date=due_date,
         due_time=due_time,
         minutes=minutes,
-        created_by=username,
+        created_by=actor,
+        on_behalf_of=on_behalf_of,
     )
     session.commit()
     return row
 
 
 def remove_touchpoint(
-    session: Session, client_id: int, unit_fund_id: int, touchpoint_id: int, *, username: str
+    session: Session,
+    client_id: int,
+    unit_fund_id: int,
+    touchpoint_id: int,
+    *,
+    actor: str,
+    on_behalf_of: str | None = None,
 ) -> None:
-    require_owner(session, client_id, unit_fund_id, username)
+    require_client_fund(session, client_id, unit_fund_id)
     removed = session.execute(
         update(ActiveClientTouchpoint)
         .where(
@@ -173,14 +170,20 @@ def remove_touchpoint(
         entity_type=ENTITY_TYPE,
         action="remove",
         entity_id=_entity_id(client_id, unit_fund_id),
-        actor_id=username,
-        detail={"touchpoint_id": touchpoint_id},
+        actor_id=actor,
+        detail=with_on_behalf_of({"touchpoint_id": touchpoint_id}, on_behalf_of),
     )
     session.commit()
 
 
 def stage_snooze_reminder(
-    session: Session, client_id: int, unit_fund_id: int, *, due_date: date, created_by: str
+    session: Session,
+    client_id: int,
+    unit_fund_id: int,
+    *,
+    due_date: date,
+    created_by: str,
+    on_behalf_of: str | None = None,
 ) -> None:
     _stage_touchpoint(
         session,
@@ -192,6 +195,7 @@ def stage_snooze_reminder(
         due_time=None,
         minutes=None,
         created_by=created_by,
+        on_behalf_of=on_behalf_of,
     )
 
 
@@ -203,6 +207,7 @@ def stage_follow_up(
     interaction_type: str,
     due_date: date,
     created_by: str,
+    on_behalf_of: str | None = None,
 ) -> None:
     channel = CHANNEL_BY_INTERACTION_TYPE[interaction_type]
     _stage_touchpoint(
@@ -215,6 +220,7 @@ def stage_follow_up(
         due_time=None,
         minutes=None,
         created_by=created_by,
+        on_behalf_of=on_behalf_of,
     )
 
 
@@ -241,6 +247,7 @@ def mark_touchpoint_done(
     *,
     interaction_id: int,
     actor_id: str,
+    on_behalf_of: str | None = None,
 ) -> None:
     session.execute(
         update(ActiveClientTouchpoint)
@@ -253,5 +260,7 @@ def mark_touchpoint_done(
         action="done",
         entity_id=_entity_id(client_id, unit_fund_id),
         actor_id=actor_id,
-        detail={"touchpoint_id": touchpoint_id, "interaction_id": interaction_id},
+        detail=with_on_behalf_of(
+            {"touchpoint_id": touchpoint_id, "interaction_id": interaction_id}, on_behalf_of
+        ),
     )

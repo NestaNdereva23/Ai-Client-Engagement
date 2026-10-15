@@ -43,6 +43,10 @@ def resolve_endpoint(endpoint: str, settings: Settings) -> EndpointConfig:
     fetch_path is None for "inactive-clients", which is how IngestionWorker
     already falls back to the client's own base URL; every other endpoint
     supplies its own full URL from settings.
+
+    page_size is how many records to ask for per page. The inactive feed is the
+    big one, so it asks for 1000 to cut the round trips. The active feed leaves
+    it as None and takes the source's own default.
     """
     if endpoint == "inactive-clients":
         return EndpointConfig(
@@ -60,6 +64,6 @@ def resolve_endpoint(endpoint: str, settings: Settings) -> EndpointConfig:
             client_model=ActiveClientRecord,
             schema_drift_fn=schema_drift_active,
             count_field="client_count",
-            page_size=1000,
+            page_size=None,
         )
     raise UnknownEndpoint(endpoint)

@@ -140,6 +140,7 @@ from app.db.models.suppression import Suppression
 from app.db.models.template_generation_plan import TemplateGenerationPlan
 from app.db.models.template_policy import CampaignTemplatePolicy, TemplatePolicyConfigVersion
 from app.db.models.test_recipient import TestRecipient
+from app.db.models.user_access import UserAccess
 
 __all__ = [
     "AGENT_EVENT_KINDS",
@@ -267,5 +268,6 @@ __all__ = [
     "TierContract",
     "TouchLog",
     "Transactions",
+    "UserAccess",
     "VoiceContract",
 ]

@@ -189,6 +189,16 @@ def reviewer_2_headers() -> dict[str, str]:
 
 
 @pytest.fixture
+def headers_for():
+    """Authorization header for any email, signed with the fixed test secret."""
+
+    def make(email: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {_make_token(email)}"}
+
+    return make
+
+
+@pytest.fixture
 def configured_reviewers(monkeypatch):
     """Point app.api.reviewer_auth at the fixed test JWT secret above."""
     from app.api import reviewer_auth
@@ -216,4 +226,18 @@ def cleanup_runs():
             session.execute(text("DELETE FROM ingestion_rejects WHERE run_id = :r"), {"r": run_id})
             session.execute(text("DELETE FROM raw_staging WHERE run_id = :r"), {"r": run_id})
             session.execute(text("DELETE FROM ingestion_status WHERE run_id = :r"), {"r": run_id})
+        session.commit()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _seed_test_admins(_ensure_tables: None) -> None:
+    """Make both fixed test reviewers admins, so tests of routes that return
+    client data get past the access check without setting anything up."""
+    if not DB_AVAILABLE:
+        return
+    from app.db.models.user_access import ROLE_ADMIN, UserAccess
+
+    with SessionLocal() as session:
+        for email in (REVIEWER_1_ID, REVIEWER_2_ID):
+            session.merge(UserAccess(email=email, role=ROLE_ADMIN, active=True, view_as_email=None))
         session.commit()

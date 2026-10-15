@@ -16,6 +16,7 @@ from app.db.models.active_clients import (
 from app.db.models.audit import AuditLog
 from app.db.models.fa_assignment import FaAssignment
 from app.db.models.routing import ClientTier
+from app.db.models.user_access import ROLE_ADVISOR, UserAccess
 from app.db.session import SessionLocal
 from app.main import app
 from app.routing.tiers import TIER_GRADUAL_DEPOSITOR
@@ -32,8 +33,8 @@ OUTSIDE_BOOK = 981199
 
 
 @pytest.fixture(autouse=True)
-def _authed(configured_reviewers, reviewer_1_headers):
-    client.headers.update(reviewer_1_headers)
+def _authed(configured_reviewers, headers_for):
+    client.headers.update(headers_for(OWNER))
     yield
     client.headers.pop("Authorization", None)
 
@@ -48,6 +49,7 @@ def _clear(session) -> None:
     session.execute(delete(AuditLog).where(AuditLog.entity_id == f"{CLIENT}/{FUND}"))
     for model in (FaAssignment, ActiveClientFund, ClientTier):
         session.execute(delete(model).where(model.client_id == CLIENT))
+    session.execute(delete(UserAccess).where(UserAccess.email.in_([OWNER, STRANGER])))
     session.commit()
 
 
@@ -66,6 +68,12 @@ def seeded_client(db):
             )
         )
         session.add(FaAssignment(client_id=CLIENT, unit_fund_id=FUND, fa_id=OWNER, source="test"))
+        session.add_all(
+            [
+                UserAccess(email=OWNER, role=ROLE_ADVISOR, fa_id=OWNER),
+                UserAccess(email=STRANGER, role=ROLE_ADVISOR, fa_id=STRANGER),
+            ]
+        )
         session.add(
             ClientTier(
                 client_id=CLIENT,
@@ -93,10 +101,10 @@ def _touchpoint_body(**changes) -> dict:
     return {**body, **changes}
 
 
-def _add(username: str = OWNER, client_id: int = CLIENT, **changes):
+def _add(client_id: int = CLIENT, headers: dict | None = None, **changes):
     return client.post(
         f"{BASE}/{client_id}/{FUND}/touchpoints",
-        params={"username": username},
+        headers=headers,
         json=_touchpoint_body(**changes),
     )
 
@@ -106,9 +114,7 @@ def _open_touchpoints() -> list[dict]:
 
 
 def _log(body: dict):
-    return client.post(
-        f"{BASE}/{CLIENT}/{FUND}/interactions", params={"username": OWNER}, json=body
-    )
+    return client.post(f"{BASE}/{CLIENT}/{FUND}/interactions", json=body)
 
 
 def test_the_owner_can_add_list_and_remove_a_touchpoint(seeded_client) -> None:
@@ -120,9 +126,7 @@ def test_the_owner_can_add_list_and_remove_a_touchpoint(seeded_client) -> None:
     assert touchpoint["due_time"] == "10:30:00"
     assert [row["id"] for row in _open_touchpoints()] == [touchpoint["id"]]
 
-    removed = client.delete(
-        f"{BASE}/{CLIENT}/{FUND}/touchpoints/{touchpoint['id']}", params={"username": OWNER}
-    )
+    removed = client.delete(f"{BASE}/{CLIENT}/{FUND}/touchpoints/{touchpoint['id']}")
 
     assert removed.status_code == 204
     assert _open_touchpoints() == []
@@ -139,15 +143,18 @@ def test_the_owner_can_add_list_and_remove_a_touchpoint(seeded_client) -> None:
 
 
 def test_only_the_owner_can_change_touchpoints_and_the_client_must_be_in_the_book(
-    seeded_client,
+    seeded_client, headers_for, reviewer_1_headers
 ) -> None:
-    assert _add(username=STRANGER).status_code == 403
-    assert _add(client_id=OUTSIDE_BOOK).status_code == 404
+    stranger = headers_for(STRANGER)
+
+    assert _add(headers=stranger).status_code == 403
+    assert _add(client_id=OUTSIDE_BOOK).status_code == 403
+    assert _add(client_id=OUTSIDE_BOOK, headers=reviewer_1_headers).status_code == 404
     assert _open_touchpoints() == []
 
     touchpoint_id = _add().json()["id"]
     stranger_remove = client.delete(
-        f"{BASE}/{CLIENT}/{FUND}/touchpoints/{touchpoint_id}", params={"username": STRANGER}
+        f"{BASE}/{CLIENT}/{FUND}/touchpoints/{touchpoint_id}", headers=stranger
     )
 
     assert stranger_remove.status_code == 403

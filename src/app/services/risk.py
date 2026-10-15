@@ -12,49 +12,14 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion, RiskRun, RiskSnapshot
-from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_pair_cursor, encode_pair_cursor
 from app.risk.magnitude import pick_primary_signal
 from app.risk.signals import SIGNAL_ORDER
 from app.routing.sides import not_on_inactive_side
-
-SMALL_BALANCE_REVIEW_ROUTE = "small_balance_review"
-
-
-def list_small_balance_review_queue(
-    session: Session, *, cursor: str | None = None, limit: int = DEFAULT_LIMIT
-) -> tuple[list[ClientRiskFeatures], str | None]:
-    """The current small_balance_review population, ordered by (client_id,
-    unit_fund_id).
-
-    Read-only, on purpose: ops takes a waive/notify/close decision manually,
-    outside this codebase (Section 20 of the implementation plan). No
-    campaigns/ module, enrollment path, or digest reads this route -- a
-    client routed here can never reach an outreach campaign through any
-    path this codebase provides.
-    """
-    limit = clamp_limit(limit)
-    query = select(ClientRiskFeatures).where(ClientRiskFeatures.route == SMALL_BALANCE_REVIEW_ROUTE)
-    if cursor is not None:
-        after_client_id, after_unit_fund_id = decode_pair_cursor(cursor)
-        query = query.where(
-            tuple_(ClientRiskFeatures.client_id, ClientRiskFeatures.unit_fund_id)
-            > (after_client_id, after_unit_fund_id)
-        )
-    query = query.order_by(ClientRiskFeatures.client_id, ClientRiskFeatures.unit_fund_id).limit(
-        limit + 1
-    )
-
-    rows = list(session.scalars(query).all())
-    next_cursor = None
-    if len(rows) > limit:
-        rows = rows[:limit]
-        next_cursor = encode_pair_cursor(rows[-1].client_id, rows[-1].unit_fund_id)
-    return rows, next_cursor
 
 
 @dataclass(frozen=True)

@@ -1,9 +1,5 @@
-"""The write tools: the agent records a decision and starts real work, and
-every attempt to go around a check is refused and recorded.
-
-Each tool is called the way the executor calls it, session first, so these
-prove the tool itself rather than the conversation around it.
-"""
+"""The write tools: the agent records a decision and starts real work, and every attempt
+to go around a check is refused and recorded."""
 
 from __future__ import annotations
 
@@ -18,7 +14,8 @@ from app.agents import insight_members as insight_members_module
 from app.agents.action_catalog import load_action
 from app.agents.proposal_state import transition_proposal
 from app.agents.propose import ON_DO_NOT_CONTACT_LIST
-from app.agents.watchlist import FEE_PRESSURE_GONE_QUIET, WatchlistThresholds
+from app.agents.situations import FIRST_DEPOSIT_NO_REPEAT
+from app.agents.watchlist import WatchlistThresholds
 from app.agents.write_tools import (
     FLAG_FOR_ACCOUNT_MANAGER,
     RECORD_NO_ACTION,
@@ -207,7 +204,7 @@ def _seed_client(client_id: int) -> None:
             ClientSituationState(
                 client_id=client_id,
                 unit_fund_id=FUND_ID,
-                situation_code=FEE_PRESSURE_GONE_QUIET,
+                situation_code=FIRST_DEPOSIT_NO_REPEAT,
                 is_active=True,
                 signal_codes=["fee_pressure_close"],
                 since=AS_OF,
@@ -222,7 +219,7 @@ def _write_insight(*, state: str = "accepted") -> int:
         insight = AgentInsight(
             kind="risk",
             title=INSIGHT_TITLE,
-            group_name=FEE_PRESSURE_GONE_QUIET,
+            group_name=FIRST_DEPOSIT_NO_REPEAT,
             client_count=1,
             money_total_kes=200_000.0,
             confidence="high",
@@ -456,7 +453,7 @@ def test_record_no_action_keeps_the_group_the_count_and_the_reason() -> None:
         session.commit()
 
     assert result["status"] == "recorded"
-    assert result["group_name"] == FEE_PRESSURE_GONE_QUIET
+    assert result["group_name"] == FIRST_DEPOSIT_NO_REPEAT
     assert result["client_count"] == 1
 
     with SessionLocal() as session:
@@ -579,9 +576,7 @@ def _reachable_from(module: str) -> set[str]:
     ["app.agents.write_tools", "app.agents.tools", "app.agents.insight_tools"],
 )
 def test_no_agent_tool_can_reach_the_mailer(module: str) -> None:
-    """Sending stays behind the send gate, so no tool the agent can call may
-    even import its way to the mailer.
-    """
+    """Sending stays behind the send gate, so no tool the agent can call may import the mailer."""
     reachable = _reachable_from(module)
     assert "app.delivery.mailer" not in reachable
     assert "app.delivery.sender" not in reachable

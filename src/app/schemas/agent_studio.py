@@ -7,21 +7,18 @@ from pydantic import BaseModel, Field
 
 class ScenarioRequest(BaseModel):
     balance: float
+    days_since_last_deposit: int | None = None
+    typical_gap_days: float | None = None
+    real_withdrawer: bool = False
+    net_flow_negative: bool = False
+    funds_held: int = 1
     n_deposits: int = 1
     first_deposit_days_ago: int | None = None
-    months_until_empty: float | None = None
-    sig_dormant: bool = False
     sig_shrinking: bool = False
-    risk_band: str = "Watch"
-    funds_held: int = 1
-    days_since_call_flagged: int | None = None
-    call_logged_since_flagged: bool = False
-    route_moved_more_urgent: bool = False
-    on_call_list: bool = False
+    advisor_call_overdue: bool = False
+    risk_band_rose: bool = False
+    near_preservation_line: bool = False
     new_client_days: int | None = None
-    months_until_empty_threshold: float | None = None
-    small_balance_kes: float | None = None
-    awaiting_call_days: int | None = None
     money_ceiling_kes: float | None = None
     as_of: date | None = None
 
