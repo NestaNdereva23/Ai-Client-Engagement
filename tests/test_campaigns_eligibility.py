@@ -219,6 +219,23 @@ def test_a_client_with_some_visible_history_is_not_excluded_on_that_ground(
     _cleanup_client(client_id)
 
 
+def test_a_never_funded_client_is_not_excluded_for_having_no_history(
+    campaign_with_step: int, fund: int
+) -> None:
+    client_id = 99590
+    with SessionLocal() as session:
+        _make_client(session, client_id)
+        session.commit()
+        session.add(ClientFeatures(client_id=client_id, purchase_depth="none", never_funded=True))
+        session.commit()
+        enrollment = _make_enrollment(session, campaign_id=campaign_with_step, client_id=client_id)
+
+        result = check_eligibility(session, enrollment)
+
+    assert result.eligible is True
+    _cleanup_client(client_id)
+
+
 def test_a_suppressed_client_is_skipped_and_excluded_before_the_first_touch(
     campaign_with_step: int, fund: int
 ) -> None:

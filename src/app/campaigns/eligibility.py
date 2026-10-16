@@ -173,11 +173,19 @@ def _has_no_visible_history(session: Session, client_id: int) -> bool:
     the book (0.4 percent) can be counted but never written to; they route
     to pick_up_again, the angle that claims nothing, but a message that says
     nothing is not worth sending, so this excludes them at the gate instead.
+
+    Never funded clients (hot leads) are the exception. They have no history
+    by definition, and their first deposit angle is written for exactly that.
     """
-    depth = session.scalar(
-        select(ClientFeatures.purchase_depth).where(ClientFeatures.client_id == client_id)
-    )
-    return depth == "none"
+    row = session.execute(
+        select(ClientFeatures.purchase_depth, ClientFeatures.never_funded).where(
+            ClientFeatures.client_id == client_id
+        )
+    ).first()
+    if row is None:
+        return False
+    depth, never_funded = row
+    return depth == "none" and not never_funded
 
 
 def _angle_held(session: Session, client_id: int) -> bool:
