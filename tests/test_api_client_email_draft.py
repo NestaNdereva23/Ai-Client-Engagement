@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,15 +10,19 @@ from sqlalchemy import delete, select
 import app.api.routers.briefing as briefing_router
 from app.briefing.client_email import DraftRejected, parse_email_draft
 from app.config import get_settings
-from app.db.models.active_clients import ActiveClientFund
+from app.db.models.active_clients import ActiveClientFund, ActiveClientTouchpoint
 from app.db.models.audit import AuditLog
+from app.db.models.campaigns import Enrollment
 from app.db.models.complaints import ClientComplaint
+from app.db.models.fa_assignment import FaAssignment
 from app.db.models.llmops import GenerationRun
 from app.db.models.models import Clients, Funds, PiiVault
 from app.db.models.outreach import AGENT_PROPOSAL_CAMPAIGN_TYPE, Campaign, OutreachMessage
 from app.db.models.risk import ClientRiskFeatures
 from app.db.session import SessionLocal
 from app.main import app
+from app.services.agent_campaign_scope import message_is_visible
+from app.services.client_touchpoints import today_in_nairobi
 
 client = TestClient(app)
 
@@ -78,6 +82,7 @@ def _clear(session) -> None:
     ).all()
     session.execute(delete(OutreachMessage).where(OutreachMessage.client_id == CLIENT))
     session.execute(delete(GenerationRun).where(GenerationRun.client_id == CLIENT))
+    session.execute(delete(Enrollment).where(Enrollment.client_id == CLIENT))
     session.execute(
         delete(AuditLog).where(
             AuditLog.entity_type == "outreach_message", AuditLog.entity_id.in_(message_ids)
@@ -173,6 +178,36 @@ def test_a_draft_comes_back_for_review_and_the_model_never_sees_the_client(
         assert private not in sent_to_the_model
 
 
+def test_a_missed_meeting_changes_why_the_email_is_written(
+    monkeypatch, model_on, seeded_client
+) -> None:
+    llm = _use_model(monkeypatch)
+    with SessionLocal() as session:
+        session.add(
+            ActiveClientTouchpoint(
+                client_id=CLIENT,
+                unit_fund_id=FUND,
+                kind="meeting",
+                title="Google Meet",
+                due_date=today_in_nairobi() - timedelta(days=1),
+                created_by="test",
+            )
+        )
+        session.commit()
+
+    try:
+        response = _ask()
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(ActiveClientTouchpoint).where(ActiveClientTouchpoint.client_id == CLIENT)
+            )
+            session.commit()
+
+    assert response.status_code == 200
+    assert "We missed a meeting that was planned" in " ".join(llm.seen)
+
+
 def test_the_draft_waits_in_the_active_review_queue_and_not_the_dormant_one(
     monkeypatch, model_on, seeded_client
 ) -> None:
@@ -201,6 +236,29 @@ def test_the_draft_waits_in_the_active_review_queue_and_not_the_dormant_one(
     ).json()
     assert message_id in [item["message_id"] for item in active_queue["items"]]
     assert message_id not in [item["message_id"] for item in dormant_queue["items"]]
+
+
+def test_the_advisor_who_owns_the_client_can_open_the_draft(
+    monkeypatch, model_on, seeded_client
+) -> None:
+    _use_model(monkeypatch)
+    with SessionLocal() as session:
+        session.add(FaAssignment(client_id=CLIENT, unit_fund_id=FUND, fa_id="fa-owner"))
+        session.commit()
+
+    try:
+        message_id = _ask().json()["message_id"]
+        with SessionLocal() as session:
+            owner_sees_it = message_is_visible(session, message_id, "fa-owner")
+            stranger_sees_it = message_is_visible(session, message_id, "fa-stranger")
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(Enrollment).where(Enrollment.client_id == CLIENT))
+            session.execute(delete(FaAssignment).where(FaAssignment.client_id == CLIENT))
+            session.commit()
+
+    assert owner_sees_it
+    assert not stranger_sees_it
 
 
 def test_the_daily_cap_stops_further_drafts(

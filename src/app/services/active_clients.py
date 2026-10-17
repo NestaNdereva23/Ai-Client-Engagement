@@ -4,7 +4,7 @@ No query here reads pii_vault; the interaction log is manual bookkeeping, never 
 from __future__ import annotations
 
 import calendar
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from sqlalchemy import Date, and_, func, select, true, tuple_
@@ -12,8 +12,14 @@ from sqlalchemy.orm import Session
 
 from app.agents.signals import keys_with_active_signal
 from app.audit.log import record_audit, with_on_behalf_of
+from app.briefing.daily_brief import (
+    CLIENT_SPECIFIC_GROUPS,
+    GROUP_CODES,
+    client_reason,
+    group_code_for_rank,
+)
+from app.briefing.next_action import NextAction
 from app.db.models.active_clients import (
-    AI_ACTION_INTERACTION_TYPES,
     ActiveClientFund,
     ActiveClientInteraction,
     ActiveTransaction,
@@ -28,10 +34,8 @@ from app.pagination import (
     DEFAULT_LIMIT,
     clamp_limit,
     decode_cursor,
-    decode_id_cursor,
     decode_pair_cursor,
     encode_cursor,
-    encode_id_cursor,
     encode_pair_cursor,
 )
 from app.risk.magnitude import primary_signal_magnitude
@@ -46,11 +50,7 @@ from app.routing.sides import not_on_inactive_side
 from app.routing.tier_playbook import tier_tag_fields
 from app.routing.tiers import load_tier_thresholds_in_force
 from app.services.briefing import briefing_available_keys
-from app.services.client_ai_actions import (
-    ClientAiAction,
-    open_ai_actions_for,
-    require_open_ai_action,
-)
+from app.services.client_next_actions import ClientNextAction, next_actions_for
 from app.services.client_touchpoints import (
     check_touchpoint_is_open,
     mark_touchpoint_done,
@@ -60,7 +60,13 @@ from app.services.client_touchpoints import (
     today_in_nairobi,
 )
 from app.services.fund_names import short_fund_name
-from app.services.roster_ranking import RANKED_SORTS, SORT_CLIENT_ID, build_roster_ranking
+from app.services.roster_ranking import (
+    RANKED_SORTS,
+    SORT_BRIEF,
+    SORT_CLIENT_ID,
+    brief_group_rank,
+    build_roster_ranking,
+)
 
 
 class ActiveClientNotFound(Exception):
@@ -107,7 +113,6 @@ def record_interaction(
     note: str | None,
     reviewer_id: str,
     on_behalf_of: str | None = None,
-    proposal_id: int | None = None,
     outcome: str | None = None,
     follow_up_on: date | None = None,
     touchpoint_id: int | None = None,
@@ -116,8 +121,6 @@ def record_interaction(
     Stamps the current risk band on the row so a later digest can tell if risk got worse."""
     if session.get(ActiveClientFund, (client_id, unit_fund_id)) is None:
         raise ActiveClientNotFound(f"{client_id}/{unit_fund_id}")
-    if type in AI_ACTION_INTERACTION_TYPES:
-        require_open_ai_action(session, proposal_id, client_id, unit_fund_id)
     if follow_up_on is not None:
         require_not_in_past(follow_up_on)
     if touchpoint_id is not None:
@@ -139,7 +142,6 @@ def record_interaction(
         reviewer_id=reviewer_id,
         on_behalf_of=on_behalf_of,
         risk_band_at_interaction=risk_band,
-        proposal_id=proposal_id,
     )
     session.add(row)
     session.flush()
@@ -157,8 +159,6 @@ def record_interaction(
     audit_detail = {"note": note} if note else {}
     if outcome is not None:
         audit_detail["outcome"] = outcome
-    if proposal_id is not None:
-        audit_detail["proposal_id"] = proposal_id
     record_audit(
         session,
         entity_type="active_client_interaction",
@@ -253,7 +253,8 @@ class ActiveClientProfile:
     interactions: list[ActiveClientInteraction]
     transactions: list[ActiveTransaction]
     client_tier: ClientTier | None
-    ai_action: ClientAiAction | None
+    next_action: NextAction | None
+    next_action_note: str | None
     review_activity: ReviewPeriodActivity | None
     near_preservation_line: bool
 
@@ -307,6 +308,7 @@ def get_active_client_profile(
         )
     )
 
+    next_action = next_actions_for(session, [(client_id, unit_fund_id)])[(client_id, unit_fund_id)]
     return ActiveClientProfile(
         active=active,
         risk=risk,
@@ -317,9 +319,8 @@ def get_active_client_profile(
         interactions=list_interactions(session, client_id, unit_fund_id),
         transactions=list_transactions(session, client_id, unit_fund_id),
         client_tier=session.get(ClientTier, client_id),
-        ai_action=open_ai_actions_for(session, [(client_id, unit_fund_id)]).get(
-            (client_id, unit_fund_id)
-        ),
+        next_action=next_action.action,
+        next_action_note=next_action.note,
         review_activity=review_period_activity(session, client_id, unit_fund_id),
         near_preservation_line=bool(
             keys_with_active_signal(session, NEAR_PRESERVATION_LINE, [(client_id, unit_fund_id)])
@@ -397,8 +398,30 @@ def deposit_percentile(session: Session, client_id: int, unit_fund_id: int) -> D
     )
 
 
-def _ai_action_dict(action: ClientAiAction | None) -> dict | None:
-    return asdict(action) if action is not None else None
+def _brief_group(row, sort: str) -> str | None:
+    return group_code_for_rank(row.sort_group_rank) if sort == SORT_BRIEF else None
+
+
+def _situation_reasons(rows, sort: str) -> dict[tuple[int, int], str]:
+    today = today_in_nairobi()
+    reasons = {}
+    for row in rows:
+        code = _brief_group(row, sort)
+        if code in CLIENT_SPECIFIC_GROUPS:
+            reasons[(row.client_id, row.unit_fund_id)] = client_reason(code, row, today)
+    return reasons
+
+
+def _next_action_fields(result: ClientNextAction) -> dict:
+    action = result.action
+    return {
+        "next_action": (
+            {"title": action.title, "kind": action.kind, "why": action.why}
+            if action is not None
+            else None
+        ),
+        "next_action_note": result.note,
+    }
 
 
 def list_active_roster(
@@ -412,6 +435,7 @@ def list_active_roster(
     fa_id: str | None = None,
     unassigned: bool = False,
     worklist_only: bool = False,
+    brief_group: str | None = None,
     sort: str = SORT_CLIENT_ID,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
@@ -425,8 +449,12 @@ def list_active_roster(
             ActiveClientFund.unit_fund_id,
             ActiveClientFund.client_code,
             ActiveClientFund.balance,
+            ActiveClientFund.n_deposits,
             ActiveClientFund.last_deposit_date,
+            ActiveClientFund.last_deposit_amount,
+            ActiveClientFund.typical_gap_days,
             ActiveClientFund.largest_withdrawal,
+            ActiveClientFund.last_withdrawal_date,
             ActiveClientFund.deposit_trend,
             ActiveClientFund.months_until_empty,
             ClientRiskFeatures.risk_band,
@@ -470,6 +498,8 @@ def list_active_roster(
         query = query.where(ClientTier.tier == tier)
     if worklist_only:
         query = query.where(ClientTier.segment.is_not(None))
+    if brief_group is not None:
+        query = query.where(brief_group_rank() == GROUP_CODES.index(brief_group))
     if unassigned:
         query = query.join(
             FaAssignment,
@@ -555,7 +585,9 @@ def list_active_roster(
         fund_id: known_fund_names.get(fund_id, f"Fund {fund_id}") for fund_id in page_fund_ids
     }
     briefing_available = briefing_available_keys(session, page_keys)
-    ai_actions = open_ai_actions_for(session, page_keys)
+    next_actions = next_actions_for(
+        session, page_keys, situation_reasons=_situation_reasons(rows, sort)
+    )
     near_line = keys_with_active_signal(session, NEAR_PRESERVATION_LINE, page_keys)
 
     items = [
@@ -584,7 +616,8 @@ def list_active_roster(
             "risk_reason_tags": advisor_signal_tags(r, (r.client_id, r.unit_fund_id) in near_line),
             "complaint_caveat": r.client_id in open_complaint_ids,
             "last_interaction_at": last_interaction.get((r.client_id, r.unit_fund_id)),
-            "ai_action": _ai_action_dict(ai_actions.get((r.client_id, r.unit_fund_id))),
+            **_next_action_fields(next_actions[(r.client_id, r.unit_fund_id)]),
+            "brief_group": _brief_group(r, sort),
             **tier_tag_fields(r.tier, r.segment),
         }
         for r in rows
@@ -655,64 +688,6 @@ def list_route_change_history(
         for row in rows
     ]
     return items, next_cursor
-
-
-def route_change_details(
-    session: Session, *, run_id: str | None = None, cursor: str | None = None, limit: int = 10
-) -> tuple[str | None, datetime | None, list[dict], str | None]:
-    """The individual client route moves behind one nightly run's routes_changed count.
-    Defaults to the latest run with changes; paginated in memory with an offset cursor."""
-    limit = clamp_limit(limit)
-    query = select(AuditLog).where(
-        AuditLog.entity_type == "risk_snapshot", AuditLog.action == "route"
-    )
-    if run_id is not None:
-        query = query.where(AuditLog.run_id == run_id)
-    query = query.order_by(AuditLog.created_at.desc(), AuditLog.log_id.desc()).limit(1)
-    row = session.scalars(query).first()
-    if row is None:
-        return run_id, None, [], None
-
-    changed = (row.detail or {}).get("changed", [])
-    offset = decode_id_cursor(cursor) if cursor is not None else 0
-    page = changed[offset : offset + limit]
-    next_cursor = encode_id_cursor(offset + limit) if offset + limit < len(changed) else None
-    if not page:
-        return row.run_id, row.created_at, [], None
-
-    page_client_ids = {c["client_id"] for c in page}
-    page_fund_ids = {c["unit_fund_id"] for c in page}
-    client_codes = dict(
-        session.execute(
-            select(ActiveClientFund.client_id, ActiveClientFund.client_code).where(
-                ActiveClientFund.client_id.in_(page_client_ids)
-            )
-        ).all()
-    )
-    fund_names = dict(
-        session.execute(
-            select(Funds.unit_fund_id, Funds.unit_fund_name).where(
-                Funds.unit_fund_id.in_(page_fund_ids)
-            )
-        ).all()
-    )
-
-    items = [
-        {
-            "client_id": c["client_id"],
-            "unit_fund_id": c["unit_fund_id"],
-            "client_code": client_codes.get(c["client_id"]),
-            "fund_name": fund_names.get(c["unit_fund_id"], f"Fund {c['unit_fund_id']}"),
-            "from_route": c.get("from_route"),
-            "to_route": c["route"],
-            "direction": route_direction(c.get("from_route"), c["route"]),
-            "from_risk_band": c.get("from_risk_band"),
-            "risk_band": c["risk_band"],
-            "reasons": c.get("reasons", ""),
-        }
-        for c in page
-    ]
-    return row.run_id, row.created_at, items, next_cursor
 
 
 def _months_ago(reference: date, months: int) -> date:

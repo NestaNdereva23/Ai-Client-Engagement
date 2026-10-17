@@ -8,7 +8,6 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from app.db.models.active_clients import (
-    AI_ACTION_INTERACTION_TYPES,
     CHANNEL_BY_INTERACTION_TYPE,
     CONTACT_INTERACTION_TYPES,
 )
@@ -21,31 +20,17 @@ InteractionType = Literal[
     "whatsapp_logged",
     "snoozed",
     "dismissed",
-    "ai_action_taken",
-    "ai_action_set_aside",
 ]
 InteractionOutcome = Literal["connected", "follow_up", "no_answer"]
 TouchpointKind = Literal["call", "meeting", "email", "reminder"]
-AiActionChoice = Literal["taken", "set_aside"]
-AiActionNextStep = Literal["log_call", "client_record", "none"]
 
 
 class InteractionCreate(BaseModel):
     type: InteractionType
     outcome: InteractionOutcome | None = None
     note: str | None = None
-    proposal_id: int | None = None
     follow_up_on: date | None = None
     touchpoint_id: int | None = None
-
-    @model_validator(mode="after")
-    def _proposal_goes_with_an_ai_action_choice(self) -> InteractionCreate:
-        is_ai_action_choice = self.type in AI_ACTION_INTERACTION_TYPES
-        if is_ai_action_choice and self.proposal_id is None:
-            raise ValueError("an AI Action choice needs the proposal_id it answers")
-        if not is_ai_action_choice and self.proposal_id is not None:
-            raise ValueError("proposal_id is only for an AI Action choice")
-        return self
 
     @model_validator(mode="after")
     def _contact_fields_go_with_a_contact(self) -> InteractionCreate:
@@ -73,7 +58,6 @@ class InteractionOut(BaseModel):
     note: str | None
     reviewer_id: str
     risk_band_at_interaction: str | None
-    proposal_id: int | None
     created_at: datetime
 
     @computed_field
@@ -112,20 +96,12 @@ class TouchpointOut(BaseModel):
     created_at: datetime
 
 
-class AiActionOut(BaseModel):
+class NextActionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    proposal_id: int
-    action_code: str
     title: str
-    response_kind: str | None
-    response_label: str
-    why_now: str
-    group_label: str
-    group_clients: int
-    next_step: AiActionNextStep
-    choice: AiActionChoice | None
-    created_at: datetime
+    kind: str
+    why: str
 
 
 class ActiveClientIdentityOut(BaseModel):
@@ -271,7 +247,9 @@ class ActiveClientRosterLineOut(ClientTierTagOut):
     # DigestLineOut.briefing_available uses.
     briefing_available: bool
     # The agent's open suggestion for this client-fund, or None.
-    ai_action: AiActionOut | None = None
+    next_action: NextActionOut | None = None
+    next_action_note: str | None = None
+    brief_group: str | None = None
 
 
 class RouteChangeRunOut(BaseModel):
@@ -294,44 +272,6 @@ class RouteChangeRunOut(BaseModel):
     less_urgent_count: int
 
 
-class RouteChangeDetailOut(BaseModel):
-    """One client-fund's route move within a single nightly run.
-
-    direction is "more_urgent" (moved to a route that needs a human sooner)
-    or "less_urgent" (moved to a route that needs a human less urgently),
-    or None for a client's first-ever scored run, when there's no
-    from_route to compare against. This is about queue priority only, not
-    the client's own situation -- a move to small_balance_review is
-    "less_urgent" even when it means the client already withdrew almost
-    everything.
-    from_risk_band is the risk band this client-fund carried before this
-    run; None on a first-ever scored run, same as from_route.
-    """
-
-    client_id: int
-    unit_fund_id: int
-    client_code: str | None
-    fund_name: str
-    from_route: str | None
-    to_route: str
-    direction: str | None
-    from_risk_band: str | None
-    risk_band: str
-    reasons: str
-
-
-class RouteChangeDetailsOut(BaseModel):
-    """The client-level route moves behind one nightly run's routes_changed
-    count, capped at `limit` per page (10 by default) with next_cursor set
-    when there are more.
-    """
-
-    run_id: str | None
-    as_of: datetime | None
-    items: list[RouteChangeDetailOut]
-    next_cursor: str | None = None
-
-
 class ReviewPeriodActivityOut(BaseModel):
     review_period_days: int
     deposits: int
@@ -351,7 +291,8 @@ class ActiveClientProfileOut(BaseModel):
     interactions: list[InteractionOut]
     transactions: list[ActiveTransactionOut]
     segment_and_tier: ClientTierDetailOut
-    ai_action: AiActionOut | None = None
+    next_action: NextActionOut | None = None
+    next_action_note: str | None = None
     review_activity: ReviewPeriodActivityOut | None = None
 
 

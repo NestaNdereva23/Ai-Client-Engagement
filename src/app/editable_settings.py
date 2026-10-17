@@ -122,6 +122,7 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
     EditableSetting("digest_redirect_to", "text", optional=True, max_length=200),
     _switch("ai_briefing_enabled"),
     _whole("client_email_draft_daily_cap", 1, 500),
+    _whole("next_action_quiet_days", 1, 60),
     _whole("agent_query_call_budget", 1, 50),
     _whole("agent_investigation_max_turns", 1, 20),
     _whole("agent_investigation_concurrency", 1, 8),

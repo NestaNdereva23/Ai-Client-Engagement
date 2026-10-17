@@ -20,8 +20,10 @@ from app.config import Settings
 from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
 from app.db.models.models import ClientFeatures
 from app.db.models.outreach import Campaign, OutreachMessage
+from app.llmops.operations import active_tracer
 from app.llmops.telemetry import persist_generation_telemetry
-from app.llmops.tracing import Tracer
+from app.llmops.trace_names import CAMPAIGN_EMAIL_DRAFT, TAG_CAMPAIGN, TAG_EMAIL
+from app.llmops.tracing import Tracer, trace_scope
 from app.llmops.versions import persist_generation_run
 from app.privacy.boundary import AuditSink, BoundaryAudit
 from app.services.review import create_outreach_message, get_message
@@ -116,7 +118,12 @@ def _generate_and_persist(
     message in the same cohort slot as the one it's replacing.
     """
     product = resolve_product(session, client_id)
-    state = orchestrator.generate(channel, client_id=client_id, product=product)
+    with trace_scope(
+        tracer or active_tracer(),
+        name=CAMPAIGN_EMAIL_DRAFT,
+        tags=[TAG_CAMPAIGN, TAG_EMAIL],
+    ):
+        state = orchestrator.generate(channel, client_id=client_id, product=product)
 
     run = persist_generation_run(session, state, settings, channel=channel)
     session.flush()

@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.agent_loop import ACTS_ALONE, GroupDecision
 from app.agents.events import NO_EVENTS, EventLog
+from app.agents.fa_scope import current_fa_id
 from app.agents.insight_state import transition_insight
 from app.agents.permissions import effective_permission
 from app.agents.propose import (
@@ -126,6 +127,7 @@ def save_insight_proposal(
     money_total_kes = sum(member.balance for member in decision.included)
     proposal = AgentProposal(
         run_id=run_id,
+        fa_id=insight.fa_id or current_fa_id(),
         insight_id=insight.insight_id,
         action_code=decision.action.action_code,
         catalog_version=decision.action.version,

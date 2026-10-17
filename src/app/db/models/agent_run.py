@@ -69,6 +69,7 @@ class AgentRun(Base):
     trigger: Mapped[str] = mapped_column(Text, nullable=False)
     agent_kind: Mapped[str] = mapped_column(Text, nullable=False, server_default=NIGHTLY_AGENT)
     # The finding an action run was started for. Null for the other agents.
+    fa_id: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     insight_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("agent_insight.insight_id"), nullable=True, index=True
     )

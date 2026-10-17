@@ -4,6 +4,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.agents.email_channel import build_default_orchestrator
+from app.api.agent_scope import AgentScope, get_agent_scope, require_campaign_in_scope
 from app.api.reviewer_auth import get_current_reviewer_id
 from app.campaigns.batch_generation import BatchNotFound
 from app.campaigns.estimation import DEFAULT_ESTIMATE_LIMIT, MAX_ESTIMATE_LIMIT
@@ -128,6 +129,9 @@ def get_campaigns(
     high_value: bool | None = None,
     message_angle: str | None = None,
     channel: str | None = None,
+    campaign_type: str | None = None,
+    exclude_campaign_type: str | None = None,
+    scope: AgentScope = Depends(get_agent_scope),
     session: Session = Depends(get_session),
 ) -> Page[CampaignListItemOut]:
     try:
@@ -145,6 +149,9 @@ def get_campaigns(
             high_value=high_value,
             message_angle=message_angle,
             channel=channel,
+            campaign_type=campaign_type,
+            exclude_campaign_type=exclude_campaign_type,
+            fa_id=scope.fa_id,
         )
     except InvalidCursor:
         raise HTTPException(status_code=400, detail="invalid cursor") from None
@@ -324,7 +331,11 @@ def get_generation_cost_models(
     ]
 
 
-@router.get("/{campaign_id}", response_model=CampaignDetailOut)
+@router.get(
+    "/{campaign_id}",
+    response_model=CampaignDetailOut,
+    dependencies=[Depends(require_campaign_in_scope)],
+)
 def get_campaign_detail(
     campaign_id: int, session: Session = Depends(get_session)
 ) -> CampaignDetailOut:
@@ -346,7 +357,11 @@ def get_campaign_detail(
     )
 
 
-@router.get("/{campaign_id}/summary", response_model=CampaignSummaryOut)
+@router.get(
+    "/{campaign_id}/summary",
+    response_model=CampaignSummaryOut,
+    dependencies=[Depends(require_campaign_in_scope)],
+)
 def get_campaign_summary(
     campaign_id: int, session: Session = Depends(get_session)
 ) -> CampaignSummaryOut:
@@ -357,7 +372,11 @@ def get_campaign_summary(
     return CampaignSummaryOut(campaign_id=campaign_id, **summary)
 
 
-@router.get("/{campaign_id}/value", response_model=CampaignValueOut)
+@router.get(
+    "/{campaign_id}/value",
+    response_model=CampaignValueOut,
+    dependencies=[Depends(require_campaign_in_scope)],
+)
 def get_campaign_value(
     campaign_id: int, session: Session = Depends(get_session)
 ) -> CampaignValueOut:
@@ -368,7 +387,11 @@ def get_campaign_value(
     return CampaignValueOut(campaign_id=campaign_id, **value)
 
 
-@router.get("/{campaign_id}/generation-cost", response_model=GenerationCostOut)
+@router.get(
+    "/{campaign_id}/generation-cost",
+    response_model=GenerationCostOut,
+    dependencies=[Depends(require_campaign_in_scope)],
+)
 def get_campaign_generation_cost(
     campaign_id: int,
     model: str = Query(default=DEFAULT_MODEL),
@@ -415,7 +438,11 @@ def get_campaign_generation_cost(
     )
 
 
-@router.get("/{campaign_id}/readiness", response_model=CampaignReadinessOut)
+@router.get(
+    "/{campaign_id}/readiness",
+    response_model=CampaignReadinessOut,
+    dependencies=[Depends(require_campaign_in_scope)],
+)
 def get_campaign_readiness(
     campaign_id: int, session: Session = Depends(get_session)
 ) -> CampaignReadinessOut:
@@ -426,7 +453,11 @@ def get_campaign_readiness(
     return CampaignReadinessOut(campaign_id=campaign_id, **counts)
 
 
-@router.get("/{campaign_id}/enrollments", response_model=Page[EnrollmentOut])
+@router.get(
+    "/{campaign_id}/enrollments",
+    response_model=Page[EnrollmentOut],
+    dependencies=[Depends(require_campaign_in_scope)],
+)
 def get_campaign_enrollments(
     campaign_id: int,
     cursor: str | None = None,
@@ -462,7 +493,11 @@ def get_campaign_enrollments(
     return Page(items=items, next_cursor=next_cursor)
 
 
-@router.get("/{campaign_id}/sent", response_model=Page[SentMessageOut])
+@router.get(
+    "/{campaign_id}/sent",
+    response_model=Page[SentMessageOut],
+    dependencies=[Depends(require_campaign_in_scope)],
+)
 def get_campaign_sent_messages(
     campaign_id: int,
     cursor: str | None = None,
@@ -492,7 +527,11 @@ def get_campaign_sent_messages(
     return Page(items=items, next_cursor=next_cursor)
 
 
-@router.get("/{campaign_id}/steps", response_model=list[CampaignStepOut])
+@router.get(
+    "/{campaign_id}/steps",
+    response_model=list[CampaignStepOut],
+    dependencies=[Depends(require_campaign_in_scope)],
+)
 def get_campaign_steps(
     campaign_id: int, session: Session = Depends(get_session)
 ) -> list[CampaignStepOut]:
@@ -503,7 +542,12 @@ def get_campaign_steps(
     return [_step_out(s) for s in steps]
 
 
-@router.post("/{campaign_id}/steps", response_model=CampaignStepOut, status_code=201)
+@router.post(
+    "/{campaign_id}/steps",
+    response_model=CampaignStepOut,
+    status_code=201,
+    dependencies=[Depends(require_campaign_in_scope)],
+)
 def post_campaign_step(
     campaign_id: int,
     body: CampaignStepCreateRequest,
@@ -531,7 +575,11 @@ def post_campaign_step(
     return _step_out(step)
 
 
-@router.post("/{campaign_id}/generate", response_model=list[TouchOutcomeOut])
+@router.post(
+    "/{campaign_id}/generate",
+    response_model=list[TouchOutcomeOut],
+    dependencies=[Depends(require_campaign_in_scope)],
+)
 def post_campaign_generate(
     campaign_id: int,
     limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
@@ -565,7 +613,11 @@ def post_campaign_generate(
     ]
 
 
-@router.post("/{campaign_id}/dispatch", response_model=CampaignDispatchOut)
+@router.post(
+    "/{campaign_id}/dispatch",
+    response_model=CampaignDispatchOut,
+    dependencies=[Depends(require_campaign_in_scope)],
+)
 def post_campaign_dispatch(
     campaign_id: int,
     limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
@@ -614,7 +666,12 @@ def _batch_out(batch) -> GenerationBatchOut:
     )
 
 
-@router.post("/{campaign_id}/generate/batch", response_model=GenerationBatchOut, status_code=201)
+@router.post(
+    "/{campaign_id}/generate/batch",
+    response_model=GenerationBatchOut,
+    status_code=201,
+    dependencies=[Depends(require_campaign_in_scope)],
+)
 def post_campaign_generate_batch(
     campaign_id: int,
     background_tasks: BackgroundTasks,
@@ -641,7 +698,11 @@ def post_campaign_generate_batch(
     return _batch_out(batch)
 
 
-@router.get("/{campaign_id}/batches/{generation_batch_id}", response_model=GenerationBatchOut)
+@router.get(
+    "/{campaign_id}/batches/{generation_batch_id}",
+    response_model=GenerationBatchOut,
+    dependencies=[Depends(require_campaign_in_scope)],
+)
 def get_campaign_batch_status(
     campaign_id: int, generation_batch_id: str, session: Session = Depends(get_session)
 ) -> GenerationBatchOut:
@@ -652,7 +713,11 @@ def get_campaign_batch_status(
     return _batch_out(batch)
 
 
-@router.get("/{campaign_id}/batches", response_model=Page[GenerationBatchOut])
+@router.get(
+    "/{campaign_id}/batches",
+    response_model=Page[GenerationBatchOut],
+    dependencies=[Depends(require_campaign_in_scope)],
+)
 def get_campaign_batches(
     campaign_id: int,
     cursor: str | None = None,
@@ -669,7 +734,9 @@ def get_campaign_batches(
 
 
 @router.post(
-    "/{campaign_id}/batches/{generation_batch_id}/ingest", response_model=BatchIngestResultOut
+    "/{campaign_id}/batches/{generation_batch_id}/ingest",
+    response_model=BatchIngestResultOut,
+    dependencies=[Depends(require_campaign_in_scope)],
 )
 def post_campaign_batch_ingest(
     campaign_id: int, generation_batch_id: str, session: Session = Depends(get_session)
@@ -702,7 +769,11 @@ def _policy_out(policy: EffectivePolicy) -> TemplatePolicyOut:
     )
 
 
-@router.get("/{campaign_id}/templates/estimate", response_model=TemplateEstimateOut)
+@router.get(
+    "/{campaign_id}/templates/estimate",
+    response_model=TemplateEstimateOut,
+    dependencies=[Depends(require_campaign_in_scope)],
+)
 def get_campaign_templates_estimate(
     campaign_id: int,
     limit: int = Query(default=DEFAULT_ESTIMATE_LIMIT, ge=1, le=MAX_ESTIMATE_LIMIT),
@@ -726,7 +797,11 @@ def get_campaign_templates_estimate(
     )
 
 
-@router.get("/{campaign_id}/templates/policy", response_model=TemplatePolicyOut)
+@router.get(
+    "/{campaign_id}/templates/policy",
+    response_model=TemplatePolicyOut,
+    dependencies=[Depends(require_campaign_in_scope)],
+)
 def get_campaign_templates_policy(
     campaign_id: int, session: Session = Depends(get_session)
 ) -> TemplatePolicyOut:
@@ -737,7 +812,11 @@ def get_campaign_templates_policy(
     return _policy_out(policy)
 
 
-@router.put("/{campaign_id}/templates/policy", response_model=TemplatePolicyOut)
+@router.put(
+    "/{campaign_id}/templates/policy",
+    response_model=TemplatePolicyOut,
+    dependencies=[Depends(require_campaign_in_scope)],
+)
 def put_campaign_templates_policy(
     campaign_id: int, body: TemplatePolicyRequest, session: Session = Depends(get_session)
 ) -> TemplatePolicyOut:
@@ -759,7 +838,11 @@ def put_campaign_templates_policy(
     return _policy_out(policy)
 
 
-@router.post("/{campaign_id}/templates/draft", response_model=DraftTemplatesResult)
+@router.post(
+    "/{campaign_id}/templates/draft",
+    response_model=DraftTemplatesResult,
+    dependencies=[Depends(require_campaign_in_scope)],
+)
 def post_campaign_templates_draft(
     campaign_id: int,
     discovery_limit: int = Query(default=DEFAULT_ESTIMATE_LIMIT, ge=1, le=MAX_ESTIMATE_LIMIT),

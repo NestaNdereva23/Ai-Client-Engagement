@@ -4,6 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.agents.email_channel import build_default_orchestrator
+from app.api.agent_scope import (
+    AgentScope,
+    get_agent_scope,
+    require_message_in_scope,
+    require_messages_in_scope,
+)
 from app.api.reviewer_auth import get_current_reviewer_id
 from app.campaigns.generation import (
     MessageNotRegenerable,
@@ -61,6 +67,7 @@ def list_reviews(
     order: ReviewOrder = "oldest_first",
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    scope: AgentScope = Depends(get_agent_scope),
     session: Session = Depends(get_session),
     reviewer_id: str = Depends(get_current_reviewer_id),
 ) -> Page[OutreachMessageSummary]:
@@ -71,6 +78,7 @@ def list_reviews(
             campaign_id=campaign_id,
             campaign_type=campaign_type,
             exclude_campaign_type=exclude_campaign_type,
+            fa_id=scope.fa_id,
             only_sampled=only_sampled,
             channel=channel,
             order=order,
@@ -85,6 +93,7 @@ def list_reviews(
         campaign_id=campaign_id,
         campaign_type=campaign_type,
         exclude_campaign_type=exclude_campaign_type,
+        fa_id=scope.fa_id,
         only_sampled=only_sampled,
         channel=channel,
     )
@@ -101,7 +110,11 @@ def list_reviews(
     )
 
 
-@router.get("/{message_id}", response_model=OutreachMessageDetail)
+@router.get(
+    "/{message_id}",
+    response_model=OutreachMessageDetail,
+    dependencies=[Depends(require_message_in_scope)],
+)
 def get_review(message_id: str, session: Session = Depends(get_session)) -> OutreachMessageDetail:
     try:
         message = get_message(session, message_id)
@@ -126,7 +139,11 @@ def get_review(message_id: str, session: Session = Depends(get_session)) -> Outr
     )
 
 
-@router.post("/{message_id}/decide", response_model=DecideResultOut)
+@router.post(
+    "/{message_id}/decide",
+    response_model=DecideResultOut,
+    dependencies=[Depends(require_message_in_scope)],
+)
 def decide_review(
     message_id: str,
     body: DecideRequest,
@@ -185,7 +202,11 @@ def approve_cohort_remaining(
     )
 
 
-@router.post("/decide-batch", response_model=DecideBatchResultOut)
+@router.post(
+    "/decide-batch",
+    response_model=DecideBatchResultOut,
+    dependencies=[Depends(require_messages_in_scope)],
+)
 def decide_reviews_batch(
     body: DecideBatchRequest,
     reviewer_id: str = Depends(get_current_reviewer_id),
@@ -210,7 +231,11 @@ def decide_reviews_batch(
     )
 
 
-@router.post("/{message_id}/regenerate", response_model=OutreachMessageDetail)
+@router.post(
+    "/{message_id}/regenerate",
+    response_model=OutreachMessageDetail,
+    dependencies=[Depends(require_message_in_scope)],
+)
 def regenerate_review(
     message_id: str, session: Session = Depends(get_session)
 ) -> OutreachMessageDetail:

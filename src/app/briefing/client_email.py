@@ -7,6 +7,9 @@ from typing import Any
 
 import structlog
 
+from app.briefing.next_action import EMAIL_PURPOSES
+from app.llmops.operations import traced_model_call
+from app.llmops.trace_names import MODEL_WRITE_CLIENT_EMAIL
 from app.privacy.boundary import AuditSink, run_model_boundary
 from app.privacy.fact_block import RiskFactBlock
 from app.privacy.llm_client import LLMClient, LLMClientError, as_model_call
@@ -43,6 +46,9 @@ INSTRUCTIONS = (
     "- Write no digits at all. No amounts, dates, percentages or counts.\n"
     "- Never mention a balance, a risk, a warning sign, a score or that the client was "
     "flagged. The client must not feel watched.\n"
+    "- Never tell the client what you know about their account. Do not say you noticed a "
+    "deposit, a withdrawal, a gap or any change in activity, and do not say how long since "
+    "their last deposit. The facts only help you pick a fitting tone.\n"
     "- Never promise a return, a rate or a guarantee.\n"
     "- Ask one easy question, such as whether they would like a short call.\n"
     "- Plain, everyday English. Under 110 words in the body. No sign off name; the advisor "
@@ -66,7 +72,13 @@ def email_facts(facts: RiskFactBlock) -> dict[str, Any]:
     return facts.to_dict(permitted_keys=EMAIL_FACT_KEYS)
 
 
-def build_email_prompt(facts: dict[str, Any]) -> str:
+def build_email_prompt(
+    facts: dict[str, Any],
+    purpose: str | None = None,
+    angle: str | None = None,
+    instructions: str | None = None,
+    purpose_text: str | None = None,
+) -> str:
     lines = []
     if "fund_name" in facts:
         lines.append(f"- The fund they hold: {facts['fund_name']}")
@@ -77,10 +89,12 @@ def build_email_prompt(facts: dict[str, Any]) -> str:
     if facts.get("holds_both_funds"):
         lines.append("- They also hold the other fund")
     shown = "\n".join(lines) if lines else "(no facts are available for this client)"
-    return f"{INSTRUCTIONS}\n\nTHE ONLY FACTS YOU MAY USE:\n{shown}"
+    why = angle or purpose_text or (EMAIL_PURPOSES[purpose] if purpose else None)
+    reason = f"\n\nWHY YOU ARE WRITING:\n{why}" if why else ""
+    return f"{instructions or INSTRUCTIONS}{reason}\n\nTHE ONLY FACTS YOU MAY USE:\n{shown}"
 
 
-def _json_object(text: str) -> dict[str, Any]:
+def json_object(text: str) -> dict[str, Any]:
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end <= start:
         raise DraftRejected("the reply was not a JSON object")
@@ -104,7 +118,7 @@ def _restore_first_name(body: str) -> str:
 
 
 def parse_email_draft(text: str) -> EmailDraft:
-    parsed = _json_object(text)
+    parsed = json_object(text)
     subject, body = parsed.get("subject"), parsed.get("body")
     if not isinstance(subject, str) or not isinstance(body, str):
         raise DraftRejected("subject and body must both be text")
@@ -129,9 +143,19 @@ def draft_client_email(
     *,
     entity_id: str,
     audit: AuditSink,
+    purpose: str | None = None,
+    angle: str | None = None,
+    instructions: str | None = None,
+    purpose_text: str | None = None,
 ) -> EmailDraft:
     allowed = email_facts(facts)
-    model_call = as_model_call(llm_client, system=build_email_prompt(allowed))
+    system = build_email_prompt(allowed, purpose, angle, instructions, purpose_text)
+    model_call = traced_model_call(
+        as_model_call(llm_client, system=system),
+        name=MODEL_WRITE_CLIENT_EMAIL,
+        llm_client=llm_client,
+        system=system,
+    )
     text = ""
     try:
         text = run_model_boundary(allowed, model_call, entity_id=entity_id, audit=audit)

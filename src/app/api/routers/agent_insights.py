@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.agents.action_agent import InsightNotActionable
 from app.agents.insight_state import InvalidTransition
 from app.agents.run_report_email import announce_run_finished
+from app.api.agent_scope import AgentScope, get_agent_scope, require_insight_in_scope
 from app.api.reviewer_auth import get_current_reviewer_id
 from app.config import get_settings
 from app.db.session import get_session
@@ -53,6 +54,7 @@ def list_agent_insights(
     state: str | None = None,
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    scope: AgentScope = Depends(get_agent_scope),
     session: Session = Depends(get_session),
 ) -> Page[AgentInsightSummaryOut]:
     try:
@@ -62,6 +64,7 @@ def list_agent_insights(
             insight_date=insight_date,
             kind=kind,
             state=state,
+            fa_id=scope.fa_id,
             cursor=cursor,
             limit=limit,
         )
@@ -69,7 +72,12 @@ def list_agent_insights(
         raise HTTPException(status_code=400, detail="invalid cursor") from None
 
     total_count = count_insights(
-        session, run_id=run_id, insight_date=insight_date, kind=kind, state=state
+        session,
+        run_id=run_id,
+        insight_date=insight_date,
+        kind=kind,
+        state=state,
+        fa_id=scope.fa_id,
     )
     return Page(
         items=[AgentInsightSummaryOut.model_validate(row) for row in insights],
@@ -83,13 +91,20 @@ def count_agent_insights_by_kind(
     run_id: int | None = None,
     insight_date: date | None = Query(default=None, alias="date"),
     state: str | None = None,
+    scope: AgentScope = Depends(get_agent_scope),
     session: Session = Depends(get_session),
 ) -> InsightKindCountsOut:
-    counts = count_insights_by_kind(session, run_id=run_id, insight_date=insight_date, state=state)
+    counts = count_insights_by_kind(
+        session, run_id=run_id, insight_date=insight_date, state=state, fa_id=scope.fa_id
+    )
     return InsightKindCountsOut(counts_by_kind=counts, total_count=sum(counts.values()))
 
 
-@router.get("/{insight_id}", response_model=AgentInsightDetailOut)
+@router.get(
+    "/{insight_id}",
+    response_model=AgentInsightDetailOut,
+    dependencies=[Depends(require_insight_in_scope)],
+)
 def get_agent_insight(
     insight_id: int, session: Session = Depends(get_session)
 ) -> AgentInsightDetailOut:
@@ -125,7 +140,11 @@ def get_agent_insight(
     )
 
 
-@router.post("/{insight_id}/decision", response_model=InsightDecisionResultOut)
+@router.post(
+    "/{insight_id}/decision",
+    response_model=InsightDecisionResultOut,
+    dependencies=[Depends(require_insight_in_scope)],
+)
 def decide_agent_insight(
     insight_id: int,
     body: InsightDecisionRequest,
@@ -174,7 +193,11 @@ def decide_agent_insight(
     return result.model_copy(update={"action_run_id": run.run_id})
 
 
-@router.get("/{insight_id}/facts/{fact_id}/recount", response_model=FactRecountOut)
+@router.get(
+    "/{insight_id}/facts/{fact_id}/recount",
+    response_model=FactRecountOut,
+    dependencies=[Depends(require_insight_in_scope)],
+)
 def recount_agent_insight_fact(
     insight_id: int,
     fact_id: int,

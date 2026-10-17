@@ -81,6 +81,7 @@ class AgentProposal(Base):
     run_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("agent_run.run_id"), nullable=True
     )
+    fa_id: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     action_code: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     catalog_version: Mapped[int] = mapped_column(Integer, nullable=False)
     group_name: Mapped[str] = mapped_column(Text, nullable=False)

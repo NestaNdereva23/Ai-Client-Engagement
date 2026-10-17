@@ -50,7 +50,7 @@ class BriefingFacts:
     tier_label: str | None = None
     tier_goal: str | None = None
     tier_action: str | None = None
-    ai_action: str | None = None
+    next_action: str | None = None
 
 
 def _tier_lines(facts: BriefingFacts) -> list[str]:
@@ -58,7 +58,7 @@ def _tier_lines(facts: BriefingFacts) -> list[str]:
         ("Tier", facts.tier_label),
         ("Goal", facts.tier_goal),
         ("Action", facts.tier_action),
-        ("AI Action", facts.ai_action),
+        ("Next Action", facts.next_action),
     )
     return [f"{name:<13}{value}" for name, value in rows if value]
 

@@ -49,8 +49,8 @@ class FakeMailer:
         )
 
 
-def _settings(console_base_url: str = "") -> Settings:
-    return Settings(console_base_url=console_base_url)
+def _settings(ticketing_base_url: str = "") -> Settings:
+    return Settings(ticketing_base_url=ticketing_base_url)
 
 
 @pytest.fixture
@@ -160,7 +160,7 @@ def _asha_book(cleanup) -> int:
     )
 
 
-def test_the_email_groups_the_advisors_book_by_tier(db, cleanup) -> None:
+def test_the_email_says_what_happened_and_links_to_the_brief(db, cleanup) -> None:
     digest_run_id = _asha_book(cleanup)
     mailer = FakeMailer()
 
@@ -170,18 +170,19 @@ def test_the_email_groups_the_advisors_book_by_tier(db, cleanup) -> None:
             digest_run_id,
             roster=ROSTER,
             mailer=mailer,
-            settings=_settings("http://console.example"),
+            settings=_settings("http://ticketing.example"),
         )
 
     assert result.sent == 2
     body = _body_for(mailer, ASHA.email)
-    assert "Clients on your worklist: 3 of 3" in body
-    assert "Money at risk: KES 100,000" in body
-    assert "Gradual Depositors: 2 clients, KES 300,000 held, KES 80,000 at risk" in body
-    assert "Frequent Depositors: 1 client, KES 400,000 held, KES 20,000 at risk" in body
-    assert f"http://console.example/digest/fa:{ASHA.fa_id}" in body
+    assert "Good morning Advisor Asha," in body
+    assert "Nothing new since yesterday." in body
+    assert "By tier" not in body
+    assert (
+        "Open today's brief: http://ticketing.example/dashboard?view=ai-outreach&section=at-risk"
+    ) in body
     subject = next(m.subject for m in mailer.messages if m.to == ASHA.email)
-    assert subject == "Morning Digest: 3 Clients On Your Worklist, KES 100K At Risk"
+    assert subject == "Nothing new since yesterday"
 
 
 def test_an_advisor_with_nothing_on_the_worklist_gets_the_short_note(db, cleanup) -> None:

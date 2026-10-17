@@ -15,6 +15,7 @@ from app.agents.propose import DO_NOTHING_ACTION
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.outreach import Campaign
 from app.db.session import SessionLocal
+from app.llmops.tracing import get_shared_tracer
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_id_cursor, encode_id_cursor
 
 logger = structlog.get_logger(__name__)
@@ -38,8 +39,11 @@ def _proposal_filters(
     action_code: str | None,
     exclude_action_code: str | None,
     group_name: str | None = None,
+    fa_id: str | None = None,
 ) -> list[Any]:
     clauses: list[Any] = []
+    if fa_id is not None:
+        clauses.append(AgentProposal.fa_id == fa_id)
     if status is not None:
         clauses.append(AgentProposal.status == status)
     if proposal_date is not None:
@@ -76,6 +80,7 @@ def list_proposals(
     action_code: str | None = None,
     exclude_action_code: str | None = None,
     group_name: str | None = None,
+    fa_id: str | None = None,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> tuple[list[tuple[AgentProposal, int | None]], str | None]:
@@ -90,6 +95,7 @@ def list_proposals(
         action_code=action_code,
         exclude_action_code=exclude_action_code,
         group_name=group_name,
+        fa_id=fa_id,
     )
     query = select(AgentProposal).where(*filters)
     if cursor is not None:
@@ -116,6 +122,7 @@ def count_proposals(
     action_code: str | None = None,
     exclude_action_code: str | None = None,
     group_name: str | None = None,
+    fa_id: str | None = None,
 ) -> int:
     """How many proposals list_proposals' filters would return in total."""
     return session.scalar(
@@ -128,6 +135,7 @@ def count_proposals(
                 action_code=action_code,
                 exclude_action_code=exclude_action_code,
                 group_name=group_name,
+                fa_id=fa_id,
             )
         )
     )
@@ -304,7 +312,7 @@ def run_proposal_in_background(proposal_id: int) -> None:
 
     with SessionLocal() as session:
         try:
-            run_proposal(session, proposal_id)
+            run_proposal(session, proposal_id, tracer=get_shared_tracer())
         except Exception:
             session.rollback()
             logger.exception("decide_proposal.run_proposal_failed", proposal_id=proposal_id)

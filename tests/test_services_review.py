@@ -22,6 +22,7 @@ from app.db.models.outreach import Campaign, OutreachMessage, ReviewAction
 from app.db.session import SessionLocal
 from app.llmops.versions import persist_generation_run
 from app.services.review import (
+    EditedContentInvalid,
     EditedContentRequired,
     InvalidOutcome,
     MessageAlreadyDecided,
@@ -529,6 +530,42 @@ def test_decide_edit_approve_keeps_both_the_ai_and_edited_versions(message) -> N
         "body": "Dear {{first_name}}, we miss you.",
     }
     assert history[-1].edited_content == edited
+
+
+def test_decide_edit_approve_makes_the_edit_the_text_that_goes_out(message) -> None:
+    edited = {"subject": "Edited subject", "body": "Edited body"}
+    with SessionLocal() as session:
+        decide(session, message, outcome="edit_approve", reviewer_id="fa-1", edited_content=edited)
+        session.commit()
+
+    with SessionLocal() as session:
+        stored = session.get(OutreachMessage, message)
+    assert stored.personalized_content == edited
+    assert stored.ai_draft_content["subject"] == "Come back to {{fund_name}}"
+
+
+def test_an_edit_that_keeps_a_placeholder_gets_it_filled_in(message) -> None:
+    edited = {"subject": "Hello", "body": "Dear {{first_name}}, we miss you dearly."}
+    with SessionLocal() as session:
+        decide(session, message, outcome="edit_approve", reviewer_id="fa-1", edited_content=edited)
+        session.commit()
+
+    with SessionLocal() as session:
+        stored = session.get(OutreachMessage, message)
+    assert "{{" not in stored.personalized_content["body"]
+    assert stored.personalized_content["body"].endswith("we miss you dearly.")
+
+
+def test_an_edit_with_a_placeholder_that_has_no_value_is_refused_and_changes_nothing(
+    message,
+) -> None:
+    edited = {"subject": "Hello", "body": "Dear {{no_such_fact}}"}
+    with SessionLocal() as session, pytest.raises(EditedContentInvalid):
+        decide(session, message, outcome="edit_approve", reviewer_id="fa-1", edited_content=edited)
+
+    with SessionLocal() as session:
+        stored = session.get(OutreachMessage, message)
+    assert stored.status == "pending_review"
 
 
 def test_compute_edit_diff_only_includes_changed_fields() -> None:

@@ -58,6 +58,15 @@ def _default_delivery_mode_to_live() -> None:
 
 _default_delivery_mode_to_live()
 
+
+def _default_agent_scoping_to_off() -> None:
+    # A local .env may turn per advisor scoping on; tests that need it opt in themselves.
+    os.environ.setdefault("AGENT_FA_SCOPED", "false")
+    get_settings.cache_clear()
+
+
+_default_agent_scoping_to_off()
+
 import app.db.models  # noqa: E402,F401  (registers models on Base.metadata)
 from app.db.base import Base  # noqa: E402
 from app.db.session import SessionLocal, engine  # noqa: E402
@@ -111,6 +120,9 @@ def _seed_agent_prompts() -> None:
     intelligence_preamble = "You look for things worth acting on. "
     group_marker = "Tonight you are looking at one group: "
 
+    from app.briefing.email_prompts import default_email_prompts
+
+    defaults = default_email_prompts()
     valid_from = _date(2020, 1, 1)
     with SessionLocal() as session:
         # Reseed every run: an earlier test run may have left rows behind
@@ -131,7 +143,7 @@ def _seed_agent_prompts() -> None:
                 )
             else:
                 template = " ".join(f"{{{name}}}" for name in sorted(placeholders))
-            template = template or "Prompt body."
+            template = template or defaults.get(key, "Prompt body.")
             version = versioning.save_draft(
                 session, "agent_prompt", key, [{"template": template}], by="test"
             )
@@ -186,6 +198,24 @@ def reviewer_1_headers() -> dict[str, str]:
 def reviewer_2_headers() -> dict[str, str]:
     """Authorization: Bearer header for the second fixed test reviewer."""
     return REVIEWER_2_HEADERS
+
+
+@pytest.fixture
+def all_pages():
+    def fetch(client, path: str, **params) -> list[dict]:
+        items: list[dict] = []
+        cursor = None
+        while True:
+            query = {"limit": 200, **params}
+            if cursor is not None:
+                query["cursor"] = cursor
+            body = client.get(path, params=query).json()
+            items.extend(body["items"])
+            cursor = body["next_cursor"]
+            if cursor is None:
+                return items
+
+    return fetch
 
 
 @pytest.fixture

@@ -209,33 +209,33 @@ def test_a_balance_heading_below_the_line_shows_as_a_reason() -> None:
     assert "Balance heading below the active line" in render_briefing(facts)
 
 
-def test_the_tier_goal_action_and_ai_action_show_when_known() -> None:
+def test_the_tier_goal_action_and_next_action_show_when_known() -> None:
     facts = _base(
         tier_label="Gradual Depositors",
         tier_goal="Raise deposit frequency",
         tier_action="Call to review goals",
-        ai_action="Phone call: usually tops up by now",
+        next_action="Phone call: usually tops up by now",
     )
     text = render_briefing(facts)
 
     assert "Tier         Gradual Depositors" in text
     assert "Goal         Raise deposit frequency" in text
     assert "Action       Call to review goals" in text
-    assert "AI Action    Phone call: usually tops up by now" in text
+    assert "Next Action  Phone call: usually tops up by now" in text
 
 
 def test_no_tier_lines_show_without_a_tier() -> None:
     text = render_briefing(_base())
 
     assert "Tier " not in text
-    assert "AI Action" not in text
+    assert "Next Action" not in text
 
 
-def test_the_tier_and_ai_action_text_never_reach_the_model() -> None:
+def test_the_tier_and_next_action_text_never_reach_the_model() -> None:
     facts = _base(
         tier_label="Gradual Depositors",
         tier_action="Call to review goals",
-        ai_action="Phone call: usually tops up by now",
+        next_action="Phone call: usually tops up by now",
     )
     prompt = build_narrative_prompt(to_risk_fact_block(facts))
 

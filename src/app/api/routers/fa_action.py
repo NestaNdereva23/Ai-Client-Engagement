@@ -18,6 +18,7 @@ from app.routing.tiers import (
     SEGMENT_BY_TIER,
 )
 from app.schemas.fa_action import (
+    DailyBriefOut,
     FaActionBookOut,
     FaActionBriefingOut,
     FaActionClientOut,
@@ -26,6 +27,7 @@ from app.schemas.fa_action import (
 )
 from app.services.book_briefing import book_facts_for, get_book_narrative
 from app.services.briefing import NarrativeDisabled
+from app.services.daily_brief import build_daily_brief
 from app.services.fa_action import (
     FaActionBook,
     NotAWorklistTier,
@@ -81,6 +83,15 @@ def _to_book_out(book: FaActionBook) -> FaActionBookOut:
         not_yet_tiered=book.not_yet_tiered.clients,
         not_yet_tiered_balance_kes=book.not_yet_tiered.balance_kes,
     )
+
+
+@router.get("/{fa_id}/brief", response_model=DailyBriefOut)
+def get_fa_action_brief(
+    fa_id: str,
+    access: Access = Depends(get_access),
+    session: Session = Depends(get_session),
+) -> DailyBriefOut:
+    return DailyBriefOut.model_validate(build_daily_brief(session, book_fa_id(access, fa_id)))
 
 
 @router.get("/{fa_id}/briefing", response_model=FaActionBriefingOut)

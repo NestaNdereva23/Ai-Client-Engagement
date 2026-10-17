@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -14,7 +15,11 @@ from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agents.email_agent import build_system_prompt, resolve_allowed_placeholders
+from app.agents.email_agent import (
+    build_system_prompt,
+    required_placeholders,
+    resolve_allowed_placeholders,
+)
 from app.agents.guardrails import DEFAULT_GUARDRAIL_CHECKS, GuardrailFailure
 from app.db.models.models import ClientFeatures
 from app.db.models.rules import ClientMessageIndicators
@@ -131,6 +136,11 @@ class GenerationState(TypedDict, total=False):
 
 
 GuardrailCheck = Callable[[GenerationState], None]
+
+
+def _rejection_summary(reason: str) -> str:
+    match = re.search(r"Value error, (.*?) \[type=", reason, re.DOTALL)
+    return match.group(1).strip() if match else reason.splitlines()[0]
 
 
 def new_generation_state(*, client_id: int | None, product: str) -> GenerationState:
@@ -449,9 +459,20 @@ def build_generation_graph(
             "latency_ms": latency_ms,
         }
 
+    def system_for_attempt(state: GenerationState) -> str:
+        if state.get("failed_guardrail") != "structured_output" or not state.get("reason"):
+            return state["system_prompt"]
+        required = ", ".join(required_placeholders(state.get("facts")))
+        return (
+            f"{state['system_prompt']}\n\n"
+            f"Your last draft was rejected: {_rejection_summary(state['reason'])}. "
+            f"Write it again. The email must contain these exact tokens: {required}."
+        )
+
     def generate(state: GenerationState) -> dict[str, Any]:
         attempts = state.get("attempts", 0) + 1
-        model_call = as_model_call(llm_client, system=state["system_prompt"])
+        system_prompt = system_for_attempt(state)
+        model_call = as_model_call(llm_client, system=system_prompt)
         started = time.monotonic()
         try:
             draft = run_model_boundary(
@@ -476,7 +497,7 @@ def build_generation_graph(
         latency_ms = int((time.monotonic() - started) * 1000)
         calls = [
             *state.get("llm_calls", ()),
-            _call_record(attempts, state["system_prompt"], draft, latency_ms),
+            _call_record(attempts, system_prompt, draft, latency_ms),
         ]
         return {
             "draft": draft,

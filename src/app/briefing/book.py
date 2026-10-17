@@ -11,16 +11,16 @@ DORMANT_SEGMENT = "active_dormant"
 
 
 def format_money(value: float) -> str:
-    return f"KES {round(value):,}"
+    return f"KSh {round(value):,}"
 
 
 def compact_money(value: float) -> str:
     amount = round(value)
     if amount >= 1_000_000:
-        return f"KES {amount / 1_000_000:.1f}M"
+        return f"KSh {amount / 1_000_000:.1f}M"
     if amount >= 1_000:
-        return f"KES {amount / 1_000:.0f}K"
-    return f"KES {amount:,}"
+        return f"KSh {amount / 1_000:.0f}K"
+    return f"KSh {amount:,}"
 
 
 def plural(count: int, word: str = "client") -> str:

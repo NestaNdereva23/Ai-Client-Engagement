@@ -65,6 +65,7 @@ from app.privacy.fact_block import round_sig_figs
 from app.rules.catalog import load_angle
 from app.rules.tier_contract import load_tier
 from app.schemas.review import ReviewOrder
+from app.services.agent_campaign_scope import message_visible_to
 
 # Display order for the reviewer queue: T1 is the highest-value, always-
 # reviewed tier, so it goes first. Not the same thing as app.rules.store's
@@ -107,6 +108,10 @@ class MessageAlreadyDecided(Exception):
 
 class EditedContentRequired(Exception):
     """edit_approve was chosen without the reviewer's edited content."""
+
+
+class EditedContentInvalid(EditedContentRequired):
+    """The edit still carries a placeholder that has no real value."""
 
 
 class InvalidOutcome(Exception):
@@ -549,12 +554,15 @@ def _pending_messages_filters(
     channel: str | None = None,
     campaign_type: str | None = None,
     exclude_campaign_type: str | None = None,
+    fa_id: str | None = None,
 ) -> list[Any]:
     """The where-clauses list_pending_messages and count_pending_messages
     both filter on -- kept in one place so a count can never drift from
     what the page beside it actually shows.
     """
     clauses: list[Any] = [OutreachMessage.status == status]
+    if fa_id is not None:
+        clauses.append(message_visible_to(fa_id))
     if campaign_id is not None:
         clauses.append(OutreachMessage.campaign_id == campaign_id)
     if campaign_type is not None:
@@ -587,6 +595,7 @@ def list_pending_messages(
     channel: str | None = None,
     campaign_type: str | None = None,
     exclude_campaign_type: str | None = None,
+    fa_id: str | None = None,
     order: ReviewOrder = "oldest_first",
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
@@ -615,6 +624,7 @@ def list_pending_messages(
         channel=channel,
         campaign_type=campaign_type,
         exclude_campaign_type=exclude_campaign_type,
+        fa_id=fa_id,
     )
     query = select(OutreachMessage).where(*filters)
     key = tuple_(OutreachMessage.created_at, OutreachMessage.message_id)
@@ -702,6 +712,7 @@ def count_pending_messages(
     channel: str | None = None,
     campaign_type: str | None = None,
     exclude_campaign_type: str | None = None,
+    fa_id: str | None = None,
 ) -> int:
     """How many messages list_pending_messages' filters would return in
     total, across every page -- what a queue badge shows.
@@ -717,6 +728,7 @@ def count_pending_messages(
                 channel=channel,
                 campaign_type=campaign_type,
                 exclude_campaign_type=exclude_campaign_type,
+                fa_id=fa_id,
             )
         )
     )
@@ -823,6 +835,26 @@ def get_review_history(session: Session, message_id: str) -> list[ReviewAction]:
     )
 
 
+def _personalized_edit(session: Session, message: OutreachMessage, edited_content: dict) -> dict:
+    base = dict(message.personalized_content or {})
+    merged = {
+        **base,
+        **{key: edited_content[key] for key in ("subject", "body") if key in edited_content},
+    }
+    _raw_facts, placeholder_kwargs = _placeholder_facts_for_client(session, message.client_id)
+    personalized = personalize_content(
+        merged,
+        first_name=_resolve_first_name(message.client_id),
+        fund_name=_resolve_fund_name(session, message.client_id),
+        **placeholder_kwargs,
+    )
+    try:
+        check_no_unresolved_placeholders(personalized.get("subject", ""), personalized["body"])
+    except GuardrailFailure as failure:
+        raise EditedContentInvalid(str(failure)) from failure
+    return personalized
+
+
 def decide(
     session: Session,
     message_id: str,
@@ -845,6 +877,9 @@ def decide(
         raise InvalidOutcome(outcome)
 
     message_angle, priority_tier = _label_for_message(session, message)
+    final_content = (
+        _personalized_edit(session, message, edited_content) if outcome == "edit_approve" else None
+    )
     edit_diff = (
         compute_edit_diff(message.ai_draft_content, edited_content)
         if outcome == "edit_approve"
@@ -863,6 +898,8 @@ def decide(
     )
     session.add(action)
     message.status = _STATUS_FOR_OUTCOME[outcome]
+    if final_content is not None:
+        message.personalized_content = final_content
     record_audit(
         session,
         entity_type="review_action",

@@ -31,7 +31,7 @@ from app.campaigns.state_machine import transition_enrollment
 from app.config import get_settings
 from app.db.models.campaigns import CampaignStep, ContactEvent, Enrollment, TouchLog
 from app.db.models.models import ClientFeatures, Clients, PiiVault
-from app.db.models.outreach import Campaign, OutreachMessage
+from app.db.models.outreach import AGENT_PROPOSAL_CAMPAIGN_TYPE, Campaign, OutreachMessage
 from app.db.models.routing import ClientSide
 from app.db.models.rules import ClientMessageIndicators
 from app.db.models.suppression import Suppression
@@ -69,7 +69,7 @@ def check_eligibility(
     if campaign is None or campaign.status in ("paused", "completed"):
         return _skip(session, enrollment, reason="campaign_inactive", terminal=False)
 
-    if _moved_off_inactive(session, enrollment.client_id):
+    if _dormant_only(campaign) and _moved_off_inactive(session, enrollment.client_id):
         return _skip(session, enrollment, reason="moved_to_active", terminal=False)
 
     step_no = enrollment.current_step + 1
@@ -141,7 +141,7 @@ def check_stop_conditions(
     if campaign is None or campaign.status in ("paused", "completed"):
         return _skip(session, enrollment, reason="campaign_inactive", terminal=False)
 
-    if _moved_off_inactive(session, enrollment.client_id):
+    if _dormant_only(campaign) and _moved_off_inactive(session, enrollment.client_id):
         return _skip(session, enrollment, reason="moved_to_active", terminal=False)
 
     if _angle_held(session, enrollment.client_id):
@@ -162,6 +162,10 @@ def check_stop_conditions(
     return EligibilityResult(eligible=True)
 
 
+def _dormant_only(campaign: Campaign) -> bool:
+    return campaign.campaign_type != AGENT_PROPOSAL_CAMPAIGN_TYPE
+
+
 def _moved_off_inactive(session: Session, client_id: int) -> bool:
     side = session.get(ClientSide, client_id)
     return side is not None and side.side != SIDE_INACTIVE
@@ -173,11 +177,19 @@ def _has_no_visible_history(session: Session, client_id: int) -> bool:
     the book (0.4 percent) can be counted but never written to; they route
     to pick_up_again, the angle that claims nothing, but a message that says
     nothing is not worth sending, so this excludes them at the gate instead.
+
+    Never funded clients (hot leads) are the exception. They have no history
+    by definition, and their first deposit angle is written for exactly that.
     """
-    depth = session.scalar(
-        select(ClientFeatures.purchase_depth).where(ClientFeatures.client_id == client_id)
-    )
-    return depth == "none"
+    row = session.execute(
+        select(ClientFeatures.purchase_depth, ClientFeatures.never_funded).where(
+            ClientFeatures.client_id == client_id
+        )
+    ).first()
+    if row is None:
+        return False
+    depth, never_funded = row
+    return depth == "none" and not never_funded
 
 
 def _angle_held(session: Session, client_id: int) -> bool:

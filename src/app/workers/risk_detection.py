@@ -45,13 +45,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.agents.agent_loop import AgentRunInProgress, run_nightly_agent
+from app.agents.fa_scope import advisors_with_clients
 from app.agents.run_report_email import announce_run_finished
 from app.agents.signals import recompute_all_signals
 from app.agents.situations import recompute_all_situations
 from app.agents.watchlist import load_thresholds
 from app.audit.log import record_audit
 from app.campaigns.nurture_bridge import enroll_auto_checkin_clients
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.db.models.digest import DigestRun
 from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion, RiskRun, RiskSnapshot
 from app.db.session import SessionLocal
@@ -401,9 +402,9 @@ class RiskDetectionWorker:
 
             self._write_client_tiers(fund_measures_for_every_client_in_feed, run)
             self._enroll_auto_checkin(changes)
-            self._send_digest_emails(digest_run.digest_run_id)
             self._warm_narratives(digest_run.digest_run_id)
             self._recompute_signals_and_situations(run.reference_ts.date(), run.run_id)
+            self._send_digest_emails(digest_run.digest_run_id)
             self._prune_old_data()
             self._run_agent(run.reference_ts.date())
 
@@ -478,13 +479,13 @@ class RiskDetectionWorker:
     def _send_digest_emails(self, digest_run_id: int) -> None:
         """Mail each advisor chosen for the digest their morning summary.
 
-        Runs right after the risk run commits, ahead of the narration
-        warm-up: the email carries counts and money only, no per-client
-        detail, so it never waits on a narration to be ready. In its own
-        session, and swallows everything for the same reason the warm-up
-        does: the run has already committed, and a mail server being down
-        at 6am is not a reason to fail a pass that scored and routed the
-        whole book. Nothing is sent while no advisor is switched on.
+        Runs after the signals and situations are recomputed, because the
+        email is built from them. It carries counts and money only, never a
+        client name. In its own session, and swallows everything for the
+        same reason the warm-up does: the run has already committed, and a
+        mail server being down at 6am is not a reason to fail a pass that
+        scored and routed the whole book. Nothing is sent while no advisor
+        is switched on.
         """
         try:
             with self._session_factory() as session:
@@ -536,6 +537,20 @@ class RiskDetectionWorker:
         settings = get_settings()
         if not settings.agent_run_after_risk_detection:
             return
+        for fa_id in self._agent_scopes(settings):
+            self._run_agent_for(settings, as_of, fa_id)
+
+    def _agent_scopes(self, settings: Settings) -> list[str | None]:
+        if not settings.agent_fa_scoped:
+            return [None]
+        try:
+            with self._session_factory() as session:
+                return list(advisors_with_clients(session))
+        except Exception:
+            logger.exception("risk_detection.agent_advisors_failed")
+            return []
+
+    def _run_agent_for(self, settings: Settings, as_of: date, fa_id: str | None) -> None:
         try:
             with self._session_factory() as session:
                 run = run_nightly_agent(
@@ -543,17 +558,21 @@ class RiskDetectionWorker:
                     trigger="nightly",
                     llm_client=get_agent_llm_client(settings),
                     as_of=as_of,
+                    fa_id=fa_id,
                 )
                 logger.info(
                     "risk_detection.agent_run_started",
                     agent_run_id=run.run_id,
                     agent_run_state=run.state,
+                    fa_id=fa_id,
                 )
                 announce_run_finished(run.run_id)
         except AgentRunInProgress as exc:
-            logger.info("risk_detection.agent_run_skipped", reason=str(exc))
+            logger.info("risk_detection.agent_run_skipped", reason=str(exc), fa_id=fa_id)
         except Exception:
-            logger.exception("risk_detection.agent_run_failed", as_of=as_of.isoformat())
+            logger.exception(
+                "risk_detection.agent_run_failed", as_of=as_of.isoformat(), fa_id=fa_id
+            )
 
     def _ingest(self, run: RiskRun) -> None:
         """Pull the active-clients feed into raw_staging, keyed by this run's own id."""

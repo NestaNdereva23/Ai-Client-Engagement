@@ -7,8 +7,10 @@ from app.api.access import Access, get_access, require_client_in_book
 from app.api.errors import ApiError
 from app.config import get_settings
 from app.db.session import get_session
+from app.llmops.tracing import get_shared_tracer
 from app.privacy.llm_client import get_briefing_llm_client
 from app.schemas.briefing import BriefingOut, ClientEmailDraftOut
+from app.schemas.client_assistant import EmailDraftIn
 from app.services.briefing import (
     BriefingNotFound,
     NarrativeDisabled,
@@ -22,6 +24,7 @@ from app.services.client_email_draft import (
     EmailDraftFailed,
     draft_email_for_client,
 )
+from app.services.email_options import OptionNotFound, find_chosen_option
 
 router = APIRouter(prefix="/briefing", tags=["briefing"], dependencies=[Depends(get_access)])
 
@@ -96,12 +99,27 @@ def get_client_briefing_narrative(
 def post_client_email_draft(
     client_id: int,
     unit_fund_id: int,
+    body: EmailDraftIn | None = None,
     access: Access = Depends(require_client_in_book),
     session: Session = Depends(get_session),
 ) -> ClientEmailDraftOut:
     settings = get_settings()
     if not settings.ai_briefing_enabled:
         raise _email_draft_disabled()
+    angle = None
+    if body is not None:
+        try:
+            angle = find_chosen_option(
+                session,
+                client_id=client_id,
+                unit_fund_id=unit_fund_id,
+                turn_id=body.turn_id,
+                option_id=body.option_id,
+                username=access.email,
+                sees_every_book=access.sees_every_book,
+            ).angle
+        except OptionNotFound:
+            raise HTTPException(status_code=404, detail="email option not found") from None
     try:
         draft = draft_email_for_client(
             session,
@@ -110,6 +128,8 @@ def post_client_email_draft(
             username=access.email,
             on_behalf_of=access.on_behalf_of,
             llm_client=get_briefing_llm_client(settings),
+            angle=angle,
+            tracer=get_shared_tracer(),
         )
     except EmailDraftDisabled:
         raise _email_draft_disabled() from None

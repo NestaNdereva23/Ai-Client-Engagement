@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.access import Access, book_fa_id, get_access, require_client_in_book
+from app.briefing.daily_brief import GROUP_CODES
 from app.db.models.routing import ClientTier
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
@@ -26,13 +27,11 @@ from app.schemas.active_clients import (
     ActiveClientRiskHistoryEntryOut,
     ActiveClientRosterLineOut,
     ActiveTransactionOut,
-    AiActionOut,
     DepositPercentileOut,
     InteractionCreate,
     InteractionOut,
+    NextActionOut,
     ReviewPeriodActivityOut,
-    RouteChangeDetailOut,
-    RouteChangeDetailsOut,
     RouteChangeRunOut,
     SaleTypeBucketOut,
     TouchpointCreate,
@@ -57,11 +56,9 @@ from app.services.active_clients import (
     list_route_change_history,
     list_transactions,
     record_interaction,
-    route_change_details,
     transaction_analytics,
 )
 from app.services.briefing import deposit_trend_band_of
-from app.services.client_ai_actions import AiActionNotFound, AiActionNotOpen
 from app.services.client_tiers import TierSummary, summarize_client_tiers
 from app.services.client_touchpoints import (
     TouchpointClientNotFound,
@@ -90,12 +87,15 @@ def get_roster(
     fa_id: str | None = None,
     unassigned: bool = False,
     worklist_only: bool = False,
-    sort: Literal["client_id", "risk_score", "fund_at_risk"] = "client_id",
+    brief_group: str | None = None,
+    sort: Literal["client_id", "risk_score", "fund_at_risk", "brief"] = "client_id",
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
     access: Access = Depends(get_access),
 ) -> Page[ActiveClientRosterLineOut]:
+    if brief_group is not None and brief_group not in GROUP_CODES:
+        raise HTTPException(status_code=422, detail="unknown brief group")
     try:
         rows, next_cursor = list_active_roster(
             session,
@@ -107,6 +107,7 @@ def get_roster(
             fa_id=book_fa_id(access, fa_id),
             unassigned=unassigned and access.sees_every_book,
             worklist_only=worklist_only,
+            brief_group=brief_group,
             sort=sort,
             cursor=cursor,
             limit=limit,
@@ -181,27 +182,6 @@ def get_route_change_history(
     return Page(items=[RouteChangeRunOut.model_validate(r) for r in rows], next_cursor=next_cursor)
 
 
-@router.get("/analytics/route-changes/details", response_model=RouteChangeDetailsOut)
-def get_route_change_details(
-    run_id: str | None = None,
-    cursor: str | None = None,
-    limit: int = Query(default=10, ge=1, le=MAX_LIMIT),
-    session: Session = Depends(get_session),
-) -> RouteChangeDetailsOut:
-    try:
-        found_run_id, as_of, rows, next_cursor = route_change_details(
-            session, run_id=run_id, cursor=cursor, limit=limit
-        )
-    except InvalidCursor:
-        raise HTTPException(status_code=400, detail="invalid cursor") from None
-    return RouteChangeDetailsOut(
-        run_id=found_run_id,
-        as_of=as_of,
-        items=[RouteChangeDetailOut.model_validate(r) for r in rows],
-        next_cursor=next_cursor,
-    )
-
-
 @router.get("/analytics/transactions", response_model=TransactionAnalyticsOut)
 def get_transaction_analytics(
     months: int = Query(default=12, ge=1, le=36),
@@ -243,7 +223,6 @@ def post_interaction(
             note=body.note,
             reviewer_id=access.email,
             on_behalf_of=access.on_behalf_of,
-            proposal_id=body.proposal_id,
             outcome=body.outcome,
             follow_up_on=body.follow_up_on,
             touchpoint_id=body.touchpoint_id,
@@ -254,12 +233,6 @@ def post_interaction(
         raise HTTPException(status_code=404, detail="no open touchpoint with that id") from None
     except TouchpointDateInPast:
         raise HTTPException(status_code=422, detail="the follow-up day is in the past") from None
-    except AiActionNotFound:
-        raise HTTPException(
-            status_code=404, detail="no AI Action from that proposal for this client"
-        ) from None
-    except AiActionNotOpen:
-        raise HTTPException(status_code=409, detail="that AI Action is no longer open") from None
     return InteractionOut.model_validate(row)
 
 
@@ -455,7 +428,10 @@ def _to_profile_out(profile: ActiveClientProfile) -> ActiveClientProfileOut:
         interactions=[InteractionOut.model_validate(i) for i in profile.interactions],
         transactions=[ActiveTransactionOut.model_validate(t) for t in profile.transactions],
         segment_and_tier=_to_tier_detail_out(profile.client_tier),
-        ai_action=AiActionOut.model_validate(profile.ai_action) if profile.ai_action else None,
+        next_action=(
+            NextActionOut.model_validate(profile.next_action) if profile.next_action else None
+        ),
+        next_action_note=profile.next_action_note,
         review_activity=(
             ReviewPeriodActivityOut(
                 review_period_days=profile.review_activity.review_period_days,

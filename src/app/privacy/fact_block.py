@@ -34,6 +34,16 @@ RISK_FACT_BLOCK_VERSION = 1
 
 BOOK_FACT_BLOCK_VERSION = 1
 
+ASSISTANT_FACT_BLOCK_VERSION = 1
+
+WITHDRAWAL_SIZE_BANDS = ("none", "small", "moderate", "large", "nearly_all")
+WITHDRAWAL_RECENCY_BANDS = ("none", "this_week", "this_month", "last_three_months", "older")
+DEPOSIT_RHYTHM_BANDS = ("unknown", "weekly", "monthly", "every_two_months", "quarterly", "rarely")
+CONTACT_CHANNELS = ("none", "call", "email", "meeting", "whatsapp")
+CONTACT_OUTCOMES = ("none", "connected", "follow_up", "no_answer")
+CONTACT_AGE_BANDS = ("never", "this_week", "this_month", "last_three_months", "older")
+CONTACT_COUNT_BANDS = ("none", "one", "several")
+
 BOOK_TIERS = (
     "gradual_depositor",
     "gradual_depositor_withdrawer",
@@ -202,3 +212,33 @@ class RiskFactBlock(BaseModel):
             return raw
         allowed = set(permitted_keys)
         return {key: value for key, value in raw.items() if key in allowed}
+
+
+class AssistantFactBlock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    risk_band: _band(RISK_BANDS) | None = None
+    balance_tier: _band(BALANCE_TIERS) | None = None
+    value_tier: _band(VALUE_TIERS) | None = None
+    recency_band: _band(RISK_RECENCY_BANDS) | None = None
+    deposit_trend_band: _band(DEPOSIT_TREND_BANDS) | None = None
+    deposit_rhythm_band: _band(DEPOSIT_RHYTHM_BANDS) | None = None
+    largest_withdrawal_size_band: _band(WITHDRAWAL_SIZE_BANDS) | None = None
+    last_withdrawal_recency_band: _band(WITHDRAWAL_RECENCY_BANDS) | None = None
+    fund_name: _band(FUND_DISPLAY_NAMES.values()) | None = None
+
+    sig_heavy_withdrawal: bool | None = None
+    sig_dormant: bool | None = None
+    sig_broken_pattern: bool | None = None
+    sig_shrinking: bool | None = None
+    near_preservation_line: bool | None = None
+    sig_never_repeated: bool | None = None
+    holds_both_funds: bool | None = None
+
+    last_contact_channel: _band(CONTACT_CHANNELS) | None = None
+    last_contact_outcome: _band(CONTACT_OUTCOMES) | None = None
+    last_contact_age_band: _band(CONTACT_AGE_BANDS) | None = None
+    contacts_last_90_days_band: _band(CONTACT_COUNT_BANDS) | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump(exclude_none=True)

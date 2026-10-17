@@ -18,6 +18,7 @@ from app.api.routers import (
     briefing,
     campaigns,
     chat,
+    client_assistant,
     clients,
     data_quality,
     delivery,
@@ -54,6 +55,7 @@ router.include_router(admin.router)
 router.include_router(risk.router)
 router.include_router(digest.router)
 router.include_router(briefing.router)
+router.include_router(client_assistant.router)
 router.include_router(active_clients.router)
 router.include_router(fa_action.router)
 router.include_router(delivery.router)

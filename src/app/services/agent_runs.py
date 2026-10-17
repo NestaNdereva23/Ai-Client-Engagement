@@ -21,11 +21,13 @@ class AgentRunNotFound(Exception):
     """No agent_run exists with the given id."""
 
 
-def start_manual_run(session: Session, *, as_of: date | None = None) -> AgentRun:
+def start_manual_run(
+    session: Session, *, as_of: date | None = None, fa_id: str | None = None
+) -> AgentRun:
     """Open a run for a person clicking the button. Raises AgentRunInProgress
     if one is already going, rather than queueing it silently.
     """
-    return start_agent_run(session, trigger="manual", as_of=as_of)
+    return start_agent_run(session, trigger="manual", as_of=as_of, fa_id=fa_id)
 
 
 def run_agent_in_background(run_id: int, *, as_of: date | None, settings: Settings) -> None:
@@ -55,17 +57,25 @@ def get_agent_run(session: Session, run_id: int) -> AgentRun:
 
 
 def list_agent_runs(
-    session: Session, *, cursor: str | None = None, limit: int = DEFAULT_LIMIT
+    session: Session,
+    *,
+    cursor: str | None = None,
+    limit: int = DEFAULT_LIMIT,
+    fa_id: str | None = None,
 ) -> tuple[list[AgentRun], str | None]:
     """One page of runs, newest first."""
     limit = clamp_limit(limit)
-    rows = list(session.scalars(_agent_run_page_query(cursor, limit)).all())
+    rows = list(session.scalars(_agent_run_page_query(cursor, limit, fa_id)).all())
     return _cut_page(rows, limit)
 
 
-def _agent_run_page_query(cursor: str | None, limit: int) -> Select[tuple[AgentRun]]:
+def _agent_run_page_query(
+    cursor: str | None, limit: int, fa_id: str | None = None
+) -> Select[tuple[AgentRun]]:
     """The one query behind both list_agent_runs and its async twin."""
     query = select(AgentRun)
+    if fa_id is not None:
+        query = query.where(AgentRun.fa_id == fa_id)
     if cursor is not None:
         after_id = decode_id_cursor(cursor)
         query = query.where(AgentRun.run_id < after_id)

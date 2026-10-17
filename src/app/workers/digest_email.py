@@ -11,13 +11,14 @@ from sqlalchemy.orm import Session
 
 from app.advisors import FaRecord
 from app.audit.log import record_audit
-from app.briefing.book import BookFacts
+from app.briefing.daily_brief import DailyBrief
 from app.briefing.digest_email import RenderedEmail, render_digest_email
 from app.config import Settings, get_settings
 from app.db.models.digest import DigestEmailSend, DigestRun
 from app.delivery.mailer import EmailMessage, Mailer, get_mailer, is_cytonn_address
-from app.services.book_briefing import gather_book_facts, month_end_patterns
+from app.services.book_briefing import month_end_patterns
 from app.services.client_touchpoints import today_in_nairobi
+from app.services.daily_brief import build_daily_brief
 from app.services.user_access import digest_recipients
 
 logger = structlog.get_logger(__name__)
@@ -40,7 +41,7 @@ class DigestEmailRunResult:
 class AdvisorEmail:
     fa_id: str
     advisor: FaRecord
-    facts: BookFacts
+    brief: DailyBrief
     rendered: RenderedEmail
 
 
@@ -50,7 +51,7 @@ def build_advisor_emails(
     *,
     roster: Sequence[FaRecord],
     only_fa_id: str | None = None,
-    console_base_url: str = "",
+    ticketing_base_url: str = "",
     today: date | None = None,
 ) -> list[AdvisorEmail]:
     if session.get(DigestRun, digest_run_id) is None:
@@ -65,9 +66,10 @@ def build_advisor_emails(
     )
     emails: list[AdvisorEmail] = []
     for record in wanted:
-        facts = gather_book_facts(
+        brief = build_daily_brief(
             session,
             record.fa_id,
+            today=today,
             advisor_name=record.name,
             month_end=patterns.get(record.fa_id),
         )
@@ -75,10 +77,8 @@ def build_advisor_emails(
             AdvisorEmail(
                 fa_id=record.fa_id,
                 advisor=record,
-                facts=facts,
-                rendered=render_digest_email(
-                    fa_id=record.fa_id, facts=facts, console_base_url=console_base_url
-                ),
+                brief=brief,
+                rendered=render_digest_email(brief=brief, ticketing_base_url=ticketing_base_url),
             )
         )
     return emails
@@ -128,9 +128,9 @@ def send_digest_emails(
         digest_run_id,
         roster=roster,
         only_fa_id=only_fa_id,
-        console_base_url=settings.console_base_url,
+        ticketing_base_url=settings.ticketing_base_url,
     )
-    emails = [email for email in emails if email.facts.assigned_clients > 0]
+    emails = [email for email in emails if email.brief.assigned_clients > 0]
     done = _already_sent(session, digest_run_id, [email.fa_id for email in emails])
 
     sent = 0
@@ -154,8 +154,8 @@ def send_digest_emails(
                     digest_run_id=digest_run_id,
                     fa_id=email.fa_id,
                     status=status,
-                    client_count=email.facts.worklist_clients,
-                    fund_value_total=email.facts.worklist_at_risk_kes,
+                    client_count=email.brief.worklist_clients,
+                    fund_value_total=email.brief.at_risk_kes,
                 )
             )
             record_audit(
@@ -167,8 +167,8 @@ def send_digest_emails(
                     "digest_run_id": digest_run_id,
                     "fa_id": email.fa_id,
                     "status": status,
-                    "clients": email.facts.worklist_clients,
-                    "fund_value_total": email.facts.worklist_at_risk_kes,
+                    "clients": email.brief.worklist_clients,
+                    "fund_value_total": email.brief.at_risk_kes,
                 },
             )
             session.commit()
@@ -189,8 +189,8 @@ def send_digest_emails(
                 detail={
                     "digest_run_id": digest_run_id,
                     "fa_id": email.fa_id,
-                    "clients": email.facts.worklist_clients,
-                    "fund_value_total": email.facts.worklist_at_risk_kes,
+                    "clients": email.brief.worklist_clients,
+                    "fund_value_total": email.brief.at_risk_kes,
                     "error": str(exc),
                 },
             )

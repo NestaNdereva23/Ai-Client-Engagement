@@ -17,10 +17,12 @@ misuse (a bad argument, an unpicklable value in state).
 from __future__ import annotations
 
 import functools
+from collections.abc import Iterator, Sequence
+from contextlib import ExitStack, contextmanager
 from typing import Any, Protocol
 
 import structlog
-from langfuse import Langfuse
+from langfuse import Langfuse, propagate_attributes
 
 from app.config import Settings, get_settings
 
@@ -199,6 +201,31 @@ class LangfuseTracer:
             self._client.shutdown()
         except Exception:
             logger.warning("langfuse_shutdown_failed", exc_info=True)
+
+
+@contextmanager
+def trace_scope(
+    tracer: Tracer,
+    *,
+    name: str,
+    tags: Sequence[str] = (),
+    user_id: str | None = None,
+    session_id: str | None = None,
+) -> Iterator[None]:
+    with ExitStack() as stack:
+        if isinstance(tracer, LangfuseTracer):
+            try:
+                stack.enter_context(
+                    propagate_attributes(
+                        trace_name=name,
+                        tags=list(tags) or None,
+                        user_id=user_id,
+                        session_id=session_id,
+                    )
+                )
+            except Exception:
+                logger.warning("langfuse_trace_scope_failed", name=name, exc_info=True)
+        yield
 
 
 def get_tracer(settings: Settings | None = None) -> Tracer:

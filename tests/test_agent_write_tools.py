@@ -376,6 +376,59 @@ def test_run_proposal_creates_the_campaign_enrolls_and_drafts_into_review() -> N
     assert any("nearly empty" in line for line in drafter.calls[0]["prohibitions"])
 
 
+class SpanRecorder:
+    def __init__(self) -> None:
+        self.spans: list[dict] = []
+
+    def start_span(
+        self, *, trace_id, name, input, metadata=None, as_type="span", model=None, parent=None
+    ):
+        span = {"trace_id": trace_id, "name": name, "parent": parent, "output": None}
+        self.spans.append(span)
+        return span
+
+    def end_span(self, handle, *, output, usage_details=None, level=None, status_message=None):
+        handle["output"] = output
+        handle["level"] = level
+
+    def flush(self) -> None:
+        return None
+
+
+def test_run_proposal_puts_each_step_on_one_named_trace() -> None:
+    _seed_client(ELIGIBLE_CLIENT)
+    insight_id = _write_insight()
+    recorder = SpanRecorder()
+    tools = make_write_tools(
+        run_id=RUN_ID, as_of=AS_OF, draft=FakeDrafter(drafted=1), tracer=recorder
+    )
+
+    with SessionLocal() as session:
+        proposal_id = _proposed(session, tools, insight_id)["proposal_id"]
+        transition_proposal(
+            session,
+            session.get(AgentProposal, proposal_id),
+            to_status="approved",
+            reason="a person said yes",
+            decided_by="reviewer_1",
+        )
+        session.commit()
+        tools[RUN_PROPOSAL](session, proposal_id=proposal_id)
+
+    names = [span["name"] for span in recorder.spans]
+    assert names == [
+        "Agent campaign enrollment and email drafting",
+        "Re-check clients before enrolling",
+        "Enroll clients into the campaign",
+        "Draft emails into review queue",
+        "Tell account managers",
+    ]
+    root = recorder.spans[0]
+    assert {span["trace_id"] for span in recorder.spans} == {root["trace_id"]}
+    assert all(span["parent"] is root for span in recorder.spans[1:])
+    assert recorder.spans[3]["output"] == {"drafted": 1}
+
+
 def test_run_proposal_refuses_one_nobody_approved() -> None:
     _seed_client(ELIGIBLE_CLIENT)
     insight_id = _write_insight()

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import structlog
 
 from app.briefing.narrative_prompt import build_narrative_prompt, narrative_facts
+from app.llmops.operations import traced_model_call
+from app.llmops.trace_names import MODEL_WRITE_CLIENT_BRIEF
 from app.privacy.boundary import AuditSink, run_model_boundary
 from app.privacy.fact_block import RiskFactBlock
 from app.privacy.llm_client import LLMClient, LLMClientError, as_model_call
@@ -94,7 +96,12 @@ def draft_narrative(
 ) -> NarrativeResult:
     """Generate one narrated briefing, or fall back to fallback_text.."""
     prompt = build_narrative_prompt(facts)
-    model_call = as_model_call(llm_client, system=prompt)
+    model_call = traced_model_call(
+        as_model_call(llm_client, system=prompt),
+        name=MODEL_WRITE_CLIENT_BRIEF,
+        llm_client=llm_client,
+        system=prompt,
+    )
     try:
         text = run_model_boundary(
             narrative_facts(facts),

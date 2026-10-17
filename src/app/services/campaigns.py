@@ -79,6 +79,7 @@ from app.pagination import (
     encode_id_cursor,
 )
 from app.privacy.llm_client import LLMClient
+from app.services.agent_campaign_scope import campaign_visible_to
 from app.services.clients import resolve_cohort_client_ids
 from app.services.template_review import TemplateNotFound
 
@@ -328,6 +329,9 @@ def list_campaigns(
     high_value: bool | None = None,
     message_angle: str | None = None,
     channel: str | None = None,
+    campaign_type: str | None = None,
+    exclude_campaign_type: str | None = None,
+    fa_id: str | None = None,
 ) -> tuple[list[Row], str | None]:
     """Campaigns oldest-first, each carrying its own enrollment counts.
 
@@ -359,6 +363,12 @@ def list_campaigns(
         query = query.where(Campaign.status == status)
     if channel is not None:
         query = query.where(Campaign.default_channel == channel)
+    if fa_id is not None:
+        query = query.where(campaign_visible_to(fa_id))
+    if campaign_type is not None:
+        query = query.where(Campaign.campaign_type == campaign_type)
+    if exclude_campaign_type is not None:
+        query = query.where(Campaign.campaign_type != exclude_campaign_type)
     cohort_filters = {
         "fund_id": fund_id,
         "value_band": value_band,

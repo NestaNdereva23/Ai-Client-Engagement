@@ -1,20 +1,4 @@
-"""Turns an approved outreach_message into an actual send.
-
-campaigns/touch.py owns everything about *whether* a touch may go out: the
-approval check, the send-time stop-condition recheck, the audit trail, and
-advancing the enrollment once it does. It stays free of any provider
-dependency on purpose, so it takes a plain SenderFn callable instead. This
-module is that callable's one real implementation: address the message and
-hand it to whatever Mailer app.delivery.mailer.get_mailer() resolves to --
-Mailpit in development, a recording no-op wherever SMTP is not configured,
-and a real provider once one is.
-
-personalized_content is required. ai_draft_content is what the model saw --
-it still carries unresolved placeholders like {{first_name}} -- and must
-never be what reaches a client. A message with no personalized_content
-reaching this sender is a bug upstream (create_outreach_message always sets
-it), not something to paper over here.
-"""
+"""Turns an approved outreach_message into an actual send."""
 
 from __future__ import annotations
 

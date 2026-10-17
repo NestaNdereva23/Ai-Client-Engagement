@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 from app.agents.action_catalog import selectable_actions
 from app.agents.agent_loop import GroupDecision, MissingPromptTemplate, start_agent_run
 from app.agents.events import NO_EVENTS, EventLog, RunEventLog
+from app.agents.fa_scope import fa_scope
 from app.agents.insight_members import ResolvedMembers, resolve_insight_members
 from app.agents.insight_proposal import (
     ACCEPTED,
@@ -709,7 +710,9 @@ def start_action_run(session: Session, insight_id: int, *, trigger: str = "manua
             f"finding {insight_id} is a change of label, which a written rule settles and which "
             "never starts an action"
         )
-    return start_agent_run(session, trigger=trigger, kind=ACTION_AGENT, insight_id=insight_id)
+    return start_agent_run(
+        session, trigger=trigger, kind=ACTION_AGENT, insight_id=insight_id, fa_id=insight.fa_id
+    )
 
 
 def execute_action_run(
@@ -773,7 +776,8 @@ def execute_action_run(
 
     try:
         try:
-            graph.invoke({})
+            with fa_scope(run.fa_id):
+                graph.invoke({})
         except Exception as exc:
             logger.exception("action_agent.run_failed", run_id=run_id, reason=str(exc))
             events.record(ERROR, about="run", reason=str(exc))

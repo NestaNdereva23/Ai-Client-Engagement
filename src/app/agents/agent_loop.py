@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.agents.action_brief import proposal_prohibitions
 from app.agents.action_catalog import load_action, selectable_actions
 from app.agents.events import NO_EVENTS, EventLog, RunEventLog
+from app.agents.fa_scope import current_fa_id, fa_scope
 from app.agents.permissions import effective_permission
 from app.agents.prompt_versioning import AGENT_LOOP_CHOOSE, AGENT_LOOP_PLAN, active_prompt
 from app.agents.proposal_state import transition_proposal
@@ -719,6 +720,7 @@ def build_agent_loop_graph(
             money_total_kes = sum(member.balance for member in decision.included)
             proposal = AgentProposal(
                 run_id=run_id,
+                fa_id=current_fa_id(),
                 action_code=decision.action.action_code,
                 catalog_version=decision.action.version,
                 group_name=group.name,
@@ -816,6 +818,7 @@ def build_agent_loop_graph(
                             run_id=run_id,
                             as_of=as_of,
                             cooldown_days=cooldown_days,
+                            tracer=tracer,
                         )
                     except Exception as exc:
                         session.rollback()
@@ -973,6 +976,7 @@ def start_agent_run(
     as_of: date | None = None,
     kind: str = NIGHTLY_AGENT,
     insight_id: int | None = None,
+    fa_id: str | None = None,
 ) -> AgentRun:
     """Open a new agent_run row and commit it, ready for execute_agent_run.
     A whole book run refuses with AgentRunInProgress when another is under way."""
@@ -981,14 +985,24 @@ def start_agent_run(
     if kind in BOOK_WIDE_AGENTS:
         in_progress = session.scalar(
             select(AgentRun)
-            .where(AgentRun.state == "running", AgentRun.agent_kind.in_(BOOK_WIDE_AGENTS))
+            .where(
+                AgentRun.state == "running",
+                AgentRun.agent_kind.in_(BOOK_WIDE_AGENTS),
+                AgentRun.fa_id.is_(None) if fa_id is None else AgentRun.fa_id == fa_id,
+            )
             .limit(1)
         )
         if in_progress is not None:
             raise AgentRunInProgress(f"agent run {in_progress.run_id} is already running")
 
     risk_run_id = _latest_completed_risk_run_id(session)
-    run = AgentRun(trigger=trigger, risk_run_id=risk_run_id, agent_kind=kind, insight_id=insight_id)
+    run = AgentRun(
+        trigger=trigger,
+        risk_run_id=risk_run_id,
+        agent_kind=kind,
+        insight_id=insight_id,
+        fa_id=fa_id,
+    )
     session.add(run)
     session.commit()
     logger.info(
@@ -1107,12 +1121,14 @@ def execute_agent_run(
         try:
             if get_settings().agent_resume_campaigns_enabled:
                 events.record(STEP_STARTED, step="resume_campaigns")
-                resume_summary = _resume_running_campaigns(session, events=events)
+                with fa_scope(run.fa_id):
+                    resume_summary = _resume_running_campaigns(session, events=events)
                 events.record(STEP_COMPLETED, step="resume_campaigns", **resume_summary)
             else:
                 logger.info("agent_loop.resume_campaigns_skipped", run_id=run_id)
 
-            graph.invoke({})
+            with fa_scope(run.fa_id):
+                graph.invoke({})
         except Exception as exc:
             logger.exception("agent_loop.run_failed", run_id=run_id, reason=str(exc))
             events.record(ERROR, about="run", reason=str(exc))
@@ -1163,10 +1179,11 @@ def run_nightly_agent(
     tracer: Tracer | None = None,
     audit: AuditSink | None = None,
     events: EventLog | None = None,
+    fa_id: str | None = None,
 ) -> AgentRun:
     """Start a run and take it all the way through, in one call.
     For a caller that can wait; the API calls start_agent_run and execute_agent_run apart."""
-    run = start_agent_run(session, trigger=trigger, as_of=as_of)
+    run = start_agent_run(session, trigger=trigger, as_of=as_of, fa_id=fa_id)
     return execute_agent_run(
         session,
         run,

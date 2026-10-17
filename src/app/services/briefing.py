@@ -30,7 +30,7 @@ from app.risk.signals import (
     SIGNAL_ORDER,
 )
 from app.routing.tier_playbook import TIER_PLAYBOOK
-from app.services.client_ai_actions import open_ai_actions_for
+from app.services.client_next_actions import next_actions_for
 from app.transform.active_features import BALANCE_TIERS
 from app.transform.features import MIN_TREND_CHANGE
 from app.transform.features import fund_type_from_name as classify_fund_type
@@ -164,19 +164,15 @@ def gather_briefing_facts(
 
     client_tier = session.get(ClientTier, client_id)
     playbook = TIER_PLAYBOOK.get(client_tier.tier) if client_tier else None
-    ai_action = open_ai_actions_for(session, [(client_id, unit_fund_id)]).get(
+    next_action = next_actions_for(session, [(client_id, unit_fund_id)])[
         (client_id, unit_fund_id)
-    )
+    ].action
 
     return BriefingFacts(
         tier_label=playbook.label if playbook else None,
         tier_goal=playbook.goal if playbook else None,
         tier_action=playbook.fa_action if playbook else None,
-        ai_action=(
-            f"{ai_action.title}: {ai_action.why_now}"
-            if ai_action and ai_action.choice != "set_aside"
-            else None
-        ),
+        next_action=f"{next_action.title}: {next_action.why}" if next_action else None,
         client_code=active.client_code,
         fund_name=_fund_name(session, unit_fund_id),
         risk_score=risk.risk_score,

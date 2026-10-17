@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.action_catalog import action_is_paused, load_action
 from app.agents.action_rules import already_offered, lacks_an_approved_guide
+from app.agents.fa_scope import current_fa_id
 from app.agents.permissions import effective_permission
 from app.agents.situation_action_mapping import action_code_for_situation
 from app.agents.situations import (
@@ -294,6 +295,7 @@ def _save_proposal(
     money_total = sum(member.balance for member in included)
 
     proposal = AgentProposal(
+        fa_id=current_fa_id(),
         action_code=action.action_code,
         catalog_version=action.version,
         group_name=group.name,

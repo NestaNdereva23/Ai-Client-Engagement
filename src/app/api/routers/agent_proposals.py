@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.agents import card_copy
 from app.agents.proposal_state import InvalidTransition
+from app.api.agent_scope import AgentScope, get_agent_scope, require_proposal_in_scope
 from app.api.reviewer_auth import get_current_reviewer_id
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
@@ -48,6 +49,7 @@ def list_agent_proposals(
     exclude_action_code: str | None = None,
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    scope: AgentScope = Depends(get_agent_scope),
     session: Session = Depends(get_session),
 ) -> Page[AgentProposalSummaryOut]:
     try:
@@ -57,6 +59,7 @@ def list_agent_proposals(
             proposal_date=proposal_date,
             action_code=action_code,
             exclude_action_code=exclude_action_code,
+            fa_id=scope.fa_id,
             cursor=cursor,
             limit=limit,
         )
@@ -68,6 +71,7 @@ def list_agent_proposals(
         proposal_date=proposal_date,
         action_code=action_code,
         exclude_action_code=exclude_action_code,
+        fa_id=scope.fa_id,
     )
     items = []
     for p, included_count in proposals:
@@ -99,7 +103,11 @@ def list_agent_proposals(
     )
 
 
-@router.get("/{proposal_id}", response_model=AgentProposalDetailOut)
+@router.get(
+    "/{proposal_id}",
+    response_model=AgentProposalDetailOut,
+    dependencies=[Depends(require_proposal_in_scope)],
+)
 def get_agent_proposal(
     proposal_id: int, session: Session = Depends(get_session)
 ) -> AgentProposalDetailOut:
@@ -136,7 +144,11 @@ def get_agent_proposal(
     )
 
 
-@router.get("/{proposal_id}/clients", response_model=Page[AgentProposalClientOut])
+@router.get(
+    "/{proposal_id}/clients",
+    response_model=Page[AgentProposalClientOut],
+    dependencies=[Depends(require_proposal_in_scope)],
+)
 def list_agent_proposal_clients(
     proposal_id: int,
     included: bool | None = None,
@@ -162,7 +174,11 @@ def list_agent_proposal_clients(
     )
 
 
-@router.get("/{proposal_id}/versions", response_model=ProposalVersionsOut)
+@router.get(
+    "/{proposal_id}/versions",
+    response_model=ProposalVersionsOut,
+    dependencies=[Depends(require_proposal_in_scope)],
+)
 def compare_agent_proposal_versions(
     proposal_id: int,
     window_days: int | None = Query(default=None, ge=1),
@@ -177,7 +193,11 @@ def compare_agent_proposal_versions(
     return ProposalVersionsOut.model_validate(comparison)
 
 
-@router.post("/{proposal_id}/decision", response_model=ProposalDecisionResultOut)
+@router.post(
+    "/{proposal_id}/decision",
+    response_model=ProposalDecisionResultOut,
+    dependencies=[Depends(require_proposal_in_scope)],
+)
 def decide_agent_proposal(
     proposal_id: int,
     body: ProposalDecisionRequest,
@@ -207,7 +227,11 @@ def decide_agent_proposal(
     return ProposalDecisionResultOut.model_validate(proposal)
 
 
-@router.post("/{proposal_id}/stop", response_model=ProposalDecisionResultOut)
+@router.post(
+    "/{proposal_id}/stop",
+    response_model=ProposalDecisionResultOut,
+    dependencies=[Depends(require_proposal_in_scope)],
+)
 def stop_agent_proposal(
     proposal_id: int,
     body: ProposalStopRequest,

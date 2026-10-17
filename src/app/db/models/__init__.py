@@ -38,6 +38,7 @@ from app.db.models.agent_proposal import (
 from app.db.models.agent_run import AGENT_RUN_STATES, AGENT_RUN_TRIGGERS, AgentRun, AgentToolCall
 from app.db.models.api import IdempotencyKey
 from app.db.models.app_setting import AppSetting
+from app.db.models.assistant_starter import AssistantStarter
 from app.db.models.audit import AuditLog
 from app.db.models.auth import REVIEWER_ROLES, ReviewerUser
 from app.db.models.briefing import BriefingNarrative
@@ -206,6 +207,7 @@ __all__ = [
     "Campaign",
     "CampaignStep",
     "CampaignTemplatePolicy",
+    "AssistantStarter",
     "ChatSession",
     "ChatTurn",
     "ClientComplaint",

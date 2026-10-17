@@ -20,6 +20,7 @@ from datetime import date
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
+from app.agents.fa_scope import narrow_to_scope
 from app.agents.query_fields import FilterRefused, compile_conditions
 from app.agents.situations import SITUATION_CODES
 from app.agents.watchlist import (
@@ -91,7 +92,7 @@ def _from_watch_list(session: Session, insight: AgentInsight, as_of: date) -> Re
 def _from_situation(session: Session, insight: AgentInsight) -> ResolvedMembers:
     from app.db.models.signals import ClientSituationState
 
-    rows = session.execute(
+    statement = (
         select(
             ClientSituationState.client_id,
             ClientSituationState.unit_fund_id,
@@ -109,6 +110,11 @@ def _from_situation(session: Session, insight: AgentInsight) -> ResolvedMembers:
             ClientSituationState.is_active.is_(True),
         )
         .order_by(ClientSituationState.client_id, ClientSituationState.unit_fund_id)
+    )
+    rows = session.execute(
+        narrow_to_scope(
+            statement, ClientSituationState.client_id, ClientSituationState.unit_fund_id
+        )
     ).all()
 
     members = tuple(
@@ -134,7 +140,7 @@ def _from_filter(session: Session, insight: AgentInsight) -> ResolvedMembers:
     except FilterRefused as exc:
         return ResolvedMembers(members=(), refusal=str(exc))
 
-    rows = session.execute(
+    statement = (
         select(
             ClientRiskFeatures.client_id,
             ClientRiskFeatures.unit_fund_id,
@@ -144,6 +150,9 @@ def _from_filter(session: Session, insight: AgentInsight) -> ResolvedMembers:
         .outerjoin(ActiveClientFund, _JOIN_ON)
         .where(*clauses)
         .order_by(ClientRiskFeatures.client_id, ClientRiskFeatures.unit_fund_id)
+    )
+    rows = session.execute(
+        narrow_to_scope(statement, ClientRiskFeatures.client_id, ClientRiskFeatures.unit_fund_id)
     ).all()
 
     members = tuple(

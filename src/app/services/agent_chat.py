@@ -12,7 +12,7 @@ from app.schemas.agent_chat import ChatSessionOut, ChatTurnOut
 
 def get_chat_session(session: Session, session_id: int) -> ChatSessionOut:
     row = session.get(ChatSession, session_id)
-    if row is None:
+    if row is None or row.client_id is not None:
         raise ChatSessionNotFound(session_id)
     return ChatSessionOut(
         session_id=row.session_id,
@@ -47,7 +47,7 @@ def list_chat_sessions(
     session: Session, *, cursor: str | None = None, limit: int = DEFAULT_LIMIT
 ) -> tuple[list[ChatSession], str | None]:
     limit = clamp_limit(limit)
-    query = select(ChatSession)
+    query = select(ChatSession).where(ChatSession.client_id.is_(None))
     if cursor is not None:
         query = query.where(ChatSession.session_id < decode_id_cursor(cursor))
     query = query.order_by(ChatSession.session_id.desc()).limit(limit + 1)

@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.digest_run_id,
                     roster=roster,
                     only_fa_id=args.fa_id,
-                    console_base_url=settings.console_base_url,
+                    ticketing_base_url=settings.ticketing_base_url,
                 )
             else:
                 result = send_digest_emails(

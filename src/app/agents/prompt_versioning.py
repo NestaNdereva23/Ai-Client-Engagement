@@ -15,6 +15,17 @@ EMAIL_BASE_INSTRUCTIONS = "email_base_instructions"
 SMS_BASE_INSTRUCTIONS = "sms_base_instructions"
 INTELLIGENCE_INVESTIGATION = "intelligence_investigation"
 AGENT_CHAT = "agent_chat"
+CLIENT_EMAIL_DRAFT = "client_email_draft"
+EMAIL_OPTIONS_SUGGEST = "email_options_suggest"
+EMAIL_PURPOSE_PREFIX = "email_purpose_"
+EMAIL_PURPOSE_KEYS = (
+    "email_purpose_reschedule_meeting",
+    "email_purpose_ask_what_changed",
+    "email_purpose_welcome_and_top_up",
+    "email_purpose_encourage_top_up",
+    "email_purpose_grow_by_staying_invested",
+    "email_purpose_review_goals",
+)
 
 PROMPT_KEYS = (
     AGENT_LOOP_PLAN,
@@ -24,6 +35,9 @@ PROMPT_KEYS = (
     SMS_BASE_INSTRUCTIONS,
     INTELLIGENCE_INVESTIGATION,
     AGENT_CHAT,
+    CLIENT_EMAIL_DRAFT,
+    EMAIL_OPTIONS_SUGGEST,
+    *EMAIL_PURPOSE_KEYS,
 )
 
 PROMPT_PLACEHOLDERS: dict[str, frozenset[str]] = {
@@ -62,6 +76,9 @@ PROMPT_PLACEHOLDERS: dict[str, frozenset[str]] = {
         }
     ),
     AGENT_CHAT: frozenset({"as_of", "question", "field_names", "measures"}),
+    CLIENT_EMAIL_DRAFT: frozenset(),
+    EMAIL_OPTIONS_SUGGEST: frozenset(),
+    **{key: frozenset() for key in EMAIL_PURPOSE_KEYS},
 }
 
 FORMATTED_PROMPTS = frozenset(

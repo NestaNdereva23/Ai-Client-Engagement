@@ -64,6 +64,18 @@ from app.db.models.agent_insight import AgentInsight
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.campaigns import CampaignStep, Enrollment
 from app.db.models.outreach import AGENT_PROPOSAL_CAMPAIGN_TYPE, Campaign, OutreachMessage
+from app.llmops.operations import active_tracer, trace_operation
+from app.llmops.trace_names import (
+    AGENT_CAMPAIGN_RUN,
+    AGENT_DRAFT_EMAILS,
+    AGENT_ENROLL_CLIENTS,
+    AGENT_RECHECK_CLIENTS,
+    AGENT_TELL_ACCOUNT_MANAGERS,
+    TAG_AGENT,
+    TAG_CAMPAIGN,
+    TAG_EMAIL,
+)
+from app.llmops.tracing import Tracer
 from app.privacy.llm_client import ToolSpec
 from app.services.active_clients import ActiveClientNotFound, record_interaction
 
@@ -136,6 +148,7 @@ def draft_into_review_queue(
     prohibitions: Sequence[str],
     settings: Settings | None = None,
     limit: int = DEFAULT_BATCH_LIMIT,
+    tracer: Tracer | None = None,
 ) -> int:
     """Draft the campaign's due enrollments and leave them in the review queue.
 
@@ -146,10 +159,11 @@ def draft_into_review_queue(
     and the client guide that fits its action are bound in the same way.
     """
     settings = settings or get_settings()
+    tracer = tracer or active_tracer()
     split = load_split_for_campaign(session, campaign_id)
     variants = set(split.variant_of.values()) if split else {None}
     orchestrators = {
-        variant: _orchestrator_for(session, settings, campaign_id, prohibitions, variant)
+        variant: _orchestrator_for(session, settings, campaign_id, prohibitions, variant, tracer)
         for variant in variants
     }
 
@@ -176,11 +190,13 @@ def _orchestrator_for(
     campaign_id: int,
     prohibitions: Sequence[str],
     variant: str | None,
+    tracer: Tracer,
 ) -> Orchestrator:
     guide_brief = guide_brief_for_campaign(session, campaign_id, variant=variant)
     return build_default_orchestrator(
         session,
         settings,
+        tracer=tracer,
         prompt_builder=functools.partial(
             build_system_prompt,
             extra_prohibitions=tuple(prohibitions),
@@ -202,6 +218,39 @@ def run_proposal(
     as_of: date | None = None,
     cooldown_days: int | None = None,
     draft: Drafter = draft_into_review_queue,
+    tracer: Tracer | None = None,
+) -> dict[str, Any]:
+    with trace_operation(
+        AGENT_CAMPAIGN_RUN,
+        tracer=tracer,
+        as_type="agent",
+        input={"proposal_id": proposal_id},
+        metadata={"agent_run_id": run_id},
+        tags=[TAG_AGENT, TAG_CAMPAIGN, TAG_EMAIL],
+        session_id=f"agent-proposal-{proposal_id}",
+    ) as operation:
+        result = _start_proposal_work(
+            session,
+            proposal_id,
+            run_id=run_id,
+            as_of=as_of,
+            cooldown_days=cooldown_days,
+            draft=draft,
+        )
+        operation.output = result
+        if "error" in result:
+            operation.level = "WARNING"
+        return result
+
+
+def _start_proposal_work(
+    session: Session,
+    proposal_id: int,
+    *,
+    run_id: int | None,
+    as_of: date | None,
+    cooldown_days: int | None,
+    draft: Drafter,
 ) -> dict[str, Any]:
     day = as_of or date.today()
     audit_run_id = None if run_id is None else str(run_id)
@@ -234,10 +283,12 @@ def run_proposal(
 
     settings = get_settings()
     cooldown = settings.agent_contact_cooldown_days if cooldown_days is None else cooldown_days
-    blocked = {
-        member_key(member): member_skip_reason(session, member, action, day, cooldown)
-        for member in members
-    }
+    with trace_operation(AGENT_RECHECK_CLIENTS, input={"clients": len(members)}) as recheck:
+        blocked = {
+            member_key(member): member_skip_reason(session, member, action, day, cooldown)
+            for member in members
+        }
+        recheck.output = {"left_out": sum(1 for reason in blocked.values() if reason)}
     still_allowed = [member for member in members if blocked[member_key(member)] is None]
     dropped = {
         reason: sum(1 for value in blocked.values() if value == reason)
@@ -309,11 +360,13 @@ def run_proposal(
     )
     session.flush()
 
-    enrollments = enroll_cohort(
-        session,
-        campaign_id=campaign.campaign_id,
-        client_ids=ready,
-    )
+    with trace_operation(AGENT_ENROLL_CLIENTS, input={"clients": len(ready)}) as enrolling:
+        enrollments = enroll_cohort(
+            session,
+            campaign_id=campaign.campaign_id,
+            client_ids=ready,
+        )
+        enrolling.output = {"campaign_id": campaign.campaign_id, "enrolled": len(enrollments)}
     proposal.campaign_id = campaign.campaign_id
     transition_proposal(
         session,
@@ -335,12 +388,18 @@ def run_proposal(
     )
     session.commit()
 
-    drafted = draft(
-        session,
-        campaign_id=campaign.campaign_id,
-        prohibitions=proposal_prohibitions(session, proposal),
-    )
-    told = tell_account_managers(session, proposal, campaign.campaign_id, author=AGENT_ACTOR)
+    with trace_operation(
+        AGENT_DRAFT_EMAILS, input={"campaign_id": campaign.campaign_id}
+    ) as drafting:
+        drafted = draft(
+            session,
+            campaign_id=campaign.campaign_id,
+            prohibitions=proposal_prohibitions(session, proposal),
+        )
+        drafting.output = {"drafted": drafted}
+    with trace_operation(AGENT_TELL_ACCOUNT_MANAGERS) as telling:
+        told = tell_account_managers(session, proposal, campaign.campaign_id, author=AGENT_ACTOR)
+        telling.output = {"told": told}
     session.commit()
     logger.info(
         "agent_write_tool.run_proposal",
@@ -370,6 +429,7 @@ def make_write_tools(
     cooldown_days: int | None = None,
     draft: Drafter = draft_into_review_queue,
     events: EventLog = NO_EVENTS,
+    tracer: Tracer | None = None,
 ) -> dict[str, Callable[..., dict[str, Any]]]:
     """Build the write tools for one agent run.
 
@@ -490,6 +550,7 @@ def make_write_tools(
             as_of=day,
             cooldown_days=cooldown_days,
             draft=draft,
+            tracer=tracer,
         )
 
     def record_no_action(session: Session, *, insight_id: int, reason: str) -> dict[str, Any]:

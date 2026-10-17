@@ -129,6 +129,7 @@ class Settings(BaseSettings):
     briefing_llm_max_tokens: int = 1024
     briefing_prewarm_limit: int = 200
     client_email_draft_daily_cap: int = 20
+    next_action_quiet_days: int = 7
 
     agent_llm_provider: str = ""
     agent_llm_model: str = ""
@@ -136,6 +137,7 @@ class Settings(BaseSettings):
     agent_llm_max_tokens: int = 2048
     agent_run_after_risk_detection: bool = False
     agent_resume_campaigns_enabled: bool = True
+    agent_fa_scoped: bool = False
     agent_run_stale_after_minutes: int = 120
     agent_report_recipients: str = ""
 
@@ -264,10 +266,6 @@ class Settings(BaseSettings):
     mail_transport: Literal["smtp", "ticketing"] = "smtp"
     ticketing_base_url: str = ""
     ticketing_timeout_seconds: float = 30.0
-
-    console_base_url: str = Field(
-        default="", validation_alias=AliasChoices("CONSOLE_BASE_URL", "console_base_url")
-    )
 
     admin_username: str = Field(default="", validation_alias=AliasChoices("ADMIN_USERNAME"))
     admin_password: str = Field(default="", validation_alias=AliasChoices("ADMIN_PASSWORD"))

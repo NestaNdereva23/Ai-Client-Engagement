@@ -10,6 +10,7 @@ from datetime import date
 from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
+from app.agents.fa_scope import narrow_to_scope
 from app.agents.situations import (
     APPROACHING_PRESERVATION_LINE,
     DEPOSIT_SIZE_FALLING,
@@ -100,7 +101,7 @@ def load_thresholds(session: Session, as_of: date) -> WatchlistThresholds:
 
 
 def _situation_statement(situation_code: str) -> Select:
-    return (
+    statement = (
         select(ActiveClientFund.client_id, ActiveClientFund.unit_fund_id, ActiveClientFund.balance)
         .join(
             ClientSituationState,
@@ -112,6 +113,7 @@ def _situation_statement(situation_code: str) -> Select:
             ClientSituationState.is_active.is_(True),
         )
     )
+    return narrow_to_scope(statement, ActiveClientFund.client_id, ActiveClientFund.unit_fund_id)
 
 
 def _build_group(session: Session, name: str, definition: dict, statement: Select) -> WatchGroup:

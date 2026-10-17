@@ -11,6 +11,8 @@ from app.briefing.narrative import (
     UngroundedNarrative,
     narrative_prose_check,
 )
+from app.llmops.operations import traced_model_call
+from app.llmops.trace_names import MODEL_WRITE_BOOK_BRIEF
 from app.privacy.boundary import AuditSink, run_model_boundary
 from app.privacy.fact_block import BookFactBlock, BookTierFact, round_sig_figs
 from app.privacy.llm_client import LLMClient, LLMClientError, as_model_call
@@ -153,7 +155,13 @@ def draft_book_narrative(
     audit: AuditSink | None = None,
 ) -> NarrativeResult:
     block = to_book_fact_block(facts)
-    model_call = as_model_call(llm_client, system=build_book_prompt(block))
+    system = build_book_prompt(block)
+    model_call = traced_model_call(
+        as_model_call(llm_client, system=system),
+        name=MODEL_WRITE_BOOK_BRIEF,
+        llm_client=llm_client,
+        system=system,
+    )
     try:
         text = run_model_boundary(block.to_dict(), model_call, entity_id=entity_id, audit=audit)
         narrative_prose_check(text)
