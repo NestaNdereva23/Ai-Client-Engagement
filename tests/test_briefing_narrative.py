@@ -52,10 +52,18 @@ def facts(**overrides) -> RiskFactBlock:
     return RiskFactBlock(**defaults)
 
 
+def test_the_studio_instructions_open_the_briefing_prompt() -> None:
+    client = ScriptedLLMClient("They have been quiet for a while.")
+
+    draft_narrative(facts(), client, fallback_text=FALLBACK_TEXT, instructions="STUDIO RULES")
+
+    assert client.calls[0]["system"].startswith("STUDIO RULES")
+
+
 def test_build_narrative_prompt_lists_the_given_facts_in_plain_wording() -> None:
     prompt = build_narrative_prompt(facts())
     assert "Overall attention level: Watch" in prompt
-    assert "Time since their last deposit: 1-3m" in prompt
+    assert "Time since their last deposit: one to three months" in prompt
     # The route reads as an instruction, not as an internal route code.
     assert "keep this client on the watchlist" in prompt
     assert "fa_watchlist" not in prompt
@@ -152,7 +160,7 @@ def test_draft_narrative_sends_the_facts_as_the_scanned_payload() -> None:
     # same discipline as every other run_model_boundary call in this
     # codebase, never the raw dataclass or a hand-built string.
     assert "risk_band: Watch" in llm.calls[0]["user"]
-    assert "recency_band: 1-3m" in llm.calls[0]["user"]
+    assert "recency_band: one to three months" in llm.calls[0]["user"]
     # Only what actually holds for this client crosses; a signal that did
     # not fire is not sent as "false" for the model to narrate.
     assert "sig_heavy_withdrawal" not in llm.calls[0]["user"]

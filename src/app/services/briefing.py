@@ -7,6 +7,7 @@ from datetime import date
 from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
+from app.agents.prompt_versioning import CLIENT_BRIEF_NARRATIVE, prompt_text
 from app.agents.signals import keys_with_active_signal
 from app.audit.log import record_audit, with_on_behalf_of
 from app.briefing.narrative import NarrativeResult, draft_narrative
@@ -326,7 +327,8 @@ def get_narrative_briefing(
     fallback_text = render_briefing(facts)
     risk_fact_block = to_risk_fact_block(facts)
 
-    stored = read_narrative(session, client_id, unit_fund_id, risk_fact_block)
+    instructions = prompt_text(session, CLIENT_BRIEF_NARRATIVE, ref)
+    stored = read_narrative(session, client_id, unit_fund_id, risk_fact_block, instructions)
     if stored is not None:
         # Already drafted for these exact facts, by the nightly warm-up or by
         # an earlier look. Nothing crosses the model boundary, so there is no
@@ -337,6 +339,7 @@ def get_narrative_briefing(
             risk_fact_block,
             llm_client,
             fallback_text=fallback_text,
+            instructions=instructions,
             entity_id=str(client_id),
             audit=briefing_boundary_audit_sink(session),
         )
@@ -348,6 +351,7 @@ def get_narrative_briefing(
                 risk_fact_block,
                 text=result.text,
                 model=getattr(llm_client, "model", "unknown"),
+                instructions=instructions,
             )
 
     name = _client_name(client_id)

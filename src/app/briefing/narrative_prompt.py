@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.privacy.fact_block import RiskFactBlock
+from app.transform.active_features import QUIET_FOR_BY_RECENCY_BAND
 
 # Human-readable labels used when presenting band level facts to the model.
 # These deliberately describe what the information means to an advisor rather
@@ -91,7 +92,7 @@ CAVEAT_PHRASES: tuple[tuple[str, str], ...] = (
 )
 
 
-_BASE_INSTRUCTIONS = (
+INSTRUCTIONS = (
     "Write a short internal briefing for a financial advisor who is about "
     "to review or contact one client. The briefing is private and is not "
     "sent to the client.\n\n"
@@ -208,6 +209,8 @@ def _render_facts(payload: dict[str, Any]) -> str:
 
         if key == "route":
             value = ROUTE_PHRASES.get(str(value), value)
+        elif key == "recency_band":
+            value = QUIET_FOR_BY_RECENCY_BAND.get(str(value), value)
 
         lines.append(f"- {label}: {value}")
 
@@ -231,13 +234,13 @@ def _render_facts(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def build_narrative_prompt(facts: RiskFactBlock) -> str:
+def build_narrative_prompt(facts: RiskFactBlock, instructions: str = INSTRUCTIONS) -> str:
     """Build the complete system prompt for one advisor briefing.
     The same fact set may also go through the boundary as a scanned user turn; it adds nothing."""
     rendered_facts = _render_facts(narrative_facts(facts))
 
     return (
-        f"{_BASE_INSTRUCTIONS}\n\n"
+        f"{instructions}\n\n"
         "THE ONLY FACTS YOU MAY USE FOR THIS CLIENT:\n"
         f"{rendered_facts}\n\n"
         "The user message may repeat these same facts using internal field "

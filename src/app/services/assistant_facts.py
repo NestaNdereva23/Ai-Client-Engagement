@@ -24,9 +24,11 @@ from app.db.models.active_clients import (
 from app.privacy.fact_block import FUND_DISPLAY_NAMES, AssistantFactBlock
 from app.risk.signals import NEAR_PRESERVATION_LINE
 from app.services.briefing import deposit_trend_band_of
+from app.services.client_next_actions import next_action_for_client
 from app.transform.features import fund_type_from_name
 
 RECENT_CONTACT_DAYS = 90
+RESCHEDULE_MEETING = "reschedule_meeting"
 
 
 @dataclass(frozen=True)
@@ -68,6 +70,11 @@ def _contact_summary(
     )
 
 
+def _missed_meeting(session: Session, client_id: int, unit_fund_id: int) -> bool:
+    action = next_action_for_client(session, client_id, unit_fund_id).action
+    return action is not None and action.email_purpose == RESCHEDULE_MEETING
+
+
 def build_assistant_facts(
     session: Session, facts: BriefingFacts, client_id: int, unit_fund_id: int, today: date
 ) -> AssistantFactBlock:
@@ -93,5 +100,6 @@ def build_assistant_facts(
         last_contact_channel=contact.channel,
         last_contact_outcome=contact.outcome,
         last_contact_age_band=contact.age_band,
-        contacts_last_90_days_band=contact.count_band,
+        contacts_last_three_months_band=contact.count_band,
+        missed_meeting=_missed_meeting(session, client_id, unit_fund_id) or None,
     )

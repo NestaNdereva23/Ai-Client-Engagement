@@ -8,10 +8,12 @@ from typing import Any
 import structlog
 
 from app.briefing.next_action import EMAIL_PURPOSES
+from app.briefing.off_limits import OFF_LIMITS_WORDS, find_off_limits
+from app.briefing.tone_cue import tone_cue
 from app.llmops.operations import traced_model_call
 from app.llmops.trace_names import MODEL_WRITE_CLIENT_EMAIL
 from app.privacy.boundary import AuditSink, run_model_boundary
-from app.privacy.fact_block import RiskFactBlock
+from app.privacy.fact_block import AssistantFactBlock
 from app.privacy.llm_client import LLMClient, LLMClientError, as_model_call
 from app.privacy.scanners import InboundLeak, OutboundLeak
 
@@ -20,15 +22,24 @@ logger = structlog.get_logger(__name__)
 FIRST_NAME_PLACEHOLDER = "{{first_name}}"
 ALLOWED_TOKENS = (FIRST_NAME_PLACEHOLDER, "{{fund_name}}")
 MAX_SUBJECT_CHARS = 120
-EMAIL_FACT_KEYS = ("fund_name", "recency_band", "holds_both_funds")
+CONTACT_KEYS = ("last_contact_channel", "last_contact_outcome", "last_contact_age_band")
+EMAIL_FACT_KEYS = ("fund_name", "holds_both_funds", "missed_meeting", *CONTACT_KEYS)
 
-QUIET_FOR_BY_RECENCY_BAND = {
-    "<=1m": "about a month or less",
-    "1-3m": "one to three months",
-    "3-6m": "three to six months",
-    "6-12m": "six months to a year",
-    "1-2y": "one to two years",
-    "2y+": "more than two years",
+CONTACT_NOUNS = {
+    "call": "a phone call",
+    "email": "an email",
+    "meeting": "a meeting",
+    "whatsapp": "a WhatsApp message",
+}
+CONTACT_WHEN = {
+    "this_week": "this week",
+    "this_month": "this month",
+    "last_three_months": "in the last three months",
+    "older": "more than three months ago",
+}
+CONTACT_ENDINGS = {
+    "follow_up": ", and we agreed to follow up",
+    "no_answer": ", but we did not connect",
 }
 
 _DIGIT = re.compile(r"\d")
@@ -68,8 +79,37 @@ class EmailDraft:
     body: str
 
 
-def email_facts(facts: RiskFactBlock) -> dict[str, Any]:
-    return facts.to_dict(permitted_keys=EMAIL_FACT_KEYS)
+def email_facts(facts: AssistantFactBlock) -> dict[str, Any]:
+    shown = {key: value for key, value in facts.to_dict().items() if key in EMAIL_FACT_KEYS}
+    if shown.get("last_contact_channel") == "none":
+        for key in CONTACT_KEYS:
+            shown.pop(key, None)
+    return shown
+
+
+def _contact_line(facts: dict[str, Any]) -> str | None:
+    noun = CONTACT_NOUNS.get(facts.get("last_contact_channel"))
+    when = CONTACT_WHEN.get(facts.get("last_contact_age_band"))
+    if noun is None or when is None:
+        return None
+    ending = CONTACT_ENDINGS.get(facts.get("last_contact_outcome"), "")
+    return f"- Our last contact with them was {noun} {when}{ending}"
+
+
+def _checks(angle: str | None) -> str:
+    rules = [
+        "Write no digits at all. Spell any number as a word, for example 'ten minutes'.",
+        f"The only placeholders you may use are {' and '.join(ALLOWED_TOKENS)}.",
+    ]
+    if angle:
+        rules.append(
+            f"Never use these words, except inside the fund's own name: {OFF_LIMITS_WORDS}."
+        )
+        rules.append(
+            "Never say that anything is being left out, for example 'without mentioning ...'."
+        )
+    bullets = "\n".join(f"- {rule}" for rule in rules)
+    return f"\n\nHOW YOUR REPLY IS CHECKED (a draft that breaks these is thrown away):\n{bullets}"
 
 
 def build_email_prompt(
@@ -78,20 +118,26 @@ def build_email_prompt(
     angle: str | None = None,
     instructions: str | None = None,
     purpose_text: str | None = None,
+    tone: str | None = None,
 ) -> str:
     lines = []
     if "fund_name" in facts:
         lines.append(f"- The fund they hold: {facts['fund_name']}")
-    if facts.get("recency_band") in QUIET_FOR_BY_RECENCY_BAND:
-        lines.append(
-            f"- Time since their last deposit: {QUIET_FOR_BY_RECENCY_BAND[facts['recency_band']]}"
-        )
     if facts.get("holds_both_funds"):
         lines.append("- They also hold the other fund")
+    contact = _contact_line(facts)
+    if contact:
+        lines.append(contact)
+    if facts.get("missed_meeting"):
+        lines.append("- A meeting we had planned with them did not take place")
     shown = "\n".join(lines) if lines else "(no facts are available for this client)"
     why = angle or purpose_text or (EMAIL_PURPOSES[purpose] if purpose else None)
     reason = f"\n\nWHY YOU ARE WRITING:\n{why}" if why else ""
-    return f"{instructions or INSTRUCTIONS}{reason}\n\nTHE ONLY FACTS YOU MAY USE:\n{shown}"
+    guidance = f"\n\nAPPROVED COMMUNICATION GUIDANCE:\n{tone}" if tone else ""
+    return (
+        f"{instructions or INSTRUCTIONS}{reason}{guidance}"
+        f"\n\nTHE ONLY FACTS YOU MAY USE:\n{shown}{_checks(angle)}"
+    )
 
 
 def json_object(text: str) -> dict[str, Any]:
@@ -137,8 +183,16 @@ def parse_email_draft(text: str) -> EmailDraft:
     return EmailDraft(subject=subject, body=body)
 
 
+def check_off_limits_words(draft: EmailDraft) -> None:
+    word = find_off_limits(f"{draft.subject} {draft.body}")
+    if word:
+        raise DraftRejected(
+            f"the draft used the word '{word}', which the client must not be told about"
+        )
+
+
 def draft_client_email(
-    facts: RiskFactBlock,
+    facts: AssistantFactBlock,
     llm_client: LLMClient,
     *,
     entity_id: str,
@@ -149,7 +203,9 @@ def draft_client_email(
     purpose_text: str | None = None,
 ) -> EmailDraft:
     allowed = email_facts(facts)
-    system = build_email_prompt(allowed, purpose, angle, instructions, purpose_text)
+    system = build_email_prompt(
+        allowed, purpose, angle, instructions, purpose_text, tone_cue(facts)
+    )
     model_call = traced_model_call(
         as_model_call(llm_client, system=system),
         name=MODEL_WRITE_CLIENT_EMAIL,
@@ -159,7 +215,10 @@ def draft_client_email(
     text = ""
     try:
         text = run_model_boundary(allowed, model_call, entity_id=entity_id, audit=audit)
-        return parse_email_draft(text)
+        draft = parse_email_draft(text)
+        if angle:
+            check_off_limits_words(draft)
+        return draft
     except (InboundLeak, OutboundLeak, LLMClientError, DraftRejected) as exc:
         logger.warning(
             "client_email_draft_failed",

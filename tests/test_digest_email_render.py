@@ -361,6 +361,16 @@ def test_the_book_summary_comes_back_as_narrative_when_every_figure_is_in_the_fa
     assert "about KES 9.1 million held" in system
 
 
+def test_the_studio_instructions_open_the_book_summary_prompt() -> None:
+    client = _ScriptedClient("You hold 2 clients on the worklist.")
+
+    draft_book_narrative(
+        _precise_facts(), client, fallback_text="plain", instructions="STUDIO RULES"
+    )
+
+    assert client.seen[0][0].startswith("STUDIO RULES")
+
+
 def test_the_book_summary_falls_back_on_a_figure_that_is_not_in_the_facts() -> None:
     client = _ScriptedClient("About 73 clients are at risk.")
 

@@ -8,6 +8,7 @@ from typing import Any
 import structlog
 
 from app.briefing.client_email import DraftRejected, json_object
+from app.briefing.off_limits import OFF_LIMITS_WORDS, find_avoidance, find_off_limits
 from app.llmops.operations import traced_model_call
 from app.llmops.trace_names import MODEL_SUGGEST_EMAIL_OPTIONS
 from app.privacy.boundary import AuditSink, run_model_boundary
@@ -28,10 +29,21 @@ MAX_ANGLE_CHARS = 420
 MAX_TAG_CHARS = 24
 
 _DIGIT = re.compile(r"\d")
-_OFF_LIMITS_IN_ANGLE = re.compile(
-    r"\b(balance|withdraw\w*|risk\w*|warning|flagged|preservation|dormant|churn|fees?|score"
-    r"|market|perform\w*|returns?|tiers?|premium|value status)\b",
-    re.IGNORECASE,
+
+CHECKS = (
+    "\n\nHOW YOUR REPLY IS CHECKED (an option that breaks these rules is thrown away):\n"
+    "- Write no digits in any field, including why. Spell numbers as words, for example "
+    "'three months', never the digits.\n"
+    "- An angle must not use any of these words, in any form, except inside the fund's own "
+    f"name: {OFF_LIMITS_WORDS}. The team guidance above is for you, so do not copy its "
+    "wording into an angle if it uses one of these words.\n"
+    "- An angle says only what to talk about. It must not say what to avoid or leave out, so "
+    "do not use 'without', 'avoid', 'do not' or 'never' in it.\n"
+    "- Say it another way. Instead of 'recent changes' write 'their current plans'. Instead "
+    "of 'performing' write 'working towards their goals'.\n"
+    f"- Limits: title {MAX_TITLE_CHARS} characters, summary {MAX_SUMMARY_CHARS}, why "
+    f"{MAX_WHY_CHARS}, angle {MAX_ANGLE_CHARS}, each tag {MAX_TAG_CHARS}.\n"
+    "- recency_band is how long it has been since the client's last deposit."
 )
 
 INSTRUCTIONS = (
@@ -89,7 +101,7 @@ def build_options_prompt(
     if approach:
         lines.append(f"- How the team usually goes about it: {approach}")
     guidance = "\n\nGUIDANCE FROM THE TEAM:\n" + "\n".join(lines) if lines else ""
-    return f"{instructions or INSTRUCTIONS}{guidance}"
+    return f"{instructions or INSTRUCTIONS}{guidance}{CHECKS}"
 
 
 def _text_field(item: dict[str, Any], name: str, limit: int) -> str:
@@ -100,12 +112,21 @@ def _text_field(item: dict[str, Any], name: str, limit: int) -> str:
     if len(value) > limit:
         raise OptionsRejected(f"{name} was too long")
     if _DIGIT.search(value):
-        raise OptionsRejected(f"{name} carried digits that came from no supplied fact")
+        raise OptionsRejected(f"{name} carried digits; spell any number as a word")
     return value
 
 
-def _off_limits_reason(word: str) -> str:
-    return f"an angle used the word '{word}', which the client must not be told about"
+def _check_angle_words(angle: str) -> None:
+    off_limits = find_off_limits(angle)
+    if off_limits:
+        raise OptionsRejected(
+            f"an angle used the word '{off_limits}', which the client must not be told about"
+        )
+    avoidance = find_avoidance(angle)
+    if avoidance:
+        raise OptionsRejected(
+            f"an angle said what to avoid ('{avoidance}'); say only what to talk about"
+        )
 
 
 def check_angle(angle: str) -> str:
@@ -114,9 +135,7 @@ def check_angle(angle: str) -> str:
         raise OptionsRejected("the angle was empty or too long")
     if _DIGIT.search(angle):
         raise OptionsRejected("the angle carried digits")
-    off_limits = _OFF_LIMITS_IN_ANGLE.search(angle)
-    if off_limits:
-        raise OptionsRejected(_off_limits_reason(off_limits.group(0)))
+    _check_angle_words(angle)
     return angle
 
 
@@ -141,9 +160,7 @@ def _option_id(title: str, angle: str) -> str:
 def _build_option(item: dict[str, Any]) -> EmailOption:
     title = _text_field(item, "title", MAX_TITLE_CHARS)
     angle = _text_field(item, "angle", MAX_ANGLE_CHARS)
-    off_limits = _OFF_LIMITS_IN_ANGLE.search(angle)
-    if off_limits:
-        raise OptionsRejected(_off_limits_reason(off_limits.group(0)))
+    _check_angle_words(angle)
     return EmailOption(
         option_id=_option_id(title, angle),
         title=title,
@@ -155,7 +172,7 @@ def _build_option(item: dict[str, Any]) -> EmailOption:
     )
 
 
-def parse_email_options(text: str) -> list[EmailOption]:
+def _read_options(text: str) -> tuple[list[EmailOption], list[str]]:
     try:
         parsed = json_object(text)
     except DraftRejected as exc:
@@ -167,21 +184,35 @@ def parse_email_options(text: str) -> list[EmailOption]:
         raise OptionsRejected(f"expected {MIN_OPTIONS} to {MAX_OPTIONS} options")
 
     kept: list[EmailOption] = []
-    first_problem = ""
+    problems: list[str] = []
     for item in items:
         try:
             option = _build_option(item)
         except OptionsRejected as exc:
-            first_problem = first_problem or str(exc)
+            title = item.get("title") if isinstance(item.get("title"), str) else "unnamed"
+            problems.append(f"option '{title}': {exc}")
             logger.warning("email_option_dropped", reason=str(exc))
             continue
         if option.title.lower() in {kept_option.title.lower() for kept_option in kept}:
             raise OptionsRejected("two options had the same title")
         kept.append(option)
+    return kept, problems
+
+
+def _one_recommended(options: list[EmailOption]) -> list[EmailOption]:
+    pick = next((index for index, option in enumerate(options) if option.recommended), 0)
+    return [replace(option, recommended=index == pick) for index, option in enumerate(options)]
+
+
+def _refusal(problems: list[str]) -> str:
+    return "; ".join(dict.fromkeys(problems)) or "too few usable options"
+
+
+def parse_email_options(text: str) -> list[EmailOption]:
+    kept, problems = _read_options(text)
     if len(kept) < MIN_OPTIONS:
-        raise OptionsRejected(first_problem or "too few usable options")
-    pick = next((index for index, option in enumerate(kept) if option.recommended), 0)
-    return [replace(option, recommended=index == pick) for index, option in enumerate(kept)]
+        raise OptionsRejected(_refusal(problems))
+    return _one_recommended(kept)
 
 
 def _with_feedback(prompt: str, reason: str) -> str:
@@ -206,6 +237,7 @@ def suggest_email_options(
     payload = facts.to_dict()
     base_prompt = build_options_prompt(goal, approach, instructions)
     last_reason = ""
+    accepted: list[EmailOption] = []
     for attempt in range(1, MAX_ATTEMPTS + 1):
         text = ""
         system = _with_feedback(base_prompt, last_reason)
@@ -218,17 +250,22 @@ def suggest_email_options(
         )
         try:
             text = run_model_boundary(payload, model_call, entity_id=entity_id, audit=audit)
-            return parse_email_options(text)
+            kept, problems = _read_options(text)
         except (InboundLeak, OutboundLeak, LLMClientError) as exc:
             logger.warning("email_options_failed", entity_id=entity_id, reason=str(exc))
             raise OptionsRejected(str(exc)) from exc
         except OptionsRejected as exc:
-            last_reason = str(exc)
-            logger.warning(
-                "email_options_rejected",
-                entity_id=entity_id,
-                attempt=attempt,
-                reason=last_reason,
-                reply=text[:600],
-            )
+            kept, problems = [], [str(exc)]
+        known = {option.title.lower() for option in accepted}
+        accepted += [option for option in kept if option.title.lower() not in known]
+        if len(accepted) >= MIN_OPTIONS:
+            return _one_recommended(accepted[:MAX_OPTIONS])
+        last_reason = _refusal(problems)
+        logger.warning(
+            "email_options_rejected",
+            entity_id=entity_id,
+            attempt=attempt,
+            reason=last_reason,
+            reply=text[:600],
+        )
     raise OptionsRejected(last_reason)

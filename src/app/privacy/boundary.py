@@ -24,6 +24,7 @@ from app.privacy.scanners import (
     scan_inbound,
     scan_outbound,
 )
+from app.transform.active_features import QUIET_FOR_BY_RECENCY_BAND
 
 # A model call takes an allow-listed payload and returns the drafted text.
 ModelCall = Callable[[dict[str, Any]], str]
@@ -85,9 +86,16 @@ def to_model_context(row: Mapping[str, Any]) -> dict[str, Any]:
     return {key: row[key] for key in MODEL_ALLOWED_KEYS if key in row}
 
 
+def _plain_value(key: str, value: Any) -> Any:
+    if key == "recency_band":
+        return QUIET_FOR_BY_RECENCY_BAND.get(value, value)
+    return value
+
+
 def render_model_context(payload: Mapping[str, Any]) -> str:
-    """Turn an allow listed payload into the plain text a model call sends."""
-    return "\n".join(f"{key}: {value}" for key, value in sorted(payload.items()))
+    """Turn an allow listed payload into the plain text a model call sends.
+    The scanners see the band codes; the model reads them as plain words."""
+    return "\n".join(f"{key}: {_plain_value(key, value)}" for key, value in sorted(payload.items()))
 
 
 def run_model_boundary(

@@ -26,7 +26,8 @@ PERMITTED_KEYS = {
     "last_contact_channel",
     "last_contact_outcome",
     "last_contact_age_band",
-    "contacts_last_90_days_band",
+    "contacts_last_three_months_band",
+    "missed_meeting",
 }
 
 

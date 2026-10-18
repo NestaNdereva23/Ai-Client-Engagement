@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.progress import StepProgress
-from app.agents.prompt_versioning import EMAIL_OPTIONS_SUGGEST
+from app.agents.prompt_versioning import EMAIL_OPTIONS_SUGGEST, prompt_text
 from app.audit.log import record_audit
 from app.briefing.email_options import (
     EmailOption,
@@ -14,7 +14,6 @@ from app.briefing.email_options import (
     check_angle,
     suggest_email_options,
 )
-from app.briefing.email_prompts import email_prompt_text
 from app.config import get_settings
 from app.db.models.chat import ChatSession, ChatTurn
 from app.db.models.suppression import Suppression
@@ -100,7 +99,7 @@ def suggest_options_for_client(
                 audit=_crossing_sink(session, username),
                 goal=facts.tier_goal,
                 approach=facts.tier_action,
-                instructions=email_prompt_text(session, EMAIL_OPTIONS_SUGGEST, today),
+                instructions=prompt_text(session, EMAIL_OPTIONS_SUGGEST, today),
             )
             operation.output = {"option_titles": [option.title for option in options]}
     except OptionsRejected as exc:

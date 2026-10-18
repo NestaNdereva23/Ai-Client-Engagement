@@ -34,7 +34,7 @@ RISK_FACT_BLOCK_VERSION = 1
 
 BOOK_FACT_BLOCK_VERSION = 1
 
-ASSISTANT_FACT_BLOCK_VERSION = 1
+ASSISTANT_FACT_BLOCK_VERSION = 2
 
 WITHDRAWAL_SIZE_BANDS = ("none", "small", "moderate", "large", "nearly_all")
 WITHDRAWAL_RECENCY_BANDS = ("none", "this_week", "this_month", "last_three_months", "older")
@@ -238,7 +238,8 @@ class AssistantFactBlock(BaseModel):
     last_contact_channel: _band(CONTACT_CHANNELS) | None = None
     last_contact_outcome: _band(CONTACT_OUTCOMES) | None = None
     last_contact_age_band: _band(CONTACT_AGE_BANDS) | None = None
-    contacts_last_90_days_band: _band(CONTACT_COUNT_BANDS) | None = None
+    contacts_last_three_months_band: _band(CONTACT_COUNT_BANDS) | None = None
+    missed_meeting: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(exclude_none=True)

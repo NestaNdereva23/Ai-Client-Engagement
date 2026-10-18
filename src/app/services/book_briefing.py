@@ -7,6 +7,7 @@ from datetime import date
 from sqlalchemy import and_, exists, func, literal_column, select
 from sqlalchemy.orm import Session
 
+from app.agents.prompt_versioning import BOOK_BRIEF_NARRATIVE, prompt_text
 from app.briefing.book import BookFacts, MonthEndPattern, TierLine, render_book_briefing
 from app.briefing.book_narrative import draft_book_narrative
 from app.briefing.narrative import NarrativeResult
@@ -151,6 +152,7 @@ def get_book_narrative(session: Session, fa_id: str, *, llm_client: LLMClient) -
         facts,
         llm_client,
         fallback_text=plain,
+        instructions=prompt_text(session, BOOK_BRIEF_NARRATIVE, today_in_nairobi()),
         entity_id=fa_id,
         audit=briefing_boundary_audit_sink(session, entity_type="book_briefing"),
     )

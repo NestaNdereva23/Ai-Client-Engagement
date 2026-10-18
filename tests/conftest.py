@@ -109,7 +109,12 @@ def _seed_agent_prompts() -> None:
 
     from sqlalchemy import delete
 
-    from app.agents.prompt_versioning import FORMATTED_PROMPTS, PROMPT_KEYS, PROMPT_PLACEHOLDERS
+    from app.agents.prompt_versioning import (
+        FORMATTED_PROMPTS,
+        PROMPT_KEYS,
+        PROMPT_PLACEHOLDERS,
+        default_prompt_texts,
+    )
     from app.db.models.agent_prompt import AgentPrompt
     from app.rules import versioning
 
@@ -120,9 +125,7 @@ def _seed_agent_prompts() -> None:
     intelligence_preamble = "You look for things worth acting on. "
     group_marker = "Tonight you are looking at one group: "
 
-    from app.briefing.email_prompts import default_email_prompts
-
-    defaults = default_email_prompts()
+    defaults = default_prompt_texts()
     valid_from = _date(2020, 1, 1)
     with SessionLocal() as session:
         # Reseed every run: an earlier test run may have left rows behind

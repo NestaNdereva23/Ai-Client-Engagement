@@ -11,6 +11,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, select
 
+from app.briefing.narrative_prompt import INSTRUCTIONS
 from app.briefing.store import (
     facts_fingerprint,
     read_narrative,
@@ -154,6 +155,12 @@ def test_fingerprint_changes_when_any_fact_changes() -> None:
     before = RiskFactBlock(risk_band="Watch", sig_dormant=True)
     after = RiskFactBlock(risk_band="High", sig_dormant=True)
     assert facts_fingerprint(before) != facts_fingerprint(after)
+
+
+def test_fingerprint_changes_with_edited_instructions_but_not_with_the_built_in_ones() -> None:
+    block = RiskFactBlock(risk_band="Watch", sig_dormant=True)
+    assert facts_fingerprint(block, INSTRUCTIONS) == facts_fingerprint(block)
+    assert facts_fingerprint(block, "STUDIO RULES") != facts_fingerprint(block)
 
 
 def test_fingerprint_changes_when_a_signal_stops_firing() -> None:

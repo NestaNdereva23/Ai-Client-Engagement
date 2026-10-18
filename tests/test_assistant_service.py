@@ -7,7 +7,11 @@ import pytest
 from sqlalchemy import delete, select
 
 from app.config import get_settings
-from app.db.models.active_clients import ActiveClientFund, ActiveClientInteraction
+from app.db.models.active_clients import (
+    ActiveClientFund,
+    ActiveClientInteraction,
+    ActiveClientTouchpoint,
+)
 from app.db.models.audit import AuditLog
 from app.db.models.complaints import ClientComplaint
 from app.db.models.models import Clients, Funds, PiiVault
@@ -62,6 +66,9 @@ class _ScriptedLLM:
 def _clear(session) -> None:
     session.execute(
         delete(ActiveClientInteraction).where(ActiveClientInteraction.client_id == CLIENT)
+    )
+    session.execute(
+        delete(ActiveClientTouchpoint).where(ActiveClientTouchpoint.client_id == CLIENT)
     )
     session.execute(delete(ClientComplaint).where(ClientComplaint.client_id == CLIENT))
     session.execute(delete(PiiVault).where(PiiVault.client_id == CLIENT))
@@ -138,7 +145,26 @@ def test_a_client_with_no_contact_and_a_large_recent_withdrawal(seeded_client) -
     assert block["deposit_rhythm_band"] == "every_two_months"
     assert block["last_contact_channel"] == "none"
     assert block["last_contact_age_band"] == "never"
-    assert block["contacts_last_90_days_band"] == "none"
+    assert block["contacts_last_three_months_band"] == "none"
+    assert "missed_meeting" not in block
+
+
+def test_a_meeting_that_was_missed_becomes_a_fact(seeded_client) -> None:
+    with SessionLocal() as session:
+        session.add(
+            ActiveClientTouchpoint(
+                client_id=CLIENT,
+                unit_fund_id=FUND,
+                kind="meeting",
+                title="Goals review",
+                due_date=today_in_nairobi() - timedelta(days=2),
+                created_by=USER,
+            )
+        )
+        session.commit()
+        block = _facts_block(session)
+
+    assert block["missed_meeting"] is True
 
 
 def test_logged_contacts_become_bands_and_the_note_is_never_read(seeded_client) -> None:
@@ -168,7 +194,7 @@ def test_logged_contacts_become_bands_and_the_note_is_never_read(seeded_client) 
     assert block["last_contact_channel"] == "call"
     assert block["last_contact_outcome"] == "connected"
     assert block["last_contact_age_band"] == "this_week"
-    assert block["contacts_last_90_days_band"] == "several"
+    assert block["contacts_last_three_months_band"] == "several"
     assert "0712345678" not in json.dumps(block)
 
 

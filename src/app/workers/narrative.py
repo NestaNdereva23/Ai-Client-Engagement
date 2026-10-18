@@ -22,6 +22,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agents.prompt_versioning import CLIENT_BRIEF_NARRATIVE, prompt_text
 from app.briefing.narrative import draft_narrative
 from app.briefing.render import render_briefing
 from app.briefing.store import facts_fingerprint, save_narrative, stale_or_missing_keys
@@ -91,8 +92,10 @@ def warm_digest_narratives(
         if facts is not None:
             fact_blocks[(client_id, unit_fund_id)] = facts
 
+    instructions = prompt_text(session, CLIENT_BRIEF_NARRATIVE, ref)
     fingerprints = {
-        key: facts_fingerprint(to_risk_fact_block(facts)) for key, facts in fact_blocks.items()
+        key: facts_fingerprint(to_risk_fact_block(facts), instructions)
+        for key, facts in fact_blocks.items()
     }
     to_draft = stale_or_missing_keys(session, fingerprints)
 
@@ -106,6 +109,7 @@ def warm_digest_narratives(
                 risk_fact_block,
                 llm_client,
                 fallback_text=render_briefing(facts),
+                instructions=instructions,
                 entity_id=str(client_id),
                 audit=briefing_boundary_audit_sink(session),
             )
@@ -128,6 +132,7 @@ def warm_digest_narratives(
             risk_fact_block,
             text=result.text,
             model=getattr(llm_client, "model", "unknown"),
+            instructions=instructions,
         )
         drafted += 1
 

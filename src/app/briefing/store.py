@@ -21,28 +21,34 @@ from sqlalchemy import func, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from app.briefing.narrative_prompt import INSTRUCTIONS
 from app.db.models.briefing import BriefingNarrative
 from app.privacy.fact_block import RISK_FACT_BLOCK_VERSION, RiskFactBlock
 
 
-def facts_fingerprint(facts: RiskFactBlock) -> str:
+def facts_fingerprint(facts: RiskFactBlock, instructions: str = INSTRUCTIONS) -> str:
     """A stable hash of everything a narration was allowed to draw on.
 
     The block is dumped with sorted keys so two equal blocks always hash
     alike, and the schema version is folded in so a change to what the
     fields mean retires every stored narration written under the old
-    meaning.
+    meaning. Instructions edited in the studio retire them too. The built in
+    text is left out of the hash so narrations stored before the studio keep
+    their hash.
     """
-    payload = json.dumps(
-        {"version": RISK_FACT_BLOCK_VERSION, "facts": facts.to_dict()},
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    content: dict = {"version": RISK_FACT_BLOCK_VERSION, "facts": facts.to_dict()}
+    if instructions != INSTRUCTIONS:
+        content["instructions"] = instructions
+    payload = json.dumps(content, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def read_narrative(
-    session: Session, client_id: int, unit_fund_id: int, facts: RiskFactBlock
+    session: Session,
+    client_id: int,
+    unit_fund_id: int,
+    facts: RiskFactBlock,
+    instructions: str = INSTRUCTIONS,
 ) -> str | None:
     """The stored narration for this client-fund, if it still matches these
     facts. None when there is none, or when the one there is went stale.
@@ -50,7 +56,7 @@ def read_narrative(
     row = session.get(BriefingNarrative, (client_id, unit_fund_id))
     if row is None:
         return None
-    if row.facts_hash != facts_fingerprint(facts):
+    if row.facts_hash != facts_fingerprint(facts, instructions):
         return None
     return row.narrative_text
 
@@ -63,6 +69,7 @@ def save_narrative(
     *,
     text: str,
     model: str,
+    instructions: str = INSTRUCTIONS,
 ) -> None:
     """Store the narration for this client-fund, replacing any earlier one.
 
@@ -74,7 +81,7 @@ def save_narrative(
         client_id=client_id,
         unit_fund_id=unit_fund_id,
         narrative_text=text,
-        facts_hash=facts_fingerprint(facts),
+        facts_hash=facts_fingerprint(facts, instructions),
         fact_block_version=RISK_FACT_BLOCK_VERSION,
         model=model,
     )

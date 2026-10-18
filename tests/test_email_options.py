@@ -7,9 +7,11 @@ import pytest
 from app.briefing.email_options import (
     OptionsRejected,
     build_options_prompt,
+    check_angle,
     parse_email_options,
     suggest_email_options,
 )
+from app.briefing.off_limits import OFF_LIMITS_WORDS, find_off_limits
 from app.privacy.fact_block import AssistantFactBlock
 
 
@@ -101,6 +103,14 @@ def test_when_two_are_recommended_only_the_first_flagged_one_is_kept() -> None:
         _reply(_item("One", angle="Remind them their balance is healthy."), _item("Two")),
         _reply(_item("One", angle="Say the market has been kind lately."), _item("Two")),
         _reply(_item("One", angle="Thank them for being a top tier client."), _item("Two")),
+        _reply(_item("One", angle="Ask how their plans are coming along lately."), _item("Two")),
+        _reply(_item("One", angle="Thank them for their activity with us."), _item("Two")),
+        _reply(_item("One", angle="Praise their latest transaction."), _item("Two")),
+        _reply(_item("One", angle="Praise their recent saving."), _item("Two")),
+        _reply(_item("One", angle="Keep the tone light, without pressure."), _item("Two")),
+        _reply(_item("One", angle="Avoid pushing for a call."), _item("Two")),
+        _reply(_item("One", angle="Do not rush them."), _item("Two")),
+        _reply(_item("One", angle="Don't push."), _item("Two")),
         _reply(_item("One", summary="They deposited 200 last month."), _item("Two")),
         _reply(_item(title="x" * 71), _item("Two")),
         _reply(_item("One", why=""), _item("Two")),
@@ -149,6 +159,39 @@ def test_the_withdrawal_may_be_named_in_why_but_never_in_the_angle() -> None:
     assert "withdrawal" in options[0].why
 
 
+def test_an_angle_that_hides_a_topic_is_refused_when_the_option_is_chosen() -> None:
+    leaky = (
+        "Invite the client to consider how regular contributions can work alongside what they "
+        "already own. Mention that staying invested allows interest to accumulate naturally "
+        "without drawing attention to any recent transactions."
+    )
+
+    with pytest.raises(OptionsRejected):
+        check_angle(leaky)
+
+
+def test_the_fund_name_may_appear_in_an_angle() -> None:
+    reply = _reply(
+        _item("One", angle="Thank them warmly for investing in the Money Market Fund."),
+        _item("Two"),
+    )
+
+    assert [option.title for option in parse_email_options(reply)] == ["One", "Two"]
+
+
+@pytest.mark.parametrize("word", OFF_LIMITS_WORDS.split(", "))
+def test_every_word_the_prompt_lists_is_one_the_check_catches(word) -> None:
+    assert find_off_limits(f"Talk about the {word}.") is not None
+
+
+def test_the_prompt_tells_the_model_what_the_check_refuses() -> None:
+    prompt = build_options_prompt(instructions="STUDIO OPTIONS")
+
+    assert "transaction" in prompt
+    assert "'without'" in prompt
+    assert "recency_band is how long" in prompt
+
+
 def test_the_prompt_carries_the_team_guidance_only_when_given() -> None:
     bare = build_options_prompt()
     guided = build_options_prompt("Turn activity into growth", "Show interest earned")
@@ -177,12 +220,52 @@ def test_one_bad_reply_is_retried_and_told_why() -> None:
 
     options = suggest_email_options(_facts(), llm, entity_id="1", audit=lambda record: None)
 
-    assert len(options) == 3
     assert llm.replies == []
+    assert [option.title for option in options][0] == "Two"
     first_system, second_system = llm.seen[0], llm.seen[2]
     assert "REFUSED" not in first_system
     assert "REFUSED" in second_system
-    assert "the word 'market'" in second_system
+    assert "option 'One': an angle used the word 'market'" in second_system
+
+
+def test_the_retry_is_told_which_option_failed_and_every_problem() -> None:
+    bad = _reply(
+        _item("One", angle="Say the market has been kind."),
+        _item("Two", angle="Keep it light, without pressure."),
+        _item("Three", why="No contact for 90 days."),
+    )
+    llm = _ScriptedLLM(bad, _three())
+
+    suggest_email_options(_facts(), llm, entity_id="1", audit=lambda record: None)
+
+    retry_system = llm.seen[2]
+    assert "option 'One': an angle used the word 'market'" in retry_system
+    assert "option 'Two': an angle said what to avoid ('without')" in retry_system
+    assert "option 'Three': why carried digits; spell any number as a word" in retry_system
+
+
+def test_a_good_option_from_a_refused_reply_is_kept_for_the_next_attempt() -> None:
+    first = _reply(
+        _item("Keeper", recommended=True),
+        _item("Bad one", angle="Praise their recent saving."),
+        _item("Bad two", angle="Keep it light, without pressure."),
+    )
+    second = _reply(_item("Fresh one"), _item("Keeper"), _item("Bad three", why="After 90 days."))
+    llm = _ScriptedLLM(first, second)
+
+    options = suggest_email_options(_facts(), llm, entity_id="1", audit=lambda record: None)
+
+    assert [option.title for option in options] == ["Keeper", "Fresh one"]
+    assert [option.recommended for option in options] == [True, False]
+    assert llm.replies == []
+
+
+def test_the_prompt_states_every_rule_the_code_enforces_even_when_studio_text_omits_them() -> None:
+    prompt = build_options_prompt(instructions="STUDIO OPTIONS")
+
+    assert "Write no digits in any field, including why" in prompt
+    assert "must not say what to avoid or leave out" in prompt
+    assert "Limits: title 70 characters" in prompt
 
 
 def test_three_bad_replies_give_up() -> None:

@@ -8,10 +8,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.agents.progress import StepProgress
-from app.agents.prompt_versioning import CLIENT_EMAIL_DRAFT
+from app.agents.prompt_versioning import CLIENT_EMAIL_DRAFT, prompt_text
 from app.audit.log import record_audit, with_on_behalf_of
 from app.briefing.client_email import DraftRejected, EmailDraft, draft_client_email
-from app.briefing.email_prompts import email_prompt_text, purpose_key
+from app.briefing.email_prompts import purpose_key
 from app.campaigns.enrollment import enroll_cohort
 from app.campaigns.nurture_bridge import ensure_active_client_row
 from app.config import get_settings
@@ -25,7 +25,8 @@ from app.llmops.tracing import Tracer
 from app.llmops.versions import get_or_create_model_version
 from app.privacy.boundary import AuditSink, BoundaryAudit
 from app.privacy.llm_client import LLMClient, resolve_briefing_model_config
-from app.services.briefing import BriefingNotFound, gather_briefing_facts, to_risk_fact_block
+from app.services.assistant_facts import build_assistant_facts
+from app.services.briefing import BriefingNotFound, gather_briefing_facts
 from app.services.client_next_actions import next_action_for_client
 from app.services.client_touchpoints import today_in_nairobi
 from app.services.review import create_outreach_message
@@ -232,9 +233,9 @@ def _draft_email_for_client(
     action = next_action_for_client(session, client_id, unit_fund_id).action
     purpose = action.email_purpose if action is not None else None
     today = today_in_nairobi()
-    instructions = email_prompt_text(session, CLIENT_EMAIL_DRAFT, today)
+    instructions = prompt_text(session, CLIENT_EMAIL_DRAFT, today)
     purpose_text = (
-        email_prompt_text(session, purpose_key(purpose), today) if purpose and not angle else None
+        prompt_text(session, purpose_key(purpose), today) if purpose and not angle else None
     )
 
     cap = settings.client_email_draft_daily_cap
@@ -245,7 +246,7 @@ def _draft_email_for_client(
     try:
         with steps.step("Writing the draft"):
             draft = draft_client_email(
-                to_risk_fact_block(facts),
+                build_assistant_facts(session, facts, client_id, unit_fund_id, today),
                 llm_client,
                 entity_id=str(client_id),
                 audit=_crossing_sink(session, username),

@@ -263,7 +263,7 @@ class Settings(BaseSettings):
     email_sender: str = ""
 
     # smtp sends directly; ticketing sends through the Ticketing app's Gmail mailbox.
-    mail_transport: Literal["smtp", "ticketing"] = "smtp"
+    mail_transport: Literal["smtp", "ticketing"] = "ticketing"
     ticketing_base_url: str = ""
     ticketing_timeout_seconds: float = 30.0
 

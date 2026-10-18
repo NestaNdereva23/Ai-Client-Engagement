@@ -20,10 +20,12 @@ from app.agents.pattern_search import (
     two_proportion_z,
 )
 from app.agents.pattern_writeup import READ_PATTERN, WRITE_PATTERN_INSIGHT, write_up_patterns
+from app.agents.prompt_versioning import PATTERN_WRITEUP
 from app.config import get_settings
 from app.db.models.action_result import ActionResult
 from app.db.models.active_clients import ActiveClientFund, ActiveTransaction
 from app.db.models.agent_insight import AgentInsight, AgentInsightFact
+from app.db.models.agent_prompt import AgentPrompt
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.audit import AuditLog
 from app.db.models.campaigns import Enrollment, TouchLog
@@ -460,6 +462,34 @@ def test_the_model_writes_each_pattern_up_as_an_insight_with_its_numbers(scenari
     assert [pattern.sent_count for pattern in patterns] == [i.client_count for i in insights]
     assert len(facts) == 5
     assert all(fact.source_filter["features"] for fact in facts)
+
+
+def test_the_pattern_write_up_is_steered_by_the_live_studio_prompt(scenario) -> None:
+    seen: list[str] = []
+
+    class SpyWriter(WriterClient):
+        def converse(self, *, system, messages, tools=()):
+            seen.append(system)
+            return super().converse(system=system, messages=messages, tools=tools)
+
+    studio = AgentPrompt(
+        version=9999,
+        prompt_name=PATTERN_WRITEUP,
+        template="STUDIO WRITE UP RULES",
+        valid_from=date(2026, 9, 1),
+        status="published",
+    )
+    with SessionLocal() as session:
+        run_pattern_search(session, now=NOW, window_days=WINDOW)
+        session.add(studio)
+        session.commit()
+        try:
+            write_up_patterns(session, SpyWriter(), seen_at=NOW)
+        finally:
+            session.delete(studio)
+            session.commit()
+
+    assert set(seen) == {"STUDIO WRITE UP RULES"}
 
 
 def test_accepting_a_pattern_never_starts_an_action(db: None) -> None:

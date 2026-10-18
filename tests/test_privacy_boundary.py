@@ -40,6 +40,13 @@ def _turn(
     )
 
 
+def test_the_model_reads_the_recency_band_in_plain_words() -> None:
+    shown = render_model_context({"recency_band": "<=1m", "risk_band": "Watch"})
+
+    assert shown == "recency_band: about a month or less\nrisk_band: Watch"
+    assert render_model_context({"recency_band": "Over 6y"}) == "recency_band: Over 6y"
+
+
 def test_to_model_context_keeps_only_allowlisted_keys() -> None:
     row = {**ALLOWLISTED, "client_id": 1001, "own_rhythm_days": 42, "client_name": "Jane"}
     assert to_model_context(row) == ALLOWLISTED

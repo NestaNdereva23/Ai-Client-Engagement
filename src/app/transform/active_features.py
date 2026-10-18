@@ -40,6 +40,14 @@ BALANCE_TIERS = ("Tiny", "Micro", "Small", "Core", "Premium", "Institutional")
 # also not a recomputed statistic.
 RECENCY_BAND_CUTOFFS = (30, 90, 180, 365, 730)
 RECENCY_BANDS = ("<=1m", "1-3m", "3-6m", "6-12m", "1-2y", "2y+")
+QUIET_FOR_BY_RECENCY_BAND = {
+    "<=1m": "about a month or less",
+    "1-3m": "one to three months",
+    "3-6m": "three to six months",
+    "6-12m": "six months to a year",
+    "1-2y": "one to two years",
+    "2y+": "more than two years",
+}
 
 # Quartiles of avg_deposit_amount across active_eda_out's 27,481-row client x
 # fund extract (the same population client_risk_features serves), rounded to

@@ -17,6 +17,9 @@ INTELLIGENCE_INVESTIGATION = "intelligence_investigation"
 AGENT_CHAT = "agent_chat"
 CLIENT_EMAIL_DRAFT = "client_email_draft"
 EMAIL_OPTIONS_SUGGEST = "email_options_suggest"
+CLIENT_BRIEF_NARRATIVE = "client_brief_narrative"
+BOOK_BRIEF_NARRATIVE = "book_brief_narrative"
+PATTERN_WRITEUP = "pattern_writeup"
 EMAIL_PURPOSE_PREFIX = "email_purpose_"
 EMAIL_PURPOSE_KEYS = (
     "email_purpose_reschedule_meeting",
@@ -37,6 +40,9 @@ PROMPT_KEYS = (
     AGENT_CHAT,
     CLIENT_EMAIL_DRAFT,
     EMAIL_OPTIONS_SUGGEST,
+    CLIENT_BRIEF_NARRATIVE,
+    BOOK_BRIEF_NARRATIVE,
+    PATTERN_WRITEUP,
     *EMAIL_PURPOSE_KEYS,
 )
 
@@ -78,6 +84,9 @@ PROMPT_PLACEHOLDERS: dict[str, frozenset[str]] = {
     AGENT_CHAT: frozenset({"as_of", "question", "field_names", "measures"}),
     CLIENT_EMAIL_DRAFT: frozenset(),
     EMAIL_OPTIONS_SUGGEST: frozenset(),
+    CLIENT_BRIEF_NARRATIVE: frozenset(),
+    BOOK_BRIEF_NARRATIVE: frozenset(),
+    PATTERN_WRITEUP: frozenset(),
     **{key: frozenset() for key in EMAIL_PURPOSE_KEYS},
 }
 
@@ -133,3 +142,25 @@ def active_prompt(session: Session, prompt_key: str, as_of: date) -> AgentPrompt
         .order_by(AgentPrompt.valid_from.desc(), AgentPrompt.version.desc())
         .limit(1)
     )
+
+
+def default_prompt_texts() -> dict[str, str]:
+    """The built in text for each prompt that has one in code, used until a version is live."""
+    from app.agents.pattern_writeup import SYSTEM_PROMPT
+    from app.briefing.book_narrative import INSTRUCTIONS as BOOK_INSTRUCTIONS
+    from app.briefing.email_prompts import default_email_prompts
+    from app.briefing.narrative_prompt import INSTRUCTIONS as CLIENT_INSTRUCTIONS
+
+    return {
+        **default_email_prompts(),
+        CLIENT_BRIEF_NARRATIVE: CLIENT_INSTRUCTIONS,
+        BOOK_BRIEF_NARRATIVE: BOOK_INSTRUCTIONS,
+        PATTERN_WRITEUP: SYSTEM_PROMPT,
+    }
+
+
+def prompt_text(session: Session, key: str, as_of: date) -> str:
+    row = active_prompt(session, key, as_of)
+    if row is not None and row.template.strip():
+        return row.template
+    return default_prompt_texts()[key]

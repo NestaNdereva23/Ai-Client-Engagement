@@ -24,7 +24,7 @@ logger = structlog.get_logger(__name__)
 
 _DIGIT_RUN = re.compile(r"\d+")
 
-_BASE_INSTRUCTIONS = (
+INSTRUCTIONS = (
     "Write a short summary of one financial advisor's whole book of clients, for "
     "that advisor to read at the start of the day. It is private and is never "
     "sent to a client.\n\n"
@@ -124,9 +124,9 @@ def render_book_facts(block: BookFactBlock) -> str:
     return "\n".join(lines)
 
 
-def build_book_prompt(block: BookFactBlock) -> str:
+def build_book_prompt(block: BookFactBlock, instructions: str = INSTRUCTIONS) -> str:
     return (
-        f"{_BASE_INSTRUCTIONS}\n\n"
+        f"{instructions}\n\n"
         "THE ONLY FACTS YOU MAY USE FOR THIS BOOK:\n"
         f"{render_book_facts(block)}\n\n"
         "The user message may repeat these same facts using internal field names. "
@@ -151,11 +151,12 @@ def draft_book_narrative(
     llm_client: LLMClient,
     *,
     fallback_text: str,
+    instructions: str = INSTRUCTIONS,
     entity_id: str | None = None,
     audit: AuditSink | None = None,
 ) -> NarrativeResult:
     block = to_book_fact_block(facts)
-    system = build_book_prompt(block)
+    system = build_book_prompt(block, instructions)
     model_call = traced_model_call(
         as_model_call(llm_client, system=system),
         name=MODEL_WRITE_BOOK_BRIEF,
