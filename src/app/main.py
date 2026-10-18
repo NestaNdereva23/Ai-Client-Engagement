@@ -96,7 +96,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     admin = Admin(
         app,
         engine,
-        authentication_backend=AdminAuth(secret_key=settings.admin_secret_key),
+        authentication_backend=AdminAuth(
+            secret_key=settings.admin_secret_key, session_cookie="ace_admin_session"
+        ),
         templates_dir=str(_ADMIN_TEMPLATES_DIR),
     )
     for view in ADMIN_VIEWS:
