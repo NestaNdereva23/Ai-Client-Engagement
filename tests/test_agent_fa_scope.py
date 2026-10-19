@@ -48,8 +48,10 @@ def book(db):
         _clear(session)
         session.add_all(
             [
-                UserAccess(email=ASHA, role=ROLE_ADVISOR, fa_id="scope-fa-asha"),
-                UserAccess(email=BRIAN, role=ROLE_ADVISOR, fa_id="scope-fa-brian"),
+                UserAccess(email=ASHA, role=ROLE_ADVISOR, fa_id="scope-fa-asha", ai_assistant=True),
+                UserAccess(
+                    email=BRIAN, role=ROLE_ADVISOR, fa_id="scope-fa-brian", ai_assistant=True
+                ),
                 UserAccess(email=ADMIN, role=ROLE_ADMIN),
             ]
         )

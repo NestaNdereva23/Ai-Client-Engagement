@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.api.access import require_ai_assistant
 from app.api.routers import (
     access,
     action_catalog,
@@ -35,11 +36,13 @@ from app.api.routers import (
     templates,
 )
 
+ai_assistant_only = [Depends(require_ai_assistant)]
+
 router = APIRouter(prefix="/api/v1")
 router.include_router(review.router)
-router.include_router(agent_proposals.router)
-router.include_router(agent_insights.router)
-router.include_router(agent_patterns.router)
+router.include_router(agent_proposals.router, dependencies=ai_assistant_only)
+router.include_router(agent_insights.router, dependencies=ai_assistant_only)
+router.include_router(agent_patterns.router, dependencies=ai_assistant_only)
 router.include_router(agent_runs.router)
 router.include_router(ingestion.router)
 router.include_router(data_quality.router)
@@ -59,10 +62,10 @@ router.include_router(client_assistant.router)
 router.include_router(active_clients.router)
 router.include_router(fa_action.router)
 router.include_router(delivery.router)
-router.include_router(situations.router)
+router.include_router(situations.router, dependencies=ai_assistant_only)
 router.include_router(agent_studio.router)
 router.include_router(app_settings.router)
 router.include_router(access.router)
-router.include_router(chat.router)
-router.include_router(agent_metrics.router)
-router.include_router(action_catalog.router)
+router.include_router(chat.router, dependencies=ai_assistant_only)
+router.include_router(agent_metrics.router, dependencies=ai_assistant_only)
+router.include_router(action_catalog.router, dependencies=ai_assistant_only)

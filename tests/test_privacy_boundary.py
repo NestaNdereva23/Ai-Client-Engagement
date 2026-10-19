@@ -105,6 +105,25 @@ def test_outbound_hit_aborts_after_the_call(monkeypatch: pytest.MonkeyPatch) -> 
         run_model_boundary(ALLOWLISTED, lambda payload: "leaky draft")
 
 
+def test_scan_output_off_returns_a_draft_with_an_email_and_the_audit_says_skipped() -> None:
+    records: list = []
+    draft = run_model_boundary(
+        ALLOWLISTED,
+        lambda payload: "write to jane@example.com",
+        audit=records.append,
+        scan_output=False,
+    )
+    assert draft == "write to jane@example.com"
+    assert records[0].outbound == "skipped"
+
+
+def test_scan_output_off_still_runs_the_inbound_scan() -> None:
+    with pytest.raises(InboundLeak):
+        run_model_boundary(
+            {**ALLOWLISTED, "client_id": 1001}, lambda payload: "draft", scan_output=False
+        )
+
+
 def test_run_conversation_boundary_sends_the_scanned_context_as_the_first_message() -> None:
     seen_messages: list[list[dict]] = []
 

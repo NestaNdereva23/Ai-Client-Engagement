@@ -15,6 +15,7 @@ from app.agents.guardrails import (
     default_grounding_check,
     default_rate_specificity_check,
     default_sign_off_check,
+    enabled_checks,
 )
 
 
@@ -231,3 +232,22 @@ def test_guardrail_failure_carries_the_name_it_was_raised_with() -> None:
     failure = GuardrailFailure("bad claim", guardrail="grounding")
     assert failure.guardrail == "grounding"
     assert str(failure) == "bad claim"
+
+
+@pytest.mark.parametrize(
+    ("switch", "expected"),
+    [(True, (default_currency_check,)), (False, ())],
+)
+def test_enabled_checks_follows_the_switch(monkeypatch, switch, expected) -> None:
+    monkeypatch.setattr(
+        "app.agents.guardrails.get_settings", lambda: type("S", (), {"guardrail_checks": switch})
+    )
+    assert enabled_checks((default_currency_check,)) == expected
+
+
+def test_enabled_checks_refuses_to_run_when_the_switch_is_unset(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.agents.guardrails.get_settings", lambda: type("S", (), {"guardrail_checks": None})
+    )
+    with pytest.raises(RuntimeError, match="GUARDRAIL_CHECKS"):
+        enabled_checks((default_currency_check,))

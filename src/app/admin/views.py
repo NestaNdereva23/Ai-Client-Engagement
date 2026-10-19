@@ -651,9 +651,10 @@ class ReviewerUserAdmin(_ReadOnlyView, model=ReviewerUser):
 
 class UserAccessAdmin(ModelView, model=UserAccess):
     """The one screen that can change data: add an admin or advisor, switch the
-    digest on, or set who an admin views as. Advisor rows are the list of account
-    managers that clients are shared out to. A row is never deleted here, switch
-    Active off instead, so the nightly feed does not add the person back."""
+    digest or the AI Assistant tab on, or set who an admin views as. Advisor rows
+    are the list of account managers that clients are shared out to. A row is never
+    deleted here, switch Active off instead, so the nightly feed does not add the
+    person back."""
 
     name = "User Access"
     name_plural = "User Access"
@@ -670,9 +671,11 @@ class UserAccessAdmin(ModelView, model=UserAccess):
         UserAccess.daily_capacity,
         UserAccess.active,
         UserAccess.receives_digest,
+        UserAccess.ai_assistant,
         UserAccess.view_as_email,
         UserAccess.source,
     ]
+    column_labels = {UserAccess.ai_assistant: "AI Assistant"}
     column_searchable_list = [UserAccess.email]
     column_sortable_list = [UserAccess.email, UserAccess.role, UserAccess.source]
     column_default_sort = [(UserAccess.email, False)]
@@ -684,6 +687,7 @@ class UserAccessAdmin(ModelView, model=UserAccess):
         UserAccess.daily_capacity,
         UserAccess.active,
         UserAccess.receives_digest,
+        UserAccess.ai_assistant,
         UserAccess.view_as_email,
     ]
     form_include_pk = True

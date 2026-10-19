@@ -3,7 +3,8 @@
 One row per person, keyed by the email in Ticketing's signed token. An advisor
 sees their own book. An admin sees every book, and can set view_as_email to
 see one advisor's book as that advisor sees it. A person with no row, or with
-active switched off, sees no client data.
+active switched off, sees no client data. The AI Assistant tab is open to every
+admin, and to an advisor only while ai_assistant is switched on.
 
 The advisor rows are also the list of account managers the nightly run shares
 clients out to: each client goes to the row whose email matches the account
@@ -62,6 +63,7 @@ class UserAccess(Base):
     )
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     receives_digest: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    ai_assistant: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     view_as_email: Mapped[str | None] = mapped_column(Text, nullable=True)
     source: Mapped[str] = mapped_column(Text, nullable=False, server_default=SOURCE_MANUAL)
     created_at: Mapped[datetime] = mapped_column(

@@ -71,6 +71,7 @@ FORWARDED_ALLOW_IPS=
 
 #CTA  Guardrail Check
 PUBLIC_CONTACT_NUMBERS=
+GUARDRAIL_CHECKS=        # true or false, must be set. false skips draft checks and the reply privacy scan
 
 # ---Live  Delivery mode ---   
 DELIVERY_MODE=           #live or test
@@ -231,6 +232,14 @@ Each client belongs to the account manager Cytonn names for them. The active fee
 - A match makes that manager the owner. If Cytonn moves a client to another manager, the next run follows.
 - A client with no manager in the feed, or one whose manager is not an active advisor, keeps their current owner or is shared out to the manager with the lightest load.
 - The audit entry for each run says how many clients were placed by the feed and how many did not match.
+
+#### Who sees the AI Assistant tab
+
+The tab (insights, actions, patterns, Ask, reports, run report and autonomy) is open to every admin. An advisor sees it only when AI Assistant is ticked on their row in User Access. It is off for every new advisor, including those the nightly run adds.
+
+- The routes behind the tab check the same box, so hiding the tab is not the only guard. Reading a run's live progress stays open, because the assistant on a client's profile uses it.
+- The assistant on a client's profile is a separate feature and does not need the box.
+- Set `AGENT_FA_SCOPED=true` before ticking the first advisor, or they would see every advisor's findings.
 
 
 ## Which database session to use

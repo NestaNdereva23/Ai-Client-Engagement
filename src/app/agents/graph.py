@@ -20,7 +20,12 @@ from app.agents.email_agent import (
     required_placeholders,
     resolve_allowed_placeholders,
 )
-from app.agents.guardrails import DEFAULT_GUARDRAIL_CHECKS, GuardrailFailure
+from app.agents.guardrails import (
+    DEFAULT_GUARDRAIL_CHECKS,
+    GuardrailFailure,
+    enabled_checks,
+    guardrails_on,
+)
 from app.db.models.models import ClientFeatures
 from app.db.models.rules import ClientMessageIndicators
 from app.db.models.views import (
@@ -352,7 +357,8 @@ def build_generation_graph(
     audit: AuditSink | None = None,
     tracer: Tracer | None = None,
 ) -> CompiledStateGraph:
-    checks = tuple(guardrail_checks)
+    checks = enabled_checks(guardrail_checks)
+    scan_output = guardrails_on()
     tracer = tracer or NullTracer()
 
     def _retry_or_reject(attempts: int, guardrail: str, reason: str) -> dict[str, Any]:
@@ -482,6 +488,7 @@ def build_generation_graph(
                 run_id=state["run_id"],
                 trace_id=state["trace_id"],
                 audit=audit,
+                scan_output=scan_output,
             )
         except OutboundLeak as leak:
             latency_ms = int((time.monotonic() - started) * 1000)

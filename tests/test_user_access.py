@@ -69,7 +69,11 @@ def people(db):
         session.add_all(
             [
                 UserAccess(
-                    email=ASHA, role=ROLE_ADVISOR, fa_id="acc-fa-asha", receives_digest=True
+                    email=ASHA,
+                    role=ROLE_ADVISOR,
+                    fa_id="acc-fa-asha",
+                    receives_digest=True,
+                    ai_assistant=True,
                 ),
                 UserAccess(email=BRIAN, role=ROLE_ADVISOR, fa_id="acc-fa-brian"),
                 UserAccess(email=ADMIN, role=ROLE_ADMIN),
@@ -138,6 +142,19 @@ def test_an_unknown_or_inactive_account_sees_no_client_data(people, headers_for)
         assert client.get(ROSTER, headers=headers).status_code == 403
         assert client.get("/api/v1/fa-action/acc-fa-asha", headers=headers).status_code == 403
         assert client.get("/api/v1/access/me", headers=headers).status_code == 403
+
+
+def test_the_ai_assistant_needs_an_admin_or_the_box(people, headers_for) -> None:
+    for email, open_to_them in ((ADMIN, True), (ASHA, True), (BRIAN, False)):
+        headers = _as(headers_for, email)
+
+        me = client.get("/api/v1/access/me", headers=headers)
+        insights = client.get("/api/v1/agent/insights", headers=headers)
+        runs = client.get("/api/v1/agent/runs", headers=headers)
+
+        expected = 200 if open_to_them else 403
+        assert me.json()["ai_assistant"] is open_to_them
+        assert (insights.status_code, runs.status_code) == (expected, expected)
 
 
 def test_an_admin_with_no_view_as_sees_every_book(people, headers_for) -> None:

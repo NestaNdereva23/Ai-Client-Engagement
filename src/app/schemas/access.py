@@ -8,6 +8,7 @@ class AccessOut(BaseModel):
     role: str
     fa_id: str | None
     viewing_as: str | None
+    ai_assistant: bool
 
 
 class AdvisorOut(BaseModel):

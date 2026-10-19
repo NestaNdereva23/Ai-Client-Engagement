@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 import app.agents.client_assistant as assistant_module
 import app.api.routers.briefing as briefing_router
@@ -469,6 +469,11 @@ def test_a_client_with_an_open_complaint_gets_a_notice_not_options(
 def test_the_ask_screen_never_lists_a_client_session(seeded, headers_for, stub) -> None:
     headers = headers_for(OWNER)
     body = _options_turn(headers)
+    with SessionLocal() as session:
+        session.execute(
+            update(UserAccess).where(UserAccess.email == OWNER).values(ai_assistant=True)
+        )
+        session.commit()
 
     listed = client.get("/api/v1/agent/chat/sessions", headers=headers).json()
     fetched = client.get(f"/api/v1/agent/chat/sessions/{body['session_id']}", headers=headers)

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.agent_loop import AgentRunInProgress
 from app.agents.run_report_email import announce_run_finished
+from app.api.access import require_ai_assistant
 from app.api.agent_scope import (
     AgentScope,
     advisor_for_new_run,
@@ -56,7 +57,12 @@ router = APIRouter(
 )
 
 
-@router.post("", response_model=AgentRunOut, status_code=202)
+@router.post(
+    "",
+    response_model=AgentRunOut,
+    status_code=202,
+    dependencies=[Depends(require_ai_assistant)],
+)
 def post_agent_run(
     background_tasks: BackgroundTasks,
     as_of: date | None = None,
@@ -81,7 +87,7 @@ def post_agent_run(
 @router.get(
     "/{run_id}/report",
     response_model=RunReportOut,
-    dependencies=[Depends(require_run_in_scope)],
+    dependencies=[Depends(require_ai_assistant), Depends(require_run_in_scope)],
 )
 def get_agent_run_report(run_id: int, session: Session = Depends(get_session)) -> RunReportOut:
     try:
@@ -93,7 +99,7 @@ def get_agent_run_report(run_id: int, session: Session = Depends(get_session)) -
 @router.get(
     "/{run_id}",
     response_model=AgentRunOut,
-    dependencies=[Depends(require_run_in_scope)],
+    dependencies=[Depends(require_ai_assistant), Depends(require_run_in_scope)],
 )
 def get_agent_run_route(run_id: int, session: Session = Depends(get_session)) -> AgentRunOut:
     try:
@@ -163,7 +169,11 @@ def get_agent_run_events(
     )
 
 
-@router.get("", response_model=Page[AgentRunOut])
+@router.get(
+    "",
+    response_model=Page[AgentRunOut],
+    dependencies=[Depends(require_ai_assistant)],
+)
 def get_agent_runs(
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),

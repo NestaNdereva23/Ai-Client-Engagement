@@ -25,12 +25,14 @@ from app.services.user_access import advisor_fa_id, find_access
 class Access:
     """email is the real person. shown_email is the advisor whose book is shown:
     their own for an advisor, the viewed one for an admin who has set view as,
-    and empty for an admin who is looking at every book."""
+    and empty for an admin who is looking at every book. ai_assistant is true
+    for every admin, and for an advisor only when it has been switched on."""
 
     email: str
     is_admin: bool
     shown_email: str | None
     shown_fa_id: str | None
+    ai_assistant: bool
 
     @property
     def sees_every_book(self) -> bool:
@@ -60,17 +62,27 @@ def get_access(
 
 def access_for(session: Session, row: UserAccess) -> Access:
     if row.role != ROLE_ADMIN:
-        return Access(row.email, False, row.email, advisor_fa_id(row))
+        return Access(
+            row.email, False, row.email, advisor_fa_id(row), ai_assistant=row.ai_assistant
+        )
     if not row.view_as_email:
-        return Access(row.email, True, None, None)
+        return Access(row.email, True, None, None, ai_assistant=True)
     viewed = find_access(session, row.view_as_email)
     viewed_fa_id = advisor_fa_id(viewed) if viewed is not None else None
-    return Access(row.email, True, normalize_email(row.view_as_email), viewed_fa_id)
+    return Access(
+        row.email, True, normalize_email(row.view_as_email), viewed_fa_id, ai_assistant=True
+    )
 
 
 def get_admin_access(access: Access = Depends(get_access)) -> Access:
     if not access.is_admin:
         raise _forbidden("only an admin can do this")
+    return access
+
+
+def require_ai_assistant(access: Access = Depends(get_access)) -> Access:
+    if not access.ai_assistant:
+        raise _forbidden("the AI Assistant is not switched on for this account")
     return access
 
 

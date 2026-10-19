@@ -23,6 +23,7 @@ def _access_out(access: Access) -> AccessOut:
         role="admin" if access.is_admin else "advisor",
         fa_id=access.shown_fa_id,
         viewing_as=access.shown_email if access.is_admin else None,
+        ai_assistant=access.ai_assistant,
     )
 
 

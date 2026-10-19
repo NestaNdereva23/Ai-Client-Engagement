@@ -67,6 +67,14 @@ def _default_agent_scoping_to_off() -> None:
 
 _default_agent_scoping_to_off()
 
+
+def _default_guardrail_checks_to_on() -> None:
+    os.environ.setdefault("GUARDRAIL_CHECKS", "true")
+    get_settings.cache_clear()
+
+
+_default_guardrail_checks_to_on()
+
 import app.db.models  # noqa: E402,F401  (registers models on Base.metadata)
 from app.db.base import Base  # noqa: E402
 from app.db.session import SessionLocal, engine  # noqa: E402

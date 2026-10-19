@@ -234,6 +234,9 @@ class Settings(BaseSettings):
 
     rag_enabled: bool = True
 
+    # No default on purpose: generation refuses to run until this is set to true or false.
+    guardrail_checks: bool | None = None
+
     cohort_sample_cap: int = 25
 
     require_deliverable_contact: bool = False

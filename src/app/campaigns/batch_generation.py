@@ -47,7 +47,7 @@ from sqlalchemy.orm import Session
 from app.agents.channels import EMAIL_CHANNEL, ChannelSpec, channel_spec
 from app.agents.email_agent import SystemPromptBlocks, build_system_prompt_blocks
 from app.agents.graph import ClientContext, ContextLoader, load_client_context
-from app.agents.guardrails import GuardrailFailure
+from app.agents.guardrails import GuardrailFailure, enabled_checks, guardrails_on
 from app.audit.log import record_audit
 from app.campaigns.eligibility import check_eligibility
 from app.campaigns.generation import (
@@ -581,13 +581,14 @@ def _ingest_one(
 
     audit = model_boundary_audit_sink(session)
     try:
-        scan_batch_result(
-            raw_output,
-            entity_id=str(item.client_id),
-            run_id=item.custom_id,
-            trace_id=item.trace_id,
-            audit=audit,
-        )
+        if guardrails_on():
+            scan_batch_result(
+                raw_output,
+                entity_id=str(item.client_id),
+                run_id=item.custom_id,
+                trace_id=item.trace_id,
+                audit=audit,
+            )
     except OutboundLeak as leak:
         return _persist_result(
             session,
@@ -627,7 +628,7 @@ def _ingest_one(
         name="guardrails",
         input=content,
     )
-    for check in spec.guardrail_checks:
+    for check in enabled_checks(spec.guardrail_checks):
         try:
             check(check_state)
         except GuardrailFailure as failure:
