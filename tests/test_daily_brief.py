@@ -270,7 +270,7 @@ def test_the_brief_says_what_happened_and_orders_the_groups(advisor_book) -> Non
         "1 of them has taken out more than half of their balance in the last 30 days, "
         "KSh 660K in total. 1 of them did it yesterday."
     )
-    assert withdrawing.warning_signs == "Most common warning signs: heavy withdrawal (1 of 2)."
+    assert withdrawing.warning_signs == "Most common warning signs: large withdrawal (1 of 2)."
     assert brief.groups[1].sharp_fact == "1 of them has not made a deposit for over six months."
     assert brief.rest_clients == 0
     assert brief.worklist_clients == 4

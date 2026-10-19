@@ -216,9 +216,9 @@ See the `LANGFUSE_*` block in `.env.example` for the compose bootstrap variables
 
 Each advisor chosen for the digest gets one email after the nightly run has recomputed the groups. It is the same brief the Daily Brief screen shows.
 
-- It opens with what happened since yesterday: large withdrawals, what is on the calendar today, balances that fell below the capital preservation line, overdue calls, and deposits.
-- Then comes "Where to start": up to three groups of clients in the order of the brief, each with a count, the money that could leave, and one specific fact such as how many took out more than half of their balance in the last 30 days.
-- The subject is the top two headlines.
+- Under "Today at a glance" it lists what happened since yesterday: large withdrawals, what is on the calendar today, balances that fell below the capital preservation line, overdue calls, and deposits.
+- Then comes "Where to start": up to three groups of clients in order of urgency, each with a count, the money at risk (each balance weighted by its risk score, not the full balance), the most common warning signs, one specific fact such as how many took out more than half of their balance in the last 30 days, and a fixed next step.
+- The subject names the large withdrawals or overdue calls first, if there are any, then how many clients are in the groups to review.
 - The email carries counts and money only, never a client name.
 - It links to the Daily Brief in Ticketing, built from `TICKETING_BASE_URL` as `/dashboard?view=ai-outreach&section=at-risk`. The link is left out when that setting is blank.
 

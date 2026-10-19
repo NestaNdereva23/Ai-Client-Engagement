@@ -117,14 +117,14 @@ def _brief(**overrides) -> DailyBrief:
                 could_leave_kes=3_000_000.0,
                 share=0.7,
                 what_is_happening="x",
-                what_to_do="y",
+                what_to_do="Call them first.",
                 worth_knowing="z",
                 sharp_fact=(
                     "3 of them have taken out more than half of their balance "
                     "in the last 30 days, KSh 1.2M in total."
                 ),
                 examples=(BriefClient(777, 9992, "C777", 410_000.0, 90_000.0, "Took out a lot."),),
-                warning_signs="Most common warning signs: heavy withdrawal (4 of 6).",
+                warning_signs="Most common warning signs: large withdrawal (4 of 6).",
             ),
             BriefGroup(
                 code="stopped",
@@ -133,7 +133,7 @@ def _brief(**overrides) -> DailyBrief:
                 could_leave_kes=0.0,
                 share=0.0,
                 what_is_happening="x",
-                what_to_do="y",
+                what_to_do="Send a check-in.",
                 worth_knowing="z",
                 sharp_fact=None,
                 examples=(),
@@ -146,9 +146,12 @@ def _brief(**overrides) -> DailyBrief:
     return DailyBrief(**base)
 
 
-def test_the_subject_is_the_top_two_headlines() -> None:
-    assert _brief().subject == "2 large withdrawals yesterday, 3 things on your calendar"
-    assert _brief(headlines=()).subject == "Nothing new since yesterday"
+def test_the_subject_leads_with_what_is_urgent_then_counts_the_clients_to_review() -> None:
+    calendar_only = (calendar_headline([CalendarItem(1, "meeting", "Meeting", "14:00")]),)
+
+    assert _brief().subject == "2 large withdrawals yesterday, 8 clients to review today"
+    assert _brief(headlines=calendar_only).subject == "8 clients to review today"
+    assert _brief(headlines=(), groups=()).subject == "Nothing new since yesterday"
     assert _brief(worklist_clients=0).subject == "Nothing on your worklist today"
 
 
@@ -156,17 +159,33 @@ def test_the_body_starts_with_what_happened_then_where_to_start() -> None:
     body = render_digest_email(brief=_brief()).text_body
 
     assert "Good morning Asha," in body
-    assert "2 clients made large withdrawals yesterday. KSh 1.9M in total." in body
+    assert "Here is what needs your attention today." in body
+    assert "Today at a glance" in body
+    assert "- 2 clients made large withdrawals yesterday. KSh 1.9M in total." in body
     assert (
-        "You have 3 things on your calendar today. "
+        "- You have 3 things on your calendar today. "
         "A call at 10:30, a WhatsApp follow-up and a reminder." in body
     )
+    assert "Where to start\nThey are in order of urgency, with money already leaving first." in body
     assert "1. Clients taking money out while paying in less" in body
-    assert "   6 clients, KSh 3.0M could leave." in body
-    assert "   Most common warning signs: heavy withdrawal (4 of 6)." in body
+    assert "   6 clients, KSh 3.0M at risk." in body
+    assert "   Most common warning signs: large withdrawal (4 of 6)." in body
     assert "   3 of them have taken out more than half of their balance" in body
-    assert "2. Clients who have stopped investing\n   2 clients.\n" in body
+    assert "   Next step: Call them first." in body
+    assert (
+        "2. Clients who have stopped investing\n   2 clients.\n   Next step: Send a check-in."
+        in body
+    )
+    assert "could leave" not in body
     assert "By tier" not in body
+
+
+def test_the_at_risk_note_shows_only_when_a_group_shows_money() -> None:
+    with_money = render_digest_email(brief=_brief()).text_body
+    without_money = render_digest_email(brief=_brief(groups=_brief().groups[1:])).text_body
+
+    assert "KSh at risk counts each balance in proportion to its risk score." in with_money
+    assert "KSh at risk" not in without_money
 
 
 def test_a_quiet_morning_still_says_where_to_start() -> None:
@@ -245,20 +264,29 @@ def test_the_calendar_headline_names_up_to_three_things_and_counts_the_rest() ->
 
     assert headline.lead == "You have 5 things on your calendar today."
     assert headline.text == "A call at 10:30, a meeting at 14:00, a WhatsApp follow-up and 2 more."
-    assert calendar_headline(items[:1]).lead == "You have 1 thing on your calendar today."
+
+
+def test_a_single_calendar_item_reads_as_one_sentence() -> None:
+    meeting = calendar_headline([CalendarItem(1, "meeting", "Meeting", "14:00")])
+    reminder = calendar_headline([CalendarItem(1, "reminder", "Reminder", None)])
+
+    assert (meeting.lead, meeting.text) == ("You have a meeting at 14:00 today.", "")
+    assert (reminder.lead, reminder.text) == ("You have a reminder today.", "")
 
 
 def test_warning_signs_name_the_signals_behind_the_amount() -> None:
     assert warning_signs_fact({}, 3) is None
     assert warning_signs_fact({"sig_broken_pattern": 1}, 1) == (
-        "Warning signs: broke their own pattern."
+        "Warning signs: activity changed from usual."
     )
     assert warning_signs_fact({"sig_heavy_withdrawal": 1, "sig_broken_pattern": 1}, 1) == (
-        "Warning signs: broke their own pattern and heavy withdrawal."
+        "Warning signs: activity changed from usual and large withdrawal."
     )
     assert warning_signs_fact(
         {"sig_shrinking": 2, "sig_heavy_withdrawal": 5, "sig_dormant": 1}, 6
-    ) == ("Most common warning signs: heavy withdrawal (5 of 6), shrinking deposits (2 of 6).")
+    ) == (
+        "Most common warning signs: large withdrawal (5 of 6), deposits getting smaller (2 of 6)."
+    )
 
 
 def test_the_sharp_facts_say_nothing_when_there_is_nothing_to_say() -> None:

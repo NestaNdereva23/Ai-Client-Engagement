@@ -124,6 +124,14 @@ CALENDAR_PHRASES = {
 }
 TIMED_KINDS = ("call", "meeting")
 PHRASES_SHOWN = 3
+URGENT_HEADLINE_KINDS = ("large_withdrawals", "overdue_calls")
+
+BRIEF_SIGNAL_WORDS = {
+    **{name: label.lower() for name, label in SIGNAL_LABELS.items()},
+    "sig_broken_pattern": "activity changed from usual",
+    "sig_heavy_withdrawal": "large withdrawal",
+    "sig_shrinking": "deposits getting smaller",
+}
 
 
 @dataclass(frozen=True)
@@ -188,9 +196,16 @@ class DailyBrief:
     def subject(self) -> str:
         if self.worklist_clients == 0:
             return "Nothing on your worklist today"
-        if not self.headlines:
+        parts = []
+        urgent = next((h for h in self.headlines if h.kind in URGENT_HEADLINE_KINDS), None)
+        if urgent is not None:
+            parts.append(urgent.short)
+        to_review = sum(group.clients for group in self.groups)
+        if to_review:
+            parts.append(f"{to_review:,} {plural(to_review, 'client')} to review today")
+        if not parts:
             return "Nothing new since yesterday"
-        text = ", ".join(headline.short for headline in self.headlines[:2])
+        text = ", ".join(parts)
         return text[0].upper() + text[1:]
 
 
@@ -266,6 +281,10 @@ def _calendar_phrase(item: CalendarItem) -> str:
 def calendar_headline(items: Sequence[CalendarItem]) -> Headline:
     count = len(items)
     shown = [_calendar_phrase(item) for item in items[:PHRASES_SHOWN]]
+    if count == 1:
+        return Headline(
+            "calendar", f"You have {shown[0]} today.", "", "1 thing on your calendar", 1
+        )
     if count > PHRASES_SHOWN:
         shown.append(f"{count - PHRASES_SHOWN} more")
     text = join_with_and(shown)
@@ -385,9 +404,9 @@ def warning_signs_fact(counts: dict[str, int], clients: int) -> str | None:
     if not ranked:
         return None
     if clients == 1:
-        names = [SIGNAL_LABELS[name].lower() for name, _ in ranked[:3]]
+        names = [BRIEF_SIGNAL_WORDS[name] for name, _ in ranked[:3]]
         return f"Warning signs: {_joined(names)}."
-    shown = [f"{SIGNAL_LABELS[name].lower()} ({count} of {clients})" for name, count in ranked[:2]]
+    shown = [f"{BRIEF_SIGNAL_WORDS[name]} ({count} of {clients})" for name, count in ranked[:2]]
     return f"Most common warning signs: {', '.join(shown)}."
 
 

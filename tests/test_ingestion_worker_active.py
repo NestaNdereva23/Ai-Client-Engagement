@@ -46,10 +46,10 @@ def _worker(client, page_fetcher) -> IngestionWorker:
     )
 
 
-def test_the_active_feed_uses_the_source_page_size_and_the_inactive_feed_asks_for_1000() -> None:
+def test_both_feeds_ask_for_1000_records_per_page() -> None:
     settings = get_settings()
 
-    assert resolve_endpoint("active-clients", settings).page_size is None
+    assert resolve_endpoint("active-clients", settings).page_size == 1000
     assert resolve_endpoint("inactive-clients", settings).page_size == 1000
 
 

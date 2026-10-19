@@ -44,9 +44,8 @@ def resolve_endpoint(endpoint: str, settings: Settings) -> EndpointConfig:
     already falls back to the client's own base URL; every other endpoint
     supplies its own full URL from settings.
 
-    page_size is how many records to ask for per page. The inactive feed is the
-    big one, so it asks for 1000 to cut the round trips. The active feed leaves
-    it as None and takes the source's own default.
+    page_size is how many records to ask for per page. Both feeds ask for 1000
+    to cut the round trips.
     """
     if endpoint == "inactive-clients":
         return EndpointConfig(
@@ -64,6 +63,6 @@ def resolve_endpoint(endpoint: str, settings: Settings) -> EndpointConfig:
             client_model=ActiveClientRecord,
             schema_drift_fn=schema_drift_active,
             count_field="client_count",
-            page_size=None,
+            page_size=1000,
         )
     raise UnknownEndpoint(endpoint)
