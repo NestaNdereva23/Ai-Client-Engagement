@@ -15,6 +15,7 @@ router = APIRouter(tags=["audit"], dependencies=[Depends(get_current_reviewer_id
 @router.get("/audit", response_model=Page[AuditLogEntryOut])
 def list_audit_log(
     entity: str | None = None,
+    entity_id: str | None = None,
     run: str | None = None,
     trace: str | None = None,
     cursor: str | None = None,
@@ -23,7 +24,13 @@ def list_audit_log(
 ) -> Page[AuditLogEntryOut]:
     try:
         rows, next_cursor = browse_audit_log(
-            session, entity_type=entity, run_id=run, trace_id=trace, cursor=cursor, limit=limit
+            session,
+            entity_type=entity,
+            entity_id=entity_id,
+            run_id=run,
+            trace_id=trace,
+            cursor=cursor,
+            limit=limit,
         )
     except InvalidCursor:
         raise HTTPException(status_code=400, detail="invalid cursor") from None

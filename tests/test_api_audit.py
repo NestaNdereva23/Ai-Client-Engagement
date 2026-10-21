@@ -73,6 +73,15 @@ def test_list_audit_log_filters_by_entity(an_audit_row) -> None:
     assert items[0]["detail"] == {"k": "v"}
 
 
+def test_list_audit_log_filters_by_entity_id(an_audit_row) -> None:
+    run_id, _trace_id = an_audit_row
+    response = client.get(AUDIT, params={"entity": "test_entity", "entity_id": "e1"})
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert any(item["run_id"] == run_id for item in items)
+    assert all(item["entity_id"] == "e1" for item in items)
+
+
 def test_list_audit_log_filters_by_trace(an_audit_row) -> None:
     _run_id, trace_id = an_audit_row
     response = client.get(AUDIT, params={"trace": trace_id})

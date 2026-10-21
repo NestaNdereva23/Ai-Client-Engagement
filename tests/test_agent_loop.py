@@ -212,6 +212,7 @@ def clean(db: None):
 @pytest.fixture(autouse=True)
 def _fixed_thresholds(monkeypatch, clean: None):
     monkeypatch.setattr(agent_loop_module, "load_thresholds", lambda session, as_of: THRESHOLDS)
+    monkeypatch.setattr(get_settings(), "agent_angle_generation_enabled", False)
 
 
 _MAPPING_VERSION = 900001

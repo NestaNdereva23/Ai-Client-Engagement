@@ -54,6 +54,34 @@ def test_saved_setting_takes_effect_at_once_and_is_audited(
     assert audit.detail == {"from": before, "to": wanted, "reason": "Testing the settings page"}
 
 
+def test_new_active_book_settings_are_listed_and_saveable(
+    clean_settings: None, reviewer_1_headers: dict[str, str]
+) -> None:
+    listed = client.get(URL, headers=reviewer_1_headers)
+    assert listed.status_code == 200
+    keys = {s["key"] for s in listed.json()["settings"]}
+    assert {
+        "agent_run_after_risk_detection",
+        "agent_fa_scoped",
+        "agent_resume_campaigns_enabled",
+        "agent_angle_generation_enabled",
+        "agent_run_stale_after_minutes",
+        "agent_group_pause_window_seconds",
+        "agent_report_recipients",
+        "pattern_min_group_size",
+        "pattern_min_gap_points",
+        "pattern_min_z",
+        "pattern_max_features",
+        "pattern_max_per_run",
+    } <= keys
+
+    response = _save(reviewer_1_headers, {"agent_angle_generation_enabled": True})
+
+    assert response.status_code == 200
+    assert _value(response, "agent_angle_generation_enabled") is True
+    assert get_settings().agent_angle_generation_enabled is True
+
+
 @pytest.mark.parametrize(
     "changes",
     [

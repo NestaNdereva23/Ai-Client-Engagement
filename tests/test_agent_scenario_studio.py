@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from app.agents.permissions import set_permission
 from app.agents.scenario_studio import (
@@ -44,48 +44,48 @@ TIER_THRESHOLDS = TierThresholds(
 ACT_ALONE_ACTION = "follow_up_when_no_one_called"
 
 
-def _existing_permission(session) -> str | None:
-    row = session.scalar(
+def _existing_permission(session) -> AgentPermission | None:
+    return session.scalar(
         select(AgentPermission).where(
             AgentPermission.action_code == ACT_ALONE_ACTION,
             AgentPermission.priority_tier.is_(None),
             AgentPermission.risk_band.is_(None),
+            AgentPermission.valid_to.is_(None),
         )
     )
-    return None if row is None else row.permission
 
 
 @pytest.fixture
 def act_alone_permission():
     with SessionLocal() as session:
         before = _existing_permission(session)
+        before_id = None if before is None else before.permission_id
         set_permission(
             session,
             ACT_ALONE_ACTION,
             "act_alone",
             changed_by="scenario-studio-test",
             changed_reason="let the scenario studio test the auto-queue path",
+            valid_from=AS_OF,
         )
         session.commit()
 
     yield
 
     with SessionLocal() as session:
-        if before is None:
-            session.execute(
-                delete(AgentPermission).where(
-                    AgentPermission.action_code == ACT_ALONE_ACTION,
-                    AgentPermission.priority_tier.is_(None),
-                    AgentPermission.risk_band.is_(None),
-                )
+        session.execute(
+            delete(AgentPermission).where(
+                AgentPermission.action_code == ACT_ALONE_ACTION,
+                AgentPermission.priority_tier.is_(None),
+                AgentPermission.risk_band.is_(None),
+                AgentPermission.permission_id != before_id,
             )
-        else:
-            set_permission(
-                session,
-                ACT_ALONE_ACTION,
-                before,
-                changed_by="scenario-studio-test",
-                changed_reason="restore the setting this test found in place",
+        )
+        if before_id is not None:
+            session.execute(
+                update(AgentPermission)
+                .where(AgentPermission.permission_id == before_id)
+                .values(valid_to=None)
             )
         session.commit()
 

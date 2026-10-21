@@ -160,7 +160,11 @@ def evaluate_scenario(
     )
     permission = (
         effective_permission(
-            session, action_code, money_total_kes=scenario.balance, money_ceiling_kes=ceiling
+            session,
+            action_code,
+            money_total_kes=scenario.balance,
+            money_ceiling_kes=ceiling,
+            at=as_of,
         )
         if action_code
         else None

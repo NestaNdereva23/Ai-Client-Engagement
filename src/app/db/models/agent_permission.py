@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
+    Date,
     DateTime,
     Float,
+    Index,
     Integer,
     Text,
-    UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -27,11 +29,13 @@ class AgentPermission(Base):
 
     __tablename__ = "agent_permission"
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_agent_permission_action_tier_band_live",
             "action_code",
             "priority_tier",
             "risk_band",
-            name="uq_agent_permission_action_tier_band",
+            unique=True,
+            postgresql_where=text("valid_to IS NULL"),
             postgresql_nulls_not_distinct=True,
         ),
         CheckConstraint(
@@ -61,6 +65,8 @@ class AgentPermission(Base):
     max_money_kes: Mapped[float | None] = mapped_column(Float, nullable=True)
     changed_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     changed_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    valid_from: Mapped[date] = mapped_column(Date, nullable=False)
+    valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

@@ -443,13 +443,13 @@ def _level(
     proposals: Sequence[AgentProposal],
     run_day: date,
 ) -> ReportLevel:
-    stored = resolve_permission(session, action_code)
+    stored = resolve_permission(session, action_code, at=run_day)
     entry = catalog.get(action_code)
     usage = daily_usage(session, action_code=action_code, as_of=run_day)
     return ReportLevel(
         action_code=action_code,
         level=DEFAULT_PERMISSION if stored is None else stored.permission,
-        effective_level=effective_permission(session, action_code),
+        effective_level=effective_permission(session, action_code, at=run_day),
         paused=entry is None or entry.paused,
         used_in_run=sorted(
             {p.permission_applied for p in proposals if p.action_code == action_code}

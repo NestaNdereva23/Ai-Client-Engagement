@@ -129,6 +129,18 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
     _whole("agent_insight_write_cap", 1, 100),
     _whole("agent_query_min_group_size", 3, 50),
     _choice("prompt_config_source", "hardcoded", "db"),
+    _switch("agent_run_after_risk_detection"),
+    _switch("agent_fa_scoped"),
+    _switch("agent_resume_campaigns_enabled"),
+    _switch("agent_angle_generation_enabled"),
+    _whole("agent_run_stale_after_minutes", 5, 1440),
+    _whole("agent_group_pause_window_seconds", 0, 300),
+    EditableSetting("agent_report_recipients", "text", optional=True, max_length=500),
+    _whole("pattern_min_group_size", 3, 500),
+    EditableSetting("pattern_min_gap_points", "float", 0, 100),
+    EditableSetting("pattern_min_z", "float", 0, 20),
+    _whole("pattern_max_features", 1, 10),
+    _whole("pattern_max_per_run", 1, 100),
 )
 
 EDITABLE_SETTINGS_BY_KEY: dict[str, EditableSetting] = {s.key: s for s in EDITABLE_SETTINGS}

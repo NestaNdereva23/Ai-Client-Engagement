@@ -508,6 +508,7 @@ def make_write_tools(
                 skip_reasons=skip_reasons,
             ),
             members=resolved.members,
+            as_of=day,
             run_id=run_id,
             events=events,
         )
@@ -577,6 +578,7 @@ def make_write_tools(
                 skip_reasons={member_key(member): NO_ACTION_DECIDED for member in resolved.members},
             ),
             members=resolved.members,
+            as_of=day,
             run_id=run_id,
             events=events,
         )

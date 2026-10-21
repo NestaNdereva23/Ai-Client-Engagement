@@ -147,4 +147,6 @@ def test_todo36_endpoints_are_registered():
     paths = set(app.openapi().get("paths", {}))
     assert "/api/v1/agent/actions" in paths
     assert "/api/v1/agent/actions/{action_code}/content-mix" in paths
+    assert "/api/v1/agent/actions/{action_code}/paused" in paths
+    assert "/api/v1/agent/actions/{action_code}/permission" in paths
     assert "/api/v1/agent/metrics/guide-mix" in paths

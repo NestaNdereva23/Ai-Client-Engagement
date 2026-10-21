@@ -7,7 +7,7 @@ class ActionMixOut(BaseModel):
     action_code: str
     title: str
     content_mix: str
-    default_permission: str
+    permission: str
     response_kind: str
     sends_message: bool
     paused: bool
@@ -27,3 +27,23 @@ class SetContentMixOut(BaseModel):
     action_code: str
     content_mix: str
     version: int
+
+
+class SetPausedIn(BaseModel):
+    paused: bool
+
+
+class SetPausedOut(BaseModel):
+    action_code: str
+    paused: bool
+    version: int
+
+
+class SetPermissionIn(BaseModel):
+    permission: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
+class SetPermissionOut(BaseModel):
+    action_code: str
+    permission: str

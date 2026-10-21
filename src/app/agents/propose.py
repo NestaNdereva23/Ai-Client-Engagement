@@ -317,6 +317,7 @@ def _save_proposal(
             action.action_code,
             money_total_kes=money_total,
             money_ceiling_kes=action.money_ceiling_kes,
+            at=as_of,
         ),
         skip_reason_counts=skip_reason_counts(skip_reasons),
         status="proposed",

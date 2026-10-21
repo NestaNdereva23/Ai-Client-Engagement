@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import pytest
 from sqlalchemy import delete, select
 
@@ -50,7 +52,9 @@ def written_actions():
 def test_every_seeded_action_has_a_setting(db: None) -> None:
     with SessionLocal() as session:
         rows = session.scalars(
-            select(AgentPermission).where(AgentPermission.priority_tier.is_(None))
+            select(AgentPermission).where(
+                AgentPermission.priority_tier.is_(None), AgentPermission.valid_to.is_(None)
+            )
         ).all()
     settings = {row.action_code: row.permission for row in rows}
     for action_code in SEEDED_ACTIONS:
@@ -199,7 +203,9 @@ def test_a_tier_only_row_beats_a_band_only_row(db: None, written_actions: list[s
         )
 
 
-def test_writing_a_setting_twice_updates_the_same_row(db: None, written_actions: list[str]) -> None:
+def test_writing_a_setting_twice_closes_the_old_row_and_opens_a_new_one(
+    db: None, written_actions: list[str]
+) -> None:
     with SessionLocal() as session:
         written_actions.append(TRIAL_ACTION)
         first = set_permission(
@@ -215,7 +221,36 @@ def test_writing_a_setting_twice_updates_the_same_row(db: None, written_actions:
             changed_by="tester",
             changed_reason="second",
         )
-        assert second.permission_id == first_id
+        assert second.permission_id != first_id
+        session.commit()
+
+    with SessionLocal() as session:
+        rows = session.scalars(
+            select(AgentPermission)
+            .where(AgentPermission.action_code == TRIAL_ACTION)
+            .order_by(AgentPermission.permission_id)
+        ).all()
+    assert len(rows) == 2
+    assert rows[0].permission == "suggest_only"
+    assert rows[0].valid_to is not None
+    assert rows[1].permission == "approve_each"
+    assert rows[1].max_clients_per_day == 50
+    assert rows[1].max_money_kes == 250000.0
+    assert rows[1].valid_to is None
+
+
+def test_writing_the_same_setting_again_writes_nothing(
+    db: None, written_actions: list[str]
+) -> None:
+    with SessionLocal() as session:
+        written_actions.append(TRIAL_ACTION)
+        first = set_permission(
+            session, TRIAL_ACTION, "suggest_only", changed_by="tester", changed_reason="first"
+        )
+        again = set_permission(
+            session, TRIAL_ACTION, "suggest_only", changed_by="tester", changed_reason="again"
+        )
+        assert again.permission_id == first.permission_id
         session.commit()
 
     with SessionLocal() as session:
@@ -223,9 +258,6 @@ def test_writing_a_setting_twice_updates_the_same_row(db: None, written_actions:
             select(AgentPermission).where(AgentPermission.action_code == TRIAL_ACTION)
         ).all()
     assert len(rows) == 1
-    assert rows[0].permission == "approve_each"
-    assert rows[0].max_clients_per_day == 50
-    assert rows[0].max_money_kes == 250000.0
 
 
 def test_a_change_leaves_a_readable_trail(db: None, written_actions: list[str]) -> None:
@@ -256,6 +288,30 @@ def test_a_change_leaves_a_readable_trail(db: None, written_actions: list[str]) 
     assert changes[1].detail["after"]["permission"] == "approve_sample"
     assert changes[1].detail["reason"] == "two clean weeks"
     assert changes[1].actor_id == "asha"
+
+
+def test_an_old_setting_is_still_readable_on_the_day_it_was_live(
+    db: None, written_actions: list[str]
+) -> None:
+    yesterday = date.today() - timedelta(days=1)
+    with SessionLocal() as session:
+        written_actions.append(TRIAL_ACTION)
+        set_permission(
+            session,
+            TRIAL_ACTION,
+            "suggest_only",
+            changed_by="tester",
+            changed_reason="first",
+            valid_from=yesterday,
+        )
+        set_permission(
+            session, TRIAL_ACTION, "act_alone", changed_by="tester", changed_reason="second"
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        assert effective_permission(session, TRIAL_ACTION, at=yesterday) == "suggest_only"
+        assert effective_permission(session, TRIAL_ACTION) == "act_alone"
 
 
 def test_an_unknown_permission_level_is_refused(db: None) -> None:

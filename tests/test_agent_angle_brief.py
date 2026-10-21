@@ -184,8 +184,8 @@ def test_angle_for_proposal_returns_none_for_a_no_message_action(db: None) -> No
     assert result is None
 
 
-def test_angle_for_proposal_is_a_no_op_when_the_flag_is_off(db: None) -> None:
-    assert get_settings().agent_angle_generation_enabled is False
+def test_angle_for_proposal_is_a_no_op_when_the_flag_is_off(db: None, monkeypatch) -> None:
+    monkeypatch.setattr(get_settings(), "agent_angle_generation_enabled", False)
     with SessionLocal() as session:
         before = session.scalar(select(AuditLog).order_by(AuditLog.log_id.desc()).limit(1))
         before_id = before.log_id if before else 0

@@ -4,7 +4,7 @@ from datetime import date, datetime, time
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from app.agents.permissions import set_permission
 from app.agents.situation_action_mapping import (
@@ -158,18 +158,21 @@ def test_batch_simulation_everyone_needs_approval_without_a_permission_row(book:
 def test_batch_simulation_auto_queues_the_action_with_permission_to_act_alone(book: None) -> None:
     with SessionLocal() as session:
         before = session.scalar(
-            select(AgentPermission.permission).where(
+            select(AgentPermission).where(
                 AgentPermission.action_code == "follow_up_when_no_one_called",
                 AgentPermission.priority_tier.is_(None),
                 AgentPermission.risk_band.is_(None),
+                AgentPermission.valid_to.is_(None),
             )
         )
+        before_id = None if before is None else before.permission_id
         set_permission(
             session,
             "follow_up_when_no_one_called",
             "act_alone",
             changed_by="agent-studio-service-test",
             changed_reason="let the batch simulation test the auto-queue path",
+            valid_from=AS_OF,
         )
         session.commit()
 
@@ -178,21 +181,19 @@ def test_batch_simulation_auto_queues_the_action_with_permission_to_act_alone(bo
             result = run_batch_simulation(session, AS_OF)
     finally:
         with SessionLocal() as session:
-            if before is None:
-                session.execute(
-                    delete(AgentPermission).where(
-                        AgentPermission.action_code == "follow_up_when_no_one_called",
-                        AgentPermission.priority_tier.is_(None),
-                        AgentPermission.risk_band.is_(None),
-                    )
+            session.execute(
+                delete(AgentPermission).where(
+                    AgentPermission.action_code == "follow_up_when_no_one_called",
+                    AgentPermission.priority_tier.is_(None),
+                    AgentPermission.risk_band.is_(None),
+                    AgentPermission.permission_id != before_id,
                 )
-            else:
-                set_permission(
-                    session,
-                    "follow_up_when_no_one_called",
-                    before,
-                    changed_by="agent-studio-service-test",
-                    changed_reason="restore the setting this test found in place",
+            )
+            if before_id is not None:
+                session.execute(
+                    update(AgentPermission)
+                    .where(AgentPermission.permission_id == before_id)
+                    .values(valid_to=None)
                 )
             session.commit()
 

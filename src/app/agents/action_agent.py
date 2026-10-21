@@ -598,6 +598,7 @@ def build_action_agent_graph(
             insight=insight,
             decision=decision,
             members=resolved.members,
+            as_of=as_of,
             run_id=run_id,
             events=events,
         )

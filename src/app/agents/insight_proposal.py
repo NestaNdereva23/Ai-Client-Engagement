@@ -114,6 +114,7 @@ def save_insight_proposal(
     insight: AgentInsight,
     decision: GroupDecision,
     members: Sequence[GroupMember],
+    as_of: date,
     run_id: int | None = None,
     events: EventLog = NO_EVENTS,
 ) -> AgentProposal:
@@ -147,6 +148,7 @@ def save_insight_proposal(
             decision.action.action_code,
             money_total_kes=money_total_kes,
             money_ceiling_kes=decision.action.money_ceiling_kes,
+            at=as_of,
         ),
         skip_reason_counts=skip_reason_counts(decision.skip_reasons),
         status="proposed",

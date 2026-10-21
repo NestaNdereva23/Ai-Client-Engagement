@@ -348,13 +348,13 @@ def estimate_cost(
 
 
 def _action_allowance(session: Session, action_code: str, day: date) -> dict[str, Any]:
-    permission_row = resolve_permission(session, action_code)
+    permission_row = resolve_permission(session, action_code, at=day)
     usage = daily_usage(session, action_code=action_code, as_of=day)
     cap_clients = permission_row.max_clients_per_day if permission_row else None
     cap_money = permission_row.max_money_kes if permission_row else None
     return {
         "action_code": action_code,
-        "permission": effective_permission(session, action_code),
+        "permission": effective_permission(session, action_code, at=day),
         "cap_clients_per_day": cap_clients,
         "used_clients": usage.used_clients,
         "remaining_clients": None

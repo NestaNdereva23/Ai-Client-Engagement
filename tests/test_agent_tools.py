@@ -568,9 +568,13 @@ class _FakePermission:
 def test_check_allowance_reports_what_is_left_under_a_cap(db: None, monkeypatch) -> None:
     monkeypatch.setattr(tools_module, "load_action", lambda session, code, at: object())
     monkeypatch.setattr(
-        tools_module, "resolve_permission", lambda session, code: _FakePermission(5, 100_000.0)
+        tools_module,
+        "resolve_permission",
+        lambda session, code, at=None: _FakePermission(5, 100_000.0),
     )
-    monkeypatch.setattr(tools_module, "effective_permission", lambda session, code: "approve_each")
+    monkeypatch.setattr(
+        tools_module, "effective_permission", lambda session, code, at=None: "approve_each"
+    )
 
     from app.services.agent_proposals import DailyUsage
 
@@ -591,8 +595,10 @@ def test_check_allowance_reports_what_is_left_under_a_cap(db: None, monkeypatch)
 
 def test_check_allowance_treats_no_cap_as_unlimited(db: None, monkeypatch) -> None:
     monkeypatch.setattr(tools_module, "load_action", lambda session, code, at: object())
-    monkeypatch.setattr(tools_module, "resolve_permission", lambda session, code: None)
-    monkeypatch.setattr(tools_module, "effective_permission", lambda session, code: "suggest_only")
+    monkeypatch.setattr(tools_module, "resolve_permission", lambda session, code, at=None: None)
+    monkeypatch.setattr(
+        tools_module, "effective_permission", lambda session, code, at=None: "suggest_only"
+    )
 
     from app.services.agent_proposals import DailyUsage
 

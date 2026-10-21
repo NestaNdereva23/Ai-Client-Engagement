@@ -815,6 +815,7 @@ def build_agent_loop_steps(
                     decision.action.action_code,
                     money_total_kes=money_total_kes,
                     money_ceiling_kes=decision.action.money_ceiling_kes,
+                    at=as_of,
                 ),
                 skip_reason_counts=skip_reason_counts(decision.skip_reasons),
                 status="proposed",
