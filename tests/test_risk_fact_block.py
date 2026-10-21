@@ -86,7 +86,7 @@ def test_a_band_field_rejects_a_value_outside_its_vocabulary(field, bad_value) -
 @pytest.mark.parametrize(
     ("field", "good_value"),
     [
-        ("risk_band", next(iter(RISK_BANDS))),
+        ("risk_band", sorted(RISK_BANDS)[0]),
         ("route", ROUTES[0]),
         ("balance_tier", BALANCE_TIERS[0]),
         ("recency_band", RECENCY_BANDS[0]),

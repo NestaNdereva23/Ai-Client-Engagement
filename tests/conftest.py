@@ -11,6 +11,11 @@ collide with real client/fund ids from an actual Cytonn pull; on a shared
 database an upsert-based transform silently overwrites real rows with test
 data. Create the database once (`CREATE DATABASE ace_test`) and apply
 migrations to it before running the suite for the first time.
+
+Under pytest-xdist (`-n auto`), each worker process clones that database
+(`CREATE DATABASE ... TEMPLATE ace_test`) into its own `ace_test_gwN`, so
+workers never collide on the same hardcoded ids. Plain `pytest` with no `-n`
+is unaffected.
 """
 
 from __future__ import annotations
@@ -24,18 +29,54 @@ from sqlalchemy import text
 
 from app.config import get_settings
 
+_DB_PATH_RE = re.compile(r"/([^/?]+)(\?.*)?$")
+
 
 def _redirect_to_test_database() -> None:
     explicit = os.environ.get("TEST_DATABASE_URL")
     if explicit:
-        os.environ["DATABASE_URL"] = explicit
+        base = explicit
     else:
-        base = get_settings().database_url
         # .../ace -> .../ace_test ; leaves a query string, if any, untouched.
-        os.environ["DATABASE_URL"] = re.sub(
-            r"/([^/?]+)(\?.*)?$", lambda m: f"/{m.group(1)}_test{m.group(2) or ''}", base
-        )
+        # Idempotent: the xdist controller process runs this same function
+        # and leaks its already-suffixed DATABASE_URL to worker processes
+        # through the inherited environment, so a worker must not suffix twice.
+        base = get_settings().database_url
+        name = _DB_PATH_RE.search(base).group(1)
+        if not name.endswith("_test"):
+            base = _DB_PATH_RE.sub(lambda m: f"/{name}_test{m.group(2) or ''}", base)
+
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER")
+    if worker_id:
+        base = _clone_worker_database(base, worker_id)
+
+    os.environ["DATABASE_URL"] = base
     get_settings.cache_clear()
+
+
+def _clone_worker_database(template_url: str, worker_id: str) -> str:
+    """Point this xdist worker at its own copy of the test database.
+
+    CREATE DATABASE ... TEMPLATE requires a connection to neither database
+    involved, so this goes through the `postgres` maintenance database.
+    """
+    from sqlalchemy import create_engine
+
+    template_db = _DB_PATH_RE.search(template_url).group(1)
+    worker_db = f"{template_db}_{worker_id}"
+    worker_url = _DB_PATH_RE.sub(lambda m: f"/{worker_db}{m.group(2) or ''}", template_url)
+    admin_url = _DB_PATH_RE.sub(lambda m: f"/postgres{m.group(2) or ''}", template_url)
+
+    try:
+        engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+        with engine.connect() as conn:
+            conn.execute(text(f'DROP DATABASE IF EXISTS "{worker_db}" WITH (FORCE)'))
+            conn.execute(text(f'CREATE DATABASE "{worker_db}" TEMPLATE "{template_db}"'))
+        engine.dispose()
+    except Exception:
+        pass  # unreachable database; _db_available() below reports it and tests skip
+
+    return worker_url
 
 
 _redirect_to_test_database()
@@ -90,6 +131,10 @@ def _db_available() -> bool:
 
 
 DB_AVAILABLE = _db_available()
+# An idle pooled connection to this database blocks CREATE DATABASE ... TEMPLATE
+# (used to clone per-worker test databases under xdist), so don't leave one open
+# in the controller process, which never runs a test but stays up for the whole run.
+engine.dispose()
 
 
 @pytest.fixture
