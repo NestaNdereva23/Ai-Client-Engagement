@@ -14,6 +14,7 @@ from app.agents import agent_loop as agent_loop_module
 from app.agents.action_catalog import load_action
 from app.agents.agent_loop import (
     CHOOSE_ACTION_TOOL_NAME,
+    FALLBACK_PLAN_TEXT,
     NOT_SELECTED_TONIGHT,
     AgentRunInProgress,
     execute_agent_run,
@@ -402,6 +403,64 @@ def test_a_full_run_produces_a_proposal_chosen_by_the_model() -> None:
     assert detail["why_now"] and isinstance(detail["why_now"], str)
     assert "screen_label" in detail
     assert "suggested_owner" in detail
+
+
+def test_plan_retries_when_the_model_echoes_a_tool_call_instead_of_making_one() -> None:
+    _seed_first_deposit_client(ELIGIBLE_CLIENT)
+    llm_client = FakeConversingLLMClient(
+        [
+            _final_answer('{"list_groups": {}}'),
+            _final_answer("The fee warning group matters tonight."),
+            *_choose_reply(
+                [
+                    {
+                        "group_name": FIRST_DEPOSIT_NO_REPEAT,
+                        "action_code": "fee_warning",
+                        "angle": "sitting_still",
+                        "reason": "their balance will run out within a few months",
+                    }
+                ]
+            ),
+        ]
+    )
+
+    with SessionLocal() as session:
+        run = run_nightly_agent(session, trigger="manual", llm_client=llm_client, as_of=AS_OF)
+        run_id = run.run_id
+
+    with SessionLocal() as session:
+        stored_run = session.get(AgentRun, run_id)
+    assert stored_run.state == "completed"
+    assert stored_run.plan_text == "The fee warning group matters tonight."
+
+
+def test_plan_falls_back_when_the_model_keeps_echoing_a_tool_call() -> None:
+    _seed_first_deposit_client(ELIGIBLE_CLIENT)
+    llm_client = FakeConversingLLMClient(
+        [
+            _final_answer('{"list_groups": {}}'),
+            _final_answer('{"list_groups": {"as_of": "2026-09-07"}}'),
+            *_choose_reply(
+                [
+                    {
+                        "group_name": FIRST_DEPOSIT_NO_REPEAT,
+                        "action_code": "fee_warning",
+                        "angle": "sitting_still",
+                        "reason": "their balance will run out within a few months",
+                    }
+                ]
+            ),
+        ]
+    )
+
+    with SessionLocal() as session:
+        run = run_nightly_agent(session, trigger="manual", llm_client=llm_client, as_of=AS_OF)
+        run_id = run.run_id
+
+    with SessionLocal() as session:
+        stored_run = session.get(AgentRun, run_id)
+    assert stored_run.state == "completed"
+    assert stored_run.plan_text == FALLBACK_PLAN_TEXT
 
 
 def test_a_generated_angle_is_published_and_used_when_the_flag_is_on(monkeypatch) -> None:

@@ -91,13 +91,14 @@ def gate_members(
     session: Session,
     *,
     action: AgentActionCatalog,
+    group_name: str,
     members: Sequence[GroupMember],
     as_of: date,
     cooldown_days: int | None,
 ) -> dict[tuple[int, int], str | None]:
     """Why each client fund was left out of this response, or None if it stays."""
     if contact_checks_apply(action):
-        return group_skip_reasons(session, members, action, as_of, cooldown_days)
+        return group_skip_reasons(session, group_name, members, action, as_of, cooldown_days)
     return {member_key(member): None for member in members}
 
 

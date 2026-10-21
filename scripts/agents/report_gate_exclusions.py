@@ -75,7 +75,7 @@ def _live_report(as_of: date, only_group: str | None) -> int:
                     f"the group '{group.name}' has no action in the rule table"
                 )
             action = load_action_or_raise(session, action_code, as_of)
-            reasons = group_skip_reasons(session, group.members, action, as_of, None)
+            reasons = group_skip_reasons(session, group.name, group.members, action, as_of, None)
             included = sum(1 for reason in reasons.values() if reason is None)
             # Client funds, not distinct clients: a client with two funds in
             # the same group is one client_count but two entries here, and

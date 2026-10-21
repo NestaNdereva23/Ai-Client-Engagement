@@ -28,7 +28,7 @@ from datetime import date
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.agents.action_brief import proposal_prohibitions
@@ -60,6 +60,7 @@ from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT
 from app.campaigns.touch import run_due_enrollments
 from app.config import Settings, get_settings
 from app.db.models.active_clients import FLAGGED_FOR_ACCOUNT_MANAGER, ActiveClientFund
+from app.db.models.agent import AgentActionCatalog
 from app.db.models.agent_insight import AgentInsight
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.campaigns import CampaignStep, Enrollment
@@ -107,6 +108,18 @@ Drafter = Callable[..., int]
 
 def _refuse(error: str, message: str) -> dict[str, Any]:
     return {"error": error, "message": message}
+
+
+def _campaign_name(session: Session, action: AgentActionCatalog, group_name: str) -> str:
+    base = f"{action.title} for {group_name.replace('_', ' ')}"
+    prior_runs = session.scalar(
+        select(func.count(AgentProposal.proposal_id)).where(
+            AgentProposal.group_name == group_name,
+            AgentProposal.campaign_id.isnot(None),
+        )
+    )
+    batch = (prior_runs or 0) + 1
+    return base if batch == 1 else f"{base} (run {batch})"
 
 
 def _text(value: Any) -> str:
@@ -285,7 +298,9 @@ def _start_proposal_work(
     cooldown = settings.agent_contact_cooldown_days if cooldown_days is None else cooldown_days
     with trace_operation(AGENT_RECHECK_CLIENTS, input={"clients": len(members)}) as recheck:
         blocked = {
-            member_key(member): member_skip_reason(session, member, action, day, cooldown)
+            member_key(member): member_skip_reason(
+                session, member, proposal.group_name, action, day, cooldown
+            )
             for member in members
         }
         recheck.output = {"left_out": sum(1 for reason in blocked.values() if reason)}
@@ -342,7 +357,7 @@ def _start_proposal_work(
         )
 
     campaign = Campaign(
-        name=f"{action.title} for {proposal.group_name}",
+        name=_campaign_name(session, action, proposal.group_name),
         campaign_type=CAMPAIGN_TYPE,
         cohort_definition=proposal.group_definition,
         status=RUNNING,
@@ -483,6 +498,7 @@ def make_write_tools(
         skip_reasons = gate_members(
             session,
             action=action,
+            group_name=insight.group_name,
             members=resolved.members,
             as_of=day,
             cooldown_days=cooldown_days,

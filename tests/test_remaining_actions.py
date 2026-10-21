@@ -480,6 +480,7 @@ def test_nothing_is_proposed_without_an_approved_guide(action_code: str, client_
         action = load_active_actions(session, TODAY)[action_code]
         reasons = group_skip_reasons(
             session,
+            "test_group",
             [GroupMember(client_id=client_fund, unit_fund_id=FUND_ID, balance=BALANCE)],
             action,
             TODAY,
@@ -506,7 +507,7 @@ def test_a_second_fund_never_runs_above_approve_each_and_is_offered_once(
     member = GroupMember(client_id=client_fund, unit_fund_id=FUND_ID, balance=BALANCE)
     with SessionLocal() as session:
         action = load_active_actions(session, TODAY)[SECOND_FUND]
-        before = member_skip_reason(session, member, action, TODAY, 7)
+        before = member_skip_reason(session, member, "test_group", action, TODAY, 7)
 
     model = ScriptedModel(_sign_off())
     result = _propose_and_run(SECOND_FUND, model)
@@ -520,7 +521,7 @@ def test_a_second_fund_never_runs_above_approve_each_and_is_offered_once(
             session, campaign_id=result["started"]["campaign_id"], sender=_recording_sender([])
         )
         session.commit()
-        after = member_skip_reason(session, member, action, TODAY, 7)
+        after = member_skip_reason(session, member, "test_group", action, TODAY, 7)
 
     assert before is None
     assert after == ALREADY_OFFERED

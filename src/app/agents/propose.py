@@ -69,7 +69,10 @@ ANGLE_PAUSED = "angle_paused"
 ACTION_PAUSED = "action_paused"
 NO_APPROVED_GUIDE = "no_approved_guide"
 ALREADY_OFFERED = "already_offered"
+ALREADY_IN_A_RUNNING_PROPOSAL = "already_in_a_running_proposal"
 CONSOLIDATED_INTO_ANOTHER_SITUATION = "consolidated_into_another_situation"
+
+RUNNING_PROPOSAL_STATUS = "running"
 
 SITUATION_PRIORITY: tuple[str, ...] = (
     RISK_ROSE_NO_CALL,
@@ -160,7 +163,9 @@ def propose_group(
         raise ProposalActionMissing(f"the group '{group.name}' has no action in the rule table")
     mapped_action = load_action_or_raise(session, mapped_code, as_of)
 
-    skip_reasons = group_skip_reasons(session, group.members, mapped_action, as_of, cooldown_days)
+    skip_reasons = group_skip_reasons(
+        session, group.name, group.members, mapped_action, as_of, cooldown_days
+    )
     if winners is not None:
         for member in group.members:
             key = member_key(member)
@@ -214,6 +219,7 @@ def skip_reason_counts(skip_reasons: dict[tuple[int, int], str | None]) -> dict[
 
 def group_skip_reasons(
     session: Session,
+    group_name: str,
     members: Sequence[GroupMember],
     action: AgentActionCatalog,
     as_of: date,
@@ -229,7 +235,7 @@ def group_skip_reasons(
     settings = get_settings()
     cooldown = settings.agent_contact_cooldown_days if cooldown_days is None else cooldown_days
     return {
-        member_key(member): member_skip_reason(session, member, action, as_of, cooldown)
+        member_key(member): member_skip_reason(session, member, group_name, action, as_of, cooldown)
         for member in members
     }
 
@@ -237,6 +243,7 @@ def group_skip_reasons(
 def member_skip_reason(
     session: Session,
     member: GroupMember,
+    group_name: str,
     action: AgentActionCatalog,
     as_of: date,
     cooldown_days: int,
@@ -247,11 +254,31 @@ def member_skip_reason(
         return OPEN_COMPLAINT
     if _contacted_recently(session, member, as_of, cooldown_days):
         return CONTACTED_RECENTLY
+    if _already_in_running_proposal(session, member, group_name):
+        return ALREADY_IN_A_RUNNING_PROPOSAL
     if action.message_angle and angle_is_held(session, action.message_angle, as_of):
         return ANGLE_PAUSED
     if already_offered(session, member.client_id, action):
         return ALREADY_OFFERED
     return None
+
+
+def _already_in_running_proposal(session: Session, member: GroupMember, group_name: str) -> bool:
+    return (
+        session.scalar(
+            select(AgentProposalClient.proposal_client_id)
+            .join(AgentProposal, AgentProposal.proposal_id == AgentProposalClient.proposal_id)
+            .where(
+                AgentProposal.group_name == group_name,
+                AgentProposal.status == RUNNING_PROPOSAL_STATUS,
+                AgentProposalClient.client_id == member.client_id,
+                AgentProposalClient.unit_fund_id == member.unit_fund_id,
+                AgentProposalClient.included.is_(True),
+            )
+            .limit(1)
+        )
+        is not None
+    )
 
 
 def _has_open_complaint(session: Session, client_id: int) -> bool:

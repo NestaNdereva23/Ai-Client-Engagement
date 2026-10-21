@@ -3,6 +3,7 @@ check every gate, write the proposals, and report."""
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -24,6 +25,7 @@ from app.agents.permissions import effective_permission
 from app.agents.prompt_versioning import AGENT_LOOP_CHOOSE, AGENT_LOOP_PLAN, active_prompt
 from app.agents.proposal_state import transition_proposal
 from app.agents.propose import (
+    ALREADY_IN_A_RUNNING_PROPOSAL,
     DO_NOTHING_ACTION,
     WATCH_FOR_NOW_ACTION,
     default_action_code_for_group,
@@ -93,6 +95,7 @@ logger = structlog.get_logger(__name__)
 DEFAULT_PLAN_MAX_TURNS = 6
 DEFAULT_CHOOSE_MAX_TURNS = 6
 DEFAULT_MAX_CHOOSE_ATTEMPTS = 2
+DEFAULT_MAX_PLAN_ATTEMPTS = 2
 
 FALLBACK_PLAN_TEXT = "The model did not settle on a plan tonight, so no group is treated as urgent."
 
@@ -201,6 +204,19 @@ def _trace_value(value: Any) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [_trace_value(item) for item in value]
     return value
+
+
+_GROUP_LEVEL_TOOL_NAMES = frozenset(spec.name for spec in GROUP_LEVEL_TOOL_SPECS)
+
+
+def _is_unmade_tool_call(text: str, tool_names: frozenset[str]) -> bool:
+    """True when text is a tool call the model wrote out instead of making,
+    e.g. the literal string {"list_groups": {}}."""
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return False
+    return isinstance(parsed, dict) and bool(parsed) and set(parsed) <= tool_names
 
 
 def _span_input(state: AgentLoopState) -> dict[str, Any]:
@@ -470,17 +486,33 @@ def build_agent_loop_steps(
             system=system_prompt,
         )
 
-        result = run_conversation_boundary(
-            {},
-            converse,
-            call_tool,
-            max_turns=DEFAULT_PLAN_MAX_TURNS,
-            run_id=str(run_id),
-            trace_id=trace_id,
-            audit=audit,
-        )
-        plan_text = (result.final_text or "").strip()
-        if result.stopped_reason != "final_answer" or not plan_text:
+        # A weak model occasionally echoes a tool call as plain text instead
+        # of actually calling the tool, e.g. the reply is the literal string
+        # {"list_groups": {}}. That is never a real plan, so give it one more
+        # try before falling back.
+        result = None
+        plan_text = ""
+        for _ in range(DEFAULT_MAX_PLAN_ATTEMPTS):
+            result = run_conversation_boundary(
+                {},
+                converse,
+                call_tool,
+                max_turns=DEFAULT_PLAN_MAX_TURNS,
+                run_id=str(run_id),
+                trace_id=trace_id,
+                audit=audit,
+            )
+            plan_text = (result.final_text or "").strip()
+            if result.stopped_reason != "final_answer" or not _is_unmade_tool_call(
+                plan_text, _GROUP_LEVEL_TOOL_NAMES
+            ):
+                break
+
+        if (
+            result.stopped_reason != "final_answer"
+            or not plan_text
+            or _is_unmade_tool_call(plan_text, _GROUP_LEVEL_TOOL_NAMES)
+        ):
             plan_text = FALLBACK_PLAN_TEXT
 
         logger.info(
@@ -559,6 +591,7 @@ def build_agent_loop_steps(
                     actions=actions, candidate_group_names=candidate_names
                 ),
             )
+            tool_names = frozenset(spec.name for spec in tools)
             converse = traced_converse(
                 counting_converse(
                     as_converse_call(llm_client, system=system_prompt, tools=tools), tally
@@ -608,6 +641,12 @@ def build_agent_loop_steps(
                         if refusals
                         else "the model did not settle on a final answer before the turn cap"
                     )
+                    continue
+                if not attempt_choices and _is_unmade_tool_call(
+                    (result.final_text or "").strip(), tool_names
+                ):
+                    last_error = "the model wrote a tool call instead of making one"
+
                     continue
                 choices = attempt_choices
                 fell_back = False
@@ -714,7 +753,9 @@ def build_agent_loop_steps(
                 if overridden
                 else choice.reason
             )
-            skip_reasons = group_skip_reasons(session, group.members, action, as_of, cooldown_days)
+            skip_reasons = group_skip_reasons(
+                session, group.name, group.members, action, as_of, cooldown_days
+            )
             included = tuple(
                 member for member in group.members if skip_reasons[member_key(member)] is None
             )
@@ -758,6 +799,18 @@ def build_agent_loop_steps(
             },
         )
         session.commit()
+        already_running_count = sum(
+            1
+            for decision in checked.values()
+            for reason in decision.skip_reasons.values()
+            if reason == ALREADY_IN_A_RUNNING_PROPOSAL
+        )
+        events.record(
+            RUN_STATUS,
+            stage="checked",
+            group_count=len(checked),
+            already_running_count=already_running_count,
+        )
         return {"checked": checked}
 
     def propose(state: AgentLoopState, span: Any) -> dict[str, Any]:

@@ -546,6 +546,7 @@ def build_action_agent_graph(
             skip_reasons = gate_members(
                 session,
                 action=action,
+                group_name=state["brief"].group_name,
                 members=resolved.members,
                 as_of=as_of,
                 cooldown_days=cooldown_days,
