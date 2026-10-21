@@ -28,7 +28,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
-AGENT_RUN_STATES = ("running", "completed", "failed")
+AGENT_RUN_STATES = ("running", "completed", "failed", "paused", "cancelled")
 
 AGENT_RUN_TRIGGERS = ("nightly", "manual", "chat")
 
@@ -51,7 +51,14 @@ class AgentRun(Base):
 
     __tablename__ = "agent_run"
     __table_args__ = (
-        CheckConstraint("state IN ('running', 'completed', 'failed')", name="ck_agent_run_state"),
+        CheckConstraint(
+            "state IN ('running', 'completed', 'failed', 'paused', 'cancelled')",
+            name="ck_agent_run_state",
+        ),
+        CheckConstraint(
+            "control_requested IS NULL OR control_requested IN ('pause', 'cancel')",
+            name="ck_agent_run_control_requested",
+        ),
         CheckConstraint("trigger IN ('nightly', 'manual', 'chat')", name="ck_agent_run_trigger"),
         CheckConstraint("cost_kes IS NULL OR cost_kes >= 0", name="ck_agent_run_cost_not_negative"),
         CheckConstraint(
@@ -81,6 +88,10 @@ class AgentRun(Base):
     cost_kes: Mapped[float | None] = mapped_column(Float, nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     prompt_versions: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Set by the pause/cancel endpoints; the running loop clears it once seen.
+    control_requested: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The choose step's output, kept so a resumed run does not call the model again.
+    choices: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class AgentToolCall(Base):

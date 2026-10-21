@@ -22,6 +22,7 @@ from app.schemas.agent_proposals import (
 )
 from app.services.agent_proposals import (
     ProposalNotFound,
+    angle_brief_for_proposal,
     count_proposals,
     decide_proposal,
     get_proposal,
@@ -32,6 +33,7 @@ from app.services.agent_proposals import (
     run_proposal_in_background,
     stop_proposal,
 )
+from app.services.fund_names import fund_short_names
 from app.services.proposal_versions import ProposalNotSplit, compare_versions
 
 router = APIRouter(
@@ -118,6 +120,7 @@ def get_agent_proposal(
 
     included_count = get_proposal_included_count(session, proposal_id)
     copy = card_copy.copy_for_history(proposal.group_name)
+    angle_brief = angle_brief_for_proposal(session, proposal)
     return AgentProposalDetailOut(
         proposal_id=proposal.proposal_id,
         action_code=proposal.action_code,
@@ -136,8 +139,12 @@ def get_agent_proposal(
         suggested_owner=card_copy.suggested_owner_for(proposal.response_kind),
         group_definition=proposal.group_definition,
         evidence=proposal.evidence,
+        evidence_detail=proposal.evidence_detail,
         reason=proposal.reason,
         angle=proposal.angle,
+        angle_headline=angle_brief.headline if angle_brief is not None else None,
+        angle_claim=angle_brief.claim if angle_brief is not None else None,
+        angle_ask=angle_brief.ask if angle_brief is not None else None,
         content_mix=proposal.content_mix,
         campaign_id=proposal.campaign_id,
         decided_by=proposal.decided_by,
@@ -152,6 +159,8 @@ def get_agent_proposal(
 def list_agent_proposal_clients(
     proposal_id: int,
     included: bool | None = None,
+    min_trend: float | None = None,
+    max_trend: float | None = None,
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
@@ -163,13 +172,30 @@ def list_agent_proposal_clients(
 
     try:
         clients, next_cursor = list_proposal_clients(
-            session, proposal_id, included=included, cursor=cursor, limit=limit
+            session,
+            proposal_id,
+            included=included,
+            min_trend=min_trend,
+            max_trend=max_trend,
+            cursor=cursor,
+            limit=limit,
         )
     except InvalidCursor:
         raise HTTPException(status_code=400, detail="invalid cursor") from None
 
+    fund_names = fund_short_names(session, {c.unit_fund_id for c in clients})
     return Page(
-        items=[AgentProposalClientOut.model_validate(c) for c in clients],
+        items=[
+            AgentProposalClientOut(
+                client_id=c.client_id,
+                unit_fund_id=c.unit_fund_id,
+                fund_short_name=fund_names.get(c.unit_fund_id),
+                included=c.included,
+                skip_reason=c.skip_reason,
+                variant=c.variant,
+            )
+            for c in clients
+        ],
         next_cursor=next_cursor,
     )
 

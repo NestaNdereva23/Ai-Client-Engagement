@@ -191,6 +191,39 @@ def get_client_facts(
     return {"facts": narrative_facts(to_risk_fact_block(facts))}
 
 
+_MAX_SAMPLE_ATTEMPTS = 20
+
+
+def sample_group_member(
+    session: Session, *, group_name: str, as_of: str | None = None
+) -> dict[str, Any]:
+    """One example client fund's allowed facts from inside a group, picked
+    server side: the same bands and warning signs get_client_facts returns,
+    with no client id attached. For seeing what one member of a group looks
+    like when you have no id to call get_client_facts with.
+    """
+    day = _parse_as_of(as_of)
+    if group_name not in GROUP_NAMES:
+        return _unknown_group(group_name)
+
+    groups, refusal = _groups_for(session, day)
+    if refusal is not None:
+        return refusal
+    group = _find_group(groups, group_name)
+    if group is None or not group.members:
+        return {"error": "empty_group", "message": f"'{group_name}' has nobody in it tonight"}
+
+    for member in group.members[:_MAX_SAMPLE_ATTEMPTS]:
+        facts = gather_briefing_facts(session, member.client_id, member.unit_fund_id, day)
+        if facts is not None:
+            return {
+                "group_name": group_name,
+                "as_of": day.isoformat(),
+                "facts": narrative_facts(to_risk_fact_block(facts)),
+            }
+    return {"error": "not_found", "message": "no risk facts are on file for anyone sampled"}
+
+
 def get_contact_history(session: Session, *, group_name: str) -> dict[str, Any]:
     """The most recent proposal made for this group, and what happened to
     it: which action, how many clients qualified, and its current status.
@@ -401,6 +434,7 @@ TOOL_FUNCTIONS: dict[str, Callable[..., dict[str, Any]]] = {
     "list_groups": list_groups,
     "describe_group": describe_group,
     "get_client_facts": get_client_facts,
+    "sample_group_member": sample_group_member,
     "get_contact_history": get_contact_history,
     "search_knowledge": search_knowledge,
     "list_angles": list_angles,
@@ -445,7 +479,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         name="get_client_facts",
         description=(
             "The allowed facts for one client fund: bands and warning signs only, "
-            "never a name, an id, or an exact figure."
+            "never a name, an id, or an exact figure. Only call this with an id "
+            "someone gave you in the conversation; never guess one."
         ),
         input_schema={
             "type": "object",
@@ -455,6 +490,26 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
                 "as_of": _AS_OF_PROPERTY,
             },
             "required": ["client_id", "unit_fund_id"],
+        },
+    ),
+    ToolSpec(
+        name="sample_group_member",
+        description=(
+            "One example client fund from inside a group, picked for you: the same "
+            "bands and warning signs get_client_facts returns, with no client id "
+            "attached. Use this instead of get_client_facts when you have no id, "
+            "only a group name."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "group_name": {
+                    "type": "string",
+                    "description": "One of the watch list's group names, from list_groups.",
+                },
+                "as_of": _AS_OF_PROPERTY,
+            },
+            "required": ["group_name"],
         },
     ),
     ToolSpec(
@@ -579,4 +634,10 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
             },
         },
     ),
+)
+
+# plan and choose only ever reason about groups as a whole, never one client:
+# neither has a real id to call get_client_facts with, so it is left out here.
+GROUP_LEVEL_TOOL_SPECS: tuple[ToolSpec, ...] = tuple(
+    spec for spec in TOOL_SPECS if spec.name != "get_client_facts"
 )

@@ -44,8 +44,14 @@ from app.services.agent_events import (
 from app.services.agent_run_reports import get_run_report
 from app.services.agent_runs import (
     AgentRunNotFound,
+    AgentRunNotPaused,
+    AgentRunNotRunning,
     get_agent_run,
     list_agent_runs,
+    request_cancel,
+    request_pause,
+    resume_agent_in_background,
+    resume_paused_run,
     run_agent_in_background,
     start_manual_run,
 )
@@ -80,6 +86,67 @@ def post_agent_run(
     background_tasks.add_task(
         run_agent_in_background, run.run_id, as_of=as_of, settings=get_settings()
     )
+    background_tasks.add_task(announce_run_finished, run.run_id)
+    return AgentRunOut.model_validate(run)
+
+
+@router.post(
+    "/{run_id}/pause",
+    response_model=AgentRunOut,
+    dependencies=[Depends(require_ai_assistant), Depends(require_run_in_scope)],
+)
+def post_agent_run_pause(
+    run_id: int,
+    reviewer_id: str = Depends(get_current_reviewer_id),
+    session: Session = Depends(get_session),
+) -> AgentRunOut:
+    try:
+        run = request_pause(session, run_id, actor_id=reviewer_id)
+    except AgentRunNotFound:
+        raise HTTPException(status_code=404, detail="agent run not found") from None
+    except AgentRunNotRunning as exc:
+        raise HTTPException(status_code=409, detail=f"run is {exc}") from None
+    return AgentRunOut.model_validate(run)
+
+
+@router.post(
+    "/{run_id}/cancel",
+    response_model=AgentRunOut,
+    dependencies=[Depends(require_ai_assistant), Depends(require_run_in_scope)],
+)
+def post_agent_run_cancel(
+    run_id: int,
+    reviewer_id: str = Depends(get_current_reviewer_id),
+    session: Session = Depends(get_session),
+) -> AgentRunOut:
+    try:
+        run = request_cancel(session, run_id, actor_id=reviewer_id)
+    except AgentRunNotFound:
+        raise HTTPException(status_code=404, detail="agent run not found") from None
+    except AgentRunNotRunning as exc:
+        raise HTTPException(status_code=409, detail=f"run is {exc}") from None
+    return AgentRunOut.model_validate(run)
+
+
+@router.post(
+    "/{run_id}/resume",
+    response_model=AgentRunOut,
+    status_code=202,
+    dependencies=[Depends(require_ai_assistant), Depends(require_run_in_scope)],
+)
+def post_agent_run_resume(
+    run_id: int,
+    background_tasks: BackgroundTasks,
+    reviewer_id: str = Depends(get_current_reviewer_id),
+    session: Session = Depends(get_session),
+) -> AgentRunOut:
+    try:
+        run = resume_paused_run(session, run_id, actor_id=reviewer_id)
+    except AgentRunNotFound:
+        raise HTTPException(status_code=404, detail="agent run not found") from None
+    except AgentRunNotPaused as exc:
+        raise HTTPException(status_code=409, detail=f"run is {exc}") from None
+    background_tasks.add_task(resume_agent_in_background, run.run_id, settings=get_settings())
     background_tasks.add_task(announce_run_finished, run.run_id)
     return AgentRunOut.model_validate(run)
 

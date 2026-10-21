@@ -90,6 +90,9 @@ class AgentProposal(Base):
     client_count: Mapped[int] = mapped_column(Integer, nullable=False)
     money_total_kes: Mapped[float | None] = mapped_column(Float, nullable=True)
     evidence: Mapped[str] = mapped_column(Text, nullable=False)
+    # A metric breakdown behind the evidence sentence, for groups where one
+    # exists (not every situation has a meaningful one). Counts and KES only.
+    evidence_detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     # {skip_reason: count of client funds left out for it}. Excludes only;
     # a fully included group has an empty dict, never a missing one.

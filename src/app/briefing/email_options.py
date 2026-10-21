@@ -104,7 +104,7 @@ def build_options_prompt(
     return f"{instructions or INSTRUCTIONS}{guidance}{CHECKS}"
 
 
-def _text_field(item: dict[str, Any], name: str, limit: int) -> str:
+def text_field(item: dict[str, Any], name: str, limit: int) -> str:
     value = item.get(name)
     if not isinstance(value, str) or not value.strip():
         raise OptionsRejected(f"{name} was missing or empty")
@@ -116,7 +116,7 @@ def _text_field(item: dict[str, Any], name: str, limit: int) -> str:
     return value
 
 
-def _check_angle_words(angle: str) -> None:
+def check_angle_words(angle: str) -> None:
     off_limits = find_off_limits(angle)
     if off_limits:
         raise OptionsRejected(
@@ -135,7 +135,7 @@ def check_angle(angle: str) -> str:
         raise OptionsRejected("the angle was empty or too long")
     if _DIGIT.search(angle):
         raise OptionsRejected("the angle carried digits")
-    _check_angle_words(angle)
+    check_angle_words(angle)
     return angle
 
 
@@ -158,14 +158,14 @@ def _option_id(title: str, angle: str) -> str:
 
 
 def _build_option(item: dict[str, Any]) -> EmailOption:
-    title = _text_field(item, "title", MAX_TITLE_CHARS)
-    angle = _text_field(item, "angle", MAX_ANGLE_CHARS)
-    _check_angle_words(angle)
+    title = text_field(item, "title", MAX_TITLE_CHARS)
+    angle = text_field(item, "angle", MAX_ANGLE_CHARS)
+    check_angle_words(angle)
     return EmailOption(
         option_id=_option_id(title, angle),
         title=title,
-        summary=_text_field(item, "summary", MAX_SUMMARY_CHARS),
-        why=_text_field(item, "why", MAX_WHY_CHARS),
+        summary=text_field(item, "summary", MAX_SUMMARY_CHARS),
+        why=text_field(item, "why", MAX_WHY_CHARS),
         angle=angle,
         tags=_tags(item),
         recommended=item.get("recommended") is True,

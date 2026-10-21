@@ -50,16 +50,22 @@ from app.services.clients import (
     suppression_summary,
 )
 from app.services.clients_overview import ClientsOverview, clients_overview
+from app.services.fund_names import fund_short_names
 
 router = APIRouter(tags=["clients"], dependencies=[Depends(get_current_reviewer_id)])
 
 
 def _to_summary(
-    row, *, call_brief: str | None = None, client_name: str | None = None
+    row,
+    *,
+    call_brief: str | None = None,
+    client_name: str | None = None,
+    fund_short_name: str | None = None,
 ) -> ClientSummaryOut:
     return ClientSummaryOut(
         client_id=row.client_id,
         unit_fund_id=row.unit_fund_id,
+        fund_short_name=fund_short_name,
         recency_band=row.recency_band,
         value_band=row.value_band,
         cadence_band=row.cadence_band,
@@ -109,8 +115,16 @@ def get_clients(
     except InvalidCursor:
         raise HTTPException(status_code=400, detail="invalid cursor") from None
     names = get_client_names([r.client_id for r in rows], reviewer_id=reviewer_id)
+    fund_names = fund_short_names(session, {r.unit_fund_id for r in rows})
     return Page(
-        items=[_to_summary(r, client_name=names.get(r.client_id)) for r in rows],
+        items=[
+            _to_summary(
+                r,
+                client_name=names.get(r.client_id),
+                fund_short_name=fund_names.get(r.unit_fund_id),
+            )
+            for r in rows
+        ],
         next_cursor=next_cursor,
     )
 
@@ -146,7 +160,10 @@ def get_clients_suppression_summary(
 
 
 def _to_overview_out(
-    overview: ClientsOverview, *, names: dict[int, str | None]
+    overview: ClientsOverview,
+    *,
+    names: dict[int, str | None],
+    fund_names: dict[int, str],
 ) -> ClientsOverviewOut:
     segments = overview.segments
     enrollment = overview.enrollment
@@ -193,7 +210,14 @@ def _to_overview_out(
         angles=[AngleStatusOut(**row._mapping) for row in overview.angles],
         records_rejected=overview.records_rejected,
         roster=Page(
-            items=[_to_summary(r, client_name=names.get(r.client_id)) for r in overview.roster],
+            items=[
+                _to_summary(
+                    r,
+                    client_name=names.get(r.client_id),
+                    fund_short_name=fund_names.get(r.unit_fund_id),
+                )
+                for r in overview.roster
+            ],
             next_cursor=overview.roster_next_cursor,
         ),
     )
@@ -215,7 +239,8 @@ def get_clients_overview(
     """
     overview = clients_overview(session, roster_limit=roster_limit)
     names = get_client_names([r.client_id for r in overview.roster], reviewer_id=reviewer_id)
-    return _to_overview_out(overview, names=names)
+    fund_names = fund_short_names(session, {r.unit_fund_id for r in overview.roster})
+    return _to_overview_out(overview, names=names, fund_names=fund_names)
 
 
 @router.get("/clients/{client_id}", response_model=ClientSummaryOut)

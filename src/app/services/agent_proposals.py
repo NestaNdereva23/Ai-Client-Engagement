@@ -12,11 +12,14 @@ from sqlalchemy.orm import Session
 
 from app.agents.proposal_state import transition_proposal
 from app.agents.propose import DO_NOTHING_ACTION
+from app.db.models.active_clients import ActiveClientFund
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.outreach import Campaign
+from app.db.models.rules import MessageAngleCatalog
 from app.db.session import SessionLocal
 from app.llmops.tracing import get_shared_tracer
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_id_cursor, encode_id_cursor
+from app.rules.catalog import load_angle
 
 logger = structlog.get_logger(__name__)
 
@@ -149,6 +152,14 @@ def get_proposal(session: Session, proposal_id: int) -> AgentProposal:
     return proposal
 
 
+def angle_brief_for_proposal(
+    session: Session, proposal: AgentProposal
+) -> MessageAngleCatalog | None:
+    if proposal.angle is None:
+        return None
+    return load_angle(session, proposal.angle, proposal.created_at.date())
+
+
 def get_proposal_clients(session: Session, proposal_id: int) -> list[AgentProposalClient]:
     """Every client the proposal considered, in the order they were written."""
     return list(
@@ -184,6 +195,8 @@ def list_proposal_clients(
     proposal_id: int,
     *,
     included: bool | None = None,
+    min_trend: float | None = None,
+    max_trend: float | None = None,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> tuple[list[AgentProposalClient], str | None]:
@@ -192,6 +205,15 @@ def list_proposal_clients(
     if included is not None:
         clauses.append(AgentProposalClient.included.is_(included))
     query = select(AgentProposalClient).where(*clauses)
+    if min_trend is not None and max_trend is not None:
+        # Matches one evidence_detail third by the same trend_low/trend_high
+        # range it was reported with; a trend tied exactly on a boundary
+        # value can land in whichever neighbouring third shares that edge.
+        query = query.join(
+            ActiveClientFund,
+            (ActiveClientFund.client_id == AgentProposalClient.client_id)
+            & (ActiveClientFund.unit_fund_id == AgentProposalClient.unit_fund_id),
+        ).where(ActiveClientFund.deposit_trend.between(min_trend, max_trend))
     if cursor is not None:
         after_id = decode_id_cursor(cursor)
         query = query.where(AgentProposalClient.proposal_client_id > after_id)

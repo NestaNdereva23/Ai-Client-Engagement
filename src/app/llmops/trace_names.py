@@ -25,6 +25,7 @@ SUGGEST_EMAIL_OPTIONS = "Suggest email options"
 
 MODEL_WRITE_CLIENT_EMAIL = "Model call: write client email"
 MODEL_SUGGEST_EMAIL_OPTIONS = "Model call: suggest email options"
+MODEL_GENERATE_ANGLE_BRIEF = "Model call: generate proposal angle brief"
 MODEL_WRITE_CLIENT_BRIEF = "Model call: write client brief"
 MODEL_WRITE_BOOK_BRIEF = "Model call: write book brief"
 

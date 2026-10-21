@@ -43,6 +43,7 @@ class AgentProposalClientOut(BaseModel):
 
     client_id: int
     unit_fund_id: int
+    fund_short_name: str | None = None
     included: bool
     skip_reason: str | None
     variant: str | None
@@ -53,8 +54,12 @@ class AgentProposalDetailOut(AgentProposalSummaryOut):
 
     group_definition: dict | None
     evidence: str
+    evidence_detail: dict | None
     reason: str
     angle: str | None
+    angle_headline: str | None = None
+    angle_claim: str | None = None
+    angle_ask: str | None = None
     campaign_id: int | None
     decided_by: str | None
 

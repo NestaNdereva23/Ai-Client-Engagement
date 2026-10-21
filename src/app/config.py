@@ -137,9 +137,13 @@ class Settings(BaseSettings):
     agent_llm_max_tokens: int = 2048
     agent_run_after_risk_detection: bool = False
     agent_resume_campaigns_enabled: bool = True
+    agent_angle_generation_enabled: bool = False
     agent_fa_scoped: bool = False
     agent_run_stale_after_minutes: int = 120
     agent_report_recipients: str = ""
+    # How long propose() waits after one group's proposal, before moving to
+    # the next, so a person has a window to pause.
+    agent_group_pause_window_seconds: int = 10
 
     langfuse_base_url: str = ""
     langfuse_public_key: str = ""

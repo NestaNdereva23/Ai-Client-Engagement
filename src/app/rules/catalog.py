@@ -11,7 +11,7 @@ together stay in step.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
@@ -118,6 +118,40 @@ def save_catalog_version(
             )
 
     return len(angles)
+
+
+def publish_single_angle(
+    session: Session,
+    angle: str,
+    values: Mapping[str, object],
+    *,
+    as_of: date,
+    by: str | None = None,
+) -> int:
+    # publish() would hide every other angle under a lone new version; merge into the live one.
+    draft_version = versioning.save_draft(session, "message_angle_catalog", angle, [values], by=by)
+    live_version = active_catalog_version(session, as_of)
+    if live_version is None:
+        raise CatalogValidationError(f"no catalogue is active as of {as_of}")
+    live_valid_from = session.scalar(
+        select(MessageAngleCatalog.valid_from)
+        .where(MessageAngleCatalog.version == live_version)
+        .limit(1)
+    )
+    row = session.scalar(
+        select(MessageAngleCatalog).where(
+            MessageAngleCatalog.angle == angle, MessageAngleCatalog.version == draft_version
+        )
+    )
+    row.version = live_version
+    row.valid_from = live_valid_from
+    row.valid_to = None
+    row.status = "published"
+    row.published_by = by
+    row.published_at = datetime.now(UTC)
+    session.flush()
+    versioning.record_published_version(session, "message_angle_catalog", angle, live_version)
+    return live_version
 
 
 def active_catalog_version(session: Session, at: date) -> int | None:

@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from app.agents.agent_loop import execute_agent_run, start_agent_run
+from app.agents.agent_loop import CANCEL, PAUSE, execute_agent_run, start_agent_run
+from app.agents.events import record_event
+from app.audit.log import record_audit
 from app.config import Settings
+from app.db.models.agent_event import RESUMED
 from app.db.models.agent_run import AgentRun, AgentToolCall
 from app.db.session import SessionLocal
 from app.llmops.tracing import get_shared_tracer
@@ -44,6 +47,88 @@ def run_agent_in_background(run_id: int, *, as_of: date | None, settings: Settin
             run,
             llm_client=get_agent_llm_client(settings),
             as_of=as_of,
+            tracer=get_shared_tracer(),
+        )
+
+
+class AgentRunNotRunning(Exception):
+    pass
+
+
+class AgentRunNotPaused(Exception):
+    pass
+
+
+def request_pause(session: Session, run_id: int, *, actor_id: str | None) -> AgentRun:
+    run = get_agent_run(session, run_id)
+    if run.state != "running":
+        raise AgentRunNotRunning(run.state)
+    run.control_requested = PAUSE
+    record_audit(
+        session,
+        entity_type="agent_run",
+        action="pause_requested",
+        entity_id=str(run_id),
+        actor_id=actor_id,
+        run_id=str(run_id),
+    )
+    session.commit()
+    return run
+
+
+def request_cancel(session: Session, run_id: int, *, actor_id: str | None) -> AgentRun:
+    run = get_agent_run(session, run_id)
+    if run.state == "paused":
+        run.state = "cancelled"
+        run.control_requested = None
+        run.finished_at = datetime.now(UTC)
+    elif run.state == "running":
+        run.control_requested = CANCEL
+    else:
+        raise AgentRunNotRunning(run.state)
+    record_audit(
+        session,
+        entity_type="agent_run",
+        action="cancel_requested",
+        entity_id=str(run_id),
+        actor_id=actor_id,
+        run_id=str(run_id),
+    )
+    session.commit()
+    return run
+
+
+def resume_paused_run(session: Session, run_id: int, *, actor_id: str | None) -> AgentRun:
+    run = get_agent_run(session, run_id)
+    if run.state != "paused":
+        raise AgentRunNotPaused(run.state)
+    run.state = "running"
+    run.control_requested = None
+    record_audit(
+        session,
+        entity_type="agent_run",
+        action="resumed",
+        entity_id=str(run_id),
+        actor_id=actor_id,
+        run_id=str(run_id),
+    )
+    record_event(session, run_id=run_id, kind=RESUMED)
+    session.commit()
+    return run
+
+
+def resume_agent_in_background(run_id: int, *, settings: Settings) -> None:
+    """Continue a paused run. as_of is not stored on the row, so this
+    re-derives it as today, same as a fresh run would."""
+    with SessionLocal() as session:
+        run = session.get(AgentRun, run_id)
+        if run is None:
+            return
+        execute_agent_run(
+            session,
+            run,
+            llm_client=get_agent_llm_client(settings),
+            as_of=None,
             tracer=get_shared_tracer(),
         )
 

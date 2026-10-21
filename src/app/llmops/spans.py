@@ -118,6 +118,40 @@ def traced_converse(
     return call
 
 
+def traced_single_call(
+    model_call: Callable[[dict[str, Any]], str],
+    *,
+    tracer: Any,
+    trace_id: str,
+    model: str,
+    parent: Any = None,
+    name: str = MODEL_CALL_SPAN,
+    system: str,
+    metadata: dict[str, Any] | None = None,
+) -> Callable[[dict[str, Any]], str]:
+    def call(payload: dict[str, Any]) -> str:
+        handle = tracer.start_span(
+            trace_id=trace_id,
+            name=name,
+            input={"system": system, "payload": payload},
+            metadata=metadata,
+            as_type="generation",
+            model=model,
+            parent=parent,
+        )
+        try:
+            text = model_call(payload)
+        except Exception as exc:
+            tracer.end_span(
+                handle, output={"error": str(exc)}, level="ERROR", status_message=str(exc)
+            )
+            raise
+        tracer.end_span(handle, output={"text": text})
+        return text
+
+    return call
+
+
 def traced_aconverse(
     converse: Callable[[list[dict[str, Any]]], Awaitable[Any]],
     *,

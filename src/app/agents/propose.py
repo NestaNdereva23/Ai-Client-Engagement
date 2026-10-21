@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -35,7 +36,11 @@ from app.agents.watchlist import (
 )
 from app.audit.log import record_audit
 from app.config import get_settings
-from app.db.models.active_clients import CONTACT_INTERACTION_TYPES, ActiveClientInteraction
+from app.db.models.active_clients import (
+    CONTACT_INTERACTION_TYPES,
+    ActiveClientFund,
+    ActiveClientInteraction,
+)
 from app.db.models.agent import AgentActionCatalog
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.complaints import ClientComplaint
@@ -374,6 +379,86 @@ def group_evidence(group: WatchGroup, thresholds: WatchlistThresholds) -> str:
     if evidence is None:
         return f"{count} clients matched the '{group.name}' group."
     return f"{count} clients {evidence}"
+
+
+# "mildest" used to be called "just starting to turn" on screen, which implied
+# a reversal this metric cannot show -- it only ranks how fast deposits are
+# shrinking, so the wording stays about pace, not direction.
+_DEPOSIT_TREND_THIRDS = ("sharpest", "middle", "mildest")
+_DEPOSIT_TREND_THIRD_TITLES = {
+    "sharpest": "Declining sharply",
+    "middle": "Declining moderately",
+    "mildest": "Declining slowly",
+}
+
+
+def _split_into_thirds(ranked: list) -> list[list]:
+    n = len(ranked)
+    first, second = round(n / 3), round(2 * n / 3)
+    return [ranked[:first], ranked[first:second], ranked[second:]]
+
+
+def group_evidence_detail(session: Session, group: WatchGroup) -> dict[str, Any] | None:
+    """How a group's own members split by severity, for situations where a
+    real metric exists behind the evidence sentence. None when there is no
+    such metric for this situation, or too few members carry it to rank.
+
+    Ranked by each member's own deposit trend rather than a fixed cutoff, so
+    this always describes tonight's group honestly instead of a guessed
+    universal threshold.
+    """
+    if group.name != DEPOSIT_SIZE_FALLING:
+        return None
+
+    keys = {(member.client_id, member.unit_fund_id) for member in group.members}
+    fund_ids = {member.unit_fund_id for member in group.members}
+    if not fund_ids:
+        return None
+    rows = [
+        row
+        for row in session.execute(
+            select(
+                ActiveClientFund.client_id,
+                ActiveClientFund.unit_fund_id,
+                ActiveClientFund.deposit_trend,
+            ).where(
+                ActiveClientFund.unit_fund_id.in_(fund_ids),
+                ActiveClientFund.deposit_trend.isnot(None),
+            )
+        ).all()
+        if (row.client_id, row.unit_fund_id) in keys
+    ]
+    if len(rows) < 3:
+        return None
+
+    balance_by_key = {(m.client_id, m.unit_fund_id): m.balance for m in group.members}
+    ranked = sorted(rows, key=lambda row: row.deposit_trend)
+    thirds = []
+    for label, chunk in zip(_DEPOSIT_TREND_THIRDS, _split_into_thirds(ranked), strict=True):
+        trend_low = round(min(row.deposit_trend for row in chunk), 2)
+        trend_high = round(max(row.deposit_trend for row in chunk), 2)
+        thirds.append(
+            {
+                "label": label,
+                "title": _DEPOSIT_TREND_THIRD_TITLES[label],
+                "description": (
+                    f"Deposit trend score {trend_low} to {trend_high} within this group "
+                    "(more negative means a faster fall)."
+                ),
+                "client_count": len(chunk),
+                "balance_kes": sum(
+                    balance_by_key[(row.client_id, row.unit_fund_id)] for row in chunk
+                ),
+                "trend_low": trend_low,
+                "trend_high": trend_high,
+            }
+        )
+    return {
+        "metric": "deposit_trend",
+        "ranked_on": len(rows),
+        "not_ranked": len(keys) - len(rows),
+        "thirds": thirds,
+    }
 
 
 def _reason(

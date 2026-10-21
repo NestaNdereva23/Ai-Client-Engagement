@@ -17,6 +17,7 @@ from app.agents.propose import (
     ON_DO_NOT_CONTACT_LIST,
     OPEN_COMPLAINT,
     ProposalActionMissing,
+    group_evidence_detail,
     propose_group,
     propose_watchlist,
     skip_reason_counts,
@@ -383,6 +384,70 @@ def test_the_reason_and_evidence_are_written_in_plain_words(clean: None) -> None
 
     assert "Ask whether something changed" in proposal.reason
     assert "1 " in proposal.evidence or "1 clients" in proposal.evidence
+
+
+def test_group_evidence_detail_ranks_the_group_into_thirds(clean: None) -> None:
+    trend_clients = (952101, 952102, 952103)
+    balances = (100_000.0, 200_000.0, 300_000.0)
+    trends = (-0.9, -0.5, -0.11)
+    with SessionLocal() as session:
+        session.execute(
+            delete(ActiveClientFund).where(ActiveClientFund.client_id.in_(trend_clients))
+        )
+        session.add_all(
+            ActiveClientFund(
+                client_id=cid,
+                unit_fund_id=FUND_ID,
+                balance=balance,
+                n_deposits=1,
+                n_withdrawals=0,
+                deposit_trend=trend,
+            )
+            for cid, balance, trend in zip(trend_clients, balances, trends, strict=True)
+        )
+        session.commit()
+
+    group = WatchGroup(
+        name=DEPOSIT_SIZE_FALLING,
+        definition={},
+        members=tuple(
+            _member(cid, balance) for cid, balance in zip(trend_clients, balances, strict=True)
+        ),
+    )
+    try:
+        with SessionLocal() as session:
+            detail = group_evidence_detail(session, group)
+        assert detail["ranked_on"] == 3
+        assert detail["not_ranked"] == 0
+        assert [third["label"] for third in detail["thirds"]] == ["sharpest", "middle", "mildest"]
+        assert detail["thirds"][0]["client_count"] == 1
+        assert detail["thirds"][0]["balance_kes"] == 100_000.0
+        assert detail["thirds"][2]["balance_kes"] == 300_000.0
+        assert detail["thirds"][0]["title"] == "Declining sharply"
+        assert detail["thirds"][2]["title"] == "Declining slowly"
+        assert "-0.9" in detail["thirds"][0]["description"]
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(ActiveClientFund).where(ActiveClientFund.client_id.in_(trend_clients))
+            )
+            session.commit()
+
+
+def test_group_evidence_detail_is_none_for_other_situations(clean: None) -> None:
+    group = WatchGroup(
+        name=FIRST_DEPOSIT_NO_REPEAT, definition={}, members=(_member(ELIGIBLE_CLIENT),)
+    )
+    with SessionLocal() as session:
+        assert group_evidence_detail(session, group) is None
+
+
+def test_group_evidence_detail_is_none_with_too_few_ranked(clean: None) -> None:
+    group = WatchGroup(
+        name=DEPOSIT_SIZE_FALLING, definition={}, members=(_member(ELIGIBLE_CLIENT),)
+    )
+    with SessionLocal() as session:
+        assert group_evidence_detail(session, group) is None
 
 
 def test_every_proposal_writes_an_audit_row(clean: None) -> None:

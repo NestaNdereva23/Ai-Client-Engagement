@@ -18,6 +18,7 @@ from app.agents.tools import (
     get_contact_history,
     list_angles,
     list_groups,
+    sample_group_member,
     search_knowledge,
 )
 from app.agents.watchlist import (
@@ -323,6 +324,64 @@ def test_get_client_facts_refuses_a_client_with_no_risk_data(db: None) -> None:
     assert result["error"] == "not_found"
 
 
+# --- sample_group_member ---
+
+
+def test_sample_group_member_returns_facts_with_no_client_id(
+    client_book: None, monkeypatch
+) -> None:
+    _stub_watchlist(monkeypatch, (_member(CLIENT_A, FUND_ID),))
+    with SessionLocal() as session:
+        result = sample_group_member(
+            session, group_name=FIRST_DEPOSIT_NO_REPEAT, as_of=AS_OF.isoformat()
+        )
+    assert result["group_name"] == FIRST_DEPOSIT_NO_REPEAT
+    facts = result["facts"]
+    assert facts["risk_band"] == "High"
+    assert "client_id" not in result
+    assert "unit_fund_id" not in result
+    assert "client_id" not in facts
+
+
+def test_sample_group_member_skips_a_member_with_no_data_on_file(
+    client_book: None, monkeypatch
+) -> None:
+    _stub_watchlist(monkeypatch, (_member(999999999, 999999999), _member(CLIENT_A, FUND_ID)))
+    with SessionLocal() as session:
+        result = sample_group_member(
+            session, group_name=FIRST_DEPOSIT_NO_REPEAT, as_of=AS_OF.isoformat()
+        )
+    assert result["facts"]["risk_band"] == "High"
+
+
+def test_sample_group_member_refuses_an_empty_group(db: None, monkeypatch) -> None:
+    _stub_watchlist(monkeypatch, ())
+    with SessionLocal() as session:
+        result = sample_group_member(
+            session, group_name=FIRST_DEPOSIT_NO_REPEAT, as_of=AS_OF.isoformat()
+        )
+    assert result["error"] == "empty_group"
+
+
+def test_sample_group_member_refuses_an_unknown_group(db: None) -> None:
+    with SessionLocal() as session:
+        result = sample_group_member(
+            session, group_name="not_a_real_group", as_of=AS_OF.isoformat()
+        )
+    assert result["error"] == "unknown_group"
+
+
+def test_sample_group_member_is_not_found_when_nobody_sampled_has_data(
+    db: None, monkeypatch
+) -> None:
+    _stub_watchlist(monkeypatch, (_member(999999999, 999999999),))
+    with SessionLocal() as session:
+        result = sample_group_member(
+            session, group_name=FIRST_DEPOSIT_NO_REPEAT, as_of=AS_OF.isoformat()
+        )
+    assert result["error"] == "not_found"
+
+
 # --- get_contact_history ---
 
 
@@ -585,3 +644,14 @@ def test_check_allowance_without_an_action_sums_every_action(db: None, monkeypat
     assert result["overall"]["used_money_kes"] == 2_000.0
     assert result["overall"]["remaining_clients"] is None
     assert set(result["by_action"]) == {"fee_warning", "start_win_back"}
+
+
+# --- tool offering ---
+
+
+def test_group_level_tool_specs_drop_get_client_facts_but_keep_the_sample_tool() -> None:
+    names = {spec.name for spec in tools_module.GROUP_LEVEL_TOOL_SPECS}
+    assert "get_client_facts" not in names
+    assert "sample_group_member" in names
+    # Every other tool plan/choose had before is still offered.
+    assert names == {spec.name for spec in tools_module.TOOL_SPECS} - {"get_client_facts"}

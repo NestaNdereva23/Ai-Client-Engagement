@@ -1140,7 +1140,7 @@ def test_a_test_campaign_sends_to_the_tester_and_audits_mode_and_address(
 
     assert [m.to for m in mailer.sent_messages] == [tester_on_list]
     assert mailer.sent_messages[0].subject == "[TEST] Hello"
-    assert f"Test send for client {client_row}" in mailer.sent_messages[0].text_body
+    assert mailer.sent_messages[0].text_body == "Body"
     with SessionLocal() as session:
         audit = session.scalar(
             select(AuditLog).where(

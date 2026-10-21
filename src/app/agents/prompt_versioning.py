@@ -17,6 +17,7 @@ INTELLIGENCE_INVESTIGATION = "intelligence_investigation"
 AGENT_CHAT = "agent_chat"
 CLIENT_EMAIL_DRAFT = "client_email_draft"
 EMAIL_OPTIONS_SUGGEST = "email_options_suggest"
+AGENT_ANGLE_BRIEF_GENERATE = "agent_angle_brief_generate"
 CLIENT_BRIEF_NARRATIVE = "client_brief_narrative"
 BOOK_BRIEF_NARRATIVE = "book_brief_narrative"
 PATTERN_WRITEUP = "pattern_writeup"
@@ -40,6 +41,7 @@ PROMPT_KEYS = (
     AGENT_CHAT,
     CLIENT_EMAIL_DRAFT,
     EMAIL_OPTIONS_SUGGEST,
+    AGENT_ANGLE_BRIEF_GENERATE,
     CLIENT_BRIEF_NARRATIVE,
     BOOK_BRIEF_NARRATIVE,
     PATTERN_WRITEUP,
@@ -84,6 +86,7 @@ PROMPT_PLACEHOLDERS: dict[str, frozenset[str]] = {
     AGENT_CHAT: frozenset({"as_of", "question", "field_names", "measures"}),
     CLIENT_EMAIL_DRAFT: frozenset(),
     EMAIL_OPTIONS_SUGGEST: frozenset(),
+    AGENT_ANGLE_BRIEF_GENERATE: frozenset(),
     CLIENT_BRIEF_NARRATIVE: frozenset(),
     BOOK_BRIEF_NARRATIVE: frozenset(),
     PATTERN_WRITEUP: frozenset(),
@@ -146,6 +149,7 @@ def active_prompt(session: Session, prompt_key: str, as_of: date) -> AgentPrompt
 
 def default_prompt_texts() -> dict[str, str]:
     """The built in text for each prompt that has one in code, used until a version is live."""
+    from app.agents.angle_brief import INSTRUCTIONS as ANGLE_BRIEF_INSTRUCTIONS
     from app.agents.pattern_writeup import SYSTEM_PROMPT
     from app.briefing.book_narrative import INSTRUCTIONS as BOOK_INSTRUCTIONS
     from app.briefing.email_prompts import default_email_prompts
@@ -153,6 +157,7 @@ def default_prompt_texts() -> dict[str, str]:
 
     return {
         **default_email_prompts(),
+        AGENT_ANGLE_BRIEF_GENERATE: ANGLE_BRIEF_INSTRUCTIONS,
         CLIENT_BRIEF_NARRATIVE: CLIENT_INSTRUCTIONS,
         BOOK_BRIEF_NARRATIVE: BOOK_INSTRUCTIONS,
         PATTERN_WRITEUP: SYSTEM_PROMPT,

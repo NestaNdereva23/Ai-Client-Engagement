@@ -19,6 +19,7 @@ from app.privacy.fact_block import (
     AssistantFactBlock,
     BookFactBlock,
     ModelFactBlock,
+    ProposalFactBlock,
     RiskFactBlock,
 )
 
@@ -35,6 +36,7 @@ _FACT_BLOCK_SCHEMAS: tuple[type[BaseModel], ...] = (
     BookFactBlock,
     RiskFactBlock,
     AssistantFactBlock,
+    ProposalFactBlock,
 )
 
 # The bucket allow-list: every non-numeric column llm_client_context exposes,

@@ -371,3 +371,14 @@ def test_an_action_the_catalogue_does_not_hold_counts_as_paused(db: None) -> Non
     with SessionLocal() as session:
         assert load_action(session, "never_existed", IN_FORCE) is None
         assert action_is_paused(session, "never_existed", IN_FORCE)
+
+
+def test_the_orphaned_dormant_actions_stay_paused(db: None) -> None:
+    today = date(2026, 10, 21)
+    with SessionLocal() as session:
+        actions = load_active_actions(session, today)
+        assert actions["start_win_back"].paused
+        assert actions["fee_pressure_warning_dormant"].paused
+        selectable = selectable_actions(session, today)
+    assert "start_win_back" not in selectable
+    assert "fee_pressure_warning_dormant" not in selectable

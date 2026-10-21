@@ -7,6 +7,7 @@ from datetime import date
 import pytest
 from sqlalchemy import delete, select
 
+from app.db.models.prompt_config import ActiveConfiguration
 from app.db.models.rules import MessageAngleCatalog
 from app.db.session import SessionLocal
 from app.rules.catalog import (
@@ -15,6 +16,7 @@ from app.rules.catalog import (
     active_catalog_version,
     load_active_angles,
     load_angle,
+    publish_single_angle,
     save_catalog_version,
     validate_angles,
 )
@@ -223,3 +225,47 @@ def test_nothing_is_active_before_the_catalogue_starts(db: None) -> None:
     with SessionLocal() as session:
         assert active_catalog_version(session, date(2020, 1, 1)) is None
         assert load_active_angles(session, date(2020, 1, 1)) == {}
+
+
+# --- publish_single_angle ---
+
+
+@pytest.fixture
+def generated_angle():
+    name = "trial_generated_angle"
+    yield name
+    with SessionLocal() as session:
+        session.execute(delete(MessageAngleCatalog).where(MessageAngleCatalog.angle == name))
+        session.execute(
+            delete(ActiveConfiguration).where(
+                ActiveConfiguration.component_type == "message_angle_catalog",
+                ActiveConfiguration.component_key == name,
+            )
+        )
+        session.commit()
+
+
+def test_publish_single_angle_does_not_hide_the_rest_of_the_catalogue(
+    db: None, generated_angle: str
+) -> None:
+    today = date(2026, 9, 20)
+    with SessionLocal() as session:
+        before = set(load_active_angles(session, today))
+
+    values = {
+        "headline": "A generated headline",
+        "who": "Generated test clients",
+        "claim": "A generated claim",
+        "ask": "A generated ask",
+        "never": "Never anything untested",
+        "use": "Not used in this test",
+    }
+    with SessionLocal() as session:
+        version = publish_single_angle(session, generated_angle, values, as_of=today)
+        session.commit()
+
+    with SessionLocal() as session:
+        assert version == ACTIVE_VERSION
+        after = load_active_angles(session, today)
+    assert set(after) == before | {generated_angle}
+    assert after[generated_angle].headline == "A generated headline"

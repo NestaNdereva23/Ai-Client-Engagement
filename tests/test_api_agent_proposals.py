@@ -8,8 +8,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 
 from app.agents.situations import DEPOSIT_SIZE_FALLING
+from app.db.models.active_clients import ActiveClientFund
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.audit import AuditLog
+from app.db.models.models import Funds
 from app.db.session import SessionLocal
 from app.main import app
 
@@ -119,6 +121,37 @@ def test_get_proposal_returns_the_breakdown_of_who_was_left_out(proposal: int) -
     assert "clients" not in body
 
 
+def test_get_proposal_includes_the_angle_brief_when_the_angle_resolves(db: None) -> None:
+    with SessionLocal() as session:
+        row = AgentProposal(
+            action_code="start_win_back",
+            catalog_version=1,
+            group_name=DEPOSIT_SIZE_FALLING,
+            client_count=1,
+            money_total_kes=4_500.0,
+            evidence="one dormant client",
+            reason="win back before they close the account",
+            permission_applied="suggest_only",
+            angle="back_on_schedule",
+        )
+        session.add(row)
+        session.commit()
+        proposal_id = row.proposal_id
+
+    try:
+        response = client.get(f"{PROPOSALS}/{proposal_id}")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["angle"] == "back_on_schedule"
+        assert body["angle_headline"] == "Restart the standing order"
+        assert body["angle_claim"]
+        assert body["angle_ask"]
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(AgentProposal).where(AgentProposal.proposal_id == proposal_id))
+            session.commit()
+
+
 def test_get_proposal_404_when_missing(db: None) -> None:
     response = client.get(f"{PROPOSALS}/0")
     assert response.status_code == 404
@@ -139,6 +172,59 @@ def test_list_proposal_clients_filters_by_included(proposal: int) -> None:
     assert response.status_code == 200
     ids = [row["client_id"] for row in response.json()["items"]]
     assert ids == [SKIPPED_CLIENT]
+
+
+def test_list_proposal_clients_shows_the_fund_short_name(proposal: int) -> None:
+    with SessionLocal() as session:
+        session.add(Funds(unit_fund_id=FUND_ID, unit_fund_name="Cytonn Money Market Fund"))
+        session.commit()
+    try:
+        response = client.get(f"{PROPOSALS}/{proposal}/clients")
+        assert response.status_code == 200
+        by_client = {row["client_id"]: row for row in response.json()["items"]}
+        assert by_client[INCLUDED_CLIENT]["fund_short_name"] == "CMMF"
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(Funds).where(Funds.unit_fund_id == FUND_ID))
+            session.commit()
+
+
+def test_list_proposal_clients_filters_by_trend_range(proposal: int) -> None:
+    with SessionLocal() as session:
+        session.add_all(
+            [
+                ActiveClientFund(
+                    client_id=INCLUDED_CLIENT,
+                    unit_fund_id=FUND_ID,
+                    n_deposits=1,
+                    n_withdrawals=0,
+                    deposit_trend=-0.8,
+                ),
+                ActiveClientFund(
+                    client_id=SKIPPED_CLIENT,
+                    unit_fund_id=FUND_ID,
+                    n_deposits=1,
+                    n_withdrawals=0,
+                    deposit_trend=-0.1,
+                ),
+            ]
+        )
+        session.commit()
+    try:
+        response = client.get(
+            f"{PROPOSALS}/{proposal}/clients", params={"min_trend": -0.9, "max_trend": -0.5}
+        )
+        assert response.status_code == 200
+        ids = [row["client_id"] for row in response.json()["items"]]
+        assert ids == [INCLUDED_CLIENT]
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(ActiveClientFund).where(
+                    ActiveClientFund.client_id.in_([INCLUDED_CLIENT, SKIPPED_CLIENT])
+                )
+            )
+            session.commit()
 
 
 def test_list_proposal_clients_paginates_with_a_cursor(proposal: int) -> None:

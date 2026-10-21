@@ -3,6 +3,7 @@ check every gate, write the proposals, and report."""
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, is_dataclass
@@ -10,13 +11,13 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any, TypedDict
 
 import structlog
-from langgraph.graph import END, START, StateGraph
-from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agents import card_copy
 from app.agents.action_brief import proposal_prohibitions
 from app.agents.action_catalog import load_action, selectable_actions
+from app.agents.angle_brief import angle_for_proposal
 from app.agents.events import NO_EVENTS, EventLog, RunEventLog
 from app.agents.fa_scope import current_fa_id, fa_scope
 from app.agents.permissions import effective_permission
@@ -27,20 +28,23 @@ from app.agents.propose import (
     WATCH_FOR_NOW_ACTION,
     default_action_code_for_group,
     group_evidence,
+    group_evidence_detail,
     group_skip_reasons,
     load_action_or_raise,
     member_key,
     skip_reason_counts,
 )
 from app.agents.run_cost import run_cost_kes
+from app.agents.situation_action_mapping import actions_for_situation
 from app.agents.situations import (
     DEPOSIT_SIZE_FALLING,
     FREQUENT_DEPOSITOR_ONE_FUND,
     RISK_ROSE_NO_CALL,
 )
 from app.agents.tool_runtime import make_tool_executor
-from app.agents.tools import TOOL_SPECS
+from app.agents.tools import GROUP_LEVEL_TOOL_SPECS
 from app.agents.watchlist import (
+    GROUP_TO_SITUATION,
     GroupMember,
     WatchGroup,
     WatchlistThresholds,
@@ -56,6 +60,7 @@ from app.db.models.agent_event import (
     APPROVAL_GIVEN,
     APPROVAL_NEEDED,
     ERROR,
+    PAUSED,
     PROPOSAL_CREATED,
     RUN_COMPLETED,
     RUN_STARTED,
@@ -97,6 +102,9 @@ CHOOSE_ACTION_TOOL_NAME = "choose_action"
 
 ACTS_ALONE = "act_alone"
 
+PAUSE = "pause"
+CANCEL = "cancel"
+
 # These groups always get an outreach attempt: the model may still pick
 # which action and angle fits best, but it may not leave the group with
 # no message at all. A member is only left out by an actual contact gate
@@ -117,6 +125,15 @@ NO_MESSAGE_ACTIONS = (DO_NOTHING_ACTION, WATCH_FOR_NOW_ACTION)
 
 class AgentRunInProgress(RuntimeError):
     """Raised when a run is asked to start while another one is still running."""
+
+
+# Unwind a step back to the driver without tripping its error handling.
+class _RunPaused(Exception):
+    pass
+
+
+class _RunCancelled(Exception):
+    pass
 
 
 @dataclass(frozen=True)
@@ -294,6 +311,7 @@ def make_choose_action_tool(
     *,
     candidate_group_names: Sequence[str],
     actions: Mapping[str, AgentActionCatalog],
+    group_to_allowed_action_codes: Mapping[str, frozenset[str]],
     choices: dict[str, AgentChoice],
     refusals: list[str],
 ) -> Callable[..., dict[str, Any]]:
@@ -320,6 +338,12 @@ def make_choose_action_tool(
             refusals.append(message)
             return {"error": "unknown_action", "message": message}
 
+        allowed = group_to_allowed_action_codes.get(group_name, frozenset())
+        if action_code not in NO_MESSAGE_ACTIONS and action_code not in allowed:
+            message = f"'{action_code}' is not mapped to '{group_name}' tonight"
+            refusals.append(message)
+            return {"error": "wrong_action", "message": message}
+
         if angle != action.message_angle:
             message = f"'{action_code}' takes the angle {action.message_angle!r}, not {angle!r}"
             refusals.append(message)
@@ -343,7 +367,7 @@ def make_choose_action_tool(
     return choose_action
 
 
-def build_agent_loop_graph(
+def build_agent_loop_steps(
     *,
     session: Session,
     run_id: int,
@@ -355,8 +379,8 @@ def build_agent_loop_graph(
     tracer: Tracer | None = None,
     audit: AuditSink | None = None,
     events: EventLog = NO_EVENTS,
-) -> CompiledStateGraph:
-    """Wire the six steps into a compiled graph, ready to invoke() once."""
+) -> list[tuple[str, Callable[[AgentLoopState], dict[str, Any]]]]:
+    """The six steps, named and traced, in the order a run takes them."""
     tracer = tracer or NullTracer()
 
     def _traced(name: str, fn):
@@ -372,6 +396,9 @@ def build_agent_loop_graph(
             events.record(STEP_STARTED, step=name)
             try:
                 result = fn(state, handle)
+            except (_RunPaused, _RunCancelled):
+                tracer.end_span(handle, output={"stopped": "pause_or_cancel"})
+                raise
             except Exception as exc:
                 tracer.end_span(
                     handle, output={"error": str(exc)}, level="ERROR", status_message=str(exc)
@@ -419,6 +446,10 @@ def build_agent_loop_graph(
         return {"groups": groups, "actions": actions, "thresholds": thresholds}
 
     def plan(state: AgentLoopState, span: Any) -> dict[str, Any]:
+        resumed_row = session.get(AgentRun, run_id)
+        if resumed_row.plan_text is not None:
+            return {"plan_text": resumed_row.plan_text}
+
         system_prompt, prompt_version = build_plan_system_prompt(session, as_of)
         tally = ModelCallTally()
         call_tool = traced_tool_call(
@@ -429,7 +460,8 @@ def build_agent_loop_graph(
         )
         converse = traced_converse(
             counting_converse(
-                as_converse_call(llm_client, system=system_prompt, tools=TOOL_SPECS), tally
+                as_converse_call(llm_client, system=system_prompt, tools=GROUP_LEVEL_TOOL_SPECS),
+                tally,
             ),
             tracer=tracer,
             trace_id=trace_id,
@@ -485,9 +517,25 @@ def build_agent_loop_graph(
         }
 
     def choose(state: AgentLoopState, span: Any) -> dict[str, Any]:
+        resumed_row = session.get(AgentRun, run_id)
+        if resumed_row.choices is not None:
+            return {
+                "choices": {
+                    name: AgentChoice.model_validate(value)
+                    for name, value in resumed_row.choices.items()
+                }
+            }
+
         groups = state["groups"]
         actions = state["actions"]
         candidate_names = [g.name for g in groups if g.members]
+        group_to_allowed_action_codes = {
+            name: frozenset(
+                row.action_code
+                for row in actions_for_situation(session, GROUP_TO_SITUATION.get(name, name), as_of)
+            )
+            for name in candidate_names
+        }
 
         choices: dict[str, AgentChoice] = {}
         fell_back = False
@@ -506,7 +554,7 @@ def build_agent_loop_graph(
                 as_of=as_of,
             )
             tools = (
-                *TOOL_SPECS,
+                *GROUP_LEVEL_TOOL_SPECS,
                 build_choose_action_tool_spec(
                     actions=actions, candidate_group_names=candidate_names
                 ),
@@ -528,6 +576,7 @@ def build_agent_loop_graph(
                 choose_action_tool = make_choose_action_tool(
                     candidate_group_names=candidate_names,
                     actions=actions,
+                    group_to_allowed_action_codes=group_to_allowed_action_codes,
                     choices=attempt_choices,
                     refusals=refusals,
                 )
@@ -594,8 +643,9 @@ def build_agent_loop_graph(
                 **tally.as_detail(),
             },
         )
+        run_row = session.get(AgentRun, run_id)
+        run_row.choices = {name: choice.model_dump() for name, choice in choices.items()}
         if prompt_version is not None:
-            run_row = session.get(AgentRun, run_id)
             run_row.prompt_versions = {
                 **(run_row.prompt_versions or {}),
                 AGENT_LOOP_CHOOSE: prompt_version,
@@ -643,7 +693,7 @@ def build_agent_loop_graph(
                 reason = (
                     choice.reason
                     if choice is not None
-                    else "the model did not choose an action for this group tonight"
+                    else "the AI Assistant did not choose an action for this group tonight"
                 )
                 checked[group.name] = GroupDecision(
                     action=action,
@@ -659,8 +709,8 @@ def build_agent_loop_graph(
             action = load_action_or_raise(session, chosen_code, as_of)
             angle = action.message_angle if overridden else choice.angle
             reason = (
-                f"{action.title} is this group's required outreach action; the model chose "
-                "not to send anything tonight, so this fixed default was used instead."
+                f"{action.title} is this group's required outreach action; the AI Assistant "
+                "chose not to send anything tonight, so this fixed default was used instead."
                 if overridden
                 else choice.reason
             )
@@ -710,14 +760,41 @@ def build_agent_loop_graph(
         session.commit()
         return {"checked": checked}
 
-    def propose(state: AgentLoopState, _span: Any) -> dict[str, Any]:
+    def propose(state: AgentLoopState, span: Any) -> dict[str, Any]:
         proposals: list[AgentProposal] = []
-        for group in state["groups"]:
-            decision = state["checked"].get(group.name)
-            if decision is None:
+        decided_groups = [g for g in state["groups"] if state["checked"].get(g.name) is not None]
+        for index, group in enumerate(decided_groups):
+            decision = state["checked"][group.name]
+
+            # A resumed run already committed some groups; show them again, don't redo them.
+            existing = session.scalar(
+                select(AgentProposal).where(
+                    AgentProposal.run_id == run_id, AgentProposal.group_name == group.name
+                )
+            )
+            if existing is not None:
+                proposals.append(existing)
                 continue
 
             money_total_kes = sum(member.balance for member in decision.included)
+            evidence = group_evidence(group, state["thresholds"])
+            evidence_detail = group_evidence_detail(session, group)
+            angle = angle_for_proposal(
+                session,
+                action=decision.action,
+                group_name=group.name,
+                client_count=group.client_count,
+                money_total_kes=money_total_kes,
+                evidence=evidence,
+                evidence_detail=evidence_detail,
+                run_id=run_id,
+                as_of=as_of,
+                llm_client=llm_client,
+                audit=audit,
+                tracer=tracer,
+                trace_id=trace_id,
+                parent=span,
+            )
             proposal = AgentProposal(
                 run_id=run_id,
                 fa_id=current_fa_id(),
@@ -727,9 +804,10 @@ def build_agent_loop_graph(
                 group_definition=dict(group.definition),
                 client_count=group.client_count,
                 money_total_kes=money_total_kes,
-                evidence=group_evidence(group, state["thresholds"]),
+                evidence=evidence,
+                evidence_detail=evidence_detail,
                 reason=decision.reason,
-                angle=decision.action.message_angle,
+                angle=angle,
                 content_mix=decision.action.content_mix,
                 response_kind=decision.action.response_kind,
                 permission_applied=effective_permission(
@@ -775,15 +853,25 @@ def build_agent_loop_graph(
                     "group_name": group.name,
                     "action_code": decision.action.action_code,
                     "included_count": len(decision.included),
+                    "angle": proposal.angle,
                 },
             )
+            session.commit()
+            copy = card_copy.copy_for_history(group.name)
             events.record(
                 PROPOSAL_CREATED,
                 proposal_id=proposal.proposal_id,
                 group_name=group.name,
                 action_code=decision.action.action_code,
+                client_count=proposal.client_count,
                 included_count=len(decision.included),
+                money_total_kes=money_total_kes,
+                skip_reason_counts=proposal.skip_reason_counts,
                 permission_applied=proposal.permission_applied,
+                card_title=copy.card_title,
+                screen_label=copy.screen_label,
+                why_now=copy.why_now,
+                suggested_owner=card_copy.suggested_owner_for(decision.action.response_kind),
             )
             if decision.action.action_code != DO_NOTHING_ACTION:
                 if proposal.permission_applied == ACTS_ALONE:
@@ -847,6 +935,11 @@ def build_agent_loop_graph(
                         included_count=len(decision.included),
                     )
             proposals.append(proposal)
+
+            if index < len(decided_groups) - 1:
+                _wait_between_groups(
+                    session, run_id, events, next_group=decided_groups[index + 1].name
+                )
 
         record_audit(
             session,
@@ -912,23 +1005,94 @@ def build_agent_loop_graph(
         session.commit()
         return {"summary": summary, "cost_kes": cost_kes}
 
-    graph = StateGraph(AgentLoopState)
-    graph.add_node("gather", _traced("gather", gather))
-    graph.add_node("plan", _traced("plan", plan))
-    graph.add_node("choose", _traced("choose", choose))
-    graph.add_node("check", _traced("check", check))
-    graph.add_node("propose", _traced("propose", propose))
-    graph.add_node("report", _traced("report", report))
+    return [
+        ("gather", _traced("gather", gather)),
+        ("plan", _traced("plan", plan)),
+        ("choose", _traced("choose", choose)),
+        ("check", _traced("check", check)),
+        ("propose", _traced("propose", propose)),
+        ("report", _traced("report", report)),
+    ]
 
-    graph.add_edge(START, "gather")
-    graph.add_edge("gather", "plan")
-    graph.add_edge("plan", "choose")
-    graph.add_edge("choose", "check")
-    graph.add_edge("check", "propose")
-    graph.add_edge("propose", "report")
-    graph.add_edge("report", END)
 
-    return graph.compile()
+def _control_requested(session: Session, run_id: int) -> str | None:
+    return session.scalar(select(AgentRun.control_requested).where(AgentRun.run_id == run_id))
+
+
+def _wait_between_groups(
+    session: Session, run_id: int, events: EventLog, *, next_group: str
+) -> None:
+    window = get_settings().agent_group_pause_window_seconds
+    waited = 0
+    while waited < window:
+        control = _control_requested(session, run_id)
+        if control == PAUSE:
+            raise _RunPaused()
+        if control == CANCEL:
+            raise _RunCancelled()
+        events.record(
+            RUN_STATUS, stage="group_wait", seconds_left=window - waited, next_group=next_group
+        )
+        time.sleep(1)
+        waited += 1
+
+
+def _settle_paused(session: Session, run_id: int, events: EventLog) -> None:
+    session.rollback()
+    run = session.get(AgentRun, run_id)
+    run.state = "paused"
+    run.control_requested = None
+    record_audit(
+        session, entity_type="agent_run", action="paused", entity_id=str(run_id), run_id=str(run_id)
+    )
+    session.commit()
+    events.record(PAUSED)
+    logger.info("agent_loop.run_paused", run_id=run_id)
+
+
+def _settle_cancelled(session: Session, run_id: int, events: EventLog) -> None:
+    session.rollback()
+    run = session.get(AgentRun, run_id)
+    run.state = "cancelled"
+    run.control_requested = None
+    run.finished_at = datetime.now(UTC)
+    record_audit(
+        session,
+        entity_type="agent_run",
+        action="cancelled",
+        entity_id=str(run_id),
+        run_id=str(run_id),
+    )
+    session.commit()
+    events.record(RUN_COMPLETED, state="cancelled")
+    logger.info("agent_loop.run_cancelled", run_id=run_id)
+
+
+def _run_steps(
+    steps: list[tuple[str, Callable[[AgentLoopState], dict[str, Any]]]],
+    *,
+    session: Session,
+    run_id: int,
+    events: EventLog,
+) -> str:
+    state: AgentLoopState = {}
+    for _name, fn in steps:
+        control = _control_requested(session, run_id)
+        if control == PAUSE:
+            _settle_paused(session, run_id, events)
+            return "paused"
+        if control == CANCEL:
+            _settle_cancelled(session, run_id, events)
+            return "cancelled"
+        try:
+            state.update(fn(state))
+        except _RunPaused:
+            _settle_paused(session, run_id, events)
+            return "paused"
+        except _RunCancelled:
+            _settle_cancelled(session, run_id, events)
+            return "cancelled"
+    return "completed"
 
 
 def _latest_completed_risk_run_id(session: Session) -> str | None:
@@ -1079,8 +1243,9 @@ def execute_agent_run(
     audit: AuditSink | None = None,
     events: EventLog | None = None,
 ) -> AgentRun:
-    """Run the six-step graph against an agent_run row start_agent_run opened.
-    Always returns the row; a step that raises leaves the run failed with the reason recorded."""
+    """Run the six steps against an agent_run row start_agent_run opened.
+    Always returns the row; a step that raises leaves the run failed with the reason recorded.
+    Also used to resume a paused run: it re-enters the same steps, skipping what is already done."""
     llm_client = llm_client or get_agent_llm_client()
     as_of = as_of or date.today()
     tracer = tracer or NullTracer()
@@ -1104,7 +1269,7 @@ def execute_agent_run(
         model=llm_client.model,
     )
 
-    graph = build_agent_loop_graph(
+    steps = build_agent_loop_steps(
         session=session,
         run_id=run_id,
         trace_id=trace_id,
@@ -1128,7 +1293,7 @@ def execute_agent_run(
                 logger.info("agent_loop.resume_campaigns_skipped", run_id=run_id)
 
             with fa_scope(run.fa_id):
-                graph.invoke({})
+                outcome = _run_steps(steps, session=session, run_id=run_id, events=events)
         except Exception as exc:
             logger.exception("agent_loop.run_failed", run_id=run_id, reason=str(exc))
             events.record(ERROR, about="run", reason=str(exc))
@@ -1149,6 +1314,10 @@ def execute_agent_run(
             session.commit()
             tracer.flush()
             return run
+
+        if outcome != "completed":
+            tracer.flush()
+            return session.get(AgentRun, run_id)
 
         run = session.get(AgentRun, run_id)
         run.state = "completed"

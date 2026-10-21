@@ -549,6 +549,12 @@ def test_list_clients_includes_purchase_depth(two_clients) -> None:
     assert response.json()["items"][0]["purchase_depth"] == "single"
 
 
+def test_list_clients_includes_the_fund_short_name(two_clients) -> None:
+    first_id, _second_id, fund_id = two_clients
+    response = client.get(CLIENTS, params={"fund_id": fund_id, "client_id": first_id})
+    assert response.json()["items"][0]["fund_short_name"] == "CMMF"
+
+
 # --- GET /clients/summary, /clients/enrollment-summary, /clients/suppression-summary
 
 

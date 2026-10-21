@@ -26,6 +26,8 @@ from app.db.models.agent_event import (
     INSIGHT_CREATED,
     INSIGHT_DISMISSED,
     INSIGHT_UPDATED,
+    PAUSED,
+    RESUMED,
     RUN_COMPLETED,
     RUN_STATUS,
     STEP_COMPLETED,
@@ -200,6 +202,13 @@ def _apply(tally: _Tally, kind: str, detail: dict) -> None:
         tally.finished = True
         tally.outcome = detail.get("state")
         tally.open_steps.clear()
+    elif kind == PAUSED:
+        tally.finished = True
+        tally.outcome = "paused"
+        tally.open_steps.clear()
+    elif kind == RESUMED:
+        tally.finished = False
+        tally.outcome = None
 
 
 def _apply_status(tally: _Tally, detail: dict) -> None:

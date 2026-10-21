@@ -214,6 +214,27 @@ class RiskFactBlock(BaseModel):
         return {key: value for key, value in raw.items() if key in allowed}
 
 
+class ProposalFactBlock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    group_name: str
+    action_code: str
+    action_title: str
+    action_who: str
+    client_count: int = Field(ge=0)
+    money_total_kes: int | float | None = None
+    evidence: str
+    evidence_detail: dict[str, Any] | None = None
+
+    @field_validator("money_total_kes")
+    @classmethod
+    def _check_rounded(cls, value: int | float | None) -> int | float | None:
+        return value if value is None else _must_be_rounded(value)
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump(exclude_none=True)
+
+
 class AssistantFactBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
