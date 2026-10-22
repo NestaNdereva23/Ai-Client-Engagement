@@ -13,7 +13,9 @@ from app.agents.action_catalog import (
     set_action_paused,
 )
 from app.agents.permissions import PermissionValidationError, effective_permission, set_permission
+from app.agents.situation_action_mapping import load_active_mappings
 from app.api.reviewer_auth import get_current_reviewer_id
+from app.db.models.agent import AgentActionCatalog
 from app.db.session import get_session
 from app.schemas.action_catalog import (
     ActionMixListOut,
@@ -38,6 +40,14 @@ def list_action_mixes(session: Session = Depends(get_session)) -> ActionMixListO
     today = date.today()
     version = active_action_catalog_version(session, today)
     rows = load_active_actions(session, today)
+
+    situations_by_action: dict[str, list[str]] = {}
+    for mapping in load_active_mappings(session, today):
+        situations_by_action.setdefault(mapping.action_code, []).append(mapping.situation)
+
+    def sort_key(row: AgentActionCatalog) -> tuple[bool, str]:
+        return (not situations_by_action.get(row.action_code), row.action_code)
+
     actions = [
         ActionMixOut(
             action_code=row.action_code,
@@ -48,8 +58,9 @@ def list_action_mixes(session: Session = Depends(get_session)) -> ActionMixListO
             sends_message=bool(row.message_angle),
             paused=row.paused,
             version=row.version,
+            situations=situations_by_action.get(row.action_code, []),
         )
-        for row in sorted(rows.values(), key=lambda row: row.action_code)
+        for row in sorted(rows.values(), key=sort_key)
     ]
     return ActionMixListOut(version=version, actions=actions)
 

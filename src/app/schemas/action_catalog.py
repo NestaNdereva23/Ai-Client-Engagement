@@ -12,6 +12,7 @@ class ActionMixOut(BaseModel):
     sends_message: bool
     paused: bool
     version: int
+    situations: list[str]
 
 
 class ActionMixListOut(BaseModel):
