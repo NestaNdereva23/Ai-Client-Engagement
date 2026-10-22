@@ -88,6 +88,7 @@ from app.privacy.llm_client import (
     as_converse_call,
     get_agent_llm_client,
 )
+from app.privacy.scanners import OutboundLeak
 from app.schemas.agent_choice import AgentChoice
 
 logger = structlog.get_logger(__name__)
@@ -489,19 +490,25 @@ def build_agent_loop_steps(
         # A weak model occasionally echoes a tool call as plain text instead
         # of actually calling the tool, e.g. the reply is the literal string
         # {"list_groups": {}}. That is never a real plan, so give it one more
-        # try before falling back.
+        # try before falling back. The privacy boundary blocking a turn (a
+        # free-text reply that happened to match a phone/account-shaped
+        # pattern) gets the same retry, rather than failing the whole run.
         result = None
         plan_text = ""
         for _ in range(DEFAULT_MAX_PLAN_ATTEMPTS):
-            result = run_conversation_boundary(
-                {},
-                converse,
-                call_tool,
-                max_turns=DEFAULT_PLAN_MAX_TURNS,
-                run_id=str(run_id),
-                trace_id=trace_id,
-                audit=audit,
-            )
+            try:
+                result = run_conversation_boundary(
+                    {},
+                    converse,
+                    call_tool,
+                    max_turns=DEFAULT_PLAN_MAX_TURNS,
+                    run_id=str(run_id),
+                    trace_id=trace_id,
+                    audit=audit,
+                )
+            except OutboundLeak:
+                result = None
+                continue
             plan_text = (result.final_text or "").strip()
             if result.stopped_reason != "final_answer" or not _is_unmade_tool_call(
                 plan_text, _GROUP_LEVEL_TOOL_NAMES
@@ -509,16 +516,18 @@ def build_agent_loop_steps(
                 break
 
         if (
-            result.stopped_reason != "final_answer"
+            result is None
+            or result.stopped_reason != "final_answer"
             or not plan_text
             or _is_unmade_tool_call(plan_text, _GROUP_LEVEL_TOOL_NAMES)
         ):
             plan_text = FALLBACK_PLAN_TEXT
 
+        stopped_reason = result.stopped_reason if result is not None else "boundary_blocked"
         logger.info(
             "agent_loop.plan",
             run_id=run_id,
-            stopped_reason=result.stopped_reason,
+            stopped_reason=stopped_reason,
             plan_text=plan_text,
             **tally.as_detail(),
         )
@@ -530,7 +539,7 @@ def build_agent_loop_steps(
             run_id=str(run_id),
             detail={
                 "plan_text": plan_text,
-                "stopped_reason": result.stopped_reason,
+                "stopped_reason": stopped_reason,
                 **tally.as_detail(),
             },
         )
@@ -625,15 +634,20 @@ def build_agent_loop_steps(
                     parent=span,
                 )
 
-                result = run_conversation_boundary(
-                    {},
-                    converse,
-                    call_tool,
-                    max_turns=DEFAULT_CHOOSE_MAX_TURNS,
-                    run_id=str(run_id),
-                    trace_id=trace_id,
-                    audit=audit,
-                )
+                try:
+                    result = run_conversation_boundary(
+                        {},
+                        converse,
+                        call_tool,
+                        max_turns=DEFAULT_CHOOSE_MAX_TURNS,
+                        run_id=str(run_id),
+                        trace_id=trace_id,
+                        audit=audit,
+                    )
+                except OutboundLeak:
+                    attempts += 1
+                    last_error = "the model's reply was blocked by the privacy boundary"
+                    continue
                 attempts += 1
                 if result.stopped_reason != "final_answer":
                     last_error = (

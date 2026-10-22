@@ -463,6 +463,35 @@ def test_plan_falls_back_when_the_model_keeps_echoing_a_tool_call() -> None:
     assert stored_run.plan_text == FALLBACK_PLAN_TEXT
 
 
+def test_plan_retries_when_the_privacy_boundary_blocks_a_turn() -> None:
+    _seed_first_deposit_client(ELIGIBLE_CLIENT)
+    llm_client = FakeConversingLLMClient(
+        [
+            _final_answer("Call 0712345678 about this before tonight."),
+            _final_answer("The fee warning group matters tonight."),
+            *_choose_reply(
+                [
+                    {
+                        "group_name": FIRST_DEPOSIT_NO_REPEAT,
+                        "action_code": "fee_warning",
+                        "angle": "sitting_still",
+                        "reason": "their balance will run out within a few months",
+                    }
+                ]
+            ),
+        ]
+    )
+
+    with SessionLocal() as session:
+        run = run_nightly_agent(session, trigger="manual", llm_client=llm_client, as_of=AS_OF)
+        run_id = run.run_id
+
+    with SessionLocal() as session:
+        stored_run = session.get(AgentRun, run_id)
+    assert stored_run.state == "completed"
+    assert stored_run.plan_text == "The fee warning group matters tonight."
+
+
 def test_a_generated_angle_is_published_and_used_when_the_flag_is_on(monkeypatch) -> None:
     monkeypatch.setattr(get_settings(), "agent_angle_generation_enabled", True)
     _seed_first_deposit_client(ELIGIBLE_CLIENT)

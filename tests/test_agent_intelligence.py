@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import time
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -728,18 +727,26 @@ async def test_groups_asking_their_own_questions_side_by_side_each_record_a_tool
 
 
 async def test_a_run_over_every_group_is_far_quicker_than_one_group_at_a_time(book: None) -> None:
-    wait = 0.2
+    # A wall-clock race is flaky under a loaded test machine (CPU contention
+    # can slow even genuinely concurrent work past a fixed time budget), so
+    # this checks for actual overlap between groups instead of timing them.
+    wait = 0.05
+    in_flight = 0
+    max_in_flight = 0
 
     class SlowClient(ScriptedAsyncClient):
         async def aconverse(self, *, system, messages, tools=()):
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
             await asyncio.sleep(wait)
+            in_flight -= 1
             return await super().aconverse(system=system, messages=messages, tools=tools)
 
     scripts = {name: [_final_answer("Nothing to add.")] for name in GROUP_QUESTIONS}
     groups = len(GROUP_QUESTIONS)
 
     with SessionLocal() as session:
-        started = time.perf_counter()
         await run_intelligence_agent(
             session,
             trigger="manual",
@@ -747,9 +754,8 @@ async def test_a_run_over_every_group_is_far_quicker_than_one_group_at_a_time(bo
             as_of=AS_OF,
             concurrency=groups,
         )
-        took = time.perf_counter() - started
 
-    assert took < wait * groups
+    assert max_in_flight > 1
 
 
 async def test_one_group_spending_its_queries_does_not_starve_another(book: None) -> None:
