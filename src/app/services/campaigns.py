@@ -16,6 +16,7 @@ from sqlalchemy import BigInteger, Row, any_, cast, func, select, tuple_
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session
 
+from app.agents.campaign_agent import run_campaign_agent
 from app.agents.orchestrator import Orchestrator
 from app.audit.log import record_audit
 from app.campaigns.batch_generation import BatchIngestResult, BatchNotFound
@@ -59,6 +60,7 @@ from app.db.models.campaigns import (
     ContactEvent,
     Enrollment,
     TouchLog,
+    TouchPlan,
 )
 from app.db.models.generation_batch import GenerationBatch
 from app.db.models.generation_cost import GenerationCostConfigVersion
@@ -561,6 +563,72 @@ def run_campaign_generation(
         tracer=tracer,
     )
     return run_due_enrollments(session, campaign_id=campaign_id, generate=generate, limit=limit)
+
+
+def plan_and_run_due_enrollments(
+    session: Session,
+    campaign_id: int,
+    *,
+    orchestrator: Orchestrator,
+    settings: Settings,
+    tracer: Tracer | None = None,
+    limit: int = DEFAULT_BATCH_LIMIT,
+) -> list[TouchRunOutcome]:
+    if session.get(Campaign, campaign_id) is None:
+        raise CampaignNotFound(campaign_id)
+
+    run_campaign_agent(session, campaign_id)
+    return run_campaign_generation(
+        session,
+        campaign_id,
+        orchestrator=orchestrator,
+        settings=settings,
+        tracer=tracer,
+        limit=limit,
+    )
+
+
+def latest_campaign_plan(session: Session, campaign_id: int) -> list[dict]:
+    if session.get(Campaign, campaign_id) is None:
+        raise CampaignNotFound(campaign_id)
+
+    latest_run_id = session.execute(
+        select(func.max(TouchPlan.run_id))
+        .join(Enrollment, Enrollment.enrollment_id == TouchPlan.enrollment_id)
+        .where(Enrollment.campaign_id == campaign_id)
+    ).scalar_one_or_none()
+    if latest_run_id is None:
+        return []
+
+    rows = list(
+        session.execute(
+            select(TouchPlan, Enrollment.client_id)
+            .join(Enrollment, Enrollment.enrollment_id == TouchPlan.enrollment_id)
+            .where(TouchPlan.run_id == latest_run_id)
+            .order_by(TouchPlan.plan_id)
+        ).all()
+    )
+
+    plans = []
+    for plan, client_id in rows:
+        prior = session.execute(
+            select(TouchPlan.angle).where(
+                TouchPlan.enrollment_id == plan.enrollment_id,
+                TouchPlan.step_no == plan.step_no - 1,
+            )
+        ).scalar_one_or_none()
+        plans.append(
+            {
+                "enrollment_id": plan.enrollment_id,
+                "client_id": client_id,
+                "step_no": plan.step_no,
+                "prior_angle": prior,
+                "angle": plan.angle,
+                "gap_days": plan.gap_days,
+                "reason": plan.reason,
+            }
+        )
+    return plans
 
 
 def _close_sender(send_fn: SenderFn) -> None:

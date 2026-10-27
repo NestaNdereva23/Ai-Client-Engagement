@@ -103,6 +103,7 @@ def check_eligibility(
         channel,
         require_contact=get_settings().require_deliverable_contact,
         vault_session=vault_session,
+        dormant_only=_dormant_only(campaign),
     )
     if stop is not None:
         reason, terminal_status, detail = stop
@@ -147,7 +148,9 @@ def check_stop_conditions(
     if _angle_held(session, enrollment.client_id):
         return _skip(session, enrollment, reason="angle_held", terminal=False)
 
-    stop = _stop_reason(session, enrollment, channel, require_contact=True)
+    stop = _stop_reason(
+        session, enrollment, channel, require_contact=True, dormant_only=_dormant_only(campaign)
+    )
     if stop is not None:
         reason, terminal_status, detail = stop
         return _skip(
@@ -207,6 +210,7 @@ def _stop_reason(
     *,
     require_contact: bool,
     vault_session: Session | None = None,
+    dormant_only: bool = True,
 ) -> tuple[str, str, str | None] | None:
     """(reason, terminal_status, detail) for a permanent stop signal, or None."""
     suppression_reason = session.get(Suppression, enrollment.client_id)
@@ -232,7 +236,7 @@ def _stop_reason(
     if _latest_event_type(session, enrollment.client_id, ("reply",), since=since) is not None:
         return "replied", "stopped_reply", None
 
-    if _reengaged(session, enrollment):
+    if dormant_only and _reengaged(session, enrollment):
         return "reengaged", "stopped_reengaged", None
 
     return None

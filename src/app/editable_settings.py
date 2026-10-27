@@ -100,6 +100,7 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
     _switch("dispatch_direct_send"),
     _whole("dispatch_direct_send_max_batch", 1, 500),
     _whole("live_campaign_max_clients", 0, 5000),
+    _whole("agent_autosend_notice_seconds", 1, 604800),
     _whole("campaign_cooldown_days", 0, 90),
     _switch("require_deliverable_contact"),
     _whole("test_campaign_max_clients", 1, 500),

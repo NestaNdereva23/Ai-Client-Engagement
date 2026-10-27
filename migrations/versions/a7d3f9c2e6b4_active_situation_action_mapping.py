@@ -8,9 +8,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.orm import Session
 
-from app.agents.permissions import set_permission
 from app.agents.situation_action_mapping import MappingSpec, save_situation_action_mapping_version
-from app.db.models.agent_permission import AgentPermission
 
 revision: str = "a7d3f9c2e6b4"
 down_revision: str | Sequence[str] | None = "f4a9c2d7b1e8"
@@ -22,6 +20,20 @@ _PREVIOUS = 5
 _VALID_FROM = date(2026, 10, 13)
 _CHANGED_BY = "active_tiers"
 _SUGGEST_ONLY = "suggest_only"
+
+# The columns as they stood when this migration shipped, before agent_permission
+# was versioned with valid_from/valid_to. Written out here, instead of importing
+# the live model, so that later change never breaks this migration when history
+# is replayed from scratch.
+_PERMISSION_COLUMNS = (
+    "action_code",
+    "priority_tier",
+    "risk_band",
+    "permission",
+    "changed_by",
+    "changed_reason",
+)
+_PERMISSION_TABLE = sa.table("agent_permission", *(sa.column(name) for name in _PERMISSION_COLUMNS))
 
 _MAPPINGS = [
     MappingSpec(
@@ -91,30 +103,56 @@ _MAPPINGS = [
 ]
 
 
-def _make_suggest_only(session: Session, action_code: str) -> None:
-    row = (
-        session.query(AgentPermission)
-        .filter_by(action_code=action_code, priority_tier=None, risk_band=None)
-        .one_or_none()
+def _set_permission(
+    bind: sa.engine.Connection, action_code: str, permission: str, reason: str
+) -> None:
+    result = bind.execute(
+        _PERMISSION_TABLE.update()
+        .where(
+            _PERMISSION_TABLE.c.action_code == action_code,
+            _PERMISSION_TABLE.c.priority_tier.is_(None),
+            _PERMISSION_TABLE.c.risk_band.is_(None),
+        )
+        .values(permission=permission, changed_by=_CHANGED_BY, changed_reason=reason)
     )
-    if row is not None and row.permission == _SUGGEST_ONLY:
+    if result.rowcount == 0:
+        bind.execute(
+            _PERMISSION_TABLE.insert().values(
+                action_code=action_code,
+                priority_tier=None,
+                risk_band=None,
+                permission=permission,
+                changed_by=_CHANGED_BY,
+                changed_reason=reason,
+            )
+        )
+
+
+def _make_suggest_only(bind: sa.engine.Connection, action_code: str) -> None:
+    current = bind.execute(
+        sa.select(_PERMISSION_TABLE.c.permission).where(
+            _PERMISSION_TABLE.c.action_code == action_code,
+            _PERMISSION_TABLE.c.priority_tier.is_(None),
+            _PERMISSION_TABLE.c.risk_band.is_(None),
+        )
+    ).scalar_one_or_none()
+    if current == _SUGGEST_ONLY:
         return
     reason = (
         "new active situations are suggest only"
-        if row is None
-        else f"was {row.permission} before the active tiers change"
+        if current is None
+        else f"was {current} before the active tiers change"
     )
-    set_permission(
-        session, action_code, _SUGGEST_ONLY, changed_by=_CHANGED_BY, changed_reason=reason
-    )
+    _set_permission(bind, action_code, _SUGGEST_ONLY, reason)
 
 
 def upgrade() -> None:
-    session = Session(bind=op.get_bind())
+    bind = op.get_bind()
+    session = Session(bind=bind)
     save_situation_action_mapping_version(session, _VERSION, _MAPPINGS, valid_from=_VALID_FROM)
-    for action_code in sorted({spec.action_code for spec in _MAPPINGS}):
-        _make_suggest_only(session, action_code)
     session.flush()
+    for action_code in sorted({spec.action_code for spec in _MAPPINGS}):
+        _make_suggest_only(bind, action_code)
 
 
 def downgrade() -> None:

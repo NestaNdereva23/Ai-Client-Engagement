@@ -39,7 +39,7 @@ from app.campaigns.scheduler import (
     select_due_enrollments,
 )
 from app.config import get_settings
-from app.db.models.campaigns import Enrollment, TouchLog
+from app.db.models.campaigns import Enrollment, TouchLog, TouchPlan
 from app.db.models.outreach import Campaign, OutreachMessage
 from app.delivery.gate import MessageNotApproved, authorize_send
 
@@ -87,6 +87,14 @@ class TouchRunOutcome:
     generated: bool
     reason: str | None = None
     touch_id: int | None = None
+
+
+def _planned_gap_days(session: Session, enrollment_id: int, step_no: int) -> int | None:
+    return session.execute(
+        select(TouchPlan.gap_days).where(
+            TouchPlan.enrollment_id == enrollment_id, TouchPlan.step_no == step_no
+        )
+    ).scalar_one_or_none()
 
 
 def record_touch(session: Session, enrollment: Enrollment, step_no: int) -> TouchLog:
@@ -287,7 +295,13 @@ def send_touch(session: Session, touch: TouchLog, *, sender: SenderFn = stub_sen
         },
     )
 
-    advance_enrollment(session, enrollment, step_no=touch.step_no, sent_at=touch.sent_at)
+    advance_enrollment(
+        session,
+        enrollment,
+        step_no=touch.step_no,
+        sent_at=touch.sent_at,
+        gap_days=_planned_gap_days(session, touch.enrollment_id, touch.step_no),
+    )
     return touch
 
 
@@ -392,5 +406,9 @@ def reconcile_enrollment(session: Session, enrollment: Enrollment) -> Enrollment
     if latest_sent is None or latest_sent.step_no <= enrollment.current_step:
         return enrollment
     return advance_enrollment(
-        session, enrollment, step_no=latest_sent.step_no, sent_at=latest_sent.sent_at
+        session,
+        enrollment,
+        step_no=latest_sent.step_no,
+        sent_at=latest_sent.sent_at,
+        gap_days=_planned_gap_days(session, enrollment.enrollment_id, latest_sent.step_no),
     )

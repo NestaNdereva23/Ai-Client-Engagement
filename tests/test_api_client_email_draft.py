@@ -12,14 +12,21 @@ from app.briefing.client_email import DraftRejected, parse_email_draft
 from app.config import get_settings
 from app.db.models.active_clients import ActiveClientFund, ActiveClientTouchpoint
 from app.db.models.audit import AuditLog
-from app.db.models.campaigns import Enrollment
+from app.db.models.campaigns import Enrollment, TouchLog
 from app.db.models.complaints import ClientComplaint
 from app.db.models.fa_assignment import FaAssignment
 from app.db.models.llmops import GenerationRun
 from app.db.models.models import Clients, Funds, PiiVault
-from app.db.models.outreach import AGENT_PROPOSAL_CAMPAIGN_TYPE, Campaign, OutreachMessage
+from app.db.models.outreach import (
+    AGENT_PROPOSAL_CAMPAIGN_TYPE,
+    Campaign,
+    OutreachMessage,
+    ReviewAction,
+)
 from app.db.models.risk import ClientRiskFeatures
 from app.db.session import SessionLocal
+from app.delivery import sender as sender_module
+from app.delivery.mailer import NullMailer
 from app.main import app
 from app.services.agent_campaign_scope import message_is_visible
 from app.services.client_touchpoints import today_in_nairobi
@@ -80,6 +87,14 @@ def _clear(session) -> None:
     message_ids = session.scalars(
         select(OutreachMessage.message_id).where(OutreachMessage.client_id == CLIENT)
     ).all()
+    session.execute(
+        delete(TouchLog).where(
+            TouchLog.enrollment_id.in_(
+                select(Enrollment.enrollment_id).where(Enrollment.client_id == CLIENT)
+            )
+        )
+    )
+    session.execute(delete(ReviewAction).where(ReviewAction.message_id.in_(message_ids)))
     session.execute(delete(OutreachMessage).where(OutreachMessage.client_id == CLIENT))
     session.execute(delete(GenerationRun).where(GenerationRun.client_id == CLIENT))
     session.execute(delete(Enrollment).where(Enrollment.client_id == CLIENT))
@@ -253,12 +268,47 @@ def test_the_advisor_who_owns_the_client_can_open_the_draft(
             stranger_sees_it = message_is_visible(session, message_id, "fa-stranger")
     finally:
         with SessionLocal() as session:
+            session.execute(
+                delete(TouchLog).where(
+                    TouchLog.enrollment_id.in_(
+                        select(Enrollment.enrollment_id).where(Enrollment.client_id == CLIENT)
+                    )
+                )
+            )
             session.execute(delete(Enrollment).where(Enrollment.client_id == CLIENT))
             session.execute(delete(FaAssignment).where(FaAssignment.client_id == CLIENT))
             session.commit()
 
     assert owner_sees_it
     assert not stranger_sees_it
+
+
+def test_approving_the_draft_sends_it_as_the_clients_own_fa(
+    monkeypatch, model_on, seeded_client
+) -> None:
+    _use_model(monkeypatch)
+    with SessionLocal() as session:
+        vault = session.get(PiiVault, CLIENT)
+        vault.contact_email = "client@example.com"
+        fund = session.get(ActiveClientFund, (CLIENT, FUND))
+        fund.fa_email = "fa.owner@cytonn.com"
+        session.commit()
+    mailer = NullMailer()
+    monkeypatch.setattr(sender_module, "get_mailer", lambda settings=None: mailer)
+
+    message_id = _ask().json()["message_id"]
+    response = client.post(f"/api/v1/reviews/{message_id}/decide", json={"outcome": "approve"})
+
+    assert response.status_code == 200
+    assert response.json()["send"] == {"sent": True, "reason": None}
+    assert len(mailer.sent_messages) == 1
+    sent = mailer.sent_messages[0]
+    assert sent.to == "client@example.com"
+    assert sent.from_email == "fa.owner@cytonn.com"
+    assert sent.cc == ("fa.owner@cytonn.com",)
+    with SessionLocal() as session:
+        touch = session.scalar(select(TouchLog).where(TouchLog.message_id == message_id))
+        assert touch.sent_at is not None
 
 
 def test_the_daily_cap_stops_further_drafts(

@@ -7,6 +7,7 @@ AGENT_DRAFT_EMAILS = "Draft emails into review queue"
 AGENT_TELL_ACCOUNT_MANAGERS = "Tell account managers"
 
 CAMPAIGN_EMAIL_DRAFT = "Campaign email draft"
+CAMPAIGN_AGENT_PLAN = "Campaign agent: plan due touches"
 
 ASK_CHAT = "Ask chat"
 

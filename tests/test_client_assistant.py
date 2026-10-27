@@ -15,7 +15,7 @@ from app.db.models.agent_event import AgentEvent
 from app.db.models.agent_prompt import AgentPrompt
 from app.db.models.agent_run import AgentRun
 from app.db.models.audit import AuditLog
-from app.db.models.campaigns import Enrollment
+from app.db.models.campaigns import Enrollment, TouchLog
 from app.db.models.chat import ChatSession, ChatTurn
 from app.db.models.complaints import ClientComplaint
 from app.db.models.fa_assignment import FaAssignment
@@ -112,6 +112,13 @@ def _clear(session) -> None:
     message_ids = session.scalars(
         select(OutreachMessage.message_id).where(OutreachMessage.client_id == CLIENT)
     ).all()
+    session.execute(
+        delete(TouchLog).where(
+            TouchLog.enrollment_id.in_(
+                select(Enrollment.enrollment_id).where(Enrollment.client_id == CLIENT)
+            )
+        )
+    )
     session.execute(delete(OutreachMessage).where(OutreachMessage.client_id == CLIENT))
     session.execute(delete(GenerationRun).where(GenerationRun.client_id == CLIENT))
     session.execute(delete(Enrollment).where(Enrollment.client_id == CLIENT))

@@ -107,6 +107,28 @@ class TouchLog(Base):
     )
 
 
+class TouchPlan(Base):
+    __tablename__ = "touch_plan"
+    __table_args__ = (
+        UniqueConstraint("enrollment_id", "step_no", name="uq_touch_plan_enrollment_step"),
+    )
+
+    plan_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    enrollment_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("enrollment.enrollment_id"), nullable=False, index=True
+    )
+    step_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    angle: Mapped[str] = mapped_column(Text, nullable=False)
+    gap_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    run_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("agent_run.run_id"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class ContactEvent(Base):
     """Inbound signal (reply/open/bounce/complaint/optout) feeding the eligibility gate."""
 

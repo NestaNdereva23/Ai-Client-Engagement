@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.email_channel import build_default_orchestrator
@@ -11,14 +13,24 @@ from app.api.agent_scope import (
     require_messages_in_scope,
 )
 from app.api.reviewer_auth import get_current_reviewer_id
+from app.audit.log import record_audit
 from app.campaigns.generation import (
     MessageNotRegenerable,
     RegenerationRejected,
     model_boundary_audit_sink,
     regenerate_message,
 )
+from app.campaigns.touch import SendBlocked, SendOutcome, send_touch
 from app.config import get_settings
+from app.db.models.campaigns import TouchLog
+from app.db.models.outreach import (
+    ADVISOR_REQUESTED_QUEUE_NAME,
+    AGENT_PROPOSAL_CAMPAIGN_TYPE,
+    Campaign,
+    OutreachMessage,
+)
 from app.db.session import get_session
+from app.delivery.sender import build_email_sender
 from app.llmops.tracing import get_shared_tracer
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.review import (
@@ -28,6 +40,7 @@ from app.schemas.review import (
     DecideBatchResultOut,
     DecideRequest,
     DecideResultOut,
+    DecideSendOut,
     OutreachMessageDetail,
     OutreachMessageSummary,
     ReviewActionOut,
@@ -51,9 +64,57 @@ from app.services.review import approve_cohort_remainder as approve_cohort_remai
 from app.services.review import decide as decide_message
 from app.services.review import decide_batch as decide_message_batch
 
+logger = structlog.get_logger(__name__)
+
 router = APIRouter(
     prefix="/reviews", tags=["review"], dependencies=[Depends(get_current_reviewer_id)]
 )
+
+
+def _is_advisor_requested_queue(session: Session, campaign_id: int) -> bool:
+    campaign = session.get(Campaign, campaign_id)
+    return (
+        campaign is not None
+        and campaign.campaign_type == AGENT_PROPOSAL_CAMPAIGN_TYPE
+        and campaign.name == ADVISOR_REQUESTED_QUEUE_NAME
+    )
+
+
+def _send_if_advisor_requested_queue(
+    session: Session, message: OutreachMessage
+) -> SendOutcome | None:
+    # A drafted-from-profile message sends as soon as it's approved; every
+    # other queue still waits for a separate batch send.
+    if not _is_advisor_requested_queue(session, message.campaign_id):
+        return None
+    touch = session.scalar(select(TouchLog).where(TouchLog.message_id == message.message_id))
+    if touch is None:
+        return None
+
+    email_sender = build_email_sender()
+    try:
+        send_touch(session, touch, sender=email_sender)
+        return SendOutcome(touch.touch_id, touch.enrollment_id, sent=True)
+    except SendBlocked as exc:
+        return SendOutcome(touch.touch_id, touch.enrollment_id, sent=False, reason=exc.reason)
+    except Exception:
+        logger.exception(
+            "advisor_requested_queue.send_failed",
+            touch_id=touch.touch_id,
+            message_id=message.message_id,
+        )
+        record_audit(
+            session,
+            entity_type="touch_log",
+            action="send_refused",
+            entity_id=str(touch.touch_id),
+            detail={"reason": "send_error"},
+        )
+        return SendOutcome(touch.touch_id, touch.enrollment_id, sent=False, reason="send_error")
+    finally:
+        mailer = getattr(email_sender, "mailer", None)
+        if mailer is not None:
+            mailer.close()
 
 
 @router.get("", response_model=Page[OutreachMessageSummary])
@@ -160,6 +221,11 @@ def decide_review(
             reason=body.reason,
             edited_content=body.edited_content,
         )
+        send_outcome = (
+            _send_if_advisor_requested_queue(session, message)
+            if body.outcome in ("approve", "edit_approve")
+            else None
+        )
         cohort_ready = check_cohort_ready(session, message)
         session.commit()
     except MessageNotFound:
@@ -175,6 +241,9 @@ def decide_review(
     return DecideResultOut(
         action=ReviewActionOut.model_validate(action),
         cohort_ready=CohortReadyOut.model_validate(cohort_ready) if cohort_ready else None,
+        send=DecideSendOut(sent=send_outcome.sent, reason=send_outcome.reason)
+        if send_outcome
+        else None,
     )
 
 

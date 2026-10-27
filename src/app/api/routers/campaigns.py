@@ -55,6 +55,7 @@ from app.schemas.campaigns import (
     OutreachTrendPointOut,
     SentMessageOut,
     TouchOutcomeOut,
+    TouchPlanOut,
     TouchSendOutcomeOut,
 )
 from app.schemas.review import OutreachMessageSummary
@@ -89,6 +90,7 @@ from app.services.campaigns import (
     get_instantiation_batch,
     ingest_campaign_batch,
     instantiate_campaign_template,
+    latest_campaign_plan,
     list_campaign_batches,
     list_campaign_enrollments,
     list_campaign_steps,
@@ -385,6 +387,21 @@ def get_campaign_value(
     except CampaignNotFound:
         raise HTTPException(status_code=404, detail="campaign not found") from None
     return CampaignValueOut(campaign_id=campaign_id, **value)
+
+
+@router.get(
+    "/{campaign_id}/touch-plan",
+    response_model=list[TouchPlanOut],
+    dependencies=[Depends(require_campaign_in_scope)],
+)
+def get_campaign_touch_plan(
+    campaign_id: int, session: Session = Depends(get_session)
+) -> list[TouchPlanOut]:
+    try:
+        plans = latest_campaign_plan(session, campaign_id)
+    except CampaignNotFound:
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    return [TouchPlanOut(**plan) for plan in plans]
 
 
 @router.get(

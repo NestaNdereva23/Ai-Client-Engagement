@@ -45,6 +45,7 @@ class EmailMessage:
     text_body: str
     html_body: str | None = None
     cc: tuple[str, ...] = ()
+    from_email: str | None = None
 
 
 @dataclass(frozen=True)
@@ -220,6 +221,8 @@ class TicketingMailer:
         }
         if message.cc:
             payload["cc"] = list(message.cc)
+        if message.from_email:
+            payload["from"] = message.from_email
         try:
             response = self._http().post(
                 TICKETING_EMAIL_PATH,

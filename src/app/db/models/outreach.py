@@ -29,6 +29,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
 AGENT_PROPOSAL_CAMPAIGN_TYPE = "agent_proposal"
+ADVISOR_REQUESTED_QUEUE_NAME = "Advisor requested email drafts"
 CAMPAIGN_STATUSES = ("draft", "running", "paused", "completed")
 MESSAGE_STATUSES = ("pending_review", "approved", "rejected", "escalated", "held")
 REVIEW_OUTCOMES = ("approve", "edit_approve", "reject", "escalate", "hold")
@@ -51,6 +52,7 @@ class Campaign(Base):
     # Allow-listed feature values (segment, tier, bucket) the cohort was selected
     # on, not a free-text description, so enrollment can re-derive membership.
     cohort_definition: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    agent_touch_policy: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="draft")
     default_channel: Mapped[str] = mapped_column(Text, nullable=False, server_default="email")
     is_test: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())

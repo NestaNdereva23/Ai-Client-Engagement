@@ -144,6 +144,16 @@ class SentMessageOut(BaseModel):
     delivery_status: str | None
 
 
+class TouchPlanOut(BaseModel):
+    enrollment_id: int
+    client_id: int
+    step_no: int
+    prior_angle: str | None
+    angle: str
+    gap_days: int
+    reason: str
+
+
 class EnrollmentOut(BaseModel):
     enrollment_id: int
     campaign_id: int

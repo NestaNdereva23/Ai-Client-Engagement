@@ -265,6 +265,12 @@ class Settings(BaseSettings):
     # Live campaigns enroll at most this many clients; 0 means no limit.
     live_campaign_max_clients: int = 0
 
+    # A dormant touch an agent approves on its own waits this long, unseen,
+    # before it actually sends, so a reviewer who gets the heads up email has
+    # a real window to step in. Seconds, not days, so it can be shrunk for a
+    # test run without a code change.
+    agent_autosend_notice_seconds: int = 43200
+
     smtp_host: str = ""
     smtp_port: int = 1025
     smtp_username: str = ""

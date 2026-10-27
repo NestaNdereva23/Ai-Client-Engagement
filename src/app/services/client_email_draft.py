@@ -14,10 +14,16 @@ from app.briefing.client_email import DraftRejected, EmailDraft, draft_client_em
 from app.briefing.email_prompts import purpose_key
 from app.campaigns.enrollment import enroll_cohort
 from app.campaigns.nurture_bridge import ensure_active_client_row
+from app.campaigns.touch import record_touch
 from app.config import get_settings
 from app.db.models.audit import AuditLog
+from app.db.models.campaigns import TouchLog
 from app.db.models.llmops import GenerationRun, PromptVersion
-from app.db.models.outreach import AGENT_PROPOSAL_CAMPAIGN_TYPE, Campaign
+from app.db.models.outreach import (
+    ADVISOR_REQUESTED_QUEUE_NAME,
+    AGENT_PROPOSAL_CAMPAIGN_TYPE,
+    Campaign,
+)
 from app.db.models.suppression import Suppression
 from app.llmops.operations import trace_operation
 from app.llmops.trace_names import CLIENT_EMAIL_DRAFT_TRACE, CLIENT_EMAIL_SAVE, TAG_EMAIL
@@ -34,7 +40,6 @@ from app.services.review import create_outreach_message
 ENTITY_TYPE = "client_email_draft"
 MODEL_CROSSING = "draft"
 DRAFT_MADE = "generated"
-QUEUE_CAMPAIGN_NAME = "Advisor requested email drafts"
 PROMPT_VARIANT = "advisor_requested"
 
 
@@ -101,7 +106,7 @@ def _queue_campaign(session: Session) -> Campaign:
         select(Campaign)
         .where(
             Campaign.campaign_type == AGENT_PROPOSAL_CAMPAIGN_TYPE,
-            Campaign.name == QUEUE_CAMPAIGN_NAME,
+            Campaign.name == ADVISOR_REQUESTED_QUEUE_NAME,
         )
         .order_by(Campaign.campaign_id)
         .limit(1)
@@ -109,7 +114,7 @@ def _queue_campaign(session: Session) -> Campaign:
     if existing is not None:
         return existing
     campaign = Campaign(
-        name=QUEUE_CAMPAIGN_NAME,
+        name=ADVISOR_REQUESTED_QUEUE_NAME,
         campaign_type=AGENT_PROPOSAL_CAMPAIGN_TYPE,
         status="running",
         start_date=today_in_nairobi(),
@@ -161,6 +166,13 @@ def _record_run(
     return run
 
 
+def _next_step_no(session: Session, enrollment_id: int) -> int:
+    count = session.scalar(
+        select(func.count()).select_from(TouchLog).where(TouchLog.enrollment_id == enrollment_id)
+    )
+    return (count or 0) + 1
+
+
 def _queue_for_review(
     session: Session, client_id: int, draft: EmailDraft, purpose: str | None, instructions: str
 ) -> str:
@@ -168,10 +180,15 @@ def _queue_for_review(
         raise EmailDraftFailed()
     run = _record_run(session, client_id, draft, purpose, instructions)
     campaign_id = _queue_campaign(session).campaign_id
-    enroll_cohort(session, campaign_id=campaign_id, client_ids=[client_id])
+    enrollment = enroll_cohort(session, campaign_id=campaign_id, client_ids=[client_id])[0]
     message = create_outreach_message(session, run, campaign_id=campaign_id)
     if message is None:
         raise EmailDraftFailed()
+    # Links the message to a touch_log row so approving it can send it
+    # through the same path a drip campaign's own touches send through.
+    touch = record_touch(session, enrollment, _next_step_no(session, enrollment.enrollment_id))
+    touch.message_id = message.message_id
+    session.flush()
     return message.message_id
 
 

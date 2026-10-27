@@ -70,7 +70,12 @@ def count_stale_contacts(session: Session, enrollments: Sequence[Enrollment]) ->
 
 
 def advance_enrollment(
-    session: Session, enrollment: Enrollment, *, step_no: int, sent_at: datetime
+    session: Session,
+    enrollment: Enrollment,
+    *,
+    step_no: int,
+    sent_at: datetime,
+    gap_days: int | None = None,
 ) -> Enrollment:
     """Move an enrollment forward after step_no went out at sent_at."""
     if enrollment.current_step >= step_no:
@@ -87,7 +92,10 @@ def advance_enrollment(
 
     enrollment.current_step = step_no
     if next_step is not None:
-        delta_days = next_step.offset_days - (current.offset_days if current else 0)
+        if gap_days is not None:
+            delta_days = gap_days
+        else:
+            delta_days = next_step.offset_days - (current.offset_days if current else 0)
         enrollment.next_due_at = sent_at + timedelta(days=max(delta_days, 0))
         transition_enrollment(session, enrollment, to_status="in_progress", reason="touch_sent")
     else:

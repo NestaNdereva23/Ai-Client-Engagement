@@ -10,14 +10,18 @@ and persists it, the production counterpart to a test's fake_generate.
 
 from __future__ import annotations
 
+import functools
+
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from app.agents.email_agent import build_system_prompt
+from app.agents.email_channel import build_default_agent
 from app.agents.orchestrator import Orchestrator
 from app.audit.log import record_audit
 from app.campaigns.cohorts import CohortSlot
 from app.config import Settings
-from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
+from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog, TouchPlan
 from app.db.models.models import ClientFeatures
 from app.db.models.outreach import Campaign, OutreachMessage
 from app.llmops.operations import active_tracer
@@ -27,6 +31,8 @@ from app.llmops.tracing import Tracer, trace_scope
 from app.llmops.versions import persist_generation_run
 from app.privacy.boundary import AuditSink, BoundaryAudit
 from app.services.review import create_outreach_message, get_message
+
+_REPEAT_EXCERPT_LIMIT = 400
 
 
 class MessageNotRegenerable(Exception):
@@ -141,6 +147,55 @@ def _generate_and_persist(
     )
 
 
+def _touch_plan_for(session: Session, enrollment_id: int, step_no: int) -> TouchPlan | None:
+    return session.execute(
+        select(TouchPlan).where(
+            TouchPlan.enrollment_id == enrollment_id, TouchPlan.step_no == step_no
+        )
+    ).scalar_one_or_none()
+
+
+def _repeat_prohibition(session: Session, enrollment_id: int, step_no: int) -> str | None:
+    # The previous step's own draft, already pre-reattachment and model-safe.
+    previous = session.execute(
+        select(OutreachMessage.ai_draft_content)
+        .join(TouchLog, TouchLog.message_id == OutreachMessage.message_id)
+        .where(TouchLog.enrollment_id == enrollment_id, TouchLog.step_no == step_no - 1)
+    ).scalar_one_or_none()
+    if not previous:
+        return None
+    body = str(previous.get("body") or previous.get("subject") or "")[:_REPEAT_EXCERPT_LIMIT]
+    if not body:
+        return None
+    return f"repeat the wording of this client's last email to them: {body}"
+
+
+def _planned_orchestrator(
+    session: Session,
+    *,
+    plan: TouchPlan,
+    enrollment_id: int,
+    settings: Settings,
+    tracer: Tracer | None,
+) -> Orchestrator:
+    prohibition = _repeat_prohibition(session, enrollment_id, plan.step_no)
+    extra_prohibitions = (prohibition,) if prohibition else ()
+    orchestrator = Orchestrator()
+    orchestrator.register(
+        build_default_agent(
+            session,
+            settings,
+            audit=model_boundary_audit_sink(session),
+            tracer=tracer,
+            prompt_builder=functools.partial(
+                build_system_prompt, extra_prohibitions=extra_prohibitions
+            ),
+            angle_override=plan.angle,
+        )
+    )
+    return orchestrator
+
+
 def generate_for_enrollment(
     session: Session,
     enrollment: Enrollment,
@@ -161,6 +216,17 @@ def generate_for_enrollment(
     run over mixed touches drafts each one on its own channel.
     """
     channel = channel or resolve_touch_channel(session, enrollment.campaign_id, step_no)
+    plan = (
+        _touch_plan_for(session, enrollment.enrollment_id, step_no) if channel == "email" else None
+    )
+    if plan is not None:
+        orchestrator = _planned_orchestrator(
+            session,
+            plan=plan,
+            enrollment_id=enrollment.enrollment_id,
+            settings=settings,
+            tracer=tracer,
+        )
     return _generate_and_persist(
         session,
         client_id=enrollment.client_id,

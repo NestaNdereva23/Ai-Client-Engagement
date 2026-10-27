@@ -231,6 +231,7 @@ def load_client_context(
     at: date | None = None,
     use_rag: bool = True,
     extra_chunks: Sequence[GroundingChunk] = (),
+    angle_override: str | None = None,
 ) -> ClientContext:
     row = (
         session.execute(
@@ -246,19 +247,16 @@ def load_client_context(
     if indicators is None:
         raise ValueError(f"no resolved message indicators for client {client_id!r}")
 
-    chunks = (
-        retrieve_product_facts(session, product=product, angle=indicators.message_angle)
-        if use_rag
-        else ()
-    )
+    angle = angle_override or indicators.message_angle
+    chunks = retrieve_product_facts(session, product=product, angle=angle) if use_rag else ()
     chunks = (*chunks, *extra_chunks)
     on = at or date.today()
-    brief = load_angle(session, indicators.message_angle, on)
+    brief = load_angle(session, angle, on)
     contract = load_tier(session, indicators.priority_tier, on)
     features = session.get(ClientFeatures, client_id)
     return ClientContext(
         raw_context=dict(row),
-        angle=indicators.message_angle,
+        angle=angle,
         prompt_variant=indicators.prompt_variant,
         chunks=chunks,
         brief=brief,

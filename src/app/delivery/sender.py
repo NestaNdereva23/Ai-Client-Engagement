@@ -13,7 +13,12 @@ from app.campaigns.touch import SendBlocked, SenderFn, SendResult
 from app.config import Settings, get_settings
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.models import ClientFund, PiiVault
-from app.db.models.outreach import OutreachMessage
+from app.db.models.outreach import (
+    ADVISOR_REQUESTED_QUEUE_NAME,
+    AGENT_PROPOSAL_CAMPAIGN_TYPE,
+    Campaign,
+    OutreachMessage,
+)
 from app.db.session import SessionLocal, restricted_session
 from app.delivery.mailer import EmailMessage, Mailer, get_mailer, is_cytonn_address
 from app.delivery.test_recipients import ensure_test_recipient, pick_test_recipient
@@ -56,6 +61,16 @@ def _advisor_emails(client_id: int) -> tuple[str, ...]:
     )
 
 
+def _is_advisor_requested_queue(campaign_id: int) -> bool:
+    with SessionLocal() as session:
+        campaign = session.get(Campaign, campaign_id)
+    return (
+        campaign is not None
+        and campaign.campaign_type == AGENT_PROPOSAL_CAMPAIGN_TYPE
+        and campaign.name == ADVISOR_REQUESTED_QUEUE_NAME
+    )
+
+
 def build_email_sender(
     mailer: Mailer | None = None, *, settings: Settings | None = None
 ) -> SenderFn:
@@ -83,7 +98,12 @@ def build_email_sender(
 
         # A test send goes only to the test list, so no real account manager is copied.
         cc = () if test_mode else _advisor_emails(message.client_id)
-        result = mailer.send(EmailMessage(to=to, subject=subject, text_body=body, cc=cc))
+        # The advisor-requested queue sends as the client's own FA, not the
+        # shared client services inbox; every other campaign is unaffected.
+        from_email = cc[0] if cc and _is_advisor_requested_queue(message.campaign_id) else None
+        result = mailer.send(
+            EmailMessage(to=to, subject=subject, text_body=body, cc=cc, from_email=from_email)
+        )
         status = "sent" if result.sent else "recorded"
         logger.info("outreach_message.send", message_id=message.message_id, status=status)
         return SendResult(
