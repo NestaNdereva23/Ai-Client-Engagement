@@ -15,6 +15,7 @@ import httpx
 import pytest
 
 from app.config import Settings
+from app.privacy.bedrock_batch import BedrockBatchClient
 from app.privacy.boundary import run_conversation_boundary, run_model_boundary
 from app.privacy.llm_client import (
     AnthropicLLMClient,
@@ -28,6 +29,7 @@ from app.privacy.llm_client import (
     build_batch_request,
     get_agent_llm_client,
     get_anthropic_batch_client,
+    get_batch_client,
     get_briefing_llm_client,
     get_judge_llm_client,
     get_llm_client,
@@ -141,6 +143,17 @@ def test_get_llm_client_reads_model_choice_from_config_not_hardcoded() -> None:
     assert client.model == "claude-sonnet-5"
     assert client.max_tokens == 256
     assert client.temperature == 0.4
+
+
+def test_get_llm_client_builds_bedrock_from_settings() -> None:
+    settings = make_settings(
+        llm_provider="bedrock", llm_model="us.anthropic.claude-sonnet-4-6", aws_region="us-east-1"
+    )
+    client = get_llm_client(settings)
+    assert isinstance(client, AnthropicLLMClient)
+    assert client.model == "us.anthropic.claude-sonnet-4-6"
+    assert isinstance(client._client, anthropic.AnthropicBedrock)
+    assert client._client.aws_region == "us-east-1"
 
 
 def test_get_llm_client_rejects_unknown_provider() -> None:
@@ -1135,3 +1148,40 @@ def test_build_batch_request_is_identical_across_clients_sharing_the_same_cached
 
     assert first["params"]["system"][0] == second["params"]["system"][0]
     assert first["params"]["system"][1] != second["params"]["system"][1]
+
+
+def test_build_batch_request_bedrock_has_no_model_field() -> None:
+    settings = make_settings(llm_provider="bedrock", llm_model="us.anthropic.claude-sonnet-4-6")
+    request = build_batch_request(
+        custom_id="run-1",
+        system_cached="shared instructions",
+        system_dynamic="this client's own caveats",
+        user="recency_band: Over 6y",
+        settings=settings,
+    )
+
+    assert request["recordId"] == "run-1"
+    model_input = request["modelInput"]
+    assert model_input["anthropic_version"] == "bedrock-2023-05-31"
+    assert "model" not in model_input
+    assert model_input["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert model_input["messages"] == [{"role": "user", "content": "recency_band: Over 6y"}]
+
+
+def test_get_batch_client_builds_bedrock_client_from_settings() -> None:
+    settings = make_settings(
+        llm_provider="bedrock",
+        llm_model="us.anthropic.claude-sonnet-4-6",
+        aws_region="us-east-1",
+        bedrock_batch_s3_bucket="ace-batch-bucket",
+        bedrock_batch_role_arn="arn:aws:iam::123456789012:role/ace-batch",
+    )
+    client = get_batch_client(settings)
+    assert isinstance(client, BedrockBatchClient)
+    assert client.messages.batches is client
+
+
+def test_get_batch_client_still_refuses_a_non_anthropic_non_bedrock_provider() -> None:
+    settings = make_settings(llm_provider="ollama")
+    with pytest.raises(ValueError, match="anthropic"):
+        get_batch_client(settings)

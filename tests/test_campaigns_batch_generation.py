@@ -22,7 +22,7 @@ import pytest
 from sqlalchemy import delete, select
 
 from app.agents.graph import ClientContext
-from app.campaigns.batch_generation import BatchNotFound, ingest_batch, submit_batch
+from app.campaigns.batch_generation import BatchNotFound, BatchTooSmall, ingest_batch, submit_batch
 from app.campaigns.enrollment import enroll_cohort
 from app.config import Settings
 from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
@@ -50,9 +50,9 @@ FUND_ID = 987
 CLIENT_ID = 98701
 
 
-def make_settings() -> Settings:
+def make_settings(llm_provider: str = "anthropic") -> Settings:
     return Settings(
-        llm_provider="anthropic",
+        llm_provider=llm_provider,
         anthropic_api_key="test-key",
         llm_model="claude-opus-5",
         llm_temperature=None,
@@ -131,7 +131,7 @@ class FakeBatches:
         if self.results_to_return is None:
             self.results_to_return = []
 
-    def create(self, *, requests):
+    def create(self, *, requests, batch_id=None):
         self.created_requests = list(requests)
         return SimpleNamespace(id=self.batch_id)
 
@@ -370,6 +370,24 @@ def test_submit_batch_with_nothing_eligible_never_calls_the_provider(db: None) -
         session.execute(delete(GenerationBatch).where(GenerationBatch.campaign_id == campaign_id))
         session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
         session.commit()
+
+
+def test_submit_batch_raises_when_bedrock_cohort_is_below_the_provider_minimum(
+    campaign: int, client: int
+) -> None:
+    settings = make_settings(llm_provider="bedrock")
+    with SessionLocal() as session:
+        with pytest.raises(BatchTooSmall):
+            submit_batch(
+                session,
+                campaign,
+                settings=settings,
+                context_loader=make_context_loader(),
+                client=FakeBatchClient(),
+            )
+
+    with SessionLocal() as session:
+        assert session.scalars(_touch_query(campaign, client)).first() is None
 
 
 def test_ingest_batch_not_yet_ended_reports_status_with_no_outcomes(

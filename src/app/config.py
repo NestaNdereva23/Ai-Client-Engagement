@@ -117,6 +117,10 @@ class Settings(BaseSettings):
     llamacpp_base_url: str = "http://localhost:8080"
     llamacpp_timeout_seconds: float = 300.0
 
+    aws_region: str = ""
+    bedrock_batch_role_arn: str = ""
+    bedrock_batch_s3_bucket: str = ""
+
     judge_llm_provider: str = ""
     judge_llm_model: str = ""
     judge_llm_temperature: float | None = None

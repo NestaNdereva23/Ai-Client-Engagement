@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Literal, Protocol, runtime_checkable
 
 import anthropic
@@ -12,6 +13,7 @@ from anthropic.types.message_create_params import MessageCreateParamsNonStreamin
 from anthropic.types.messages.batch_create_params import Request as BatchRequest
 
 from app.config import Settings, get_settings
+from app.privacy.bedrock_batch import BedrockBatchClient
 from app.privacy.boundary import (
     AsyncConverseCall,
     ConverseCall,
@@ -724,6 +726,7 @@ def _build_llm_client(
     max_tokens: int,
     temperature: float | None,
     anthropic_api_key: str,
+    aws_region: str = "",
     ollama_base_url: str,
     ollama_timeout: float,
     llamacpp_base_url: str,
@@ -733,6 +736,18 @@ def _build_llm_client(
     if provider == "anthropic":
         return AnthropicLLMClient(
             api_key=anthropic_api_key, model=model, max_tokens=max_tokens, temperature=temperature
+        )
+    if provider == "bedrock":
+        # AnthropicBedrock/AsyncAnthropicBedrock sign with the default AWS
+        # credential chain (env vars, shared config, instance/task role) when
+        # no explicit access key is passed.
+        return AnthropicLLMClient(
+            api_key="",
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            client=anthropic.AnthropicBedrock(aws_region=aws_region),
+            async_client=anthropic.AsyncAnthropicBedrock(aws_region=aws_region),
         )
     if provider == "ollama":
         return OllamaLLMClient(
@@ -764,6 +779,7 @@ def get_llm_client(settings: Settings | None = None) -> LLMClient:
         max_tokens=settings.llm_max_tokens,
         temperature=settings.llm_temperature,
         anthropic_api_key=settings.anthropic_api_key,
+        aws_region=settings.aws_region,
         ollama_base_url=settings.ollama_base_url,
         ollama_timeout=settings.ollama_timeout_seconds,
         llamacpp_base_url=settings.llamacpp_base_url,
@@ -789,6 +805,7 @@ def get_judge_llm_client(settings: Settings | None = None) -> LLMClient:
         max_tokens=max_tokens,
         temperature=temperature,
         anthropic_api_key=settings.anthropic_api_key,
+        aws_region=settings.aws_region,
         ollama_base_url=settings.ollama_base_url,
         ollama_timeout=settings.ollama_timeout_seconds,
         llamacpp_base_url=settings.llamacpp_base_url,
@@ -814,6 +831,7 @@ def get_briefing_llm_client(settings: Settings | None = None) -> LLMClient:
         max_tokens=max_tokens,
         temperature=temperature,
         anthropic_api_key=settings.anthropic_api_key,
+        aws_region=settings.aws_region,
         ollama_base_url=settings.ollama_base_url,
         ollama_timeout=settings.ollama_timeout_seconds,
         llamacpp_base_url=settings.llamacpp_base_url,
@@ -874,6 +892,7 @@ def get_agent_llm_client(settings: Settings | None = None) -> ConversingLLMClien
         max_tokens=max_tokens,
         temperature=temperature,
         anthropic_api_key=settings.anthropic_api_key,
+        aws_region=settings.aws_region,
         ollama_base_url=settings.ollama_base_url,
         ollama_timeout=settings.ollama_timeout_seconds,
         llamacpp_base_url=settings.llamacpp_base_url,
@@ -898,7 +917,7 @@ def build_batch_request(
     system_dynamic: str = "",
     user: str,
     settings: Settings | None = None,
-) -> BatchRequest:
+) -> BatchRequest | dict[str, Any]:
     """One client's entry for client.messages.batches.create(requests=[...]).
 
     system_cached carries the ephemeral cache_control breakpoint, so every
@@ -913,6 +932,19 @@ def build_batch_request(
     if system_dynamic:
         system_blocks.append({"type": "text", "text": system_dynamic})
 
+    if settings.llm_provider == "bedrock":
+        # Bedrock's batch record has no "model" field -- the model is chosen
+        # once per job, not per record -- and needs anthropic_version instead.
+        model_input: dict[str, Any] = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": settings.llm_max_tokens,
+            "system": system_blocks,
+            "messages": [{"role": "user", "content": user}],
+        }
+        if settings.llm_temperature is not None:
+            model_input["temperature"] = settings.llm_temperature
+        return {"recordId": custom_id, "modelInput": model_input}
+
     params: dict[str, Any] = {
         "model": settings.llm_model,
         "max_tokens": settings.llm_max_tokens,
@@ -922,3 +954,33 @@ def build_batch_request(
     if settings.llm_temperature is not None:
         params["temperature"] = settings.llm_temperature
     return BatchRequest(custom_id=custom_id, params=MessageCreateParamsNonStreaming(**params))
+
+
+class _AnthropicBatchAdapter:
+    """Same .messages.batches.create/retrieve/results shape as BedrockBatchClient."""
+
+    def __init__(self, client: anthropic.Anthropic) -> None:
+        self._client = client
+        self.messages = SimpleNamespace(batches=self)
+
+    def create(self, *, requests: list[Any], batch_id: str | None = None) -> Any:
+        return self._client.messages.batches.create(requests=requests)
+
+    def retrieve(self, provider_batch_id: str) -> Any:
+        return self._client.messages.batches.retrieve(provider_batch_id)
+
+    def results(self, provider_batch_id: str) -> Any:
+        return self._client.messages.batches.results(provider_batch_id)
+
+
+def get_batch_client(settings: Settings | None = None) -> Any:
+    """The batch client for whichever provider is configured."""
+    settings = settings or get_settings()
+    if settings.llm_provider == "bedrock":
+        return BedrockBatchClient(
+            region=settings.aws_region,
+            bucket=settings.bedrock_batch_s3_bucket,
+            role_arn=settings.bedrock_batch_role_arn,
+            model_id=settings.llm_model,
+        )
+    return _AnthropicBatchAdapter(get_anthropic_batch_client(settings))

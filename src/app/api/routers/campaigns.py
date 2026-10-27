@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.agents.email_channel import build_default_orchestrator
 from app.api.agent_scope import AgentScope, get_agent_scope, require_campaign_in_scope
 from app.api.reviewer_auth import get_current_reviewer_id
-from app.campaigns.batch_generation import BatchNotFound
+from app.campaigns.batch_generation import BatchNotFound, BatchTooSmall
 from app.campaigns.estimation import DEFAULT_ESTIMATE_LIMIT, MAX_ESTIMATE_LIMIT
 from app.campaigns.generation import model_boundary_audit_sink
 from app.campaigns.generation_cost import (
@@ -691,6 +691,12 @@ def post_campaign_generate_batch(
     except CampaignNotFound:
         session.rollback()
         raise HTTPException(status_code=404, detail="campaign not found") from None
+    except BatchTooSmall as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail=f"only {exc.count} clients are due, provider needs at least {exc.minimum}",
+        ) from None
     if batch.status == "submitted":
         background_tasks.add_task(
             poll_batch_until_done, batch.generation_batch_id, settings=settings

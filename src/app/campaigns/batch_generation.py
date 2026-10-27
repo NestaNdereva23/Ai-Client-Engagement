@@ -63,12 +63,9 @@ from app.db.models.generation_batch import GenerationBatch, GenerationBatchItem
 from app.llmops.telemetry import persist_generation_telemetry
 from app.llmops.tracing import NullTracer, Tracer
 from app.llmops.versions import persist_generation_run
+from app.privacy.bedrock_batch import BEDROCK_BATCH_MIN_RECORDS
 from app.privacy.boundary import prepare_batch_payload, scan_batch_result, to_model_context
-from app.privacy.llm_client import (
-    build_batch_request,
-    get_anthropic_batch_client,
-    render_model_context,
-)
+from app.privacy.llm_client import build_batch_request, get_batch_client, render_model_context
 from app.privacy.scanners import InboundLeak, OutboundLeak
 from app.schemas.email_draft import DraftValidationError
 from app.services.review import create_outreach_message
@@ -87,6 +84,15 @@ _PROVIDER_ENDED_STATUSES = ("ended",)
 
 class BatchNotFound(Exception):
     """No generation_batch exists with the given id."""
+
+
+class BatchTooSmall(Exception):
+    """Fewer eligible clients than the provider's batch minimum."""
+
+    def __init__(self, count: int, minimum: int) -> None:
+        super().__init__(f"{count} eligible clients, provider needs at least {minimum}")
+        self.count = count
+        self.minimum = minimum
 
 
 @dataclass(frozen=True)
@@ -406,8 +412,13 @@ def submit_batch(
         )
         return batch
 
-    client = client or get_anthropic_batch_client(settings)
-    provider_batch = client.messages.batches.create(requests=requests)
+    if settings.llm_provider == "bedrock" and len(requests) < BEDROCK_BATCH_MIN_RECORDS:
+        raise BatchTooSmall(len(requests), BEDROCK_BATCH_MIN_RECORDS)
+
+    client = client or get_batch_client(settings)
+    provider_batch = client.messages.batches.create(
+        requests=requests, batch_id=batch.generation_batch_id
+    )
 
     batch.provider_batch_id = provider_batch.id
     batch.status = "submitted"
@@ -690,7 +701,7 @@ def ingest_batch(
     if batch.provider_batch_id is None:
         return BatchIngestResult(batch=batch, outcomes=[])
 
-    client = client or get_anthropic_batch_client(settings)
+    client = client or get_batch_client(settings)
     provider_batch = client.messages.batches.retrieve(batch.provider_batch_id)
 
     if provider_batch.processing_status not in _PROVIDER_ENDED_STATUSES:
