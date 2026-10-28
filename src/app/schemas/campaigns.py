@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -101,6 +102,7 @@ class CampaignReadinessOut(BaseModel):
     sendable_now: int
     sent_count: int
     next_due_at: datetime | None = None
+    problems: list[str] = Field(default_factory=list)
 
 
 class CampaignListItemOut(BaseModel):
@@ -132,6 +134,31 @@ class CampaignDetailOut(BaseModel):
     start_date: date | None
     end_date: date | None
     created_at: datetime
+    planning_mode: str
+    agent_touch_policy: dict | None
+
+
+DEFAULT_MIN_GAP_DAYS = 2
+DEFAULT_MAX_GAP_DAYS = 10
+
+CampaignObjective = Literal["win_back_deposit", "top_up", "reactivate_never_funded"]
+
+
+class CampaignPlanConfig(BaseModel):
+    objective: CampaignObjective | None = None
+    min_gap_days: int = Field(default=DEFAULT_MIN_GAP_DAYS, ge=0)
+    max_gap_days: int = Field(default=DEFAULT_MAX_GAP_DAYS, ge=0)
+    allowed_angles: list[str] = Field(default_factory=list)
+    success_measure: Literal["deposit"] = "deposit"
+    observation_days: int = Field(default=30, ge=1)
+
+    @model_validator(mode="after")
+    def _gaps_in_order(self) -> CampaignPlanConfig:
+        if self.min_gap_days > self.max_gap_days:
+            raise ValueError(
+                f"min_gap_days {self.min_gap_days} may not exceed max_gap_days {self.max_gap_days}"
+            )
+        return self
 
 
 class SentMessageOut(BaseModel):
@@ -152,6 +179,7 @@ class TouchPlanOut(BaseModel):
     angle: str
     gap_days: int
     reason: str
+    cited_facts: list[str] | None
 
 
 class EnrollmentOut(BaseModel):

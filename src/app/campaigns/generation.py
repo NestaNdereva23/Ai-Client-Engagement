@@ -11,6 +11,7 @@ and persists it, the production counterpart to a test's fake_generate.
 from __future__ import annotations
 
 import functools
+from dataclasses import dataclass
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -30,9 +31,37 @@ from app.llmops.trace_names import CAMPAIGN_EMAIL_DRAFT, TAG_CAMPAIGN, TAG_EMAIL
 from app.llmops.tracing import Tracer, trace_scope
 from app.llmops.versions import persist_generation_run
 from app.privacy.boundary import AuditSink, BoundaryAudit
+from app.rules.verified_rate import get_verified_rate
 from app.services.review import create_outreach_message, get_message
 
 _REPEAT_EXCERPT_LIMIT = 400
+
+
+@dataclass(frozen=True)
+class _FactChunk:
+    chunk_id: int
+    text: str
+
+
+def _format_rate(value: object) -> str:
+    return f"{float(value):.3f}".rstrip("0").rstrip(".")
+
+
+def _verified_rate_chunk(session: Session, client_id: int) -> _FactChunk | None:
+    product = resolve_product(session, client_id)
+    rate = get_verified_rate(session, product)
+    if rate is None:
+        return None
+    text = (
+        f"The {product} fund's current rate is {_format_rate(rate.rate_value)}%, "
+        f"verified as of {rate.as_of.date().isoformat()}."
+    )
+    return _FactChunk(chunk_id=-1, text=text)
+
+
+def _research_chunks(plan: TouchPlan) -> list[_FactChunk]:
+    notes = plan.cited_facts or []
+    return [_FactChunk(chunk_id=-(i + 2), text=note) for i, note in enumerate(notes)]
 
 
 class MessageNotRegenerable(Exception):
@@ -175,11 +204,19 @@ def _planned_orchestrator(
     *,
     plan: TouchPlan,
     enrollment_id: int,
+    client_id: int,
     settings: Settings,
     tracer: Tracer | None,
 ) -> Orchestrator:
     prohibition = _repeat_prohibition(session, enrollment_id, plan.step_no)
     extra_prohibitions = (prohibition,) if prohibition else ()
+
+    extra_chunks: list[_FactChunk] = []
+    rate_chunk = _verified_rate_chunk(session, client_id)
+    if rate_chunk is not None:
+        extra_chunks.append(rate_chunk)
+    extra_chunks.extend(_research_chunks(plan))
+
     orchestrator = Orchestrator()
     orchestrator.register(
         build_default_agent(
@@ -191,6 +228,7 @@ def _planned_orchestrator(
                 build_system_prompt, extra_prohibitions=extra_prohibitions
             ),
             angle_override=plan.angle,
+            extra_chunks=tuple(extra_chunks),
         )
     )
     return orchestrator
@@ -224,6 +262,7 @@ def generate_for_enrollment(
             session,
             plan=plan,
             enrollment_id=enrollment.enrollment_id,
+            client_id=enrollment.client_id,
             settings=settings,
             tracer=tracer,
         )

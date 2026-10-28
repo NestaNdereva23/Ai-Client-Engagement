@@ -17,6 +17,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -124,6 +125,8 @@ class TouchPlan(Base):
     run_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("agent_run.run_id"), nullable=False, index=True
     )
+    # Verbatim snippets the agent copied from search_web/get_verified_rate for this slot.
+    cited_facts: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

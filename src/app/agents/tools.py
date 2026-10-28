@@ -31,6 +31,7 @@ from app.agents.watchlist import (
     build_watchlist,
     load_thresholds,
 )
+from app.agents.web_research import WebSearchUnavailable, search_verified_web
 from app.briefing.narrative_prompt import narrative_facts
 from app.campaigns.generation_cost import (
     DEFAULT_MODEL,
@@ -39,10 +40,12 @@ from app.campaigns.generation_cost import (
     UnknownGenerationModel,
     active_generation_cost_config,
 )
+from app.config import get_settings
 from app.db.models.models import Funds
 from app.db.models.risk import ClientRiskFeatures
 from app.privacy.llm_client import ToolSpec
 from app.rules.catalog import load_active_angles
+from app.rules.verified_rate import get_verified_rate as fetch_verified_rate
 from app.services.agent_proposals import daily_usage, list_proposals
 from app.services.briefing import gather_briefing_facts, to_risk_fact_block
 from app.services.rag import search as search_rag_corpus
@@ -50,6 +53,7 @@ from app.transform.features import fund_type_from_name as classify_fund_type
 
 _MAX_SEARCH_RESULTS = 10
 _SEARCH_SCORE_DECIMALS = 3
+_MAX_WEB_RESULTS = 5
 
 
 def _parse_as_of(raw: str | None) -> date:
@@ -278,6 +282,37 @@ def search_knowledge(
     }
 
 
+def search_web(session: Session, *, query: str, k: int = 5) -> dict[str, Any]:
+    if not query or not query.strip():
+        return {"error": "empty_query", "message": "a search needs some text to look for"}
+
+    capped_k = max(1, min(k, _MAX_WEB_RESULTS))
+    try:
+        results = search_verified_web(get_settings(), query, capped_k)
+    except WebSearchUnavailable as exc:
+        return {"error": "web_search_unavailable", "message": str(exc)}
+    return {
+        "query": query,
+        "results": [{"title": r.title, "url": r.url, "snippet": r.snippet} for r in results],
+    }
+
+
+def get_verified_rate(session: Session, *, product: str) -> dict[str, Any]:
+    # Refuses once the rate has gone stale rather than returning an old figure.
+    row = fetch_verified_rate(session, product)
+    if row is None:
+        return {
+            "error": "no_verified_rate",
+            "message": f"no fresh verified rate is on file for '{product}'",
+        }
+    return {
+        "product": row.product,
+        "rate_pct": float(row.rate_value),
+        "as_of": row.as_of.date().isoformat(),
+        "source": row.source,
+    }
+
+
 def list_angles(session: Session, *, as_of: str | None = None) -> dict[str, Any]:
     """The message angles live today, and what each one may and may not claim."""
     day = _parse_as_of(as_of)
@@ -437,6 +472,8 @@ TOOL_FUNCTIONS: dict[str, Callable[..., dict[str, Any]]] = {
     "sample_group_member": sample_group_member,
     "get_contact_history": get_contact_history,
     "search_knowledge": search_knowledge,
+    "search_web": search_web,
+    "get_verified_rate": get_verified_rate,
     "list_angles": list_angles,
     "estimate_cost": estimate_cost,
     "check_allowance": check_allowance,
@@ -547,6 +584,41 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
                 },
             },
             "required": ["query"],
+        },
+    ),
+    ToolSpec(
+        name="search_web",
+        description=(
+            "Search the allow listed verified sources for a fact worth citing. "
+            "Returns only pages from sources an operator has approved."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to search for."},
+                "k": {
+                    "type": "integer",
+                    "description": f"How many results to return, at most {_MAX_WEB_RESULTS}.",
+                },
+            },
+            "required": ["query"],
+        },
+    ),
+    ToolSpec(
+        name="get_verified_rate",
+        description=(
+            "The product's own verified current rate, kept fresh by an operator. "
+            "Refuses once it has gone stale rather than returning an old figure."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "product": {
+                    "type": "string",
+                    "description": "The product to look up, for example 'money market'.",
+                }
+            },
+            "required": ["product"],
         },
     ),
     ToolSpec(

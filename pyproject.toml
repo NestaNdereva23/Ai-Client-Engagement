@@ -24,6 +24,7 @@ dependencies = [
     "sqladmin>=0.31.0",
     "itsdangerous>=2.2.0",
     "pyjwt>=2.13.0",
+    "exa-py>=2.26.0",
 ]
 
 # This is an application, not a distributable library: uv manages the

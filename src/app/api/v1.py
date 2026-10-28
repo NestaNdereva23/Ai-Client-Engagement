@@ -29,6 +29,7 @@ from app.api.routers import (
     integration,
     prompt_config,
     rag,
+    rates,
     review,
     risk,
     rules,
@@ -65,6 +66,7 @@ router.include_router(delivery.router)
 router.include_router(situations.router, dependencies=ai_assistant_only)
 router.include_router(agent_studio.router)
 router.include_router(app_settings.router)
+router.include_router(rates.router)
 router.include_router(access.router)
 router.include_router(chat.router, dependencies=ai_assistant_only)
 router.include_router(agent_metrics.router, dependencies=ai_assistant_only)

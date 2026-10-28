@@ -15,6 +15,7 @@ from app.campaigns.generation_cost import (
     GenerationCostConfigMissing,
     UnknownGenerationModel,
 )
+from app.campaigns.readiness import CampaignNotReady
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT, INSTANTIATE_DEFAULT_LIMIT, MAX_BATCH_LIMIT
 from app.campaigns.template_policy import EffectivePolicy, TemplatePolicyValidationError
 from app.config import get_settings
@@ -32,6 +33,7 @@ from app.schemas.campaigns import (
     CampaignDetailOut,
     CampaignDispatchOut,
     CampaignListItemOut,
+    CampaignPlanConfig,
     CampaignReadinessOut,
     CampaignStepCreateRequest,
     CampaignStepOut,
@@ -99,9 +101,11 @@ from app.services.campaigns import (
     list_sent_touches,
     outreach_analytics,
     outreach_trend,
+    plan_and_run_due_enrollments,
     preview_cohort,
     preview_cohort_batch,
     run_campaign_generation,
+    set_campaign_plan_config,
     set_campaign_template_policy,
     start_bulk_instantiate,
     submit_campaign_batch,
@@ -356,6 +360,8 @@ def get_campaign_detail(
         start_date=campaign.start_date,
         end_date=campaign.end_date,
         created_at=campaign.created_at,
+        planning_mode=campaign.planning_mode,
+        agent_touch_policy=campaign.agent_touch_policy,
     )
 
 
@@ -402,6 +408,64 @@ def get_campaign_touch_plan(
     except CampaignNotFound:
         raise HTTPException(status_code=404, detail="campaign not found") from None
     return [TouchPlanOut(**plan) for plan in plans]
+
+
+@router.put(
+    "/{campaign_id}/touch-policy",
+    response_model=dict,
+    dependencies=[Depends(require_campaign_in_scope)],
+)
+def put_campaign_plan_config(
+    campaign_id: int, body: CampaignPlanConfig, session: Session = Depends(get_session)
+) -> dict:
+    try:
+        config = set_campaign_plan_config(session, campaign_id, body)
+        session.commit()
+    except CampaignNotFound:
+        session.rollback()
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    return config
+
+
+@router.post(
+    "/{campaign_id}/plan-and-generate",
+    response_model=list[TouchOutcomeOut],
+    dependencies=[Depends(require_campaign_in_scope)],
+)
+def post_campaign_plan_and_generate(
+    campaign_id: int,
+    limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
+    session: Session = Depends(get_session),
+) -> list[TouchOutcomeOut]:
+    tracer = get_shared_tracer()
+    orchestrator = build_default_orchestrator(
+        session, audit=model_boundary_audit_sink(session), tracer=tracer
+    )
+    try:
+        outcomes = plan_and_run_due_enrollments(
+            session,
+            campaign_id,
+            orchestrator=orchestrator,
+            settings=get_settings(),
+            tracer=tracer,
+            limit=limit,
+        )
+        session.commit()
+    except CampaignNotFound:
+        session.rollback()
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    except CampaignNotReady as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return [
+        TouchOutcomeOut(
+            enrollment_id=o.enrollment_id,
+            generated=o.generated,
+            reason=o.reason,
+            touch_id=o.touch_id,
+        )
+        for o in outcomes
+    ]
 
 
 @router.get(
@@ -647,6 +711,9 @@ def post_campaign_dispatch(
     except CampaignNotFound:
         session.rollback()
         raise HTTPException(status_code=404, detail="campaign not found") from None
+    except CampaignNotReady as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     return CampaignDispatchOut(
         outcomes=[
             TouchSendOutcomeOut(

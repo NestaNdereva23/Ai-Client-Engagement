@@ -47,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
         campaign = Campaign(
             name="campaign agent manual test run",
             is_test=True,
+            planning_mode="agent",
             agent_touch_policy={
                 "min_gap_days": args.min_gap_days,
                 "max_gap_days": args.max_gap_days,

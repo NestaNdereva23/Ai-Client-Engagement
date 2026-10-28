@@ -142,6 +142,8 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
     EditableSetting("pattern_min_z", "float", 0, 20),
     _whole("pattern_max_features", 1, 10),
     _whole("pattern_max_per_run", 1, 100),
+    EditableSetting("web_research_allowed_domains", "text", optional=True, max_length=1000),
+    _whole("verified_rate_max_age_hours", 1, 720),
 )
 
 EDITABLE_SETTINGS_BY_KEY: dict[str, EditableSetting] = {s.key: s for s in EDITABLE_SETTINGS}

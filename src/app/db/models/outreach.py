@@ -31,6 +31,9 @@ from app.db.base import Base
 AGENT_PROPOSAL_CAMPAIGN_TYPE = "agent_proposal"
 ADVISOR_REQUESTED_QUEUE_NAME = "Advisor requested email drafts"
 CAMPAIGN_STATUSES = ("draft", "running", "paused", "completed")
+FIXED_STEPS_PLANNING_MODE = "fixed_steps"
+AGENT_PLANNING_MODE = "agent"
+PLANNING_MODES = (FIXED_STEPS_PLANNING_MODE, AGENT_PLANNING_MODE)
 MESSAGE_STATUSES = ("pending_review", "approved", "rejected", "escalated", "held")
 REVIEW_OUTCOMES = ("approve", "edit_approve", "reject", "escalate", "hold")
 COHORT_STATUSES = ("sampling", "ready_to_approve_rest", "completed")
@@ -41,6 +44,9 @@ class Campaign(Base):
     __table_args__ = (
         CheckConstraint(
             "status IN ('draft', 'running', 'paused', 'completed')", name="ck_campaign_status"
+        ),
+        CheckConstraint(
+            "planning_mode IN ('fixed_steps', 'agent')", name="ck_campaign_planning_mode"
         ),
     )
 
@@ -53,6 +59,9 @@ class Campaign(Base):
     # on, not a free-text description, so enrollment can re-derive membership.
     cohort_definition: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     agent_touch_policy: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    planning_mode: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=FIXED_STEPS_PLANNING_MODE
+    )
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="draft")
     default_channel: Mapped[str] = mapped_column(Text, nullable=False, server_default="email")
     is_test: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())

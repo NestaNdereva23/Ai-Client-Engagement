@@ -19,7 +19,7 @@ from app.db.models.campaigns import TouchPlan
 from app.db.models.outreach import Campaign
 from app.llmops.operations import active_tracer
 from app.llmops.trace_names import CAMPAIGN_AGENT_PLAN, TAG_AGENT, TAG_CAMPAIGN
-from app.llmops.tracing import trace_scope
+from app.llmops.tracing import Tracer, trace_scope
 from app.privacy.boundary import run_conversation_boundary
 from app.privacy.llm_client import (
     ConversingLLMClient,
@@ -27,28 +27,23 @@ from app.privacy.llm_client import (
     as_converse_call,
     get_agent_llm_client,
 )
-from app.rules.catalog import load_active_angles
+from app.rules.catalog import live_angle_codes
+from app.schemas.campaigns import CampaignPlanConfig
 
 logger = structlog.get_logger(__name__)
 
 CHOOSE_TOUCH_PLAN_TOOL_NAME = "choose_touch_plan"
-DEFAULT_MAX_TURNS = 6
-DEFAULT_MIN_GAP_DAYS = 2
-DEFAULT_MAX_GAP_DAYS = 10
+DEFAULT_MAX_TURNS = 10
+_MAX_RESEARCH_NOTES = 3
+_RESEARCH_NOTE_LIMIT = 500
 
 _LIST_ANGLES_SPEC = next(spec for spec in TOOL_SPECS if spec.name == "list_angles")
+_SEARCH_WEB_SPEC = next(spec for spec in TOOL_SPECS if spec.name == "search_web")
+_GET_VERIFIED_RATE_SPEC = next(spec for spec in TOOL_SPECS if spec.name == "get_verified_rate")
 
 
 class CampaignNotFound(Exception):
     pass
-
-
-def _touch_policy(campaign: Campaign) -> tuple[int, int]:
-    policy = campaign.agent_touch_policy or {}
-    return (
-        int(policy.get("min_gap_days", DEFAULT_MIN_GAP_DAYS)),
-        int(policy.get("max_gap_days", DEFAULT_MAX_GAP_DAYS)),
-    )
 
 
 def _gather_slots(session: Session, campaign_id: int) -> list[dict[str, Any]]:
@@ -96,6 +91,15 @@ def build_choose_touch_plan_tool_spec(
                             "angle": {"type": "string", "enum": sorted(allowed_angles)},
                             "gap_days": {"type": "integer"},
                             "reason": {"type": "string"},
+                            "research_notes": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    f"Up to {_MAX_RESEARCH_NOTES} facts copied verbatim from "
+                                    "search_web or get_verified_rate for this slot's drafting "
+                                    "step to cite. Leave empty if you found nothing to cite."
+                                ),
+                            },
                         },
                         "required": ["slot", "angle", "gap_days", "reason"],
                     },
@@ -104,6 +108,14 @@ def build_choose_touch_plan_tool_spec(
             "required": ["decisions"],
         },
     )
+
+
+def _clean_research_notes(raw: Any) -> list[str] | None:
+    if not isinstance(raw, list):
+        return None
+    notes = [str(note).strip()[:_RESEARCH_NOTE_LIMIT] for note in raw[:_MAX_RESEARCH_NOTES]]
+    cleaned = [note for note in notes if note]
+    return cleaned or None
 
 
 def make_choose_touch_plan_tool(
@@ -162,6 +174,7 @@ def make_choose_touch_plan_tool(
                 gap_days=decision["gap_days"],
                 reason=decision["reason"].strip(),
                 run_id=run_id,
+                cited_facts=_clean_research_notes(decision.get("research_notes")),
             )
             session.add(row)
             session.flush()
@@ -176,6 +189,7 @@ def make_choose_touch_plan_tool(
                     "step_no": row.step_no,
                     "angle": row.angle,
                     "gap_days": row.gap_days,
+                    "cited_facts": row.cited_facts,
                 },
             )
             written.append(row.plan_id)
@@ -192,9 +206,18 @@ _SYSTEM_PROMPT = (
     "tool's own schema; each slot is one client's due touch, identified only by "
     "slot number, with the angle (if any) they were sent last time.\n"
     "Pick an angle from list_angles for every slot: never the slot's prior angle, "
-    "and never a held angle. Pick how many days until that client's next touch, "
+    "and never a held angle. Do not default to one angle for every slot that has "
+    "no prior angle: spread first-touch slots across different live angles, the "
+    "same way you would if they all had history to avoid repeating. Only repeat "
+    "an angle across slots when the catalogue genuinely leaves you no other fit. "
+    "Pick how many days until that client's next touch, "
     "between {min_gap} and {max_gap} days; it does not have to be the same for "
     "every slot or every run.\n"
+    "You may call search_web for a fact from an approved source, and "
+    "get_verified_rate for the product's own current rate. Never invent a fact "
+    "or a rate yourself. If you find something worth the drafting step citing "
+    "for a slot, copy it verbatim into that slot's research_notes; leave it "
+    "empty otherwise.\n"
     "Call choose_touch_plan exactly once, covering every slot you were given, "
     "then reply with a short plain summary and no further tool call."
 )
@@ -214,6 +237,7 @@ def run_campaign_agent(
     *,
     trigger: str = "manual",
     llm_client: ConversingLLMClient | None = None,
+    tracer: Tracer | None = None,
 ) -> AgentRun:
     campaign = session.get(Campaign, campaign_id)
     if campaign is None:
@@ -232,9 +256,11 @@ def run_campaign_agent(
             session.commit()
             return run
 
-        min_gap_days, max_gap_days = _touch_policy(campaign)
-        angles = load_active_angles(session, date.today())
-        allowed_angles = {code for code, row in angles.items() if not row.held}
+        plan_config = CampaignPlanConfig.model_validate(campaign.agent_touch_policy or {})
+        min_gap_days, max_gap_days = plan_config.min_gap_days, plan_config.max_gap_days
+        allowed_angles = live_angle_codes(session, date.today())
+        if plan_config.allowed_angles:
+            allowed_angles &= set(plan_config.allowed_angles)
 
         llm_client = llm_client or get_agent_llm_client(settings)
         outcome: dict[str, Any] = {}
@@ -253,13 +279,15 @@ def run_campaign_agent(
         system_prompt = f"{system_prompt}\n\nThis run's slots:\n{_slots_prompt(slots)}"
 
         converse = as_converse_call(
-            llm_client, system=system_prompt, tools=(_LIST_ANGLES_SPEC, tool_spec)
+            llm_client,
+            system=system_prompt,
+            tools=(_LIST_ANGLES_SPEC, _SEARCH_WEB_SPEC, _GET_VERIFIED_RATE_SPEC, tool_spec),
         )
         call_tool = make_tool_executor(
             session, run_id, extra_tools={CHOOSE_TOUCH_PLAN_TOOL_NAME: choose_tool}
         )
 
-        tracer = active_tracer()
+        tracer = tracer or active_tracer()
         with trace_scope(tracer, name=CAMPAIGN_AGENT_PLAN, tags=[TAG_AGENT, TAG_CAMPAIGN]):
             run_conversation_boundary(
                 {},

@@ -92,6 +92,20 @@ class Settings(BaseSettings):
     rag_retrieval_k: int = 3
     rag_min_score: float = 0.1
 
+    exa_api_key: str = Field(default="", validation_alias=AliasChoices("EXA_API_KEY"))
+    web_research_allowed_domains: str = Field(
+        default="", validation_alias=AliasChoices("WEB_RESEARCH_ALLOWED_DOMAINS")
+    )
+
+    @property
+    def web_research_allowed_domains_list(self) -> list[str]:
+        return [
+            d.strip().lower() for d in self.web_research_allowed_domains.split(",") if d.strip()
+        ]
+
+    # A verified rate older than this is withheld rather than quoted as current.
+    verified_rate_max_age_hours: int = 24
+
     cytonn_api_base_url: str = Field(
         default="",
         validation_alias=AliasChoices("CY_API_BASE_URL", "CYTONN_API_BASE_URL"),

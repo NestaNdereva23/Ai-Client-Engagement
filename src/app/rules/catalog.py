@@ -180,6 +180,10 @@ def load_active_angles(session: Session, at: date) -> dict[str, MessageAngleCata
     return {row.angle: row for row in rows}
 
 
+def live_angle_codes(session: Session, at: date) -> set[str]:
+    return {code for code, row in load_active_angles(session, at).items() if not row.held}
+
+
 def load_angle(session: Session, angle: str, at: date) -> MessageAngleCatalog | None:
     """One angle's brief from the catalogue in force on `at`."""
     return load_active_angles(session, at).get(angle)

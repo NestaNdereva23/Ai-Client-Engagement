@@ -365,6 +365,7 @@ def test_planned_orchestrator_passes_the_angle_override_and_registers_under_emai
             session,
             plan=plan,
             enrollment_id=enrollment_id,
+            client_id=_CLIENT_A,
             settings=Settings(llm_provider="anthropic", anthropic_api_key="test-key"),
             tracer=None,
         )
@@ -493,5 +494,6 @@ def test_the_touch_plan_endpoint_returns_the_latest_runs_decisions(
             "angle": "back_on_schedule",
             "gap_days": 4,
             "reason": "first touch for this client",
+            "cited_facts": None,
         }
     ]
