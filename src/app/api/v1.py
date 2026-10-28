@@ -17,6 +17,7 @@ from app.api.routers import (
     app_settings,
     audit,
     briefing,
+    campaign_suggestions,
     campaigns,
     chat,
     client_assistant,
@@ -48,6 +49,7 @@ router.include_router(agent_runs.router)
 router.include_router(ingestion.router)
 router.include_router(data_quality.router)
 router.include_router(clients.router)
+router.include_router(campaign_suggestions.router)
 router.include_router(campaigns.router)
 router.include_router(templates.router)
 router.include_router(rules.router)

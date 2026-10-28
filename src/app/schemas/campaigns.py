@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class OutreachBucketOut(BaseModel):
@@ -301,6 +301,61 @@ class CampaignCreateOut(BaseModel):
     created_at: datetime
     enrolled_count: int
     steps: list[CampaignStepOut]
+
+
+class CampaignDraftIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=120)
+    cohort: CohortFilter
+    planning_mode: Literal["fixed_steps", "agent"] = "agent"
+    plan_config: CampaignPlanConfig
+    touch_offsets: list[int] = Field(min_length=1, max_length=10)
+    reason: str = Field(default="", max_length=1000)
+
+    @model_validator(mode="after")
+    def _complete(self) -> CampaignDraftIn:
+        if self.plan_config.objective is None:
+            raise ValueError("a suggested campaign needs an objective")
+        offsets = self.touch_offsets
+        if offsets[0] < 0 or any(
+            later <= earlier for earlier, later in zip(offsets, offsets[1:], strict=False)
+        ):
+            raise ValueError("touch_offsets must start at day 0 or later and rise with each touch")
+        return self
+
+
+class SuggestedCampaignOut(BaseModel):
+    campaign_id: int
+    run_id: int | None
+    created_at: datetime
+    draft: CampaignDraftIn
+    waiting_now: int
+    problems: list[str]
+
+
+class SuggestionApprovedOut(BaseModel):
+    campaign_id: int
+    enrolled_count: int
+
+
+class SuggestionDismissIn(BaseModel):
+    reason: str = Field(default="", max_length=500)
+
+
+class WaitingCellOut(BaseModel):
+    tier: str
+    value_band: str
+    count: int
+
+
+class WaitingPoolOut(BaseModel):
+    total: int
+    by_tier: dict[str, int]
+    by_angle: dict[str, int]
+    by_value_band: dict[str, int]
+    by_tier_and_value_band: list[WaitingCellOut]
+    groups_too_small_to_show: int
 
 
 class TouchOutcomeOut(BaseModel):

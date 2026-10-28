@@ -179,6 +179,10 @@ class Settings(BaseSettings):
 
     campaign_cooldown_days: int = 1
 
+    agent_campaign_max_live: int = 2
+    agent_campaign_pause_share: float = 0.05
+    agent_campaign_pause_min_sent: int = 20
+
     agent_new_client_days: int = 2
     agent_awaiting_call_days: int = 2
     agent_contact_cooldown_days: int = 1

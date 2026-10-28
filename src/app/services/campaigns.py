@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import BigInteger, Row, any_, cast, func, select, tuple_
+from sqlalchemy import BigInteger, Row, any_, cast, func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session
 
@@ -34,6 +34,7 @@ from app.campaigns.generation_cost import estimate_generation_cost as _estimate_
 from app.campaigns.generation_cost import (
     list_generation_cost_models as _list_generation_cost_models,
 )
+from app.campaigns.health import pause_if_unhealthy
 from app.campaigns.instantiation import instantiate_template as instantiate_template_run
 from app.campaigns.preview import BatchCohortPreview, CohortPreview
 from app.campaigns.preview import preview_cohort as preview_cohort_run
@@ -54,6 +55,7 @@ from app.campaigns.touch import (
     run_due_enrollments,
 )
 from app.campaigns.touch import send_due_touches as send_due_touches_run
+from app.campaigns.waiting_pool import waiting_client_ids
 from app.config import Settings, get_settings
 from app.db.models.campaigns import (
     CONTACT_EVENT_TYPES,
@@ -363,6 +365,7 @@ def list_campaigns(
         )
         .select_from(Campaign)
         .join(Enrollment, Enrollment.campaign_id == Campaign.campaign_id, isouter=True)
+        .where(or_(Campaign.suggestion_state.is_(None), Campaign.suggestion_state == "approved"))
         .group_by(Campaign.campaign_id)
     )
     if status is not None:
@@ -416,6 +419,49 @@ def _already_enrolled_client_ids(session: Session, client_ids: Sequence[int]) ->
     return set(session.scalars(stmt))
 
 
+def create_campaign_record(
+    session: Session,
+    *,
+    name: str,
+    campaign_type: str,
+    cohort_filters: dict,
+    start_date=None,
+    end_date=None,
+    default_channel: str = "email",
+    is_test: bool = False,
+    **columns: object,
+) -> Campaign:
+    campaign = Campaign(
+        name=name,
+        campaign_type=campaign_type,
+        cohort_definition=cohort_filters,
+        start_date=start_date,
+        end_date=end_date,
+        default_channel=default_channel,
+        is_test=is_test,
+        **columns,
+    )
+    session.add(campaign)
+    session.flush()
+    return campaign
+
+
+def enroll_campaign_cohort(
+    session: Session, campaign: Campaign, *, waiting_only: bool = False
+) -> int:
+    client_ids = resolve_cohort_client_ids(session, **campaign.cohort_definition)
+    if waiting_only:
+        client_ids = waiting_client_ids(session, client_ids)
+    else:
+        already_enrolled = _already_enrolled_client_ids(session, client_ids)
+        client_ids = [cid for cid in client_ids if cid not in already_enrolled]
+    cap = _enrollment_cap(campaign.is_test)
+    if cap:
+        client_ids = sorted(client_ids)[:cap]
+    enroll_cohort(session, campaign_id=campaign.campaign_id, client_ids=client_ids)
+    return len(client_ids)
+
+
 def create_campaign(
     session: Session,
     *,
@@ -428,25 +474,17 @@ def create_campaign(
     default_channel: str = "email",
     is_test: bool = False,
 ) -> tuple[Campaign, int, list[CampaignStep]]:
-    campaign = Campaign(
+    campaign = create_campaign_record(
+        session,
         name=name,
         campaign_type=campaign_type,
-        cohort_definition=cohort_filters,
+        cohort_filters=cohort_filters,
         start_date=start_date,
         end_date=end_date,
         default_channel=default_channel,
         is_test=is_test,
     )
-    session.add(campaign)
-    session.flush()
-
-    client_ids = resolve_cohort_client_ids(session, **cohort_filters)
-    already_enrolled = _already_enrolled_client_ids(session, client_ids)
-    client_ids = [cid for cid in client_ids if cid not in already_enrolled]
-    cap = _enrollment_cap(is_test)
-    if cap:
-        client_ids = sorted(client_ids)[:cap]
-    enroll_cohort(session, campaign_id=campaign.campaign_id, client_ids=client_ids)
+    enrolled_count = enroll_campaign_cohort(session, campaign)
 
     created_steps = [
         add_campaign_step(
@@ -467,13 +505,13 @@ def create_campaign(
         entity_id=str(campaign.campaign_id),
         detail={
             "cohort_filters": cohort_filters,
-            "matched_count": len(client_ids),
+            "matched_count": enrolled_count,
             "step_count": len(created_steps),
             "is_test": is_test,
         },
     )
     session.flush()
-    return campaign, len(client_ids), created_steps
+    return campaign, enrolled_count, created_steps
 
 
 def add_campaign_step(
@@ -604,6 +642,8 @@ def plan_and_run_due_enrollments(
     if campaign is None:
         raise CampaignNotFound(campaign_id)
     require_campaign_ready(session, campaign)
+    if pause_if_unhealthy(session, campaign) is not None:
+        return []
 
     run_campaign_agent(session, campaign_id, tracer=tracer)
     return run_campaign_generation(
@@ -680,6 +720,7 @@ def send_campaign(
         raise CampaignNotFound(campaign_id)
     if campaign.status == "draft":
         require_campaign_ready(session, campaign)
+    pause_if_unhealthy(session, campaign)
 
     email_sender = sender or build_email_sender()
     channel_senders = (
