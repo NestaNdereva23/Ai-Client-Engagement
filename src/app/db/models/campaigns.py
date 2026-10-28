@@ -9,6 +9,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     Numeric,
@@ -103,6 +104,8 @@ class TouchLog(Base):
     provider_status: Mapped[str | None] = mapped_column(Text, nullable=True)
     parts: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    side_at_send: Mapped[str | None] = mapped_column(Text, nullable=True)
+    balance_at_send: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -127,6 +130,7 @@ class TouchPlan(Base):
     )
     # Verbatim snippets the agent copied from search_web/get_verified_rate for this slot.
     cited_facts: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    next_time_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

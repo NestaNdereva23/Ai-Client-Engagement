@@ -41,6 +41,7 @@ from app.campaigns.scheduler import (
 from app.config import get_settings
 from app.db.models.campaigns import Enrollment, TouchLog, TouchPlan
 from app.db.models.outreach import Campaign, OutreachMessage
+from app.db.models.routing import ClientSide
 from app.delivery.gate import MessageNotApproved, authorize_send
 
 logger = structlog.get_logger(__name__)
@@ -277,6 +278,9 @@ def send_touch(session: Session, touch: TouchLog, *, sender: SenderFn = stub_sen
     touch.provider_status = result.provider_status
     touch.parts = result.parts
     touch.cost = result.cost
+    side = session.get(ClientSide, enrollment.client_id)
+    if side is not None:
+        touch.side_at_send, touch.balance_at_send = side.side, side.balance
     session.flush()
 
     record_audit(

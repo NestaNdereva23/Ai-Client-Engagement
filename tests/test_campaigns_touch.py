@@ -22,6 +22,7 @@ from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
 from app.db.models.llmops import GenerationRun
 from app.db.models.models import Clients, Funds, PiiVault
 from app.db.models.outreach import Campaign, OutreachMessage
+from app.db.models.routing import ClientSide
 from app.db.models.rules import ClientMessageIndicators, MessageAngleCatalog
 from app.db.models.suppression import Suppression
 from app.db.models.test_recipient import TestRecipient
@@ -1193,3 +1194,57 @@ def test_sends_so_far_counts_only_sent_touches_of_that_campaign_and_channel(
     assert _sends_so_far(campaign_with_steps, "email") == 1
     assert _sends_so_far(campaign_with_steps, "sms") == 0
     assert _sends_so_far(-1, "email") == 0
+
+
+def test_send_touch_saves_the_side_and_balance_at_the_time_of_the_send(
+    campaign_with_steps: int, client_row: int
+) -> None:
+    with SessionLocal() as session:
+        session.add(
+            ClientSide(
+                client_id=client_row,
+                side="inactive",
+                balance=450.0,
+                threshold_kes=6000.0,
+                source_feed="inactive",
+            )
+        )
+        enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=client_row
+        )
+        message = _make_message(
+            session, campaign_id=campaign_with_steps, client_id=client_row, status="approved"
+        )
+        touch = record_touch(session, enrollment, 1)
+        touch.message_id = message.message_id
+        session.commit()
+
+        try:
+            send_touch(session, touch)
+            session.commit()
+            saved = (touch.side_at_send, touch.balance_at_send)
+        finally:
+            session.execute(delete(ClientSide).where(ClientSide.client_id == client_row))
+            session.commit()
+
+    assert saved == ("inactive", 450.0)
+
+
+def test_send_touch_leaves_the_side_blank_when_the_client_has_none(
+    campaign_with_steps: int, client_row: int
+) -> None:
+    with SessionLocal() as session:
+        enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=client_row
+        )
+        message = _make_message(
+            session, campaign_id=campaign_with_steps, client_id=client_row, status="approved"
+        )
+        touch = record_touch(session, enrollment, 1)
+        touch.message_id = message.message_id
+        session.commit()
+
+        send_touch(session, touch)
+        session.commit()
+
+        assert (touch.side_at_send, touch.balance_at_send) == (None, None)

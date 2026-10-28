@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.agents.agent_loop import fail_stale_runs, start_agent_run
 from app.agents.run_cost import run_cost_kes
 from app.agents.tool_runtime import make_tool_executor
-from app.agents.tools import TOOL_SPECS
+from app.agents.tools import SETUP_TOOLS, get_campaign_results, specs_for
 from app.campaigns.waiting_pool import waiting_pool_summary
 from app.config import get_settings
 from app.db.models.agent_run import CAMPAIGN_SUGGESTER, AgentRun
@@ -41,8 +41,6 @@ AUDIENCE_TOOL_NAME = "get_waiting_audience"
 SAVE_DRAFT_TOOL_NAME = "save_campaign_draft"
 DEFAULT_MAX_TURNS = 14
 MAX_DRAFTS = 8
-
-_LIST_ANGLES_SPEC = next(spec for spec in TOOL_SPECS if spec.name == "list_angles")
 
 _OBJECTIVES = ["win_back_deposit", "top_up", "reactivate_never_funded"]
 
@@ -250,13 +248,17 @@ def execute_suggestion_run(
         converse = as_converse_call(
             llm_client,
             system=_SYSTEM_PROMPT.format(max_drafts=MAX_DRAFTS),
-            tools=(_LIST_ANGLES_SPEC, build_audience_tool_spec(), build_save_draft_tool_spec()),
+            tools=(
+                *specs_for(SETUP_TOOLS, extra=(build_audience_tool_spec(),)),
+                build_save_draft_tool_spec(),
+            ),
         )
         call_tool = make_tool_executor(
             session,
             run_id,
             extra_tools={
                 AUDIENCE_TOOL_NAME: make_audience_tool(summary),
+                "get_campaign_results": get_campaign_results,
                 SAVE_DRAFT_TOOL_NAME: make_save_draft_tool(
                     run_id=run_id, saved=saved, covered=covered
                 ),

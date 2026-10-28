@@ -14,7 +14,8 @@ refusal and carry on rather than crash.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
+from dataclasses import asdict
 from datetime import date
 from typing import Any
 
@@ -40,12 +41,14 @@ from app.campaigns.generation_cost import (
     UnknownGenerationModel,
     active_generation_cost_config,
 )
+from app.campaigns.slot_context import SlotContext
 from app.config import get_settings
 from app.db.models.models import Funds
 from app.db.models.risk import ClientRiskFeatures
 from app.privacy.llm_client import ToolSpec
 from app.rules.catalog import load_active_angles
 from app.rules.verified_rate import get_verified_rate as fetch_verified_rate
+from app.schemas.campaigns import CampaignPlanConfig
 from app.services.agent_proposals import daily_usage, list_proposals
 from app.services.briefing import gather_briefing_facts, to_risk_fact_block
 from app.services.rag import search as search_rag_corpus
@@ -713,3 +716,139 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
 GROUP_LEVEL_TOOL_SPECS: tuple[ToolSpec, ...] = tuple(
     spec for spec in TOOL_SPECS if spec.name != "get_client_facts"
 )
+
+
+CAMPAIGN_TOOL_SPECS: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="get_campaign_context",
+        description=(
+            "This campaign's objective, how it measures success, the gap allowed between "
+            "touches, how many touch points it has and the angles you may choose from."
+        ),
+        input_schema={"type": "object", "properties": {}},
+    ),
+    ToolSpec(
+        name="get_touch_history",
+        description=(
+            "What this slot's client was sent before: for each earlier touch the angle, "
+            "subject, a short excerpt, whether it was sent and delivered, how many days ago, "
+            "and whether it was opened, replied to or bounced. Also the events since the "
+            "last touch and the note left for this run. Times are in days, never dates."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"slot": {"type": "integer", "description": "The slot number."}},
+            "required": ["slot"],
+        },
+    ),
+    ToolSpec(
+        name="get_side_change",
+        description=(
+            "Whether this slot's client has moved between the inactive and active side, and "
+            "whether their balance went up or down, comparing each send with today. "
+            "Balances are bands, never amounts."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"slot": {"type": "integer", "description": "The slot number."}},
+            "required": ["slot"],
+        },
+    ),
+    ToolSpec(
+        name="get_campaign_results",
+        description=(
+            "What earlier campaign touches led to, by angle, tier and value band. Says so "
+            "plainly when there is not enough finished data yet."
+        ),
+        input_schema={"type": "object", "properties": {}},
+    ),
+)
+
+SETUP_TOOLS: tuple[str, ...] = ("get_waiting_audience", "list_angles", "get_campaign_results")
+
+PLANNING_TOOLS: tuple[str, ...] = (
+    "get_campaign_context",
+    "get_touch_history",
+    "get_side_change",
+    "get_campaign_results",
+    "list_angles",
+    "search_web",
+    "get_verified_rate",
+)
+
+REPORTING_TOOLS: tuple[str, ...] = ("get_campaign_context", "get_campaign_results")
+
+CAMPAIGN_WRITE_TOOLS: tuple[str, ...] = ("choose_touch_plan", "save_campaign_draft")
+
+
+def specs_for(names: Sequence[str], extra: Sequence[ToolSpec] = ()) -> tuple[ToolSpec, ...]:
+    registry = {spec.name: spec for spec in (*TOOL_SPECS, *CAMPAIGN_TOOL_SPECS, *extra)}
+    return tuple(registry[name] for name in names)
+
+
+def get_campaign_results(session: Session) -> dict[str, Any]:
+    return {
+        "status": "not_enough_data",
+        "message": "No finished campaign results are available yet.",
+    }
+
+
+def make_campaign_read_tools(
+    *,
+    plan_config: CampaignPlanConfig,
+    touch_points: int,
+    allowed_angles: Collection[str],
+    slots: Sequence[SlotContext],
+) -> dict[str, Callable[..., dict[str, Any]]]:
+    def slot_at(number: object) -> SlotContext | None:
+        if isinstance(number, int) and not isinstance(number, bool) and 0 <= number < len(slots):
+            return slots[number]
+        return None
+
+    def unknown_slot(number: object) -> dict[str, Any]:
+        return {"error": "unknown_slot", "message": f"{number!r} is not one of this run's slots"}
+
+    def get_campaign_context(session: Session) -> dict[str, Any]:
+        return {
+            "objective": plan_config.objective,
+            "success_measure": plan_config.success_measure,
+            "observation_days": plan_config.observation_days,
+            "min_gap_days": plan_config.min_gap_days,
+            "max_gap_days": plan_config.max_gap_days,
+            "touch_points": touch_points,
+            "allowed_angles": sorted(allowed_angles),
+        }
+
+    def get_touch_history(session: Session, *, slot: int) -> dict[str, Any]:
+        context = slot_at(slot)
+        if context is None:
+            return unknown_slot(slot)
+        return {
+            "slot": slot,
+            "step": context.step_no,
+            "kind": context.kind,
+            "history_complete": not context.missing_history,
+            "touches": [asdict(touch) for touch in context.earlier_touches],
+            "events_since_last_touch": [asdict(event) for event in context.events_since_last_touch],
+            "next_time_note": context.next_time_note,
+        }
+
+    def get_side_change(session: Session, *, slot: int) -> dict[str, Any]:
+        context = slot_at(slot)
+        if context is None:
+            return unknown_slot(slot)
+        change = context.side_change
+        return {
+            "slot": slot,
+            "side_now": change.side_now,
+            "balance_band_now": change.balance_band_now,
+            "at_send": [asdict(snapshot) for snapshot in change.at_send],
+            "note": "a send with no side recorded was sent before sides were saved at send time",
+        }
+
+    return {
+        "get_campaign_context": get_campaign_context,
+        "get_touch_history": get_touch_history,
+        "get_side_change": get_side_change,
+        "get_campaign_results": get_campaign_results,
+    }

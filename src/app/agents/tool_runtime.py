@@ -25,6 +25,8 @@ logger = structlog.get_logger(__name__)
 
 ToolCall = Callable[[str, dict[str, Any]], Any]
 
+TOOL_DATA_KEY = "tool_data"
+
 AsyncToolCall = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
 
@@ -223,6 +225,13 @@ def make_tool_executor(
         return done(output)
 
     return call_tool
+
+
+def wrapped_as_data(call_tool: ToolCall) -> ToolCall:
+    def call(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+        return {TOOL_DATA_KEY: call_tool(tool_name, tool_input)}
+
+    return call
 
 
 def make_async_tool_executor(
