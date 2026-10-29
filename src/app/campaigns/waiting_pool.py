@@ -92,7 +92,7 @@ def waiting_pool_summary(session: Session) -> dict[str, Any]:
         by_band[band] += n
         by_tier_and_band[(tier, band)] += n
 
-    minimum = get_settings().agent_query_min_group_size
+    minimum = get_settings().campaign_agent_min_group_size
     cells = [
         {"tier": tier, "value_band": band, "count": n}
         for (tier, band), n in by_tier_and_band.most_common()

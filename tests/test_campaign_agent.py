@@ -19,8 +19,8 @@ from app.agents.orchestrator import Orchestrator
 from app.campaigns.generation import _planned_orchestrator, _repeat_prohibition, _touch_plan_for
 from app.campaigns.scheduler import advance_enrollment
 from app.config import Settings
-from app.db.models.agent_run import CAMPAIGN_AGENT, AgentRun, AgentToolCall
 from app.db.models.audit import AuditLog
+from app.db.models.campaign_agent_run import PLAN_RUN, CampaignAgentRun, CampaignAgentToolCall
 from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog, TouchPlan
 from app.db.models.models import Clients, Funds
 from app.db.models.outreach import Campaign, OutreachMessage
@@ -175,9 +175,11 @@ def campaign_with_steps(fund_and_clients: None):
         session.execute(delete(OutreachMessage).where(OutreachMessage.campaign_id == campaign_id))
         session.execute(delete(Enrollment).where(Enrollment.campaign_id == campaign_id))
         session.execute(delete(CampaignStep).where(CampaignStep.campaign_id == campaign_id))
-        run_ids = session.query(AgentRun.run_id).filter(AgentRun.agent_kind == CAMPAIGN_AGENT)
-        session.execute(delete(AgentToolCall).where(AgentToolCall.run_id.in_(run_ids)))
-        session.execute(delete(AgentRun).where(AgentRun.agent_kind == CAMPAIGN_AGENT))
+        run_ids = session.query(CampaignAgentRun.run_id).filter(CampaignAgentRun.kind == PLAN_RUN)
+        session.execute(
+            delete(CampaignAgentToolCall).where(CampaignAgentToolCall.run_id.in_(run_ids))
+        )
+        session.execute(delete(CampaignAgentRun).where(CampaignAgentRun.kind == PLAN_RUN))
         session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
         session.commit()
 
@@ -190,7 +192,7 @@ def _make_enrollment(session, *, campaign_id: int, client_id: int, **overrides) 
 
 
 def _make_run(session) -> int:
-    run = AgentRun(trigger="manual", agent_kind=CAMPAIGN_AGENT)
+    run = CampaignAgentRun(trigger="manual", kind=PLAN_RUN, state="completed")
     session.add(run)
     session.commit()
     return run.run_id
@@ -694,7 +696,7 @@ def test_a_duplicate_plan_is_a_clear_error_and_leaves_the_other_slots_unsaved(
 
 def _search_call(session, run_id: int, snippet: str) -> None:
     session.add(
-        AgentToolCall(
+        CampaignAgentToolCall(
             run_id=run_id,
             ordinal=1,
             tool_name="search_web",

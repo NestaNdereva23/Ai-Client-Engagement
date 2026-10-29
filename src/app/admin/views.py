@@ -19,6 +19,7 @@ from app.db.models.api import IdempotencyKey
 from app.db.models.audit import AuditLog
 from app.db.models.auth import ReviewerUser
 from app.db.models.briefing import BriefingNarrative
+from app.db.models.campaign_agent_run import CampaignAgentRun, CampaignAgentToolCall
 from app.db.models.campaigns import CampaignStep, ContactEvent, Enrollment, TouchLog
 from app.db.models.complaints import ClientComplaint
 from app.db.models.digest import DigestEmailSend, DigestLine, DigestRun
@@ -895,6 +896,24 @@ class AgentToolCallAdmin(_ReadOnlyView, model=AgentToolCall):
     column_default_sort = [(AgentToolCall.created_at, True)]
 
 
+class CampaignAgentRunAdmin(_ReadOnlyView, model=CampaignAgentRun):
+    name = "Campaign Agent Run"
+    name_plural = "Campaign Agent Runs"
+    icon = "fa-solid fa-play"
+    category = "Campaigns"
+    category_icon = "fa-solid fa-bullhorn"
+    column_default_sort = [(CampaignAgentRun.started_at, True)]
+
+
+class CampaignAgentToolCallAdmin(_ReadOnlyView, model=CampaignAgentToolCall):
+    name = "Campaign Agent Tool Call"
+    name_plural = "Campaign Agent Tool Calls"
+    icon = "fa-solid fa-wrench"
+    category = "Campaigns"
+    category_icon = "fa-solid fa-bullhorn"
+    column_default_sort = [(CampaignAgentToolCall.created_at, True)]
+
+
 class AgentEventAdmin(_ReadOnlyView, model=AgentEvent):
     name = "Agent Event"
     name_plural = "Agent Events"
@@ -1028,6 +1047,8 @@ ADMIN_VIEWS = [
     AgentPromptAdmin,
     AgentRunAdmin,
     AgentToolCallAdmin,
+    CampaignAgentRunAdmin,
+    CampaignAgentToolCallAdmin,
     AgentEventAdmin,
     AgentInsightAdmin,
     AgentInsightClientAdmin,

@@ -260,6 +260,129 @@ class CampaignExplainOut(BaseModel):
     runs: list[ExplainRunOut]
 
 
+class CampaignAgentRunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    run_id: int
+    kind: str
+    campaign_id: int | None = None
+    trigger: str
+    state: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    summary: str | None = None
+    failure_reason: str | None = None
+
+
+class AgentCampaignFactsOut(BaseModel):
+    name: str
+    status: str
+    planning_mode: str
+    is_test: bool
+    objective: str | None = None
+    success_measure: str
+    observation_days: int
+    min_gap_days: int
+    max_gap_days: int
+    cohort: dict | None = None
+    enrolled: int
+    touch_points: int
+    allowed_angle_count: int | None = None
+    live_angle_count: int
+
+
+class AgentCheckOut(BaseModel):
+    label: str
+    ok: bool
+    problems: list[str]
+
+
+class RejectionOut(BaseModel):
+    code: str
+    slot: int | None = None
+    message: str
+
+
+class AgentRunRowOut(BaseModel):
+    run_id: int
+    started_at: datetime
+    finished_at: datetime | None = None
+    trigger: str
+    state: str
+    summary: str | None = None
+    failure_reason: str | None = None
+    cost_kes: float | None = None
+    due: int | None = None
+    planned: int
+    left_out: dict[str, int]
+    rejections: list[RejectionOut]
+
+
+class PlannedTouchRowOut(BaseModel):
+    client_id: int
+    band: str | None = None
+    step_no: int
+    touch_points: int
+    last_angle: str | None = None
+    last_subject: str | None = None
+    angle: str
+    family: str | None = None
+    suggested_subject: str | None = None
+    gap_days: int
+    reason: str
+    next_time_note: str | None = None
+
+
+class PlannedTouchesOut(BaseModel):
+    total: int
+    touches: list[PlannedTouchRowOut]
+
+
+class ReviewProgressOut(BaseModel):
+    samples: int
+    approved: int
+    waiting: int
+    others_waiting: int
+    ready_cohorts: list[str]
+
+
+class ToolUsedOut(BaseModel):
+    name: str
+    calls: int
+
+
+class BandCountOut(BaseModel):
+    name: str
+    count: int
+
+
+class AgentGroupOut(BaseModel):
+    tier: str
+    campaign_band: str | None = None
+    total: int
+    bands: list[BandCountOut]
+
+
+class LiveAgentCampaignsOut(BaseModel):
+    live: int
+    allowed: int
+
+
+class CampaignAgentOverviewOut(BaseModel):
+    campaign: AgentCampaignFactsOut
+    checks: list[AgentCheckOut]
+    latest_run: AgentRunRowOut | None = None
+    recent_runs: list[AgentRunRowOut]
+    plan_run_id: int | None = None
+    planned: PlannedTouchesOut
+    review: ReviewProgressOut
+    tools_used: list[ToolUsedOut]
+    cited_facts: list[CitedFactOut]
+    results: dict
+    group: AgentGroupOut | None = None
+    live_agent_campaigns: LiveAgentCampaignsOut
+
+
 class EnrollmentOut(BaseModel):
     enrollment_id: int
     campaign_id: int

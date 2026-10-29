@@ -9,7 +9,6 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.agents.agent_loop import start_agent_run
 from app.agents.campaign_plan_checks import (
     MAX_RESEARCH_NOTES,
     MAX_RETRIES,
@@ -20,10 +19,12 @@ from app.agents.campaign_plan_checks import (
     clean_text,
 )
 from app.agents.campaign_prompt import build_plan_prompt
+from app.agents.campaign_runs import start_campaign_run
+from app.agents.campaign_tool_runner import make_campaign_tool_runner
 from app.agents.prompt_versioning import CAMPAIGN_PLAN, prompt_text
 from app.agents.run_cost import run_cost_kes
-from app.agents.tool_runtime import make_tool_executor, wrapped_as_data
-from app.agents.tools import PLANNING_TOOLS, make_campaign_read_tools, specs_for
+from app.agents.tool_runtime import wrapped_as_data
+from app.agents.tools import PLANNING_TOOLS, TOOL_FUNCTIONS, make_campaign_read_tools, specs_for
 from app.audit.log import record_audit
 from app.campaigns.slot_context import (
     FIRST_TOUCH,
@@ -33,7 +34,7 @@ from app.campaigns.slot_context import (
     build_campaign_slots,
 )
 from app.config import get_settings
-from app.db.models.agent_run import CAMPAIGN_AGENT, AgentRun, AgentToolCall
+from app.db.models.campaign_agent_run import PLAN_RUN, CampaignAgentRun, CampaignAgentToolCall
 from app.db.models.campaigns import CampaignStep, TouchPlan
 from app.db.models.outreach import Campaign
 from app.llmops.operations import active_tracer
@@ -44,7 +45,7 @@ from app.privacy.llm_client import (
     ConversingLLMClient,
     ToolSpec,
     as_converse_call,
-    get_agent_llm_client,
+    get_campaign_agent_llm_client,
 )
 from app.rules.catalog import load_active_angles
 from app.schemas.campaigns import CampaignPlanConfig
@@ -130,9 +131,12 @@ def _web_link(value: Any) -> str | None:
 
 def _fact_sources(session: Session, run_id: int) -> list[FactSource]:
     calls = session.scalars(
-        select(AgentToolCall)
-        .where(AgentToolCall.run_id == run_id, AgentToolCall.tool_name.in_(_FACT_TOOLS))
-        .order_by(AgentToolCall.ordinal)
+        select(CampaignAgentToolCall)
+        .where(
+            CampaignAgentToolCall.run_id == run_id,
+            CampaignAgentToolCall.tool_name.in_(_FACT_TOOLS),
+        )
+        .order_by(CampaignAgentToolCall.ordinal)
     )
     sources: list[FactSource] = []
     for call in calls:
@@ -171,6 +175,7 @@ def _write_plans(
             run_id=run_id,
             cited_facts=facts[number] or None,
             next_time_note=_clean_note(decision.get("next_time")),
+            suggested_subject=_clean_note(decision.get("suggested_subject")),
         )
         session.add(row)
         session.flush()
@@ -207,6 +212,7 @@ def make_choose_touch_plan_tool(
     def reject(errors: list[PlanError]) -> dict[str, Any]:
         outcome["failed_tries"] = outcome.get("failed_tries", 0) + 1
         outcome["errors"] = [error.as_dict() for error in errors]
+        outcome.setdefault("rejections", []).extend(outcome["errors"])
         return {
             "error": errors[0].code,
             "message": "; ".join(error.message for error in errors),
@@ -269,6 +275,19 @@ def _left_out(contexts: CampaignSlots) -> str:
     return f"left out {sum(reasons.values())} ({detail})"
 
 
+def _plan_report(
+    campaign_id: int, contexts: CampaignSlots | None, outcome: dict[str, Any]
+) -> dict[str, Any]:
+    ready = len(contexts.ready) if contexts else 0
+    return {
+        "campaign_id": campaign_id,
+        "due": ready + (len(contexts.dropped) if contexts else 0),
+        "planned": outcome.get("written", 0),
+        "left_out": contexts.dropped_reasons() if contexts else {},
+        "rejections": outcome.get("rejections", []),
+    }
+
+
 def _finish_summary(headline: str, contexts: CampaignSlots) -> str:
     left_out = _left_out(contexts)
     return f"{headline}; {left_out}" if left_out else headline
@@ -317,14 +336,16 @@ def run_campaign_agent(
     trigger: str = "manual",
     llm_client: ConversingLLMClient | None = None,
     tracer: Tracer | None = None,
-) -> AgentRun:
+) -> CampaignAgentRun:
     campaign = session.get(Campaign, campaign_id)
     if campaign is None:
         raise CampaignNotFound(campaign_id)
 
-    settings = get_settings()
-    run = start_agent_run(session, trigger=trigger, kind=CAMPAIGN_AGENT)
+    llm_client = llm_client or get_campaign_agent_llm_client(get_settings())
+    run = start_campaign_run(session, kind=PLAN_RUN, campaign_id=campaign_id, trigger=trigger)
     run_id = run.run_id
+    contexts: CampaignSlots | None = None
+    outcome: dict[str, Any] = {}
 
     try:
         contexts = build_campaign_slots(session, campaign_id)
@@ -334,6 +355,7 @@ def run_campaign_agent(
             run.summary = (
                 _finish_summary("nothing to plan", contexts) if contexts.dropped else "nothing due"
             )
+            run.plan_report = _plan_report(campaign_id, contexts, outcome)
             run.finished_at = datetime.now(UTC)
             session.commit()
             return run
@@ -346,8 +368,6 @@ def run_campaign_agent(
         if plan_config.allowed_angles:
             allowed_angles &= set(plan_config.allowed_angles)
 
-        llm_client = llm_client or get_agent_llm_client(settings)
-        outcome: dict[str, Any] = {}
         choose_tool = make_choose_touch_plan_tool(
             slots=slots,
             allowed_angles=allowed_angles,
@@ -380,13 +400,13 @@ def run_campaign_agent(
             system=system_prompt,
             tools=(*specs_for(PLANNING_TOOLS), tool_spec),
         )
-        call_tool = wrapped_as_data(
-            make_tool_executor(
-                session,
-                run_id,
-                extra_tools={CHOOSE_TOUCH_PLAN_TOOL_NAME: choose_tool, **read_tools},
-            )
-        )
+        tools = {
+            **read_tools,
+            "list_angles": TOOL_FUNCTIONS["list_angles"],
+            CHOOSE_TOUCH_PLAN_TOOL_NAME: choose_tool,
+        }
+        call_tool = wrapped_as_data(make_campaign_tool_runner(session, run_id, tools))
+        session.commit()
 
         tracer = tracer or active_tracer()
         with trace_scope(tracer, name=CAMPAIGN_AGENT_PLAN, tags=[TAG_AGENT, TAG_CAMPAIGN]):
@@ -406,14 +426,16 @@ def run_campaign_agent(
             f"planned {outcome.get('written', 0)} of {len(slots)} due touches", contexts
         )
         run.state = "completed"
+        run.plan_report = _plan_report(campaign_id, contexts, outcome)
         run.finished_at = datetime.now(UTC)
         session.commit()
         return run
     except Exception as exc:
         session.rollback()
-        run = session.get(AgentRun, run_id)
+        run = session.get(CampaignAgentRun, run_id)
         run.state = "failed"
         run.failure_reason = str(exc)
+        run.plan_report = _plan_report(campaign_id, contexts, outcome)
         run.finished_at = datetime.now(UTC)
         session.commit()
         raise

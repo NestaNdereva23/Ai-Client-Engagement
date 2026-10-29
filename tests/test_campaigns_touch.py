@@ -20,8 +20,8 @@ from app.campaigns.touch import (
     send_touch,
 )
 from app.config import Settings, get_settings
-from app.db.models.agent_run import CAMPAIGN_AGENT, AgentRun
 from app.db.models.audit import AuditLog
+from app.db.models.campaign_agent_run import PLAN_RUN, CampaignAgentRun
 from app.db.models.campaigns import CampaignStep, ContactEvent, Enrollment, TouchLog, TouchPlan
 from app.db.models.llmops import GenerationRun, TraceRef
 from app.db.models.models import Clients, Funds, PiiVault
@@ -1263,7 +1263,7 @@ def _planned_second_touch(session, *, campaign_id: int, client_id: int) -> Touch
         current_step=1,
         status="in_progress",
     )
-    run = AgentRun(trigger="manual", agent_kind=CAMPAIGN_AGENT)
+    run = CampaignAgentRun(trigger="manual", kind=PLAN_RUN, state="completed")
     session.add(run)
     session.flush()
     plan_tool = make_choose_touch_plan_tool(
@@ -1311,7 +1311,7 @@ def _forget_planning(client_id: int) -> None:
         session.execute(delete(ContactEvent).where(ContactEvent.client_id == client_id))
         session.execute(delete(TouchPlan).where(TouchPlan.enrollment_id.in_(enrollment_ids)))
         session.execute(delete(AuditLog).where(AuditLog.entity_type == "touch_plan"))
-        session.execute(delete(AgentRun).where(AgentRun.agent_kind == CAMPAIGN_AGENT))
+        session.execute(delete(CampaignAgentRun).where(CampaignAgentRun.kind == PLAN_RUN))
         session.commit()
 
 

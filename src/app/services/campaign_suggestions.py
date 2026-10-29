@@ -3,7 +3,6 @@ from __future__ import annotations
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.agents.permissions import effective_permission
 from app.audit.log import record_audit
 from app.campaigns.health import AGENT_ACTOR
 from app.campaigns.readiness import (
@@ -29,8 +28,7 @@ from app.services.campaigns import (
 )
 from app.services.clients import resolve_cohort_client_ids
 
-OPEN_CAMPAIGN_ACTION = "open_campaign"
-ACT_ALONE = "act_alone"
+AGENT_OPENS = "agent_opens"
 LIVE_STATUSES = ("draft", "running")
 SHAPE_FIELDS = ("name", "cohort", "planning_mode", "plan_config", "touch_offsets")
 
@@ -142,7 +140,7 @@ def _changes_from_suggestion(original: dict, current: CampaignDraftIn) -> dict:
 
 
 def approve_suggestion(
-    session: Session, campaign_id: int, *, approved_by: str, permission: str
+    session: Session, campaign_id: int, *, approved_by: str, open_mode: str
 ) -> int:
     campaign = _pending(session, campaign_id)
     require_campaign_ready(session, campaign)
@@ -158,7 +156,7 @@ def approve_suggestion(
         entity_id=str(campaign_id),
         actor_id=approved_by,
         detail={
-            "permission": permission,
+            "open_mode": open_mode,
             "enrolled_count": enrolled,
             "changes": _changes_from_suggestion(
                 campaign.suggestion, current_draft(session, campaign)
@@ -232,7 +230,7 @@ def _held_back(session: Session, campaign: Campaign, reason: str) -> None:
 
 
 def open_on_own(session: Session, campaign: Campaign) -> bool:
-    if effective_permission(session, OPEN_CAMPAIGN_ACTION) != ACT_ALONE:
+    if get_settings().campaign_agent_open_mode != AGENT_OPENS:
         return False
     limit = get_settings().agent_campaign_max_live
     if live_agent_campaign_count(session) >= limit:
@@ -240,7 +238,7 @@ def open_on_own(session: Session, campaign: Campaign) -> bool:
         return False
     try:
         approve_suggestion(
-            session, campaign.campaign_id, approved_by=AGENT_ACTOR, permission=ACT_ALONE
+            session, campaign.campaign_id, approved_by=AGENT_ACTOR, open_mode=AGENT_OPENS
         )
     except CampaignNotReady as exc:
         _held_back(session, campaign, str(exc))

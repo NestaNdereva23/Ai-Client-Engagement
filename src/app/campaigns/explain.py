@@ -6,7 +6,7 @@ from sqlalchemy import Select, and_, func, select, union
 from sqlalchemy.orm import Session
 
 from app.db.models.action_result import ActionResult
-from app.db.models.agent_run import AgentRun, AgentToolCall
+from app.db.models.campaign_agent_run import CampaignAgentRun, CampaignAgentToolCall
 from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog, TouchPlan
 from app.db.models.outreach import OutreachMessage, ReviewAction
 
@@ -172,13 +172,16 @@ def _outcome(row: Any) -> dict[str, Any] | None:
 def _runs(session: Session, run_ids: list[int]) -> list[dict[str, Any]]:
     seen: dict[int, list[dict[str, Any]]] = {run_id: [] for run_id in run_ids}
     calls = session.scalars(
-        select(AgentToolCall)
-        .where(AgentToolCall.run_id.in_(run_ids), AgentToolCall.tool_name == RESULTS_TOOL)
-        .order_by(AgentToolCall.run_id, AgentToolCall.ordinal)
+        select(CampaignAgentToolCall)
+        .where(
+            CampaignAgentToolCall.run_id.in_(run_ids),
+            CampaignAgentToolCall.tool_name == RESULTS_TOOL,
+        )
+        .order_by(CampaignAgentToolCall.run_id, CampaignAgentToolCall.ordinal)
     )
     for call in calls:
         seen[call.run_id].append({"called_at": call.created_at, "results": call.tool_output})
-    runs = session.scalars(select(AgentRun).where(AgentRun.run_id.in_(run_ids)))
+    runs = session.scalars(select(CampaignAgentRun).where(CampaignAgentRun.run_id.in_(run_ids)))
     return [
         {
             "run_id": run.run_id,

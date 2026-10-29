@@ -26,8 +26,8 @@ from app.campaigns.slot_context import (
     build_campaign_slots,
 )
 from app.config import Settings
-from app.db.models.agent_run import CAMPAIGN_AGENT, AgentRun, AgentToolCall
 from app.db.models.audit import AuditLog
+from app.db.models.campaign_agent_run import PLAN_RUN, CampaignAgentRun, CampaignAgentToolCall
 from app.db.models.campaigns import (
     CampaignStep,
     ContactEvent,
@@ -158,9 +158,13 @@ def book(db: None):
                 AuditLog.entity_type.in_(("touch_plan", "enrollment", "pii_vault"))
             )
         )
-        agent_runs = session.query(AgentRun.run_id).filter(AgentRun.agent_kind == CAMPAIGN_AGENT)
-        session.execute(delete(AgentToolCall).where(AgentToolCall.run_id.in_(agent_runs)))
-        session.execute(delete(AgentRun).where(AgentRun.agent_kind == CAMPAIGN_AGENT))
+        agent_runs = session.query(CampaignAgentRun.run_id).filter(
+            CampaignAgentRun.kind == PLAN_RUN
+        )
+        session.execute(
+            delete(CampaignAgentToolCall).where(CampaignAgentToolCall.run_id.in_(agent_runs))
+        )
+        session.execute(delete(CampaignAgentRun).where(CampaignAgentRun.kind == PLAN_RUN))
         session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
         session.commit()
 
@@ -223,7 +227,7 @@ def _sent(
         status="approved",
     )
     session.add(message)
-    agent_run = AgentRun(trigger="manual", agent_kind=CAMPAIGN_AGENT)
+    agent_run = CampaignAgentRun(trigger="manual", kind=PLAN_RUN, state="completed")
     session.add(agent_run)
     session.flush()
     session.add(
@@ -510,11 +514,11 @@ def _choose(call_id: str, plan: dict) -> ConversationTurn:
     return _turn(_request(call_id, CHOOSE_TOUCH_PLAN_TOOL_NAME, plan))
 
 
-def _latest_run(session) -> AgentRun:
+def _latest_run(session) -> CampaignAgentRun:
     return session.scalars(
-        select(AgentRun)
-        .where(AgentRun.agent_kind == CAMPAIGN_AGENT)
-        .order_by(AgentRun.run_id.desc())
+        select(CampaignAgentRun)
+        .where(CampaignAgentRun.kind == PLAN_RUN)
+        .order_by(CampaignAgentRun.run_id.desc())
     ).first()
 
 
@@ -616,7 +620,7 @@ def test_the_prompt_follows_the_campaigns_objective_and_gap_policy(book: int) ->
 def test_a_slot_that_already_has_a_plan_is_left_out_not_planned_twice(book: int) -> None:
     with SessionLocal() as session:
         enrollment_id = _enroll(session, book, 987306)
-        run = AgentRun(trigger="manual", agent_kind=CAMPAIGN_AGENT)
+        run = CampaignAgentRun(trigger="manual", kind=PLAN_RUN, state="completed")
         session.add(run)
         session.flush()
         session.add(
@@ -641,3 +645,77 @@ def test_a_slot_that_already_has_a_plan_is_left_out_not_planned_twice(book: int)
     assert run.state == "completed"
     assert run.summary == "nothing to plan; left out 1 (1 already_planned)"
     assert status == "enrolled"
+
+
+def test_a_completed_run_saves_what_it_did_and_what_it_sent_back(book: int) -> None:
+    with SessionLocal() as session:
+        _enroll(session, book, 987307)
+    client = FakeClient([_choose("c1", _NO_NOTE_PLAN), _choose("c2", _GOOD_PLAN), _final()])
+
+    with SessionLocal() as session:
+        run = run_campaign_agent(session, book, llm_client=client)
+        report = run.plan_report
+
+    assert report["campaign_id"] == book
+    assert (report["due"], report["planned"], report["left_out"]) == (1, 1, {})
+    assert [item["code"] for item in report["rejections"]] == ["missing_next_time"]
+    assert report["rejections"][0]["slot"] == 0
+
+
+def test_a_failed_run_keeps_its_report_after_the_rollback(book: int) -> None:
+    with SessionLocal() as session:
+        _enroll(session, book, 987308)
+    refusals = [_choose(f"c{n}", _NO_NOTE_PLAN) for n in range(3)]
+    client = FakeClient([*refusals, _choose("c4", _GOOD_PLAN), _final()])
+
+    with SessionLocal() as session:
+        with pytest.raises(CampaignPlanFailed):
+            run_campaign_agent(session, book, llm_client=client)
+
+    with SessionLocal() as session:
+        report = _latest_run(session).plan_report
+
+    assert (report["due"], report["planned"]) == (1, 0)
+    assert [item["code"] for item in report["rejections"]] == ["missing_next_time"] * 3
+
+
+def test_a_run_with_nothing_to_plan_still_reports_who_was_left_out(book: int) -> None:
+    with SessionLocal() as session:
+        enrollment_id = _enroll(session, book, 987309)
+        run = CampaignAgentRun(trigger="manual", kind=PLAN_RUN, state="completed")
+        session.add(run)
+        session.flush()
+        session.add(
+            TouchPlan(
+                enrollment_id=enrollment_id,
+                step_no=1,
+                angle="back_on_schedule",
+                gap_days=4,
+                reason="planned earlier",
+                run_id=run.run_id,
+            )
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        report = run_campaign_agent(session, book, llm_client=FakeClient([])).plan_report
+
+    assert (report["due"], report["planned"], report["left_out"]) == (1, 0, {ALREADY_PLANNED: 1})
+
+
+def test_the_suggested_subject_is_saved_with_the_plan(book: int) -> None:
+    with SessionLocal() as session:
+        _enroll(session, book, 987310)
+    decision = {
+        **_GOOD_PLAN["decisions"][0],
+        "suggested_subject": "  Ready for your next deposit?  ",
+    }
+    client = FakeClient([_choose("c1", {"decisions": [decision]}), _final()])
+
+    with SessionLocal() as session:
+        run = run_campaign_agent(session, book, llm_client=client)
+        subject = session.scalar(
+            select(TouchPlan.suggested_subject).where(TouchPlan.run_id == run.run_id)
+        )
+
+    assert subject == "Ready for your next deposit?"

@@ -71,7 +71,7 @@ class Campaign(Base):
         Text, nullable=False, server_default=FIXED_STEPS_PLANNING_MODE
     )
     proposed_by_run_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("agent_run.run_id"), nullable=True, index=True
+        BigInteger, ForeignKey("campaign_agent_run.run_id"), nullable=True, index=True
     )
     suggestion: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     suggestion_state: Mapped[str | None] = mapped_column(Text, nullable=True)

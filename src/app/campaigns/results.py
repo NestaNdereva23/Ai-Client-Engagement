@@ -35,8 +35,8 @@ FLAGS = {
 }
 
 
-def campaign_results(session: Session) -> dict[str, Any]:
-    rows = session.execute(_finished_touches()).all()
+def campaign_results(session: Session, campaign_id: int | None = None) -> dict[str, Any]:
+    rows = session.execute(_finished_touches(campaign_id)).all()
     if not rows:
         return dict(NO_DATA)
 
@@ -51,8 +51,8 @@ def campaign_results(session: Session) -> dict[str, Any]:
     }
 
 
-def _finished_touches() -> Select[Any]:
-    return (
+def _finished_touches(campaign_id: int | None) -> Select[Any]:
+    stmt = (
         select(
             Campaign.name.label("campaign"),
             func.coalesce(TouchPlan.angle, CampaignStep.message_angle, UNKNOWN_LABEL).label(
@@ -85,6 +85,7 @@ def _finished_touches() -> Select[Any]:
         .outerjoin(GenerationRun, GenerationRun.run_id == OutreachMessage.generation_run_id)
         .outerjoin(ClientFeatures, ClientFeatures.client_id == ActionResult.client_id)
     )
+    return stmt if campaign_id is None else stmt.where(Campaign.campaign_id == campaign_id)
 
 
 def _summaries(groups: dict[tuple[str, int], list[Any]]) -> list[dict[str, Any]]:

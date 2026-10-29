@@ -126,11 +126,12 @@ class TouchPlan(Base):
     gap_days: Mapped[int] = mapped_column(Integer, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     run_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("agent_run.run_id"), nullable=False, index=True
+        BigInteger, ForeignKey("campaign_agent_run.run_id"), nullable=False, index=True
     )
     # Each fact is {text, url, retrieved_at, tool}, matched to a tool answer from this run.
     cited_facts: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
     next_time_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suggested_subject: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

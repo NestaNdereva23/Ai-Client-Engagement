@@ -18,11 +18,12 @@ from app.agents.action_results import (
 from app.agents.tools import get_campaign_results
 from app.campaigns import results as results_module
 from app.campaigns.explain import explain_campaign
+from app.campaigns.readiness import campaign_readiness_checks, campaign_readiness_problems
 from app.campaigns.results import NO_DATA, TOO_FEW, campaign_results
 from app.db.models.action_result import ActionResult
 from app.db.models.active_clients import ActiveClientFund, ActiveTransaction
-from app.db.models.agent_run import CAMPAIGN_AGENT, AgentRun, AgentToolCall
 from app.db.models.audit import AuditLog
+from app.db.models.campaign_agent_run import PLAN_RUN, CampaignAgentRun, CampaignAgentToolCall
 from app.db.models.campaigns import (
     CampaignStep,
     ContactEvent,
@@ -32,11 +33,12 @@ from app.db.models.campaigns import (
 )
 from app.db.models.llmops import GenerationRun
 from app.db.models.models import ClientFeatures, Clients, Funds
-from app.db.models.outreach import Campaign, OutreachMessage, ReviewAction
+from app.db.models.outreach import Campaign, OutreachMessage, ReviewAction, ReviewCohort
 from app.db.models.routing import ClientSide
 from app.db.session import SessionLocal
 from app.llmops.versions import persist_generation_run
 from app.main import app
+from app.services.campaign_overview import campaign_agent_overview
 
 FUND_ID = 99650
 DEPOSITOR = 996501
@@ -73,8 +75,8 @@ def _purge(session) -> None:
     session.execute(delete(ClientFeatures).where(ClientFeatures.client_id.in_(ALL_CLIENTS)))
     session.execute(delete(TouchLog).where(TouchLog.enrollment_id.in_(enrollment_ids)))
     session.execute(delete(TouchPlan).where(TouchPlan.enrollment_id.in_(enrollment_ids)))
-    session.execute(delete(AgentToolCall).where(AgentToolCall.run_id.in_(run_ids)))
-    session.execute(delete(AgentRun).where(AgentRun.run_id.in_(run_ids)))
+    session.execute(delete(CampaignAgentToolCall).where(CampaignAgentToolCall.run_id.in_(run_ids)))
+    session.execute(delete(CampaignAgentRun).where(CampaignAgentRun.run_id.in_(run_ids)))
     session.execute(delete(ReviewAction).where(ReviewAction.message_id.in_(message_ids)))
     session.execute(delete(OutreachMessage).where(OutreachMessage.client_id.in_(ALL_CLIENTS)))
     session.execute(delete(GenerationRun).where(GenerationRun.client_id.in_(ALL_CLIENTS)))
@@ -160,11 +162,12 @@ def _build(session) -> None:
         planning_mode="agent",
         agent_touch_policy={"observation_days": WINDOW},
     )
-    run = AgentRun(trigger="manual", agent_kind=CAMPAIGN_AGENT, state="completed")
+    run = CampaignAgentRun(trigger="manual", kind=PLAN_RUN, state="completed")
     session.add_all([campaign, run])
     session.commit()
+    run.campaign_id = campaign.campaign_id
     session.add(
-        AgentToolCall(
+        CampaignAgentToolCall(
             run_id=run.run_id,
             ordinal=1,
             tool_name="get_campaign_results",
@@ -382,3 +385,138 @@ def test_the_explain_endpoint_says_not_found_for_a_campaign_that_does_not_exist(
     )
 
     assert response.status_code == 404
+
+
+def _plan_run_id(campaign_id: int) -> int:
+    with SessionLocal() as session:
+        return session.scalar(
+            select(func.max(TouchPlan.run_id))
+            .join(Enrollment, Enrollment.enrollment_id == TouchPlan.enrollment_id)
+            .where(Enrollment.campaign_id == campaign_id)
+        )
+
+
+def test_the_overview_gathers_what_the_page_shows(scenario) -> None:
+    _measure()
+
+    with SessionLocal() as session:
+        overview = campaign_agent_overview(session, scenario)
+
+    [row] = overview["recent_runs"]
+    assert overview["campaign"]["name"] == CAMPAIGN_NAME
+    assert overview["campaign"]["observation_days"] == WINDOW
+    assert (row["state"], row["planned"], row["due"]) == ("completed", 3, None)
+    assert overview["latest_run"] == row
+    assert overview["planned"]["total"] == 3
+    touch = overview["planned"]["touches"][0]
+    assert (touch["angle"], touch["step_no"], touch["last_angle"]) == ("winback_habit", 1, None)
+    assert touch["reason"].startswith("reason ")
+    assert overview["tools_used"] == [{"name": "get_campaign_results", "calls": 1}]
+    assert [fact["url"] for fact in overview["cited_facts"]] == ["https://example.com/rate"]
+    assert [group["label"] for group in overview["results"]["by_angle"]] == ["winback_habit"]
+    assert overview["group"] is None
+    assert overview["live_agent_campaigns"]["allowed"] >= 0
+
+
+def test_the_overview_shows_a_runs_report_and_the_review_progress(scenario) -> None:
+    report = {
+        "campaign_id": scenario,
+        "due": 5,
+        "planned": 3,
+        "left_out": {"replied": 2},
+        "rejections": [{"code": "gap_out_of_range", "slot": 4, "message": "gap too long"}],
+    }
+    with SessionLocal() as session:
+        session.get(CampaignAgentRun, _plan_run_id(scenario)).plan_report = report
+        session.add(
+            ReviewCohort(
+                cohort_id=f"overview-test-{scenario}",
+                campaign_id=scenario,
+                priority_tier="hot_leads",
+                status="ready_to_approve_rest",
+            )
+        )
+        session.commit()
+        for client_id, is_sample, status in (
+            (DEPOSITOR, True, "approved"),
+            (QUIET, False, "pending_review"),
+        ):
+            message = session.scalar(
+                select(OutreachMessage).where(OutreachMessage.client_id == client_id)
+            )
+            message.cohort_id = f"overview-test-{scenario}"
+            message.is_sample = is_sample
+            message.status = status
+        session.commit()
+
+        overview = campaign_agent_overview(session, scenario)
+
+    run = overview["latest_run"]
+    assert (run["due"], run["planned"], run["left_out"]) == (5, 3, {"replied": 2})
+    assert run["rejections"][0]["code"] == "gap_out_of_range"
+    assert overview["review"] == {
+        "samples": 1,
+        "approved": 1,
+        "waiting": 0,
+        "others_waiting": 1,
+        "ready_cohorts": [f"overview-test-{scenario}"],
+    }
+
+
+def test_the_overview_counts_the_inactive_clients_of_the_group_by_band(scenario) -> None:
+    tier = "overview_test_tier"
+    with SessionLocal() as session:
+        session.get(Campaign, scenario).cohort_definition = {
+            "priority_tier": tier,
+            "value_band": "High",
+        }
+        for features in session.scalars(
+            select(ClientFeatures).where(ClientFeatures.client_id.in_(ALL_CLIENTS))
+        ):
+            features.priority_tier = tier
+        session.commit()
+
+        group = campaign_agent_overview(session, scenario)["group"]
+
+    assert group == {
+        "tier": tier,
+        "campaign_band": "High",
+        "total": 2,
+        "bands": [{"name": "Low", "count": 2}],
+    }
+
+
+def test_the_ready_checks_match_the_problems_and_turn_green_when_fixed(scenario) -> None:
+    with SessionLocal() as session:
+        campaign = session.get(Campaign, scenario)
+        before = campaign_readiness_checks(session, campaign)
+        problems = campaign_readiness_problems(session, campaign)
+
+        campaign.agent_touch_policy = {"objective": "top_up", "observation_days": WINDOW}
+        session.add(CampaignStep(campaign_id=scenario, step_no=1, offset_days=0))
+        session.commit()
+        after = campaign_readiness_checks(session, campaign)
+
+    assert [problem for check in before for problem in check.problems] == problems
+    assert problems == ["no objective is set", "no touch points are set"]
+    assert all(check.ok for check in after)
+    assert [check.label for check in after] == [
+        "Objective set",
+        "1 touch point",
+        "All angles live",
+        "Gap 2 to 10 days",
+        "Audience is an inactive group",
+    ]
+
+
+def test_the_overview_endpoint_answers_and_says_not_found(
+    scenario, configured_reviewers, reviewer_1_headers
+) -> None:
+    client = TestClient(app)
+
+    found = client.get(f"/api/v1/campaigns/{scenario}/agent-overview", headers=reviewer_1_headers)
+    missing = client.get("/api/v1/campaigns/987654321/agent-overview", headers=reviewer_1_headers)
+
+    assert found.status_code == 200
+    assert found.json()["campaign"]["name"] == CAMPAIGN_NAME
+    assert missing.status_code == 404

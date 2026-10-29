@@ -14,7 +14,7 @@ from app.db.models.agent_proposal import AgentProposal
 from app.db.models.agent_run import AgentRun
 from app.db.session import SessionLocal, get_session
 from app.schemas.review import DecideBatchRequest
-from app.services.agent_campaign_scope import campaign_is_visible, message_is_visible
+from app.services.agent_campaign_scope import message_is_visible
 
 
 @dataclass(frozen=True)
@@ -63,17 +63,6 @@ def require_proposal_in_scope(
     proposal = session.get(AgentProposal, proposal_id)
     if proposal is not None and not scope.allows(proposal.fa_id):
         raise HTTPException(status_code=404, detail="proposal not found")
-
-
-def require_campaign_in_scope(
-    campaign_id: int,
-    scope: AgentScope = Depends(get_agent_scope),
-    session: Session = Depends(get_session),
-) -> None:
-    if scope.is_everyone:
-        return
-    if not campaign_is_visible(session, campaign_id, scope.fa_id):
-        raise HTTPException(status_code=404, detail="campaign not found")
 
 
 def require_message_in_scope(

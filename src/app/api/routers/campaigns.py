@@ -4,8 +4,9 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.agents.campaign_agent import CampaignPlanFailed
+from app.agents.campaign_runs import CampaignRunInProgress
 from app.agents.email_channel import build_default_orchestrator
-from app.api.agent_scope import AgentScope, get_agent_scope, require_campaign_in_scope
+from app.api.campaign_access import listing_fa_id, require_campaign_in_scope
 from app.api.reviewer_auth import get_current_reviewer_id
 from app.campaigns.batch_generation import BatchNotFound, BatchTooSmall
 from app.campaigns.estimation import DEFAULT_ESTIMATE_LIMIT, MAX_ESTIMATE_LIMIT
@@ -25,10 +26,11 @@ from app.db.session import get_session
 from app.delivery.dispatch import dispatch_campaign
 from app.llmops.tracing import get_shared_tracer
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
-from app.privacy.llm_client import get_llm_client
+from app.privacy.llm_client import CampaignAgentNotConfigured, get_llm_client
 from app.schemas.campaigns import (
     BatchIngestOutcomeOut,
     BatchIngestResultOut,
+    CampaignAgentOverviewOut,
     CampaignCreateOut,
     CampaignCreateRequest,
     CampaignDetailOut,
@@ -75,6 +77,7 @@ from app.schemas.templates import (
     TemplatePolicyOut,
     TemplatePolicyRequest,
 )
+from app.services.campaign_overview import campaign_agent_overview
 from app.services.campaigns import (
     CampaignNotFound,
     DecreasingStepOffset,
@@ -140,7 +143,7 @@ def get_campaigns(
     channel: str | None = None,
     campaign_type: str | None = None,
     exclude_campaign_type: str | None = None,
-    scope: AgentScope = Depends(get_agent_scope),
+    fa_id: str | None = Depends(listing_fa_id),
     session: Session = Depends(get_session),
 ) -> Page[CampaignListItemOut]:
     try:
@@ -160,7 +163,7 @@ def get_campaigns(
             channel=channel,
             campaign_type=campaign_type,
             exclude_campaign_type=exclude_campaign_type,
-            fa_id=scope.fa_id,
+            fa_id=fa_id,
         )
     except InvalidCursor:
         raise HTTPException(status_code=400, detail="invalid cursor") from None
@@ -414,6 +417,20 @@ def get_campaign_touch_plan(
 
 
 @router.get(
+    "/{campaign_id}/agent-overview",
+    response_model=CampaignAgentOverviewOut,
+    dependencies=[Depends(require_campaign_in_scope)],
+)
+def get_campaign_agent_overview(
+    campaign_id: int, session: Session = Depends(get_session)
+) -> CampaignAgentOverviewOut:
+    try:
+        return CampaignAgentOverviewOut(**campaign_agent_overview(session, campaign_id))
+    except CampaignNotFound:
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+
+
+@router.get(
     "/{campaign_id}/explain",
     response_model=CampaignExplainOut,
     dependencies=[Depends(require_campaign_in_scope)],
@@ -471,7 +488,7 @@ def post_campaign_plan_and_generate(
     except CampaignNotFound:
         session.rollback()
         raise HTTPException(status_code=404, detail="campaign not found") from None
-    except CampaignNotReady as exc:
+    except (CampaignNotReady, CampaignRunInProgress, CampaignAgentNotConfigured) as exc:
         session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from None
     except CampaignPlanFailed as exc:

@@ -3,19 +3,17 @@ from __future__ import annotations
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
-from app.agents.campaign_suggester import (
-    SuggestionRunInProgress,
-    run_suggestions_in_background,
-    start_suggestion_run,
-)
-from app.agents.permissions import effective_permission
+from app.agents.campaign_runs import CampaignRunInProgress, latest_suggestion_run
+from app.agents.campaign_suggester import run_suggestions_in_background, start_suggestion_run
 from app.api.access import get_admin_access
 from app.api.reviewer_auth import get_current_reviewer_id
 from app.campaigns.readiness import CampaignNotReady
 from app.campaigns.waiting_pool import waiting_pool_summary
+from app.config import get_settings
 from app.db.session import get_session
-from app.schemas.agent_runs import AgentRunOut
+from app.privacy.llm_client import CampaignAgentNotConfigured
 from app.schemas.campaigns import (
+    CampaignAgentRunOut,
     CampaignDraftIn,
     SuggestedCampaignOut,
     SuggestionApprovedOut,
@@ -23,7 +21,6 @@ from app.schemas.campaigns import (
     WaitingPoolOut,
 )
 from app.services.campaign_suggestions import (
-    OPEN_CAMPAIGN_ACTION,
     NothingWaiting,
     SuggestionNotFound,
     SuggestionNotPending,
@@ -41,17 +38,23 @@ router = APIRouter(
 )
 
 
-@router.post("/run", response_model=AgentRunOut, status_code=202)
+@router.post("/run", response_model=CampaignAgentRunOut, status_code=202)
 def post_suggestion_run(
     background_tasks: BackgroundTasks, session: Session = Depends(get_session)
-) -> AgentRunOut:
+) -> CampaignAgentRunOut:
     try:
         run = start_suggestion_run(session)
-    except SuggestionRunInProgress as exc:
+    except (CampaignRunInProgress, CampaignAgentNotConfigured) as exc:
         session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from None
     background_tasks.add_task(run_suggestions_in_background, run.run_id)
-    return AgentRunOut.model_validate(run)
+    return CampaignAgentRunOut.model_validate(run)
+
+
+@router.get("/run", response_model=CampaignAgentRunOut | None)
+def get_suggestion_run(session: Session = Depends(get_session)) -> CampaignAgentRunOut | None:
+    run = latest_suggestion_run(session)
+    return CampaignAgentRunOut.model_validate(run) if run is not None else None
 
 
 @router.get("", response_model=list[SuggestedCampaignOut])
@@ -94,7 +97,7 @@ def post_suggestion_approve(
             session,
             campaign_id,
             approved_by=reviewer_id,
-            permission=effective_permission(session, OPEN_CAMPAIGN_ACTION),
+            open_mode=get_settings().campaign_agent_open_mode,
         )
         session.commit()
     except SuggestionNotFound:

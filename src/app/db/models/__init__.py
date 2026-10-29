@@ -42,6 +42,7 @@ from app.db.models.assistant_starter import AssistantStarter
 from app.db.models.audit import AuditLog
 from app.db.models.auth import REVIEWER_ROLES, ReviewerUser
 from app.db.models.briefing import BriefingNarrative
+from app.db.models.campaign_agent_run import CampaignAgentRun, CampaignAgentToolCall
 from app.db.models.campaigns import (
     CONTACT_EVENT_TYPES,
     ENROLLMENT_STATUSES,
@@ -207,6 +208,8 @@ __all__ = [
     "BriefingNarrative",
     "BusinessRule",
     "Campaign",
+    "CampaignAgentRun",
+    "CampaignAgentToolCall",
     "CampaignStep",
     "CampaignTemplatePolicy",
     "AssistantStarter",

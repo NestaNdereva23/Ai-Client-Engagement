@@ -179,6 +179,17 @@ class Settings(BaseSettings):
 
     campaign_cooldown_days: int = 1
 
+    campaign_agent_llm_provider: Literal["anthropic", "ollama", "llamacpp"] = "ollama"
+    campaign_agent_llm_model: str = ""
+    campaign_agent_llm_temperature: float | None = None
+    campaign_agent_llm_max_tokens: int = 2048
+    campaign_agent_llm_timeout_seconds: int = 180
+    campaign_agent_llm_api_key: str = ""
+    campaign_agent_llm_base_url: str = "http://localhost:11434"
+    campaign_agent_run_stale_after_minutes: int = 30
+    campaign_agent_min_group_size: int = 5
+    campaign_agent_open_mode: Literal["person_approves", "agent_opens"] = "person_approves"
+
     agent_campaign_max_live: int = 2
     agent_campaign_pause_share: float = 0.05
     agent_campaign_pause_min_sent: int = 20

@@ -900,6 +900,41 @@ def get_agent_llm_client(settings: Settings | None = None) -> ConversingLLMClien
     )
 
 
+class CampaignAgentNotConfigured(Exception):
+    pass
+
+
+def campaign_provider_problem(provider: str, settings: Settings) -> str | None:
+    if provider == "anthropic" and not settings.campaign_agent_llm_api_key:
+        return "anthropic needs CAMPAIGN_AGENT_LLM_API_KEY in the server environment"
+    if provider in ("ollama", "llamacpp") and not settings.campaign_agent_llm_base_url:
+        return f"{provider} needs CAMPAIGN_AGENT_LLM_BASE_URL in the server environment"
+    return None
+
+
+def get_campaign_agent_llm_client(settings: Settings | None = None) -> ConversingLLMClient:
+    settings = settings or get_settings()
+    if not settings.campaign_agent_llm_model:
+        raise CampaignAgentNotConfigured(
+            "no model is chosen for the campaign agents; pick one in Settings"
+        )
+    problem = campaign_provider_problem(settings.campaign_agent_llm_provider, settings)
+    if problem:
+        raise CampaignAgentNotConfigured(problem)
+    timeout = float(settings.campaign_agent_llm_timeout_seconds)
+    return _build_llm_client(
+        provider=settings.campaign_agent_llm_provider,
+        model=settings.campaign_agent_llm_model,
+        max_tokens=settings.campaign_agent_llm_max_tokens,
+        temperature=settings.campaign_agent_llm_temperature,
+        anthropic_api_key=settings.campaign_agent_llm_api_key,
+        ollama_base_url=settings.campaign_agent_llm_base_url,
+        ollama_timeout=timeout,
+        llamacpp_base_url=settings.campaign_agent_llm_base_url,
+        llamacpp_timeout=timeout,
+    )
+
+
 def get_anthropic_batch_client(settings: Settings | None = None) -> anthropic.Anthropic:
     """The raw Anthropic client, for the batch endpoints the LLMClient"""
     settings = settings or get_settings()

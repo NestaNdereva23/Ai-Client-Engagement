@@ -14,6 +14,7 @@ from app.editable_settings import (
     SettingValueError,
     editable_setting,
 )
+from app.privacy.llm_client import campaign_provider_problem
 from app.schemas.app_settings import AppSettingOut, AppSettingsOut, ModelInUseOut
 
 _MODEL_JOBS = (
@@ -43,6 +44,10 @@ def update_app_settings(
 ) -> None:
     cleaned = {key: editable_setting(key).clean(value) for key, value in changes.items()}
     current = get_settings()
+    provider = cleaned.get("campaign_agent_llm_provider")
+    problem = campaign_provider_problem(provider, current) if provider else None
+    if problem:
+        raise SettingValueError("campaign_agent_llm_provider", problem)
     live_key = _turns_live_on(cleaned, current)
     if live_key and not confirm_live:
         raise SettingValueError(live_key, "sending to real clients needs confirmation")

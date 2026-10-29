@@ -5,16 +5,20 @@ from typing import Any
 
 import structlog
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.agents.agent_loop import fail_stale_runs, start_agent_run
+from app.agents.campaign_runs import start_campaign_run
+from app.agents.campaign_tool_runner import make_campaign_tool_runner
 from app.agents.run_cost import run_cost_kes
-from app.agents.tool_runtime import make_tool_executor
-from app.agents.tools import SETUP_TOOLS, get_campaign_results, specs_for
+from app.agents.tools import SETUP_TOOLS, TOOL_FUNCTIONS, get_campaign_results, specs_for
 from app.campaigns.waiting_pool import waiting_pool_summary
 from app.config import get_settings
-from app.db.models.agent_run import CAMPAIGN_SUGGESTER, AgentRun
+from app.db.models.campaign_agent_run import (
+    SUGGEST_RUN,
+    CampaignAgentRun,
+    CampaignAgentToolCall,
+)
 from app.db.models.outreach import SUGGESTION_PENDING, Campaign
 from app.db.session import SessionLocal
 from app.llmops.operations import active_tracer
@@ -25,7 +29,7 @@ from app.privacy.llm_client import (
     ConversingLLMClient,
     ToolSpec,
     as_converse_call,
-    get_agent_llm_client,
+    get_campaign_agent_llm_client,
 )
 from app.rules.catalog import live_angle_codes
 from app.schemas.campaigns import CampaignDraftIn
@@ -45,7 +49,7 @@ MAX_DRAFTS = 8
 _OBJECTIVES = ["win_back_deposit", "top_up", "reactivate_never_funded"]
 
 
-class SuggestionRunInProgress(Exception):
+class NothingSaved(Exception):
     pass
 
 
@@ -213,16 +217,21 @@ _SYSTEM_PROMPT = (
 )
 
 
-def start_suggestion_run(session: Session) -> AgentRun:
-    fail_stale_runs(session, max_runtime_minutes=get_settings().agent_run_stale_after_minutes)
-    running = session.scalar(
-        select(AgentRun.run_id)
-        .where(AgentRun.state == "running", AgentRun.agent_kind == CAMPAIGN_SUGGESTER)
-        .limit(1)
+def start_suggestion_run(session: Session) -> CampaignAgentRun:
+    get_campaign_agent_llm_client(get_settings())
+    return start_campaign_run(session, kind=SUGGEST_RUN)
+
+
+def _nothing_saved_reason(session: Session, run_id: int) -> str:
+    calls = session.scalar(
+        select(func.count())
+        .select_from(CampaignAgentToolCall)
+        .where(CampaignAgentToolCall.run_id == run_id)
     )
-    if running is not None:
-        raise SuggestionRunInProgress(f"suggestion run {running} is already running")
-    return start_agent_run(session, trigger="manual", kind=CAMPAIGN_SUGGESTER)
+    return (
+        f"the model saved no drafts and made {calls} tool calls; "
+        "a model that cannot call tools does this, so pick another one in Settings"
+    )
 
 
 def execute_suggestion_run(
@@ -231,8 +240,8 @@ def execute_suggestion_run(
     *,
     llm_client: ConversingLLMClient | None = None,
     tracer: Tracer | None = None,
-) -> AgentRun:
-    run = session.get(AgentRun, run_id)
+) -> CampaignAgentRun:
+    run = session.get(CampaignAgentRun, run_id)
     try:
         summary = waiting_pool_summary(session)
         if summary["total"] == 0:
@@ -242,7 +251,7 @@ def execute_suggestion_run(
             session.commit()
             return run
 
-        llm_client = llm_client or get_agent_llm_client(get_settings())
+        llm_client = llm_client or get_campaign_agent_llm_client(get_settings())
         saved: list[int] = []
         covered: set[int] = set()
         converse = as_converse_call(
@@ -253,17 +262,19 @@ def execute_suggestion_run(
                 build_save_draft_tool_spec(),
             ),
         )
-        call_tool = make_tool_executor(
+        call_tool = make_campaign_tool_runner(
             session,
             run_id,
-            extra_tools={
+            {
                 AUDIENCE_TOOL_NAME: make_audience_tool(summary),
                 "get_campaign_results": get_campaign_results,
+                "list_angles": TOOL_FUNCTIONS["list_angles"],
                 SAVE_DRAFT_TOOL_NAME: make_save_draft_tool(
                     run_id=run_id, saved=saved, covered=covered
                 ),
             },
         )
+        session.commit()
 
         tracer = tracer or active_tracer()
         with trace_scope(tracer, name=CAMPAIGN_AGENT_SUGGEST, tags=[TAG_AGENT, TAG_CAMPAIGN]):
@@ -275,6 +286,9 @@ def execute_suggestion_run(
                 run_id=str(run_id),
                 trace_id=str(run_id),
             )
+
+        if not saved:
+            raise NothingSaved(_nothing_saved_reason(session, run_id))
 
         opened = sum(open_on_own(session, session.get(Campaign, cid)) for cid in saved)
         run.cost_kes = run_cost_kes(session, llm_client.model, date.today(), 1)
@@ -288,7 +302,7 @@ def execute_suggestion_run(
         return run
     except Exception as exc:
         session.rollback()
-        run = session.get(AgentRun, run_id)
+        run = session.get(CampaignAgentRun, run_id)
         run.state = "failed"
         run.failure_reason = str(exc)
         run.finished_at = datetime.now(UTC)
