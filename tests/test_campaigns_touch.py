@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import delete, select
 
+from app.agents.campaign_agent import make_choose_touch_plan_tool
 from app.campaigns.touch import (
     SendBlocked,
     SendResult,
@@ -17,8 +18,9 @@ from app.campaigns.touch import (
     send_touch,
 )
 from app.config import Settings, get_settings
+from app.db.models.agent_run import CAMPAIGN_AGENT, AgentRun
 from app.db.models.audit import AuditLog
-from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
+from app.db.models.campaigns import CampaignStep, ContactEvent, Enrollment, TouchLog, TouchPlan
 from app.db.models.llmops import GenerationRun
 from app.db.models.models import Clients, Funds, PiiVault
 from app.db.models.outreach import Campaign, OutreachMessage
@@ -1248,3 +1250,115 @@ def test_send_touch_leaves_the_side_blank_when_the_client_has_none(
         session.commit()
 
         assert (touch.side_at_send, touch.balance_at_send) == (None, None)
+
+
+def _planned_second_touch(session, *, campaign_id: int, client_id: int) -> TouchLog:
+    enrollment = _make_enrollment(
+        session,
+        campaign_id=campaign_id,
+        client_id=client_id,
+        current_step=1,
+        status="in_progress",
+    )
+    run = AgentRun(trigger="manual", agent_kind=CAMPAIGN_AGENT)
+    session.add(run)
+    session.flush()
+    plan_tool = make_choose_touch_plan_tool(
+        slots=[
+            {
+                "slot": 0,
+                "enrollment_id": enrollment.enrollment_id,
+                "step_no": 2,
+                "prior_angle": None,
+            }
+        ],
+        allowed_angles={"winback_value"},
+        min_gap_days=2,
+        max_gap_days=10,
+        run_id=run.run_id,
+        outcome={},
+    )
+    planned = plan_tool(
+        session,
+        decisions=[
+            {
+                "slot": 0,
+                "angle": "winback_value",
+                "gap_days": 5,
+                "reason": "second touch",
+                "next_time": "check in",
+            }
+        ],
+    )
+    assert planned["status"] == "written"
+    message = _make_message(
+        session, campaign_id=campaign_id, client_id=client_id, status="approved"
+    )
+    touch = record_touch(session, enrollment, 2)
+    touch.message_id = message.message_id
+    session.commit()
+    return touch
+
+
+def _forget_planning(client_id: int) -> None:
+    with SessionLocal() as session:
+        enrollment_ids = session.scalars(
+            select(Enrollment.enrollment_id).where(Enrollment.client_id == client_id)
+        ).all()
+        session.execute(delete(ContactEvent).where(ContactEvent.client_id == client_id))
+        session.execute(delete(TouchPlan).where(TouchPlan.enrollment_id.in_(enrollment_ids)))
+        session.execute(delete(AuditLog).where(AuditLog.entity_type == "touch_plan"))
+        session.execute(delete(AgentRun).where(AgentRun.agent_kind == CAMPAIGN_AGENT))
+        session.commit()
+
+
+def test_a_reply_that_arrives_after_planning_stops_the_send(
+    campaign_with_steps: int, client_row: int, delivery_mode
+) -> None:
+    delivery_mode("live")
+    try:
+        with SessionLocal() as session:
+            touch = _planned_second_touch(
+                session, campaign_id=campaign_with_steps, client_id=client_row
+            )
+            session.add(
+                ContactEvent(
+                    client_id=client_row,
+                    type="reply",
+                    occurred_at=datetime.now(UTC) + timedelta(minutes=1),
+                )
+            )
+            session.commit()
+
+            with pytest.raises(SendBlocked) as blocked:
+                send_touch(session, touch)
+            session.commit()
+
+            assert blocked.value.reason == "replied"
+            assert touch.sent_at is None
+            assert session.get(Enrollment, touch.enrollment_id).status == "stopped_reply"
+    finally:
+        _forget_planning(client_row)
+
+
+def test_a_deposit_that_arrives_after_planning_stops_the_send(
+    campaign_with_steps: int, client_row: int, delivery_mode
+) -> None:
+    delivery_mode("live")
+    try:
+        with SessionLocal() as session:
+            touch = _planned_second_touch(
+                session, campaign_id=campaign_with_steps, client_id=client_row
+            )
+            session.get(Clients, client_row).last_activity_date = date.today() + timedelta(days=1)
+            session.commit()
+
+            with pytest.raises(SendBlocked) as blocked:
+                send_touch(session, touch)
+            session.commit()
+
+            assert blocked.value.reason == "reengaged"
+            assert touch.sent_at is None
+            assert session.get(Enrollment, touch.enrollment_id).status == "stopped_reengaged"
+    finally:
+        _forget_planning(client_row)

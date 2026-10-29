@@ -694,6 +694,7 @@ def latest_campaign_plan(session: Session, campaign_id: int) -> list[dict]:
                 "angle": plan.angle,
                 "gap_days": plan.gap_days,
                 "reason": plan.reason,
+                "next_time_note": plan.next_time_note,
                 "cited_facts": plan.cited_facts,
             }
         )

@@ -96,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"  enrollment_id={plan.enrollment_id} step_no={plan.step_no} "
                 f"angle={plan.angle!r} gap_days={plan.gap_days} reason={plan.reason!r}"
             )
+            print(f"    next_time={plan.next_time_note!r} cited_facts={plan.cited_facts}")
 
         print("\n--- drafted messages ---")
         for outcome in outcomes:

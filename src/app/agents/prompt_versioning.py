@@ -21,6 +21,7 @@ AGENT_ANGLE_BRIEF_GENERATE = "agent_angle_brief_generate"
 CLIENT_BRIEF_NARRATIVE = "client_brief_narrative"
 BOOK_BRIEF_NARRATIVE = "book_brief_narrative"
 PATTERN_WRITEUP = "pattern_writeup"
+CAMPAIGN_PLAN = "campaign_plan"
 EMAIL_PURPOSE_PREFIX = "email_purpose_"
 EMAIL_PURPOSE_KEYS = (
     "email_purpose_reschedule_meeting",
@@ -45,6 +46,7 @@ PROMPT_KEYS = (
     CLIENT_BRIEF_NARRATIVE,
     BOOK_BRIEF_NARRATIVE,
     PATTERN_WRITEUP,
+    CAMPAIGN_PLAN,
     *EMAIL_PURPOSE_KEYS,
 )
 
@@ -90,6 +92,7 @@ PROMPT_PLACEHOLDERS: dict[str, frozenset[str]] = {
     CLIENT_BRIEF_NARRATIVE: frozenset(),
     BOOK_BRIEF_NARRATIVE: frozenset(),
     PATTERN_WRITEUP: frozenset(),
+    CAMPAIGN_PLAN: frozenset(),
     **{key: frozenset() for key in EMAIL_PURPOSE_KEYS},
 }
 
@@ -150,6 +153,7 @@ def active_prompt(session: Session, prompt_key: str, as_of: date) -> AgentPrompt
 def default_prompt_texts() -> dict[str, str]:
     """The built in text for each prompt that has one in code, used until a version is live."""
     from app.agents.angle_brief import INSTRUCTIONS as ANGLE_BRIEF_INSTRUCTIONS
+    from app.agents.campaign_prompt import INSTRUCTIONS as CAMPAIGN_PLAN_INSTRUCTIONS
     from app.agents.pattern_writeup import SYSTEM_PROMPT
     from app.briefing.book_narrative import INSTRUCTIONS as BOOK_INSTRUCTIONS
     from app.briefing.email_prompts import default_email_prompts
@@ -161,6 +165,7 @@ def default_prompt_texts() -> dict[str, str]:
         CLIENT_BRIEF_NARRATIVE: CLIENT_INSTRUCTIONS,
         BOOK_BRIEF_NARRATIVE: BOOK_INSTRUCTIONS,
         PATTERN_WRITEUP: SYSTEM_PROMPT,
+        CAMPAIGN_PLAN: CAMPAIGN_PLAN_INSTRUCTIONS,
     }
 
 

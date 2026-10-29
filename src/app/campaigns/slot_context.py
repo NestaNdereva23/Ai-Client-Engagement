@@ -28,6 +28,7 @@ MAX_RECENT_EVENTS = 10
 DEPOSIT_TXN_TYPE = "purchase"
 OPTED_OUT = "opted_out"
 DEPOSITED = "deposited"
+ALREADY_PLANNED = "already_planned"
 NOT_SENT = "no_draft"
 BALANCE_BANDS_KES = (1.0, 50.0, 600.0, 6_000.0, 50_000.0)
 
@@ -122,6 +123,9 @@ def _slot_context(session: Session, enrollment: Enrollment, now: datetime) -> Sl
     if not verdict.eligible:
         return SlotContext(enrollment.enrollment_id, step_no, kind, skip_reason=verdict.reason)
 
+    if _has_plan(session, enrollment, step_no):
+        return SlotContext(enrollment.enrollment_id, step_no, kind, skip_reason=ALREADY_PLANNED)
+
     rows = _touch_rows(session, enrollment)
     events = _client_events(session, enrollment.client_id)
     sent = [row.sent_at for row in rows if row.sent_at is not None]
@@ -143,6 +147,17 @@ def _slot_context(session: Session, enrollment: Enrollment, now: datetime) -> Sl
         events_since_last_touch=_recent_events(events, since, now),
         next_time_note=_last_note(session, enrollment, step_no),
         side_change=_side_change(session, enrollment.client_id, rows),
+    )
+
+
+def _has_plan(session: Session, enrollment: Enrollment, step_no: int) -> bool:
+    return (
+        session.scalar(
+            select(TouchPlan.plan_id).where(
+                TouchPlan.enrollment_id == enrollment.enrollment_id, TouchPlan.step_no == step_no
+            )
+        )
+        is not None
     )
 
 

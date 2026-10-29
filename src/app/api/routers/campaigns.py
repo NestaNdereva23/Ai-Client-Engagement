@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.agents.campaign_agent import CampaignPlanFailed
 from app.agents.email_channel import build_default_orchestrator
 from app.api.agent_scope import AgentScope, get_agent_scope, require_campaign_in_scope
 from app.api.reviewer_auth import get_current_reviewer_id
@@ -457,6 +458,9 @@ def post_campaign_plan_and_generate(
     except CampaignNotReady as exc:
         session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from None
+    except CampaignPlanFailed as exc:
+        session.rollback()
+        raise HTTPException(status_code=502, detail=str(exc)) from None
     return [
         TouchOutcomeOut(
             enrollment_id=o.enrollment_id,

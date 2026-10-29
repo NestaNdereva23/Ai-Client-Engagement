@@ -61,7 +61,7 @@ def _verified_rate_chunk(session: Session, client_id: int) -> _FactChunk | None:
 
 def _research_chunks(plan: TouchPlan) -> list[_FactChunk]:
     notes = plan.cited_facts or []
-    return [_FactChunk(chunk_id=-(i + 2), text=note) for i, note in enumerate(notes)]
+    return [_FactChunk(chunk_id=-(i + 2), text=note["text"]) for i, note in enumerate(notes)]
 
 
 class MessageNotRegenerable(Exception):

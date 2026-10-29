@@ -8,10 +8,16 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, select, text
 
-from app.agents.campaign_agent import CHOOSE_TOUCH_PLAN_TOOL_NAME, run_campaign_agent
+from app.agents.campaign_agent import (
+    CHOOSE_TOUCH_PLAN_TOOL_NAME,
+    CampaignPlanFailed,
+    run_campaign_agent,
+)
+from app.agents.campaign_prompt import OBJECTIVE_BRIEFS, SHARED_RULES
 from app.agents.tool_runtime import TOOL_DATA_KEY
 from app.agents.tools import PLANNING_TOOLS, make_campaign_read_tools
 from app.campaigns.slot_context import (
+    ALREADY_PLANNED,
     DEPOSITED,
     EXCERPT_LIMIT,
     FIRST_TOUCH,
@@ -447,7 +453,13 @@ def test_the_planner_only_sees_slots_that_can_still_be_planned(book: int) -> Non
                 "reason": "first touch",
                 "next_time": "  check if\nthey opened  ",
             },
-            {"slot": 1, "angle": "not_a_goodbye", "gap_days": 6, "reason": "follow up"},
+            {
+                "slot": 1,
+                "angle": "not_a_goodbye",
+                "gap_days": 6,
+                "reason": "follow up",
+                "next_time": "ask again",
+            },
         ]
     }
     client = FakeClient(
@@ -477,4 +489,155 @@ def test_the_planner_only_sees_slots_that_can_still_be_planned(book: int) -> Non
     }
     answer = client.calls[1]["messages"][-1]["content"][0]["content"]
     assert list(json.loads(answer)) == [TOOL_DATA_KEY]
-    assert sorted(note for note in notes if note) == ["check if they opened"]
+    assert sorted(notes) == ["ask again", "check if they opened"]
+
+
+_GOOD_PLAN = {
+    "decisions": [
+        {
+            "slot": 0,
+            "angle": "back_on_schedule",
+            "gap_days": 4,
+            "reason": "first touch",
+            "next_time": "see if it was opened",
+        }
+    ]
+}
+_NO_NOTE_PLAN = {"decisions": [{**_GOOD_PLAN["decisions"][0], "next_time": ""}]}
+
+
+def _choose(call_id: str, plan: dict) -> ConversationTurn:
+    return _turn(_request(call_id, CHOOSE_TOUCH_PLAN_TOOL_NAME, plan))
+
+
+def _latest_run(session) -> AgentRun:
+    return session.scalars(
+        select(AgentRun)
+        .where(AgentRun.agent_kind == CAMPAIGN_AGENT)
+        .order_by(AgentRun.run_id.desc())
+    ).first()
+
+
+def _plans_for_run(session, run_id: int) -> int:
+    return len(list(session.scalars(select(TouchPlan).where(TouchPlan.run_id == run_id))))
+
+
+def test_a_run_where_the_model_never_saves_a_plan_fails_and_says_why(book: int) -> None:
+    with SessionLocal() as session:
+        _enroll(session, book, 987301)
+
+    with SessionLocal() as session:
+        with pytest.raises(CampaignPlanFailed, match="never saved a plan"):
+            run_campaign_agent(session, book, llm_client=FakeClient([_final()]))
+
+    with SessionLocal() as session:
+        run = _latest_run(session)
+        assert run.state == "failed"
+        assert "never saved a plan" in run.failure_reason
+        assert _plans_for_run(session, run.run_id) == 0
+
+
+def test_a_run_refused_three_times_fails_with_the_reasons_and_saves_nothing(book: int) -> None:
+    with SessionLocal() as session:
+        _enroll(session, book, 987302)
+    client = FakeClient(
+        [
+            _choose("c1", _NO_NOTE_PLAN),
+            _choose("c2", _NO_NOTE_PLAN),
+            _choose("c3", _NO_NOTE_PLAN),
+            _choose("c4", _GOOD_PLAN),
+            _final(),
+        ]
+    )
+
+    with SessionLocal() as session:
+        with pytest.raises(CampaignPlanFailed, match="refused after 3 tries.*next_time"):
+            run_campaign_agent(session, book, llm_client=client)
+
+    with SessionLocal() as session:
+        run = _latest_run(session)
+        assert run.state == "failed"
+        assert "next_time" in run.failure_reason
+        assert session.query(TouchPlan).count() == 0
+
+
+def test_a_run_refused_once_then_fixed_completes_with_the_saved_count(book: int) -> None:
+    with SessionLocal() as session:
+        _enroll(session, book, 987303)
+    client = FakeClient([_choose("c1", _NO_NOTE_PLAN), _choose("c2", _GOOD_PLAN), _final()])
+
+    with SessionLocal() as session:
+        run = run_campaign_agent(session, book, llm_client=client)
+        saved = _plans_for_run(session, run.run_id)
+
+    refusal = json.loads(client.calls[1]["messages"][-1]["content"][0]["content"])[TOOL_DATA_KEY]
+    assert refusal["tries_left"] == 2
+    assert [error["code"] for error in refusal["errors"]] == ["missing_next_time"]
+    assert run.state == "completed"
+    assert run.summary == "planned 1 of 1 due touches"
+    assert saved == 1
+
+
+def test_a_run_that_runs_out_of_turns_before_saving_fails(book: int) -> None:
+    with SessionLocal() as session:
+        _enroll(session, book, 987304)
+    looking = [_turn(_request(f"h{n}", "get_touch_history", {"slot": 0})) for n in range(14)]
+
+    with SessionLocal() as session:
+        with pytest.raises(CampaignPlanFailed, match="ran out of turns"):
+            run_campaign_agent(session, book, llm_client=FakeClient(looking))
+
+    with SessionLocal() as session:
+        assert _latest_run(session).state == "failed"
+
+
+def test_the_prompt_follows_the_campaigns_objective_and_gap_policy(book: int) -> None:
+    with SessionLocal() as session:
+        _enroll(session, book, 987305)
+        session.get(Campaign, book).agent_touch_policy = {
+            "objective": "top_up",
+            "min_gap_days": 3,
+            "max_gap_days": 9,
+        }
+        session.commit()
+    client = FakeClient([_choose("c1", _GOOD_PLAN), _final()])
+
+    with SessionLocal() as session:
+        run = run_campaign_agent(session, book, llm_client=client)
+
+    system = client.calls[0]["system"]
+    assert run.state == "completed"
+    assert OBJECTIVE_BRIEFS["top_up"] in system
+    assert OBJECTIVE_BRIEFS["win_back_deposit"] not in system
+    assert "between 3 and 9" in system
+    assert all(rule in system for rule in SHARED_RULES)
+
+
+def test_a_slot_that_already_has_a_plan_is_left_out_not_planned_twice(book: int) -> None:
+    with SessionLocal() as session:
+        enrollment_id = _enroll(session, book, 987306)
+        run = AgentRun(trigger="manual", agent_kind=CAMPAIGN_AGENT)
+        session.add(run)
+        session.flush()
+        session.add(
+            TouchPlan(
+                enrollment_id=enrollment_id,
+                step_no=1,
+                angle="back_on_schedule",
+                gap_days=4,
+                reason="planned earlier",
+                run_id=run.run_id,
+            )
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        slots = build_campaign_slots(session, book)
+        run = run_campaign_agent(session, book, llm_client=FakeClient([]))
+        status = session.get(Enrollment, enrollment_id).status
+
+    assert slots.ready == ()
+    assert slots.dropped_reasons() == {ALREADY_PLANNED: 1}
+    assert run.state == "completed"
+    assert run.summary == "nothing to plan; left out 1 (1 already_planned)"
+    assert status == "enrolled"

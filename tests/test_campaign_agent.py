@@ -10,6 +10,8 @@ from sqlalchemy import delete, text
 import app.campaigns.generation as generation_module
 from app.agents.campaign_agent import (
     CHOOSE_TOUCH_PLAN_TOOL_NAME,
+    CampaignPlanFailed,
+    _require_saved_plans,
     make_choose_touch_plan_tool,
     run_campaign_agent,
 )
@@ -213,7 +215,13 @@ def test_choose_touch_plan_writes_a_row_and_an_audit_entry(campaign_with_steps: 
         result = tool(
             session,
             decisions=[
-                {"slot": 0, "angle": "winback_habit", "gap_days": 5, "reason": "first touch"}
+                {
+                    "slot": 0,
+                    "angle": "winback_habit",
+                    "gap_days": 5,
+                    "reason": "first touch",
+                    "next_time": "check in",
+                }
             ],
         )
         session.commit()
@@ -256,7 +264,13 @@ def test_choose_touch_plan_refuses_the_clients_own_last_angle(campaign_with_step
         result = tool(
             session,
             decisions=[
-                {"slot": 0, "angle": "winback_habit", "gap_days": 5, "reason": "same as before"}
+                {
+                    "slot": 0,
+                    "angle": "winback_habit",
+                    "gap_days": 5,
+                    "reason": "same as before",
+                    "next_time": "check in",
+                }
             ],
         )
         assert result["error"] == "repeats_last_angle"
@@ -283,7 +297,13 @@ def test_choose_touch_plan_refuses_a_gap_outside_the_campaign_bounds(
         result = tool(
             session,
             decisions=[
-                {"slot": 0, "angle": "winback_habit", "gap_days": 30, "reason": "too far out"}
+                {
+                    "slot": 0,
+                    "angle": "winback_habit",
+                    "gap_days": 30,
+                    "reason": "too far out",
+                    "next_time": "check in",
+                }
             ],
         )
         assert result["error"] == "gap_out_of_range"
@@ -313,7 +333,13 @@ def test_choose_touch_plan_refuses_an_incomplete_batch(campaign_with_steps: int)
         result = tool(
             session,
             decisions=[
-                {"slot": 0, "angle": "winback_habit", "gap_days": 5, "reason": "only one of two"}
+                {
+                    "slot": 0,
+                    "angle": "winback_habit",
+                    "gap_days": 5,
+                    "reason": "only one of two",
+                    "next_time": "check in",
+                }
             ],
         )
         assert result["error"] == "incomplete"
@@ -436,12 +462,14 @@ def test_run_campaign_agent_plans_every_due_enrollment_in_one_call(
                         "angle": "back_on_schedule",
                         "gap_days": 4,
                         "reason": "first touch for this client",
+                        "next_time": "check in",
                     },
                     {
                         "slot": 1,
                         "angle": "not_a_goodbye",
                         "gap_days": 6,
                         "reason": "first touch for this client",
+                        "next_time": "check in",
                     },
                 ]
             ),
@@ -494,6 +522,262 @@ def test_the_touch_plan_endpoint_returns_the_latest_runs_decisions(
             "angle": "back_on_schedule",
             "gap_days": 4,
             "reason": "first touch for this client",
+            "next_time_note": None,
             "cited_facts": None,
         }
     ]
+
+
+_OPEN_ANGLES = {"winback_habit", "winback_value", "not_a_goodbye"}
+_GOOD = {
+    "slot": 0,
+    "angle": "winback_value",
+    "gap_days": 5,
+    "reason": "a new approach",
+    "next_time": "see if it was opened",
+}
+_REPEAT = {**_GOOD, "angle": "winback_habit"}
+
+
+def _step_two_tool(session, enrollment_id: int, outcome: dict, run_id: int):
+    slots = [
+        {
+            "slot": 0,
+            "enrollment_id": enrollment_id,
+            "step_no": 2,
+            "prior_angle": "winback_habit",
+            "earlier_angles": ["winback_habit"],
+            "earlier_subjects": [],
+        }
+    ]
+    return make_choose_touch_plan_tool(
+        slots=slots,
+        allowed_angles=_OPEN_ANGLES,
+        min_gap_days=2,
+        max_gap_days=10,
+        run_id=run_id,
+        outcome=outcome,
+    )
+
+
+def _plan_count(session, enrollment_id: int) -> int:
+    return session.query(TouchPlan).filter_by(enrollment_id=enrollment_id).count()
+
+
+def test_a_refusal_lists_every_problem_and_counts_down_the_tries(campaign_with_steps: int) -> None:
+    with SessionLocal() as session:
+        enrollment_id = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=_CLIENT_A
+        )
+        outcome: dict = {}
+        tool = _step_two_tool(session, enrollment_id, outcome, _make_run(session))
+        bad = {"slot": 0, "angle": "winback_habit", "gap_days": 99, "reason": ""}
+
+        tries = [tool(session, decisions=[bad]) for _ in range(3)]
+
+    assert [t["tries_left"] for t in tries] == [2, 1, 0]
+    assert [e["code"] for e in tries[0]["errors"]] == [
+        "repeats_last_angle",
+        "gap_out_of_range",
+        "missing_reason",
+        "missing_next_time",
+    ]
+    assert tries[0]["error"] == "repeats_last_angle"
+    assert outcome["failed_tries"] == 3
+
+
+def test_a_call_after_the_last_try_saves_nothing_even_if_it_is_valid(
+    campaign_with_steps: int,
+) -> None:
+    with SessionLocal() as session:
+        enrollment_id = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=_CLIENT_A
+        )
+        outcome: dict = {}
+        tool = _step_two_tool(session, enrollment_id, outcome, _make_run(session))
+        for _ in range(3):
+            tool(session, decisions=[_REPEAT])
+
+        result = tool(session, decisions=[_GOOD])
+
+        assert result["error"] == "no_tries_left"
+        assert _plan_count(session, enrollment_id) == 0
+        assert "written" not in outcome
+
+
+def test_a_valid_retry_after_a_refusal_saves_the_plan(campaign_with_steps: int) -> None:
+    with SessionLocal() as session:
+        enrollment_id = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=_CLIENT_A
+        )
+        outcome: dict = {}
+        tool = _step_two_tool(session, enrollment_id, outcome, _make_run(session))
+
+        refused = tool(session, decisions=[_REPEAT])
+        saved = tool(session, decisions=[_GOOD])
+
+        assert refused["error"] == "repeats_last_angle"
+        assert saved == {"status": "written", "count": 1}
+        assert outcome["failed_tries"] == 1
+        assert _plan_count(session, enrollment_id) == 1
+
+
+def test_a_second_save_in_the_same_run_is_refused(campaign_with_steps: int) -> None:
+    with SessionLocal() as session:
+        enrollment_id = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=_CLIENT_A
+        )
+        tool = _step_two_tool(session, enrollment_id, {}, _make_run(session))
+        tool(session, decisions=[_GOOD])
+
+        again = tool(session, decisions=[_GOOD])
+
+        assert again["error"] == "already_saved"
+        assert _plan_count(session, enrollment_id) == 1
+
+
+def test_a_malformed_call_is_a_refusal_not_a_crash(campaign_with_steps: int) -> None:
+    with SessionLocal() as session:
+        enrollment_id = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=_CLIENT_A
+        )
+        tool = _step_two_tool(session, enrollment_id, {}, _make_run(session))
+
+        assert tool(session, decisions="all of them")["error"] == "invalid_decisions"
+        assert tool(session, decisions=["slot 0"])["error"] == "invalid_decisions"
+
+
+def test_a_duplicate_plan_is_a_clear_error_and_leaves_the_other_slots_unsaved(
+    campaign_with_steps: int,
+) -> None:
+    with SessionLocal() as session:
+        enrollment_a = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=_CLIENT_A
+        )
+        enrollment_b = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=_CLIENT_B
+        )
+        run_id = _make_run(session)
+        session.add(
+            TouchPlan(
+                enrollment_id=enrollment_b,
+                step_no=2,
+                angle="not_a_goodbye",
+                gap_days=3,
+                reason="earlier run",
+                run_id=run_id,
+            )
+        )
+        session.commit()
+        slots = [
+            {"slot": n, "enrollment_id": e, "step_no": 2, "prior_angle": None}
+            for n, e in enumerate((enrollment_a, enrollment_b))
+        ]
+        outcome: dict = {}
+        tool = make_choose_touch_plan_tool(
+            slots=slots,
+            allowed_angles=_OPEN_ANGLES,
+            min_gap_days=2,
+            max_gap_days=10,
+            run_id=run_id,
+            outcome=outcome,
+        )
+
+        result = tool(session, decisions=[_GOOD, {**_GOOD, "slot": 1}])
+
+        assert result["error"] == "duplicate_plan"
+        assert _plan_count(session, enrollment_a) == 0
+        assert _plan_count(session, enrollment_b) == 1
+        assert session.query(AuditLog).filter_by(entity_type="touch_plan").count() == 0
+        assert "written" not in outcome
+
+
+def _search_call(session, run_id: int, snippet: str) -> None:
+    session.add(
+        AgentToolCall(
+            run_id=run_id,
+            ordinal=1,
+            tool_name="search_web",
+            tool_input={"query": "redeem"},
+            tool_output={
+                "query": "redeem",
+                "retrieved_at": "2026-10-28T10:00:00+00:00",
+                "results": [{"title": "t", "url": "https://example.com/a", "snippet": snippet}],
+            },
+        )
+    )
+    session.commit()
+
+
+def test_a_cited_fact_is_saved_with_its_source_and_time(campaign_with_steps: int) -> None:
+    snippet = "Money market funds can usually be redeemed within one working day."
+    with SessionLocal() as session:
+        enrollment_id = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=_CLIENT_A
+        )
+        run_id = _make_run(session)
+        _search_call(session, run_id, snippet)
+        tool = _step_two_tool(session, enrollment_id, {}, run_id)
+
+        result = tool(session, decisions=[{**_GOOD, "research_notes": [snippet]}])
+
+        assert result["status"] == "written"
+        row = session.query(TouchPlan).filter_by(enrollment_id=enrollment_id).one()
+        assert row.cited_facts == [
+            {
+                "text": snippet,
+                "url": "https://example.com/a",
+                "retrieved_at": "2026-10-28T10:00:00+00:00",
+                "tool": "search_web",
+            }
+        ]
+        assert row.next_time_note == "see if it was opened"
+
+
+def test_a_fact_the_tools_never_returned_saves_nothing(campaign_with_steps: int) -> None:
+    with SessionLocal() as session:
+        enrollment_id = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=_CLIENT_A
+        )
+        run_id = _make_run(session)
+        _search_call(session, run_id, "Funds can be redeemed within one working day.")
+        tool = _step_two_tool(session, enrollment_id, {}, run_id)
+
+        result = tool(
+            session,
+            decisions=[{**_GOOD, "research_notes": ["Every fund doubles in a year."]}],
+        )
+
+        assert result["error"] == "unsupported_fact"
+        assert _plan_count(session, enrollment_id) == 0
+
+
+def test_the_saved_count_must_match_the_due_slots(campaign_with_steps: int) -> None:
+    with SessionLocal() as session:
+        run_id = _make_run(session)
+
+        with pytest.raises(CampaignPlanFailed, match="saved 0 plans for 2 due touches"):
+            _require_saved_plans(session, run_id, 2, {"written": 2}, "final_answer")
+        with pytest.raises(CampaignPlanFailed, match="never saved a plan"):
+            _require_saved_plans(session, run_id, 1, {}, "final_answer")
+        with pytest.raises(CampaignPlanFailed, match="ran out of turns"):
+            _require_saved_plans(session, run_id, 1, {}, "turn_limit")
+
+
+def test_a_failed_planning_run_answers_502_with_the_reasons(
+    campaign_with_steps: int, configured_reviewers, reviewer_1_headers, monkeypatch
+) -> None:
+    def fail(*args, **kwargs):
+        raise CampaignPlanFailed("plans refused after 3 tries: slot 0 needs a next_time note")
+
+    monkeypatch.setattr("app.api.routers.campaigns.plan_and_run_due_enrollments", fail)
+    monkeypatch.setattr(
+        "app.api.routers.campaigns.build_default_orchestrator", lambda *a, **k: None
+    )
+
+    response = TestClient(app).post(
+        f"/api/v1/campaigns/{campaign_with_steps}/plan-and-generate", headers=reviewer_1_headers
+    )
+
+    assert response.status_code == 502
+    assert "next_time" in response.text

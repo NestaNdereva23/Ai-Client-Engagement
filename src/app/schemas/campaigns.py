@@ -171,6 +171,13 @@ class SentMessageOut(BaseModel):
     delivery_status: str | None
 
 
+class CitedFactOut(BaseModel):
+    text: str
+    url: str | None = None
+    retrieved_at: str | None = None
+    tool: str | None = None
+
+
 class TouchPlanOut(BaseModel):
     enrollment_id: int
     client_id: int
@@ -179,7 +186,8 @@ class TouchPlanOut(BaseModel):
     angle: str
     gap_days: int
     reason: str
-    cited_facts: list[str] | None
+    next_time_note: str | None = None
+    cited_facts: list[CitedFactOut] | None
 
 
 class EnrollmentOut(BaseModel):

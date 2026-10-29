@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import asdict
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -786,6 +786,24 @@ def specs_for(names: Sequence[str], extra: Sequence[ToolSpec] = ()) -> tuple[Too
     return tuple(registry[name] for name in names)
 
 
+def stamped_search_web(session: Session, *, query: str, k: int = 5) -> dict[str, Any]:
+    answer = search_web(session, query=query, k=k)
+    if "error" in answer:
+        return answer
+    return {**answer, "retrieved_at": datetime.now(UTC).isoformat()}
+
+
+def citable_verified_rate(session: Session, *, product: str) -> dict[str, Any]:
+    answer = get_verified_rate(session, product=product)
+    if "error" in answer:
+        return answer
+    rate = f"{answer['rate_pct']:.3f}".rstrip("0").rstrip(".")
+    sentence = (
+        f"The {answer['product']} fund's current rate is {rate}%, verified as of {answer['as_of']}."
+    )
+    return {**answer, "text": sentence, "retrieved_at": datetime.now(UTC).isoformat()}
+
+
 def get_campaign_results(session: Session) -> dict[str, Any]:
     return {
         "status": "not_enough_data",
@@ -851,4 +869,6 @@ def make_campaign_read_tools(
         "get_touch_history": get_touch_history,
         "get_side_change": get_side_change,
         "get_campaign_results": get_campaign_results,
+        "get_verified_rate": citable_verified_rate,
+        "search_web": stamped_search_web,
     }
