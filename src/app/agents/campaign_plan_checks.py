@@ -179,7 +179,8 @@ def check_decisions(
         errors.extend(
             PlanError(
                 "unsupported_fact",
-                f"slot {number}: not in anything search_web or get_verified_rate returned "
+                f"slot {number}: not in anything search_approved_sites or "
+                "get_weekly_report_facts returned "
                 f"in this run: {note!r}",
                 number,
             )

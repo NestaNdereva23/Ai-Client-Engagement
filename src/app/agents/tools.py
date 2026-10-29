@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import asdict
-from datetime import UTC, date, datetime
+from datetime import date
 from typing import Any
 
 from sqlalchemy import select
@@ -34,6 +34,7 @@ from app.agents.watchlist import (
 )
 from app.agents.web_research import WebSearchUnavailable, search_verified_web
 from app.briefing.narrative_prompt import narrative_facts
+from app.campaigns.agent_information import campaign_search_web, get_weekly_report_facts
 from app.campaigns.generation_cost import (
     DEFAULT_MODEL,
     MODEL_LABELS,
@@ -721,6 +722,44 @@ GROUP_LEVEL_TOOL_SPECS: tuple[ToolSpec, ...] = tuple(
 
 CAMPAIGN_TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
+        name="get_weekly_report_facts",
+        description=(
+            "What the latest weekly market report says about one product, as short passages "
+            "with the report's title and date. Use it for current rates and market facts. "
+            "Says so plainly when no weekly report is active."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "product": {
+                    "type": "string",
+                    "description": "The product, for example money market or high yield.",
+                }
+            },
+            "required": ["product"],
+        },
+    ),
+    ToolSpec(
+        name="search_approved_sites",
+        description=(
+            "Search the websites an operator approved for the campaign agents. Returns "
+            "short tidied facts, each with the website it came from, for current rates "
+            "and market facts the weekly report does not have. Says so plainly when no "
+            "website is approved or nothing useful was found."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to search for."},
+                "k": {
+                    "type": "integer",
+                    "description": f"How many results to read, at most {_MAX_WEB_RESULTS}.",
+                },
+            },
+            "required": ["query"],
+        },
+    ),
+    ToolSpec(
         name="get_campaign_context",
         description=(
             "This campaign's objective, how it measures success, the gap allowed between "
@@ -775,8 +814,8 @@ PLANNING_TOOLS: tuple[str, ...] = (
     "get_side_change",
     "get_campaign_results",
     "list_angles",
-    "search_web",
-    "get_verified_rate",
+    "search_approved_sites",
+    "get_weekly_report_facts",
 )
 
 REPORTING_TOOLS: tuple[str, ...] = ("get_campaign_context", "get_campaign_results")
@@ -787,24 +826,6 @@ CAMPAIGN_WRITE_TOOLS: tuple[str, ...] = ("choose_touch_plan", "save_campaign_dra
 def specs_for(names: Sequence[str], extra: Sequence[ToolSpec] = ()) -> tuple[ToolSpec, ...]:
     registry = {spec.name: spec for spec in (*TOOL_SPECS, *CAMPAIGN_TOOL_SPECS, *extra)}
     return tuple(registry[name] for name in names)
-
-
-def stamped_search_web(session: Session, *, query: str, k: int = 5) -> dict[str, Any]:
-    answer = search_web(session, query=query, k=k)
-    if "error" in answer:
-        return answer
-    return {**answer, "retrieved_at": datetime.now(UTC).isoformat()}
-
-
-def citable_verified_rate(session: Session, *, product: str) -> dict[str, Any]:
-    answer = get_verified_rate(session, product=product)
-    if "error" in answer:
-        return answer
-    rate = f"{answer['rate_pct']:.3f}".rstrip("0").rstrip(".")
-    sentence = (
-        f"The {answer['product']} fund's current rate is {rate}%, verified as of {answer['as_of']}."
-    )
-    return {**answer, "text": sentence, "retrieved_at": datetime.now(UTC).isoformat()}
 
 
 def get_campaign_results(session: Session) -> dict[str, Any]:
@@ -869,6 +890,6 @@ def make_campaign_read_tools(
         "get_touch_history": get_touch_history,
         "get_side_change": get_side_change,
         "get_campaign_results": get_campaign_results,
-        "get_verified_rate": citable_verified_rate,
-        "search_web": stamped_search_web,
+        "get_weekly_report_facts": get_weekly_report_facts,
+        "search_approved_sites": campaign_search_web,
     }

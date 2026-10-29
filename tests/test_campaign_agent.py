@@ -699,12 +699,12 @@ def _search_call(session, run_id: int, snippet: str) -> None:
         CampaignAgentToolCall(
             run_id=run_id,
             ordinal=1,
-            tool_name="search_web",
+            tool_name="search_approved_sites",
             tool_input={"query": "redeem"},
             tool_output={
                 "query": "redeem",
                 "retrieved_at": "2026-10-28T10:00:00+00:00",
-                "results": [{"title": "t", "url": "https://example.com/a", "snippet": snippet}],
+                "findings": [{"text": snippet, "url": "https://example.com/a"}],
             },
         )
     )
@@ -730,7 +730,7 @@ def test_a_cited_fact_is_saved_with_its_source_and_time(campaign_with_steps: int
                 "text": snippet,
                 "url": "https://example.com/a",
                 "retrieved_at": "2026-10-28T10:00:00+00:00",
-                "tool": "search_web",
+                "tool": "search_approved_sites",
             }
         ]
         assert row.next_time_note == "see if it was opened"
@@ -783,3 +783,80 @@ def test_a_failed_planning_run_answers_502_with_the_reasons(
 
     assert response.status_code == 502
     assert "next_time" in response.text
+
+
+class _RecordingClient(FakeConversingLLMClient):
+    def __init__(self, turns: list[ConversationTurn]) -> None:
+        super().__init__(turns)
+        self.system = ""
+        self.tool_names: set[str] = set()
+
+    def converse(self, *, system, messages, tools=()):
+        self.system = system
+        self.tool_names = {tool.name for tool in tools}
+        return super().converse(system=system, messages=messages, tools=tools)
+
+
+def _search_turn() -> ConversationTurn:
+    request = ToolUseRequest(
+        call_id="s1", tool_name="search_approved_sites", tool_input={"query": "rates"}
+    )
+    return ConversationTurn(text="", tool_requests=(request,), usage=_USAGE, stop_reason="tool_use")
+
+
+def _one_slot_decision() -> dict:
+    return {
+        "slot": 0,
+        "angle": "back_on_schedule",
+        "gap_days": 4,
+        "reason": "first touch for this client",
+        "next_time": "check in",
+    }
+
+
+def test_a_switched_off_information_source_is_not_offered_and_is_refused(
+    campaign_with_steps: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "app.agents.campaign_agent.get_settings",
+        lambda: Settings(
+            campaign_agent_use_web_research=False, campaign_agent_use_weekly_report=False
+        ),
+    )
+    with SessionLocal() as session:
+        _make_enrollment(session, campaign_id=campaign_with_steps, client_id=_CLIENT_A)
+    client_stub = _RecordingClient(
+        [_search_turn(), _choose_touch_plan_turn([_one_slot_decision()]), _final_answer()]
+    )
+
+    with SessionLocal() as session:
+        run = run_campaign_agent(session, campaign_with_steps, llm_client=client_stub)
+        calls = {
+            call.tool_name: call.tool_output
+            for call in session.query(CampaignAgentToolCall).filter_by(run_id=run.run_id)
+        }
+
+    assert {"search_approved_sites", "get_weekly_report_facts"}.isdisjoint(client_stub.tool_names)
+    assert {"get_touch_history", "list_angles", "choose_touch_plan"} <= client_stub.tool_names
+    assert "do not call them: search_approved_sites, get_weekly_report_facts" in client_stub.system
+    assert calls["search_approved_sites"]["error"] == "unknown_tool"
+
+
+def test_the_information_sources_are_offered_while_they_are_switched_on(
+    campaign_with_steps: int,
+) -> None:
+    with SessionLocal() as session:
+        _make_enrollment(session, campaign_id=campaign_with_steps, client_id=_CLIENT_A)
+    client_stub = _RecordingClient(
+        [_choose_touch_plan_turn([_one_slot_decision()]), _final_answer()]
+    )
+
+    with SessionLocal() as session:
+        run_campaign_agent(session, campaign_with_steps, llm_client=client_stub)
+
+    assert {
+        "search_approved_sites",
+        "get_weekly_report_facts",
+        "get_campaign_results",
+    } <= client_stub.tool_names
+    assert "Not available in this run" not in client_stub.system

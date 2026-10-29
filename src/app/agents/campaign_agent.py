@@ -21,11 +21,16 @@ from app.agents.campaign_plan_checks import (
 from app.agents.campaign_prompt import build_plan_prompt
 from app.agents.campaign_runs import start_campaign_run
 from app.agents.campaign_tool_runner import make_campaign_tool_runner
-from app.agents.prompt_versioning import CAMPAIGN_PLAN, prompt_text
 from app.agents.run_cost import run_cost_kes
 from app.agents.tool_runtime import wrapped_as_data
 from app.agents.tools import PLANNING_TOOLS, TOOL_FUNCTIONS, make_campaign_read_tools, specs_for
 from app.audit.log import record_audit
+from app.campaigns.agent_information import (
+    allowed_tool_names,
+    switched_off_tool_names,
+    tool_is_on,
+)
+from app.campaigns.agent_prompts import campaign_prompt_texts
 from app.campaigns.slot_context import (
     FIRST_TOUCH,
     NOTE_LIMIT,
@@ -54,7 +59,7 @@ logger = structlog.get_logger(__name__)
 
 CHOOSE_TOUCH_PLAN_TOOL_NAME = "choose_touch_plan"
 DEFAULT_MAX_TURNS = 14
-_FACT_TOOLS = ("search_web", "get_verified_rate")
+_FACT_TOOLS = ("search_approved_sites", "get_weekly_report_facts")
 
 
 class CampaignNotFound(Exception):
@@ -106,8 +111,10 @@ def build_choose_touch_plan_tool_spec(
                                 "items": {"type": "string"},
                                 "description": (
                                     f"Up to {MAX_RESEARCH_NOTES} facts copied verbatim from "
-                                    "search_web or get_verified_rate for this slot's drafting "
-                                    "step to cite. Leave empty if you found nothing to cite."
+                                    "search_approved_sites or get_weekly_report_facts for "
+                                    "this slot's "
+                                    "drafting step to cite. Leave empty if you found "
+                                    "nothing to cite."
                                 ),
                             },
                         },
@@ -142,16 +149,20 @@ def _fact_sources(session: Session, run_id: int) -> list[FactSource]:
     for call in calls:
         output = call.tool_output or {}
         stamp = output.get("retrieved_at") or call.created_at.isoformat()
-        if call.tool_name == "search_web":
+        if call.tool_name == "search_approved_sites":
             sources.extend(
                 FactSource(
-                    str(hit.get("snippet") or ""), _web_link(hit.get("url")), stamp, call.tool_name
+                    str(finding.get("text") or ""),
+                    _web_link(finding.get("url")),
+                    stamp,
+                    call.tool_name,
                 )
-                for hit in output.get("results") or []
+                for finding in output.get("findings") or []
             )
-        elif output.get("text"):
-            sources.append(
-                FactSource(output["text"], _web_link(output.get("source")), stamp, call.tool_name)
+        else:
+            sources.extend(
+                FactSource(str(passage.get("text") or ""), None, stamp, call.tool_name)
+                for passage in output.get("passages") or []
             )
     return sources
 
@@ -341,7 +352,8 @@ def run_campaign_agent(
     if campaign is None:
         raise CampaignNotFound(campaign_id)
 
-    llm_client = llm_client or get_campaign_agent_llm_client(get_settings())
+    settings = get_settings()
+    llm_client = llm_client or get_campaign_agent_llm_client(settings)
     run = start_campaign_run(session, kind=PLAN_RUN, campaign_id=campaign_id, trigger=trigger)
     run_id = run.run_id
     contexts: CampaignSlots | None = None
@@ -380,8 +392,10 @@ def run_campaign_agent(
         tool_spec = build_choose_touch_plan_tool_spec(
             slot_numbers=[slot["slot"] for slot in slots], allowed_angles=sorted(allowed_angles)
         )
-        base_prompt = prompt_text(session, CAMPAIGN_PLAN, date.today())
-        system_prompt = build_plan_prompt(base_prompt, plan_config)
+        off = switched_off_tool_names(PLANNING_TOOLS, settings)
+        system_prompt = build_plan_prompt(
+            campaign_prompt_texts(session, date.today()), plan_config, unavailable=off
+        )
         system_prompt = f"{system_prompt}\n\nThis run's slots:\n{_slots_prompt(contexts.ready)}"
         touch_points = session.scalar(
             select(func.count())
@@ -398,13 +412,17 @@ def run_campaign_agent(
         converse = as_converse_call(
             llm_client,
             system=system_prompt,
-            tools=(*specs_for(PLANNING_TOOLS), tool_spec),
+            tools=(*specs_for(allowed_tool_names(PLANNING_TOOLS, settings)), tool_spec),
         )
         tools = {
-            **read_tools,
-            "list_angles": TOOL_FUNCTIONS["list_angles"],
-            CHOOSE_TOUCH_PLAN_TOOL_NAME: choose_tool,
+            name: function
+            for name, function in {
+                **read_tools,
+                "list_angles": TOOL_FUNCTIONS["list_angles"],
+            }.items()
+            if tool_is_on(name, settings)
         }
+        tools[CHOOSE_TOUCH_PLAN_TOOL_NAME] = choose_tool
         call_tool = wrapped_as_data(make_campaign_tool_runner(session, run_id, tools))
         session.commit()
 

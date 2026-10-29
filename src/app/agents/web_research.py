@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -33,9 +34,11 @@ def _domain_allowed(url: str, allowed: list[str]) -> bool:
     return any(host == domain or host.endswith(f".{domain}") for domain in allowed)
 
 
-def search_verified_web(settings: Settings, query: str, k: int) -> list[WebResult]:
+def search_verified_web(
+    settings: Settings, query: str, k: int, *, domains: Sequence[str] | None = None
+) -> list[WebResult]:
     # include_domains narrows what Exa crawls; checked again below in case it misses.
-    allowed = settings.web_research_allowed_domains_list
+    allowed = list(domains) if domains is not None else settings.web_research_allowed_domains_list
     if not settings.exa_api_key or not allowed:
         raise WebSearchUnavailable("web search has no verified sources configured")
 

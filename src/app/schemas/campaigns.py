@@ -274,6 +274,23 @@ class CampaignAgentRunOut(BaseModel):
     failure_reason: str | None = None
 
 
+class ActiveWeeklyReportOut(BaseModel):
+    title: str
+    version_no: int
+    published_on: date | None = None
+    ingested_at: datetime
+    passages: int
+    sections: list[str]
+
+
+class CampaignToolOut(BaseModel):
+    name: str
+    used_by: list[str]
+    description: str
+    parameters: list[str]
+    switch: str | None = None
+
+
 class AgentCampaignFactsOut(BaseModel):
     name: str
     status: str

@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.audit.log import record_audit
+from app.campaigns.agent_information import clean_domain_list
 from app.config import Settings, get_settings
 from app.db.models.app_setting import AppSetting
 from app.editable_settings import (
@@ -44,6 +45,12 @@ def update_app_settings(
 ) -> None:
     cleaned = {key: editable_setting(key).clean(value) for key, value in changes.items()}
     current = get_settings()
+    domains = cleaned.get("campaign_agent_web_domains")
+    if isinstance(domains, str):
+        try:
+            cleaned["campaign_agent_web_domains"] = clean_domain_list(domains)
+        except ValueError as error:
+            raise SettingValueError("campaign_agent_web_domains", str(error)) from None
     provider = cleaned.get("campaign_agent_llm_provider")
     problem = campaign_provider_problem(provider, current) if provider else None
     if problem:

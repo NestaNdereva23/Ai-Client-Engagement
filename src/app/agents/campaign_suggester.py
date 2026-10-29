@@ -8,10 +8,17 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.agents.campaign_prompt import build_suggest_prompt
 from app.agents.campaign_runs import start_campaign_run
 from app.agents.campaign_tool_runner import make_campaign_tool_runner
 from app.agents.run_cost import run_cost_kes
 from app.agents.tools import SETUP_TOOLS, TOOL_FUNCTIONS, get_campaign_results, specs_for
+from app.campaigns.agent_information import (
+    allowed_tool_names,
+    switched_off_tool_names,
+    tool_is_on,
+)
+from app.campaigns.agent_prompts import campaign_prompt_texts
 from app.campaigns.waiting_pool import waiting_pool_summary
 from app.config import get_settings
 from app.db.models.campaign_agent_run import (
@@ -192,31 +199,6 @@ def make_save_draft_tool(*, run_id: int, saved: list[int], covered: set[int]):
     return save_campaign_draft
 
 
-_SYSTEM_PROMPT = (
-    "You suggest win-back campaigns for dormant clients who are not in any campaign "
-    "yet. A person reviews every suggestion before anyone is contacted.\n"
-    "Call get_waiting_audience first. It gives counts only, by priority tier, "
-    "message angle and value band. Counts for groups that are too small are left "
-    "out; do not guess them. Use list_angles to see what each angle may say.\n"
-    "A campaign is one group of dormant clients, set by priority_tier and, when it "
-    "helps, narrowed by value_band, recency_band, purchase_depth, newly_dormant or "
-    "high_value. Never build a campaign around one message angle: the planning "
-    "agent picks the angle for each client later.\n"
-    "Try to cover the whole waiting pool: every priority tier that is shown gets a "
-    "campaign. Split a very large tier by value_band only when that makes the "
-    "groups easier to review.\n"
-    "Save each campaign with save_campaign_draft, once. Choose an objective: "
-    "win_back_deposit (bring back clients who used to deposit), top_up (clients "
-    "who still hold money and could add to it) or reactivate_never_funded "
-    "(clients who never funded). Give touch_offsets as the days after the start "
-    "for each email, from 0 and rising, for example [0, 7, 14]. Write a short "
-    "plain name and one plain line of reason.\n"
-    "Save at most {max_drafts} drafts. If a save is refused, read the message and "
-    "fix it. When you are done, reply with a short plain summary and no further "
-    "tool call."
-)
-
-
 def start_suggestion_run(session: Session) -> CampaignAgentRun:
     get_campaign_agent_llm_client(get_settings())
     return start_campaign_run(session, kind=SUGGEST_RUN)
@@ -251,14 +233,21 @@ def execute_suggestion_run(
             session.commit()
             return run
 
-        llm_client = llm_client or get_campaign_agent_llm_client(get_settings())
+        settings = get_settings()
+        llm_client = llm_client or get_campaign_agent_llm_client(settings)
         saved: list[int] = []
         covered: set[int] = set()
         converse = as_converse_call(
             llm_client,
-            system=_SYSTEM_PROMPT.format(max_drafts=MAX_DRAFTS),
+            system=build_suggest_prompt(
+                campaign_prompt_texts(session, date.today()),
+                MAX_DRAFTS,
+                unavailable=switched_off_tool_names(SETUP_TOOLS, settings),
+            ),
             tools=(
-                *specs_for(SETUP_TOOLS, extra=(build_audience_tool_spec(),)),
+                *specs_for(
+                    allowed_tool_names(SETUP_TOOLS, settings), extra=(build_audience_tool_spec(),)
+                ),
                 build_save_draft_tool_spec(),
             ),
         )
@@ -266,12 +255,16 @@ def execute_suggestion_run(
             session,
             run_id,
             {
-                AUDIENCE_TOOL_NAME: make_audience_tool(summary),
-                "get_campaign_results": get_campaign_results,
-                "list_angles": TOOL_FUNCTIONS["list_angles"],
-                SAVE_DRAFT_TOOL_NAME: make_save_draft_tool(
-                    run_id=run_id, saved=saved, covered=covered
-                ),
+                name: function
+                for name, function in {
+                    AUDIENCE_TOOL_NAME: make_audience_tool(summary),
+                    "get_campaign_results": get_campaign_results,
+                    "list_angles": TOOL_FUNCTIONS["list_angles"],
+                    SAVE_DRAFT_TOOL_NAME: make_save_draft_tool(
+                        run_id=run_id, saved=saved, covered=covered
+                    ),
+                }.items()
+                if tool_is_on(name, settings)
             },
         )
         session.commit()

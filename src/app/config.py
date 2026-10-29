@@ -189,6 +189,18 @@ class Settings(BaseSettings):
     campaign_agent_run_stale_after_minutes: int = 30
     campaign_agent_min_group_size: int = 5
     campaign_agent_open_mode: Literal["person_approves", "agent_opens"] = "person_approves"
+    campaign_agent_use_weekly_report: bool = True
+    campaign_agent_use_web_research: bool = True
+    campaign_agent_use_campaign_results: bool = True
+    campaign_agent_web_domains: str | None = ""
+
+    @property
+    def campaign_agent_web_domains_list(self) -> list[str]:
+        return [
+            d.strip().lower()
+            for d in (self.campaign_agent_web_domains or "").split(",")
+            if d.strip()
+        ]
 
     agent_campaign_max_live: int = 2
     agent_campaign_pause_share: float = 0.05

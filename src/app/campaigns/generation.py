@@ -31,7 +31,6 @@ from app.llmops.trace_names import CAMPAIGN_EMAIL_DRAFT, TAG_CAMPAIGN, TAG_EMAIL
 from app.llmops.tracing import Tracer, trace_scope
 from app.llmops.versions import persist_generation_run
 from app.privacy.boundary import AuditSink, BoundaryAudit
-from app.rules.verified_rate import get_verified_rate
 from app.services.review import create_outreach_message, get_message
 
 _REPEAT_EXCERPT_LIMIT = 400
@@ -41,22 +40,6 @@ _REPEAT_EXCERPT_LIMIT = 400
 class _FactChunk:
     chunk_id: int
     text: str
-
-
-def _format_rate(value: object) -> str:
-    return f"{float(value):.3f}".rstrip("0").rstrip(".")
-
-
-def _verified_rate_chunk(session: Session, client_id: int) -> _FactChunk | None:
-    product = resolve_product(session, client_id)
-    rate = get_verified_rate(session, product)
-    if rate is None:
-        return None
-    text = (
-        f"The {product} fund's current rate is {_format_rate(rate.rate_value)}%, "
-        f"verified as of {rate.as_of.date().isoformat()}."
-    )
-    return _FactChunk(chunk_id=-1, text=text)
 
 
 def _research_chunks(plan: TouchPlan) -> list[_FactChunk]:
@@ -212,9 +195,6 @@ def _planned_orchestrator(
     extra_prohibitions = (prohibition,) if prohibition else ()
 
     extra_chunks: list[_FactChunk] = []
-    rate_chunk = _verified_rate_chunk(session, client_id)
-    if rate_chunk is not None:
-        extra_chunks.append(rate_chunk)
     extra_chunks.extend(_research_chunks(plan))
 
     orchestrator = Orchestrator()

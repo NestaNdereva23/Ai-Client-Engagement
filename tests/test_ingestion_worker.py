@@ -327,6 +327,20 @@ def test_bulk_walks_every_page_and_writes_all_of_them(db, cleanup_runs):
     assert _counts(result.run_id) == (3, 0)
 
 
+def test_bulk_asks_for_the_same_page_size_on_every_page(db, cleanup_runs):
+    pages = [
+        _paged(10, 1, [_client_row(1)], current_page=1, last_page=3),
+        _paged(20, 1, [_client_row(2)], current_page=2, last_page=3),
+        _paged(30, 1, [_client_row(3)], current_page=3, last_page=3),
+    ]
+    client = PagedClient(pages)
+
+    result = IngestionWorker(client, page_size=1000).run_bulk()
+    cleanup_runs.append(result.run_id)
+
+    assert [c["per_page"] for c in client.calls] == [1000, 1000, 1000]
+
+
 def test_bulk_rejects_malformed_records_like_run(db, cleanup_runs):
     payload = _paged(10, 2, [_client_row(1), {"client_code": "no-id"}], current_page=1, last_page=1)
     worker = IngestionWorker(PagedClient([payload]))

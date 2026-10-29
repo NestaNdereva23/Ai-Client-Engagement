@@ -19,6 +19,7 @@ from app.db.models.api import IdempotencyKey
 from app.db.models.audit import AuditLog
 from app.db.models.auth import ReviewerUser
 from app.db.models.briefing import BriefingNarrative
+from app.db.models.campaign_agent_prompt import CampaignAgentPrompt
 from app.db.models.campaign_agent_run import CampaignAgentRun, CampaignAgentToolCall
 from app.db.models.campaigns import CampaignStep, ContactEvent, Enrollment, TouchLog
 from app.db.models.complaints import ClientComplaint
@@ -896,6 +897,15 @@ class AgentToolCallAdmin(_ReadOnlyView, model=AgentToolCall):
     column_default_sort = [(AgentToolCall.created_at, True)]
 
 
+class CampaignAgentPromptAdmin(_ReadOnlyView, model=CampaignAgentPrompt):
+    name = "Campaign Agent Prompt"
+    name_plural = "Campaign Agent Prompts"
+    icon = "fa-solid fa-pen-to-square"
+    category = "Campaigns"
+    category_icon = "fa-solid fa-bullhorn"
+    column_default_sort = [(CampaignAgentPrompt.created_at, True)]
+
+
 class CampaignAgentRunAdmin(_ReadOnlyView, model=CampaignAgentRun):
     name = "Campaign Agent Run"
     name_plural = "Campaign Agent Runs"
@@ -1047,6 +1057,7 @@ ADMIN_VIEWS = [
     AgentPromptAdmin,
     AgentRunAdmin,
     AgentToolCallAdmin,
+    CampaignAgentPromptAdmin,
     CampaignAgentRunAdmin,
     CampaignAgentToolCallAdmin,
     AgentEventAdmin,

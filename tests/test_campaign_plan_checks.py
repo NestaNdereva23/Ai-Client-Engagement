@@ -11,10 +11,11 @@ from app.agents.campaign_plan_checks import (
     subjects_too_close,
 )
 from app.agents.campaign_prompt import (
-    INSTRUCTIONS,
-    NO_OBJECTIVE_BRIEF,
-    OBJECTIVE_BRIEFS,
-    SHARED_RULES,
+    CAMPAIGN_PLAN,
+    CAMPAIGN_PLAN_RULES,
+    DEFAULTS,
+    NO_OBJECTIVE_KEY,
+    OBJECTIVE_KEYS,
     build_plan_prompt,
 )
 from app.schemas.campaigns import CampaignPlanConfig
@@ -29,13 +30,13 @@ WEB = FactSource(
     text="Money market funds can usually be redeemed within one working day.",
     url="https://example.com/redeem",
     retrieved_at="2026-10-28T10:00:00+00:00",
-    tool="search_web",
+    tool="search_approved_sites",
 )
 RATE = FactSource(
     text="The money market fund's current rate is 12.3%, verified as of 2026-10-27.",
     url=None,
     retrieved_at="2026-10-28T10:01:00+00:00",
-    tool="get_verified_rate",
+    tool="get_weekly_report_facts",
 )
 
 
@@ -184,7 +185,7 @@ def test_a_fact_that_a_tool_returned_is_kept_with_its_source() -> None:
             "text": "money market funds can usually be redeemed within one working day.",
             "url": "https://example.com/redeem",
             "retrieved_at": "2026-10-28T10:00:00+00:00",
-            "tool": "search_web",
+            "tool": "search_approved_sites",
         }
     ]
 
@@ -193,7 +194,7 @@ def test_a_part_of_a_returned_sentence_can_be_cited() -> None:
     cited, unsupported = resolve_cited_facts(["current rate is 12.3%, verified"], [RATE])
 
     assert unsupported == []
-    assert cited[0]["tool"] == "get_verified_rate"
+    assert cited[0]["tool"] == "get_weekly_report_facts"
     assert cited[0]["url"] is None
 
 
@@ -238,24 +239,26 @@ def test_every_problem_comes_back_in_one_answer() -> None:
     ]
 
 
-@pytest.mark.parametrize("objective", sorted(OBJECTIVE_BRIEFS))
+@pytest.mark.parametrize("objective", sorted(OBJECTIVE_KEYS))
 def test_the_prompt_follows_the_campaigns_objective(objective: str) -> None:
     config = CampaignPlanConfig(
         objective=objective, min_gap_days=3, max_gap_days=9, observation_days=21
     )
 
-    prompt = build_plan_prompt(INSTRUCTIONS, config)
+    prompt = build_plan_prompt(DEFAULTS, config)
+    own_brief = DEFAULTS[OBJECTIVE_KEYS[objective]]
+    other_briefs = [DEFAULTS[key] for name, key in OBJECTIVE_KEYS.items() if name != objective]
 
-    assert prompt.startswith(INSTRUCTIONS.strip())
-    assert OBJECTIVE_BRIEFS[objective] in prompt
+    assert prompt.startswith(DEFAULTS[CAMPAIGN_PLAN].strip())
+    assert own_brief in prompt
     assert "between 3 and 9" in prompt
     assert "within 21 days" in prompt
-    assert all(rule in prompt for rule in SHARED_RULES)
-    assert not any(brief in prompt for name, brief in OBJECTIVE_BRIEFS.items() if name != objective)
+    assert DEFAULTS[CAMPAIGN_PLAN_RULES] in prompt
+    assert not any(brief in prompt for brief in other_briefs)
 
 
 def test_a_campaign_with_no_objective_gets_the_neutral_brief() -> None:
-    prompt = build_plan_prompt("Base text.", CampaignPlanConfig())
+    prompt = build_plan_prompt(DEFAULTS, CampaignPlanConfig())
 
-    assert NO_OBJECTIVE_BRIEF in prompt
-    assert all(rule in prompt for rule in SHARED_RULES)
+    assert DEFAULTS[NO_OBJECTIVE_KEY] in prompt
+    assert DEFAULTS[CAMPAIGN_PLAN_RULES] in prompt

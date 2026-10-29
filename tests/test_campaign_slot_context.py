@@ -13,7 +13,7 @@ from app.agents.campaign_agent import (
     CampaignPlanFailed,
     run_campaign_agent,
 )
-from app.agents.campaign_prompt import OBJECTIVE_BRIEFS, SHARED_RULES
+from app.agents.campaign_prompt import CAMPAIGN_PLAN_RULES, DEFAULTS, OBJECTIVE_KEYS
 from app.agents.tool_runtime import TOOL_DATA_KEY
 from app.agents.tools import PLANNING_TOOLS, make_campaign_read_tools
 from app.campaigns.slot_context import (
@@ -611,10 +611,10 @@ def test_the_prompt_follows_the_campaigns_objective_and_gap_policy(book: int) ->
 
     system = client.calls[0]["system"]
     assert run.state == "completed"
-    assert OBJECTIVE_BRIEFS["top_up"] in system
-    assert OBJECTIVE_BRIEFS["win_back_deposit"] not in system
+    assert DEFAULTS[OBJECTIVE_KEYS["top_up"]] in system
+    assert DEFAULTS[OBJECTIVE_KEYS["win_back_deposit"]] not in system
     assert "between 3 and 9" in system
-    assert all(rule in system for rule in SHARED_RULES)
+    assert DEFAULTS[CAMPAIGN_PLAN_RULES] in system
 
 
 def test_a_slot_that_already_has_a_plan_is_left_out_not_planned_twice(book: int) -> None:

@@ -184,7 +184,7 @@ class IngestionWorker:
                 with ThreadPoolExecutor(max_workers=max_workers) as pool:
                     futures = {
                         pool.submit(
-                            self._client.fetch, self._fetch_path, params={"page": page_num}
+                            self._client.fetch, self._fetch_path, params=self._page_params(page_num)
                         ): page_num
                         for page_num in remaining
                     }
@@ -230,6 +230,14 @@ class IngestionWorker:
         logger.info("ingestion.started", run_id=status.run_id, endpoint=self._endpoint)
         return status
 
+    def _page_params(self, page: int) -> dict[str, Any]:
+        """Query for one page. Every page must ask for the same size, or the
+        page numbers stop lining up and part of the book is never fetched."""
+        params: dict[str, Any] = {"page": page}
+        if self._page_size is not None:
+            params["per_page"] = self._page_size
+        return params
+
     def _fetch_page(self, after: str | None) -> tuple[str, dict[str, Any]] | None:
         """Return the page after the given cursor, or None when there are no more.
 
@@ -246,10 +254,7 @@ class IngestionWorker:
         if self._known_last_page is not None and next_page > self._known_last_page:
             return None
 
-        params: dict[str, Any] = {"page": next_page}
-        if self._page_size is not None:
-            params["per_page"] = self._page_size
-        payload = self._client.fetch(self._fetch_path, params=params)
+        payload = self._client.fetch(self._fetch_path, params=self._page_params(next_page))
         meta = payload.get("meta") or {}
         current_page = meta.get("current_page", next_page)
         self._known_last_page = meta.get("last_page", current_page)

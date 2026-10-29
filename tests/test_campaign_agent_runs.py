@@ -191,3 +191,44 @@ def test_a_suggestion_run_that_saves_no_draft_is_a_failed_run(monkeypatch) -> No
         with SessionLocal() as session:
             session.execute(delete(CampaignAgentRun).where(CampaignAgentRun.run_id == run_id))
             session.commit()
+
+
+def test_the_campaign_agents_search_only_their_own_sources(monkeypatch) -> None:
+    from app.campaigns import agent_information
+
+    monkeypatch.setattr(
+        agent_information,
+        "get_settings",
+        lambda: Settings(exa_api_key="key", web_research_allowed_domains="shared.example.com"),
+    )
+
+    answer = agent_information.campaign_search_web(None, query="money market rates")
+
+    assert answer["error"] == "web_search_unavailable"
+    assert "no verified sources" in answer["message"]
+
+
+def test_a_source_list_keeps_website_names_only() -> None:
+    from app.campaigns.agent_information import clean_domain_list
+
+    pasted = " Example.com, https://www.news.site.co.ke/research,example.com "
+    assert clean_domain_list(pasted) == "example.com,news.site.co.ke"
+    assert clean_domain_list(" , ") is None
+    with pytest.raises(ValueError, match="not a website name"):
+        clean_domain_list("not a website")
+
+
+def test_the_settings_screen_refuses_a_source_that_is_not_a_website_name(monkeypatch) -> None:
+    from app.services import app_settings
+
+    monkeypatch.setattr(app_settings, "get_settings", lambda: Settings())
+
+    with SessionLocal() as session:
+        with pytest.raises(SettingValueError, match="not a website name"):
+            update_app_settings(
+                session,
+                changes={"campaign_agent_web_domains": "not a website"},
+                reason="adding a source",
+                confirm_live=False,
+                actor_id="test",
+            )

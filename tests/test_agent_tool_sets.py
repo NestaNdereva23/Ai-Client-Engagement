@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from types import SimpleNamespace
-
 import pytest
 
 import app.agents.tools as tools_module
@@ -19,8 +16,8 @@ from app.agents.tools import (
     make_campaign_read_tools,
     specs_for,
 )
-from app.agents.web_research import WebSearchUnavailable
 from app.agents.write_tools import WRITE_TOOL_SPECS
+from app.campaigns.agent_information import campaign_search_web, get_weekly_report_facts
 from app.schemas.campaigns import CampaignPlanConfig
 
 READ_SETS = {
@@ -75,58 +72,12 @@ def test_specs_for_refuses_a_name_that_is_not_a_tool() -> None:
         specs_for(("get_touch_history", "drop_everything"))
 
 
-def test_the_planners_rate_answer_carries_a_citable_sentence_and_a_time(monkeypatch) -> None:
-    row = SimpleNamespace(
-        product="money market",
-        rate_value=12.3,
-        as_of=datetime(2026, 10, 27, 8, 0, tzinfo=UTC),
-        source="https://example.com/rate",
-    )
-    monkeypatch.setattr(tools_module, "fetch_verified_rate", lambda session, product: row)
-
-    answer = tools_module.citable_verified_rate(None, product="money market")
-
-    assert answer["text"] == (
-        "The money market fund's current rate is 12.3%, verified as of 2026-10-27."
-    )
-    assert answer["source"] == "https://example.com/rate"
-    assert datetime.fromisoformat(answer["retrieved_at"]).tzinfo is not None
-
-
-def test_the_shared_rate_answer_is_left_as_it_was(monkeypatch) -> None:
-    row = SimpleNamespace(
-        product="money market",
-        rate_value=12.3,
-        as_of=datetime(2026, 10, 27, tzinfo=UTC),
-        source="x",
-    )
-    monkeypatch.setattr(tools_module, "fetch_verified_rate", lambda session, product: row)
-
-    assert "text" not in tools_module.get_verified_rate(None, product="money market")
-
-
-def test_the_planners_search_answer_is_stamped_and_a_failed_search_is_not(monkeypatch) -> None:
-    hits = [SimpleNamespace(title="t", url="https://example.com/a", snippet="a snippet")]
-    monkeypatch.setattr(tools_module, "search_verified_web", lambda settings, query, k: hits)
-    stamped = tools_module.stamped_search_web(None, query="redeem")
-
-    def down(settings, query, k):
-        raise WebSearchUnavailable("search is down")
-
-    monkeypatch.setattr(tools_module, "search_verified_web", down)
-    failed = tools_module.stamped_search_web(None, query="redeem")
-
-    assert stamped["results"][0]["snippet"] == "a snippet"
-    assert "retrieved_at" in stamped
-    assert failed["error"] == "web_search_unavailable"
-    assert "retrieved_at" not in failed
-
-
-def test_the_planner_binds_its_own_search_and_rate_tools() -> None:
+def test_the_planner_binds_its_own_search_and_report_tools() -> None:
     bound = make_campaign_read_tools(
         plan_config=CampaignPlanConfig(), touch_points=0, allowed_angles=(), slots=()
     )
 
-    assert bound["search_web"] is tools_module.stamped_search_web
-    assert bound["get_verified_rate"] is tools_module.citable_verified_rate
+    assert bound["search_approved_sites"] is campaign_search_web
+    assert bound["get_weekly_report_facts"] is get_weekly_report_facts
+    assert not {"search_web", "get_verified_rate"} & set(bound)
     assert TOOL_FUNCTIONS["search_web"] is tools_module.search_web
