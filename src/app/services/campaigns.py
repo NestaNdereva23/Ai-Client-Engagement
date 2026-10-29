@@ -28,6 +28,7 @@ from app.campaigns.estimation import (
     TemplateEstimate,
     estimate_templates_sql,
 )
+from app.campaigns.explain import explain_campaign
 from app.campaigns.generation import generate_for_enrollment
 from app.campaigns.generation_cost import DEFAULT_MODEL, CampaignCostEstimate
 from app.campaigns.generation_cost import estimate_generation_cost as _estimate_generation_cost
@@ -654,6 +655,12 @@ def plan_and_run_due_enrollments(
         tracer=tracer,
         limit=limit,
     )
+
+
+def campaign_explanation(session: Session, campaign_id: int) -> dict:
+    if session.get(Campaign, campaign_id) is None:
+        raise CampaignNotFound(campaign_id)
+    return explain_campaign(session, campaign_id)
 
 
 def latest_campaign_plan(session: Session, campaign_id: int) -> list[dict]:

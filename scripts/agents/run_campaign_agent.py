@@ -35,6 +35,11 @@ def main(argv: list[str] | None = None) -> int:
         help="A real, already-ingested client_id to enroll. Give this flag more than once.",
     )
     parser.add_argument("--steps", type=int, default=3, help="How many campaign steps to create.")
+    parser.add_argument(
+        "--objective",
+        choices=("win_back_deposit", "top_up", "reactivate_never_funded"),
+        default="win_back_deposit",
+    )
     parser.add_argument("--min-gap-days", type=int, default=2)
     parser.add_argument("--max-gap-days", type=int, default=10)
     args = parser.parse_args(argv)
@@ -49,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
             is_test=True,
             planning_mode="agent",
             agent_touch_policy={
+                "objective": args.objective,
                 "min_gap_days": args.min_gap_days,
                 "max_gap_days": args.max_gap_days,
             },

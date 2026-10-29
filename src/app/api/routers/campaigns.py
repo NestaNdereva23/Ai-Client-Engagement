@@ -33,6 +33,7 @@ from app.schemas.campaigns import (
     CampaignCreateRequest,
     CampaignDetailOut,
     CampaignDispatchOut,
+    CampaignExplainOut,
     CampaignListItemOut,
     CampaignPlanConfig,
     CampaignReadinessOut,
@@ -80,6 +81,7 @@ from app.services.campaigns import (
     DuplicateChannelSameDay,
     InstantiationBatchNotFound,
     add_campaign_step,
+    campaign_explanation,
     campaign_readiness,
     campaign_summary,
     campaign_value,
@@ -409,6 +411,20 @@ def get_campaign_touch_plan(
     except CampaignNotFound:
         raise HTTPException(status_code=404, detail="campaign not found") from None
     return [TouchPlanOut(**plan) for plan in plans]
+
+
+@router.get(
+    "/{campaign_id}/explain",
+    response_model=CampaignExplainOut,
+    dependencies=[Depends(require_campaign_in_scope)],
+)
+def get_campaign_explanation(
+    campaign_id: int, session: Session = Depends(get_session)
+) -> CampaignExplainOut:
+    try:
+        return CampaignExplainOut(**campaign_explanation(session, campaign_id))
+    except CampaignNotFound:
+        raise HTTPException(status_code=404, detail="campaign not found") from None
 
 
 @router.put(

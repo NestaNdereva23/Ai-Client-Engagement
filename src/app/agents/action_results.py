@@ -8,7 +8,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -18,7 +18,11 @@ from app.db.models.action_result import ActionResult
 from app.db.models.active_clients import ActiveClientFund, ActiveTransaction
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.campaigns import ContactEvent, Enrollment, TouchLog
+from app.db.models.models import Transactions
 from app.db.models.outreach import Campaign, OutreachMessage, ReviewAction
+from app.db.models.routing import ClientSide
+from app.routing.sides import SIDE_ACTIVE, SIDE_INACTIVE
+from app.schemas.campaigns import DEFAULT_OBSERVATION_DAYS
 
 logger = structlog.get_logger(__name__)
 
@@ -36,6 +40,8 @@ REMEASURED_COLUMNS = (
     "reviewer_changed",
     "deposited",
     "deposit_amount_kes",
+    "moved_to_active",
+    "balance_up",
     "measured_at",
 )
 
@@ -47,6 +53,17 @@ class SentMessage:
     proposal_id: int
     insight_id: int | None
     sent_at: datetime
+
+
+@dataclass(frozen=True)
+class SentTouch:
+    touch_id: int
+    message_id: str
+    client_id: int
+    sent_at: datetime
+    window_days: int
+    side_at_send: str | None
+    balance_at_send: float | None
 
 
 @dataclass(frozen=True)
@@ -83,12 +100,20 @@ def measure_action_results(
         )
         for length in lengths
     ]
+    campaign_touches = _measure_campaign_touches(
+        session,
+        measurable_until=measurable_until,
+        measured_at=measured_at,
+        remeasure=remeasure,
+        zone=zone,
+    )
     record_audit(
         session,
         entity_type="action_result",
         action="measure",
         detail={
             "windows": {str(outcome.window_days): outcome.measured for outcome in outcomes},
+            "campaign_touches": campaign_touches,
             "remeasure": remeasure,
             "data_loaded_at": None if loaded_at is None else loaded_at.isoformat(),
         },
@@ -97,6 +122,7 @@ def measure_action_results(
     logger.info(
         "action_results.measured",
         windows={outcome.window_days: outcome.measured for outcome in outcomes},
+        campaign_touches=campaign_touches,
         remeasure=remeasure,
         data_loaded_at=None if loaded_at is None else loaded_at.isoformat(),
     )
@@ -161,7 +187,132 @@ def _due_messages(
     return [SentMessage(*row) for row in session.execute(stmt).all()]
 
 
-def _batches(messages: Sequence[SentMessage]) -> Iterator[Sequence[SentMessage]]:
+def _measure_campaign_touches(
+    session: Session,
+    *,
+    measurable_until: datetime | None,
+    measured_at: datetime,
+    remeasure: bool,
+    zone: ZoneInfo,
+) -> int:
+    if measurable_until is None:
+        return 0
+    touches = _due_campaign_touches(session, measurable_until, remeasure)
+    saved = 0
+    for batch in _batches(touches):
+        rows = _campaign_touch_rows(session, batch, measured_at, zone)
+        _save(session, rows)
+        session.commit()
+        saved += len(rows)
+    return saved
+
+
+def _due_campaign_touches(
+    session: Session, measurable_until: datetime, remeasure: bool
+) -> list[SentTouch]:
+    has_proposal = exists().where(AgentProposal.campaign_id == Campaign.campaign_id)
+    stmt = (
+        select(
+            TouchLog.touch_id,
+            TouchLog.message_id,
+            OutreachMessage.client_id,
+            TouchLog.sent_at,
+            Campaign.agent_touch_policy,
+            TouchLog.side_at_send,
+            TouchLog.balance_at_send,
+        )
+        .join(Enrollment, Enrollment.enrollment_id == TouchLog.enrollment_id)
+        .join(Campaign, Campaign.campaign_id == Enrollment.campaign_id)
+        .join(OutreachMessage, OutreachMessage.message_id == TouchLog.message_id)
+        .where(
+            TouchLog.delivery_status == SENT_STATUS,
+            TouchLog.sent_at.is_not(None),
+            Campaign.is_test.is_(False),
+            ~has_proposal,
+        )
+        .order_by(TouchLog.touch_id)
+    )
+    if not remeasure:
+        stmt = stmt.where(
+            TouchLog.touch_id.not_in(
+                select(ActionResult.touch_id).where(ActionResult.touch_id.is_not(None))
+            )
+        )
+    touches = []
+    for touch_id, message_id, client_id, sent_at, policy, side, balance in session.execute(stmt):
+        days = int((policy or {}).get("observation_days") or DEFAULT_OBSERVATION_DAYS)
+        if sent_at + timedelta(days=days) <= measurable_until:
+            touches.append(SentTouch(touch_id, message_id, client_id, sent_at, days, side, balance))
+    return touches
+
+
+def _campaign_touch_rows(
+    session: Session, batch: Sequence[SentTouch], measured_at: datetime, zone: ZoneInfo
+) -> list[dict[str, Any]]:
+    client_ids = sorted({touch.client_id for touch in batch})
+    sides = {
+        side.client_id: side
+        for side in session.scalars(select(ClientSide).where(ClientSide.client_id.in_(client_ids)))
+    }
+    edited = _edited_message_ids(session, [touch.message_id for touch in batch])
+    events = _events_by_client(
+        session,
+        client_ids,
+        earliest=min(touch.sent_at for touch in batch),
+        latest=max(touch.sent_at + timedelta(days=touch.window_days) for touch in batch),
+    )
+    deposits = _deposits_by_client(
+        session,
+        client_ids,
+        first_day=min(_local_day(touch.sent_at, zone) for touch in batch),
+        last_day=max(
+            _local_day(touch.sent_at + timedelta(days=touch.window_days), zone) for touch in batch
+        ),
+        tables=(ActiveTransaction, Transactions),
+    )
+
+    rows = []
+    for touch in batch:
+        ends_at = touch.sent_at + timedelta(days=touch.window_days)
+        total = _deposit_total(
+            deposits.get(touch.client_id, ()),
+            None,
+            first_day=_local_day(touch.sent_at, zone),
+            end_day=_local_day(ends_at, zone),
+        )
+        today = sides.get(touch.client_id)
+        rows.append(
+            {
+                "touch_id": touch.touch_id,
+                "client_id": touch.client_id,
+                "message_id": touch.message_id,
+                "sent_at": touch.sent_at,
+                "window_days": touch.window_days,
+                **_event_flags(events.get(touch.client_id, ()), touch.sent_at, ends_at),
+                "reviewer_changed": touch.message_id in edited,
+                "deposited": total > 0,
+                "deposit_amount_kes": total,
+                "moved_to_active": _moved_to_active(touch, today),
+                "balance_up": _balance_up(touch, today),
+                "measured_at": measured_at,
+            }
+        )
+    return rows
+
+
+def _moved_to_active(touch: SentTouch, today: ClientSide | None) -> bool | None:
+    if today is None or touch.side_at_send is None:
+        return None
+    return touch.side_at_send == SIDE_INACTIVE and today.side == SIDE_ACTIVE
+
+
+def _balance_up(touch: SentTouch, today: ClientSide | None) -> bool | None:
+    if today is None or touch.balance_at_send is None:
+        return None
+    return today.balance > touch.balance_at_send
+
+
+def _batches(messages: Sequence[Any]) -> Iterator[Sequence[Any]]:
     for start in range(0, len(messages), BATCH_SIZE):
         yield messages[start : start + BATCH_SIZE]
 
@@ -297,30 +448,31 @@ def _event_flags(
 
 
 def _deposits_by_client(
-    session: Session, client_ids: Sequence[int], *, first_day: date, last_day: date
-) -> dict[int, list[tuple[int, date, float]]]:
-    rows = session.execute(
-        select(
-            ActiveTransaction.client_id,
-            ActiveTransaction.unit_fund_id,
-            ActiveTransaction.txn_date,
-            ActiveTransaction.amount,
-        ).where(
-            ActiveTransaction.client_id.in_(client_ids),
-            ActiveTransaction.txn_type == DEPOSIT_TXN_TYPE,
-            ActiveTransaction.txn_date >= first_day,
-            ActiveTransaction.txn_date < last_day,
-        )
-    ).all()
-    deposits: dict[int, list[tuple[int, date, float]]] = defaultdict(list)
-    for client_id, unit_fund_id, txn_date, amount in rows:
-        deposits[client_id].append((unit_fund_id, txn_date, amount))
+    session: Session,
+    client_ids: Sequence[int],
+    *,
+    first_day: date,
+    last_day: date,
+    tables: Sequence[Any] = (ActiveTransaction,),
+) -> dict[int, list[tuple[int | None, date, float]]]:
+    deposits: dict[int, list[tuple[int | None, date, float]]] = defaultdict(list)
+    for table in tables:
+        rows = session.execute(
+            select(table.client_id, table.unit_fund_id, table.txn_date, table.amount).where(
+                table.client_id.in_(client_ids),
+                table.txn_type == DEPOSIT_TXN_TYPE,
+                table.txn_date >= first_day,
+                table.txn_date < last_day,
+            )
+        ).all()
+        for client_id, unit_fund_id, txn_date, amount in rows:
+            deposits[client_id].append((unit_fund_id, txn_date, amount))
     return deposits
 
 
 def _deposit_total(
-    deposits: Iterable[tuple[int, date, float]],
-    fund_ids: Sequence[int],
+    deposits: Iterable[tuple[int | None, date, float]],
+    fund_ids: Sequence[int] | None,
     *,
     first_day: date,
     end_day: date,
@@ -329,7 +481,7 @@ def _deposit_total(
         (
             amount
             for unit_fund_id, txn_date, amount in deposits
-            if unit_fund_id in fund_ids and first_day <= txn_date < end_day
+            if (fund_ids is None or unit_fund_id in fund_ids) and first_day <= txn_date < end_day
         ),
         0.0,
     )

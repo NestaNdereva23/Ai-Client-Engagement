@@ -140,6 +140,7 @@ class CampaignDetailOut(BaseModel):
 
 DEFAULT_MIN_GAP_DAYS = 2
 DEFAULT_MAX_GAP_DAYS = 10
+DEFAULT_OBSERVATION_DAYS = 30
 
 CampaignObjective = Literal["win_back_deposit", "top_up", "reactivate_never_funded"]
 
@@ -150,7 +151,7 @@ class CampaignPlanConfig(BaseModel):
     max_gap_days: int = Field(default=DEFAULT_MAX_GAP_DAYS, ge=0)
     allowed_angles: list[str] = Field(default_factory=list)
     success_measure: Literal["deposit"] = "deposit"
-    observation_days: int = Field(default=30, ge=1)
+    observation_days: int = Field(default=DEFAULT_OBSERVATION_DAYS, ge=1)
 
     @model_validator(mode="after")
     def _gaps_in_order(self) -> CampaignPlanConfig:
@@ -188,6 +189,75 @@ class TouchPlanOut(BaseModel):
     reason: str
     next_time_note: str | None = None
     cited_facts: list[CitedFactOut] | None
+
+
+class ExplainPlanOut(BaseModel):
+    run_id: int
+    gap_days: int
+    reason: str
+    next_time_note: str | None = None
+    cited_facts: list[CitedFactOut] | None = None
+
+
+class ExplainDraftOut(BaseModel):
+    message_id: str
+    subject: str | None = None
+    body: str | None = None
+    status: str
+
+
+class ExplainApprovalOut(BaseModel):
+    outcome: str
+    reviewer_id: str
+    decided_at: datetime
+
+
+class ExplainSendOut(BaseModel):
+    touch_id: int
+    sent_at: datetime | None = None
+    delivery_status: str | None = None
+
+
+class ExplainOutcomeOut(BaseModel):
+    window_days: int
+    opened: bool
+    replied: bool
+    bounced: bool
+    deposit_seen: bool
+    deposit_amount_kes: float
+    moved_to_active: bool | None = None
+    balance_up: bool | None = None
+    measured_at: datetime
+
+
+class ExplainTouchOut(BaseModel):
+    enrollment_id: int
+    client_id: int
+    step_no: int
+    angle: str | None = None
+    stage: str
+    plan: ExplainPlanOut | None = None
+    draft: ExplainDraftOut | None = None
+    approval: ExplainApprovalOut | None = None
+    send: ExplainSendOut | None = None
+    outcome: ExplainOutcomeOut | None = None
+
+
+class ExplainResultsSeenOut(BaseModel):
+    called_at: datetime
+    results: dict
+
+
+class ExplainRunOut(BaseModel):
+    run_id: int
+    started_at: datetime
+    state: str
+    results_seen: list[ExplainResultsSeenOut]
+
+
+class CampaignExplainOut(BaseModel):
+    touches: list[ExplainTouchOut]
+    runs: list[ExplainRunOut]
 
 
 class EnrollmentOut(BaseModel):

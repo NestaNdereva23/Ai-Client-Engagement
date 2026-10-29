@@ -41,6 +41,7 @@ from app.campaigns.generation_cost import (
     UnknownGenerationModel,
     active_generation_cost_config,
 )
+from app.campaigns.results import campaign_results
 from app.campaigns.slot_context import SlotContext
 from app.config import get_settings
 from app.db.models.models import Funds
@@ -757,8 +758,10 @@ CAMPAIGN_TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="get_campaign_results",
         description=(
-            "What earlier campaign touches led to, by angle, tier and value band. Says so "
-            "plainly when there is not enough finished data yet."
+            "What was seen after earlier campaign emails, by campaign, angle, tier and value "
+            "band: opened, replied, deposit seen within the campaign's window, moved to the "
+            "active side, balance up. Small groups say too few to tell. Says so plainly when "
+            "there is not enough finished data yet."
         ),
         input_schema={"type": "object", "properties": {}},
     ),
@@ -805,10 +808,7 @@ def citable_verified_rate(session: Session, *, product: str) -> dict[str, Any]:
 
 
 def get_campaign_results(session: Session) -> dict[str, Any]:
-    return {
-        "status": "not_enough_data",
-        "message": "No finished campaign results are available yet.",
-    }
+    return campaign_results(session)
 
 
 def make_campaign_read_tools(
