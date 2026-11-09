@@ -175,7 +175,7 @@ def test_default_dispatch_still_captures_instead_of_sending(db: None):
         session.add(Funds(unit_fund_id=FUND_ID, unit_fund_name="Test Fund"))
         session.commit()
         campaign_id = campaign.campaign_id
-        _make_touch(
+        touch_id = _make_touch(
             session, client_id=CLIENT_IDS[0], campaign_id=campaign_id, contact_email="b@example.com"
         )
 
@@ -186,6 +186,7 @@ def test_default_dispatch_still_captures_instead_of_sending(db: None):
         assert [o.sent for o in outcomes] == [True]
         assert [(d.channel, d.to) for d in deliveries] == [("email", "b@example.com")]
         assert deliveries[0].cc == ()
+        assert (deliveries[0].touch_id, deliveries[0].step_no) == (touch_id, 1)
     finally:
         _cleanup((CLIENT_IDS[0],))
 

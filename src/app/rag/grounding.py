@@ -25,6 +25,13 @@ class GroundingChunk(Protocol):
     text: str
 
 
+def merge_chunks(
+    chunks: Sequence[GroundingChunk], extra: Sequence[GroundingChunk]
+) -> tuple[GroundingChunk, ...]:
+    seen = {chunk.chunk_id for chunk in chunks}
+    return (*chunks, *(chunk for chunk in extra if chunk.chunk_id not in seen))
+
+
 @dataclass(frozen=True)
 class Claim:
     value: str  # e.g. "11.35%"

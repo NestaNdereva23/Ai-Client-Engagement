@@ -48,6 +48,7 @@ from app.config import get_settings
 from app.db.models.models import Funds
 from app.db.models.risk import ClientRiskFeatures
 from app.privacy.llm_client import ToolSpec
+from app.rag.guides import list_guide_versions
 from app.rules.catalog import load_active_angles
 from app.rules.verified_rate import get_verified_rate as fetch_verified_rate
 from app.schemas.campaigns import CampaignPlanConfig
@@ -334,6 +335,8 @@ def list_angles(session: Session, *, as_of: str | None = None) -> dict[str, Any]
                 "never": row.never,
                 "use": row.use,
                 "held": row.held,
+                "family": row.family,
+                "audience": list(row.audience or ()),
             }
             for row in sorted(angles.values(), key=lambda row: row.angle)
         ],
@@ -763,7 +766,8 @@ CAMPAIGN_TOOL_SPECS: tuple[ToolSpec, ...] = (
         name="get_campaign_context",
         description=(
             "This campaign's objective, how it measures success, the gap allowed between "
-            "touches, how many touch points it has and the angles you may choose from."
+            "touches, how many touch points it has, the angles you may choose from, and the "
+            "client guides the writer can draw on for product basics and first steps."
         ),
         input_schema={"type": "object", "properties": {}},
     ),
@@ -856,6 +860,11 @@ def make_campaign_read_tools(
             "max_gap_days": plan_config.max_gap_days,
             "touch_points": touch_points,
             "allowed_angles": sorted(allowed_angles),
+            "client_guides": [
+                {"title": guide.title, "topic": guide.topic}
+                for guide in list_guide_versions(session)
+                if guide.is_active
+            ],
         }
 
     def get_touch_history(session: Session, *, slot: int) -> dict[str, Any]:

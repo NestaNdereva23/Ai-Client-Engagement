@@ -103,7 +103,7 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
     _whole("agent_autosend_notice_seconds", 1, 604800),
     _whole("campaign_cooldown_days", 0, 90),
     _whole("agent_campaign_max_live", 0, 50),
-    _choice("campaign_agent_llm_provider", "anthropic", "ollama", "llamacpp"),
+    _choice("campaign_agent_llm_provider", "anthropic", "bedrock", "ollama", "llamacpp"),
     EditableSetting("campaign_agent_llm_model", "text", max_length=100),
     *_model_limits("campaign_agent_llm"),
     _whole("campaign_agent_llm_timeout_seconds", 10, 900),

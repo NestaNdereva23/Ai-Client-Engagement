@@ -190,7 +190,7 @@ def gather_briefing_facts(
         deposit_trend=active.deposit_trend,
         largest_withdrawal=active.largest_withdrawal,
         withdrawal_pct=_withdrawal_pct(active.largest_withdrawal, active.balance),
-        days_since_withdrawal=_days_since(active.last_withdrawal_date, reference_date),
+        days_since_withdrawal=_days_since(active.largest_withdrawal_date, reference_date),
         signals=signals,
         deposit_count_capped=active.deposit_count_capped,
         withdrawal_history_hidden=active.withdrawal_history_hidden,

@@ -14,6 +14,7 @@ from app.rules.catalog import (
     AngleSpec,
     CatalogValidationError,
     active_catalog_version,
+    angle_fits,
     load_active_angles,
     load_angle,
     publish_single_angle,
@@ -269,3 +270,19 @@ def test_publish_single_angle_does_not_hide_the_rest_of_the_catalogue(
         after = load_active_angles(session, today)
     assert set(after) == before | {generated_angle}
     assert after[generated_angle].headline == "A generated headline"
+
+
+@pytest.mark.parametrize(
+    ("audience", "side", "tier", "fits"),
+    [
+        (["all"], "active", None, True),
+        (["inactive"], "inactive", "hot_leads", True),
+        (["inactive:hot_leads"], "inactive", "hot_leads", True),
+        (["inactive:low_depositors"], "inactive", "hot_leads", False),
+        (["inactive:hot_leads"], "inactive", None, False),
+        (["active"], "inactive", "hot_leads", False),
+        ([], "inactive", "hot_leads", False),
+    ],
+)
+def test_an_angle_fits_only_the_groups_its_audience_names(audience, side, tier, fits) -> None:
+    assert angle_fits(audience, side, tier) is fits

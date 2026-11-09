@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -29,6 +30,7 @@ from app.db.models.campaign_agent_run import (
 from app.db.models.outreach import SUGGESTION_PENDING, Campaign
 from app.db.session import SessionLocal
 from app.llmops.operations import active_tracer
+from app.llmops.spans import traced_converse, traced_tool_call
 from app.llmops.trace_names import CAMPAIGN_AGENT_SUGGEST, TAG_AGENT, TAG_CAMPAIGN
 from app.llmops.tracing import Tracer, get_shared_tracer, trace_scope
 from app.privacy.boundary import run_conversation_boundary
@@ -121,6 +123,15 @@ def _plain_errors(exc: ValidationError) -> str:
     )
 
 
+def _clients_in_pending_drafts(session: Session) -> set[int]:
+    cohorts = session.scalars(
+        select(Campaign.cohort_definition).where(Campaign.suggestion_state == SUGGESTION_PENDING)
+    ).all()
+    return {
+        client for cohort in cohorts if cohort for client in waiting_for_cohort(session, cohort)
+    }
+
+
 def make_save_draft_tool(*, run_id: int, saved: list[int], covered: set[int]):
     def save_campaign_draft(
         session: Session,
@@ -176,20 +187,20 @@ def make_save_draft_tool(*, run_id: int, saved: list[int], covered: set[int]):
                 "message": f"not live angles: {sorted(not_live)}",
             }
 
-        same_group = session.scalar(
-            select(Campaign.campaign_id)
-            .where(
-                Campaign.suggestion_state == SUGGESTION_PENDING,
-                Campaign.cohort_definition == draft.cohort.model_dump(),
-            )
-            .limit(1)
-        )
-        if same_group is not None:
-            return {"error": "already_suggested", "message": "this group already has a draft"}
-
         waiting = waiting_for_cohort(session, draft.cohort.model_dump())
         if not waiting:
             return {"error": "nobody_waiting", "message": "no waiting client matches this group"}
+
+        shared = len(set(waiting) & _clients_in_pending_drafts(session))
+        if shared:
+            return {
+                "error": "overlaps_another_draft",
+                "message": (
+                    f"{shared} of these {len(waiting)} clients are already in another suggested "
+                    "campaign. Split the group so no client is in two campaigns, for example "
+                    "newly_dormant true in one and false in the other, or a different value_band."
+                ),
+            }
 
         campaign = save_suggested_campaign(session, draft, run_id=run_id)
         saved.append(campaign.campaign_id)
@@ -210,9 +221,15 @@ def _nothing_saved_reason(session: Session, run_id: int) -> str:
         .select_from(CampaignAgentToolCall)
         .where(CampaignAgentToolCall.run_id == run_id)
     )
+    if not calls:
+        return (
+            "the model saved no drafts and made 0 tool calls; "
+            "a model that cannot call tools does this, so pick another one in Settings"
+        )
     return (
         f"the model saved no drafts and made {calls} tool calls; "
-        "a model that cannot call tools does this, so pick another one in Settings"
+        "ensure the model calls save_campaign_draft before concluding and that cohort arguments "
+        "match waiting clients"
     )
 
 
@@ -224,6 +241,9 @@ def execute_suggestion_run(
     tracer: Tracer | None = None,
 ) -> CampaignAgentRun:
     run = session.get(CampaignAgentRun, run_id)
+    tracer = tracer or active_tracer()
+    trace_id = uuid.uuid4().hex
+    root_span = None
     try:
         summary = waiting_pool_summary(session)
         if summary["total"] == 0:
@@ -237,19 +257,21 @@ def execute_suggestion_run(
         llm_client = llm_client or get_campaign_agent_llm_client(settings)
         saved: list[int] = []
         covered: set[int] = set()
+        system_prompt = build_suggest_prompt(
+            campaign_prompt_texts(session, date.today()),
+            MAX_DRAFTS,
+            unavailable=switched_off_tool_names(SETUP_TOOLS, settings),
+        )
+        tools = (
+            *specs_for(
+                allowed_tool_names(SETUP_TOOLS, settings), extra=(build_audience_tool_spec(),)
+            ),
+            build_save_draft_tool_spec(),
+        )
         converse = as_converse_call(
             llm_client,
-            system=build_suggest_prompt(
-                campaign_prompt_texts(session, date.today()),
-                MAX_DRAFTS,
-                unavailable=switched_off_tool_names(SETUP_TOOLS, settings),
-            ),
-            tools=(
-                *specs_for(
-                    allowed_tool_names(SETUP_TOOLS, settings), extra=(build_audience_tool_spec(),)
-                ),
-                build_save_draft_tool_spec(),
-            ),
+            system=system_prompt,
+            tools=tools,
         )
         call_tool = make_campaign_tool_runner(
             session,
@@ -269,15 +291,35 @@ def execute_suggestion_run(
         )
         session.commit()
 
-        tracer = tracer or active_tracer()
+        root_span = tracer.start_span(
+            trace_id=trace_id,
+            name=CAMPAIGN_AGENT_SUGGEST,
+            input={"waiting_pool": summary},
+            metadata={"run_id": run_id, "model": llm_client.model},
+            as_type="agent",
+        )
+        traced_conv = traced_converse(
+            converse,
+            tracer=tracer,
+            trace_id=trace_id,
+            model=llm_client.model,
+            parent=root_span,
+            system=system_prompt,
+        )
+        traced_tool = traced_tool_call(
+            call_tool,
+            tracer=tracer,
+            trace_id=trace_id,
+            parent=root_span,
+        )
         with trace_scope(tracer, name=CAMPAIGN_AGENT_SUGGEST, tags=[TAG_AGENT, TAG_CAMPAIGN]):
             run_conversation_boundary(
                 {},
-                converse,
-                call_tool,
+                traced_conv,
+                traced_tool,
                 max_turns=DEFAULT_MAX_TURNS,
                 run_id=str(run_id),
-                trace_id=str(run_id),
+                trace_id=trace_id,
             )
 
         if not saved:
@@ -292,8 +334,24 @@ def execute_suggestion_run(
         run.state = "completed"
         run.finished_at = datetime.now(UTC)
         session.commit()
+
+        if root_span is not None:
+            tracer.end_span(
+                root_span,
+                output={
+                    "saved": len(saved),
+                    "covered": len(covered),
+                    "total_waiting": summary["total"],
+                },
+            )
+            tracer.flush()
         return run
     except Exception as exc:
+        if root_span is not None:
+            tracer.end_span(
+                root_span, output={"error": str(exc)}, level="ERROR", status_message=str(exc)
+            )
+            tracer.flush()
         session.rollback()
         run = session.get(CampaignAgentRun, run_id)
         run.state = "failed"
@@ -304,8 +362,11 @@ def execute_suggestion_run(
 
 
 def run_suggestions_in_background(run_id: int) -> None:
+    tracer = get_shared_tracer()
     with SessionLocal() as session:
         try:
-            execute_suggestion_run(session, run_id, tracer=get_shared_tracer())
+            execute_suggestion_run(session, run_id, tracer=tracer)
         except Exception:
             logger.exception("campaign_suggester.failed", run_id=run_id)
+        finally:
+            tracer.flush()

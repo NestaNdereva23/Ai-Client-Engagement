@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
 
+from app.agents.tool_runtime import scanned_tool_output
 from app.agents.web_research import WebResult
 from app.campaigns import agent_information
 from app.config import Settings
@@ -60,7 +61,7 @@ def test_the_planner_reads_the_weekly_report_with_its_title_and_date(
     monkeypatch.setattr(
         agent_information,
         "retrieve_product_facts",
-        lambda session, product, k: [_hit(weekly_report[1], passage)],
+        lambda session, product, k, min_score: [_hit(weekly_report[1], passage)],
     )
 
     with SessionLocal() as session:
@@ -72,8 +73,29 @@ def test_the_planner_reads_the_weekly_report_with_its_title_and_date(
     assert answer["passages"] == [{"text": passage, "section": "Money Markets"}]
 
 
+def test_report_passages_lose_contact_details_so_the_leak_scan_passes(
+    weekly_report, monkeypatch
+) -> None:
+    passage = "Yield of 11.01% p.a. Email wmt@cytonn.com or call 0709 101 200."
+    monkeypatch.setattr(
+        agent_information,
+        "retrieve_product_facts",
+        lambda session, product, k, min_score: [_hit(weekly_report[1], passage)],
+    )
+
+    with SessionLocal() as session:
+        answer = agent_information.get_weekly_report_facts(session, product="money market")
+
+    text = answer["passages"][0]["text"]
+    assert "11.01%" in text
+    assert "@" not in text and "709" not in text
+    scanned_tool_output(answer)
+
+
 def test_the_planner_is_told_plainly_when_the_report_has_nothing(monkeypatch) -> None:
-    monkeypatch.setattr(agent_information, "retrieve_product_facts", lambda session, product, k: [])
+    monkeypatch.setattr(
+        agent_information, "retrieve_product_facts", lambda session, product, k, min_score: []
+    )
 
     with SessionLocal() as session:
         answer = agent_information.get_weekly_report_facts(session, product="money market")

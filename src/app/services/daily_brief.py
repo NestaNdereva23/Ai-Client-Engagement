@@ -75,7 +75,7 @@ def _worklist_rows(session: Session, fa_id: str):
             ActiveClientFund.last_deposit_amount,
             ActiveClientFund.typical_gap_days,
             ActiveClientFund.largest_withdrawal,
-            ActiveClientFund.last_withdrawal_date,
+            ActiveClientFund.largest_withdrawal_date,
             ClientRiskFeatures.fund_at_risk,
             ClientRiskFeatures.sig_heavy_withdrawal,
             ClientRiskFeatures.sig_dormant,

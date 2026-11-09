@@ -51,6 +51,7 @@ class AngleSpec:
     cta: str | None = None
     family: str | None = None
     tone: str | None = None
+    audience: tuple[str, ...] = ()
 
 
 def validate_angles(angles: Sequence[AngleSpec]) -> None:
@@ -102,6 +103,7 @@ def save_catalog_version(
             cta=spec.cta,
             family=spec.family,
             tone=spec.tone,
+            audience=list(spec.audience),
             valid_from=valid_from,
             valid_to=valid_to,
             status="published",
@@ -178,6 +180,14 @@ def load_active_angles(session: Session, at: date) -> dict[str, MessageAngleCata
         .order_by(MessageAngleCatalog.catalog_id)
     ).all()
     return {row.angle: row for row in rows}
+
+
+ANGLE_FOR_ALL = "all"
+
+
+def angle_fits(audience: Sequence[str] | None, side: str, tier: str | None) -> bool:
+    labels = set(audience or ())
+    return bool(labels & {ANGLE_FOR_ALL, side, f"{side}:{tier}"})
 
 
 def live_angle_codes(session: Session, at: date) -> set[str]:

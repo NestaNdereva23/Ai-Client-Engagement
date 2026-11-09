@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -127,11 +128,15 @@ class Settings(BaseSettings):
 
     ollama_base_url: str = "http://localhost:11434"
     ollama_timeout_seconds: float = 300.0
+    ollama_stream_thinking: bool = False
+    ollama_num_ctx: int | None = 16384
 
     llamacpp_base_url: str = "http://localhost:8080"
     llamacpp_timeout_seconds: float = 300.0
 
     aws_region: str = ""
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
     bedrock_batch_role_arn: str = ""
     bedrock_batch_s3_bucket: str = ""
 
@@ -179,7 +184,7 @@ class Settings(BaseSettings):
 
     campaign_cooldown_days: int = 1
 
-    campaign_agent_llm_provider: Literal["anthropic", "ollama", "llamacpp"] = "ollama"
+    campaign_agent_llm_provider: Literal["anthropic", "bedrock", "ollama", "llamacpp"] = "ollama"
     campaign_agent_llm_model: str = ""
     campaign_agent_llm_temperature: float | None = None
     campaign_agent_llm_max_tokens: int = 2048
@@ -359,6 +364,17 @@ logger = structlog.get_logger(__name__)
 OVERRIDE_REFRESH_SECONDS = 10.0
 
 
+def export_aws_credentials(settings: Settings) -> None:
+    """AWS libraries read real environment variables, not the .env file, so
+    copy the AWS keys from settings into them. A variable already set wins."""
+    for name, value in (
+        ("AWS_ACCESS_KEY_ID", settings.aws_access_key_id),
+        ("AWS_SECRET_ACCESS_KEY", settings.aws_secret_access_key),
+    ):
+        if value:
+            os.environ.setdefault(name, value)
+
+
 class SettingsProvider:
     def __init__(self) -> None:
         self._env: Settings | None = None
@@ -371,6 +387,7 @@ class SettingsProvider:
     def __call__(self) -> Settings:
         if self._env is None:
             self._env = Settings()
+            export_aws_credentials(self._env)
             self._merged = None
         if self._loader is not None and self._is_stale():
             self._reload()

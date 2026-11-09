@@ -182,7 +182,7 @@ def test_the_email_says_what_happened_and_links_to_the_brief(db, cleanup) -> Non
         "Open today's brief: http://ticketing.example/dashboard?view=ai-outreach&section=at-risk"
     ) in body
     subject = next(m.subject for m in mailer.messages if m.to == ASHA.email)
-    assert subject == "Nothing new since yesterday"
+    assert subject == "Daily Brief: KSh 100K at risk"
 
 
 def test_an_advisor_with_nothing_on_the_worklist_gets_the_short_note(db, cleanup) -> None:

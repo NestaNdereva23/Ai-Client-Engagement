@@ -22,6 +22,7 @@ from app.audit.log import record_audit
 from app.campaigns.batch_generation import BatchIngestResult, BatchNotFound
 from app.campaigns.batch_generation import ingest_batch as ingest_campaign_batch_run
 from app.campaigns.batch_generation import submit_batch as submit_campaign_batch_run
+from app.campaigns.completion import campaign_progress, complete_if_finished
 from app.campaigns.enrollment import enroll_cohort
 from app.campaigns.estimation import (
     DEFAULT_ESTIMATE_LIMIT,
@@ -761,6 +762,7 @@ def send_campaign(
             entity_id=str(campaign_id),
             detail={"from": "draft", "to": "running"},
         )
+    complete_if_finished(session, campaign)
     return outcomes
 
 
@@ -1191,3 +1193,10 @@ def outreach_trend(session: Session, *, days: int = 30) -> list[OutreachTrendPoi
         )
         day += timedelta(days=1)
     return points
+
+
+def campaign_progress_view(session: Session, campaign_id: int) -> dict:
+    campaign = session.get(Campaign, campaign_id)
+    if campaign is None:
+        raise CampaignNotFound(campaign_id)
+    return {"status": campaign.status, **campaign_progress(session, campaign)}

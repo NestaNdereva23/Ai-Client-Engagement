@@ -204,7 +204,9 @@ def test_the_client_name_stays_a_placeholder_either_way() -> None:
 
 def test_the_call_brief_has_no_subject_line() -> None:
     rendered = render_call_brief(brief=FakeBrief(), facts=FACTS, contract=FakeContract())
-    assert "subject" not in rendered.lower()
+    # A call has no email subject field. The prohibitions block may still
+    # mention "subject" in prose, since it repeats the email rules verbatim.
+    assert not any(line.lower().startswith("subject") for line in rendered.splitlines())
 
 
 def test_the_call_brief_carries_the_same_brief_and_facts_as_the_email() -> None:

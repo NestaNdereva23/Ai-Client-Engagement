@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from collections import Counter
 from datetime import UTC, date, datetime
 from typing import Any
@@ -43,6 +44,7 @@ from app.db.models.campaign_agent_run import PLAN_RUN, CampaignAgentRun, Campaig
 from app.db.models.campaigns import CampaignStep, TouchPlan
 from app.db.models.outreach import Campaign
 from app.llmops.operations import active_tracer
+from app.llmops.spans import traced_converse, traced_tool_call
 from app.llmops.trace_names import CAMPAIGN_AGENT_PLAN, TAG_AGENT, TAG_CAMPAIGN
 from app.llmops.tracing import Tracer, trace_scope
 from app.privacy.boundary import run_conversation_boundary
@@ -52,10 +54,12 @@ from app.privacy.llm_client import (
     as_converse_call,
     get_campaign_agent_llm_client,
 )
-from app.rules.catalog import load_active_angles
+from app.rules.catalog import angle_fits, load_active_angles
 from app.schemas.campaigns import CampaignPlanConfig
 
 logger = structlog.get_logger(__name__)
+
+CAMPAIGN_SIDE = "inactive"
 
 CHOOSE_TOUCH_PLAN_TOOL_NAME = "choose_touch_plan"
 DEFAULT_MAX_TURNS = 14
@@ -125,6 +129,14 @@ def build_choose_touch_plan_tool_spec(
             "required": ["decisions"],
         },
     )
+
+
+def _list_angles_within(allowed: set[str]):
+    def list_angles(session: Session, *, as_of: str | None = None) -> dict[str, Any]:
+        listing = TOOL_FUNCTIONS["list_angles"](session, as_of=as_of)
+        return {**listing, "angles": [a for a in listing["angles"] if a["angle"] in allowed]}
+
+    return list_angles
 
 
 def _clean_note(raw: Any) -> str | None:
@@ -376,7 +388,12 @@ def run_campaign_agent(
         plan_config = CampaignPlanConfig.model_validate(campaign.agent_touch_policy or {})
         min_gap_days, max_gap_days = plan_config.min_gap_days, plan_config.max_gap_days
         catalogue = load_active_angles(session, date.today())
-        allowed_angles = {code for code, row in catalogue.items() if not row.held}
+        tier = (campaign.cohort_definition or {}).get("priority_tier")
+        allowed_angles = {
+            code
+            for code, row in catalogue.items()
+            if not row.held and angle_fits(row.audience, CAMPAIGN_SIDE, tier)
+        }
         if plan_config.allowed_angles:
             allowed_angles &= set(plan_config.allowed_angles)
 
@@ -418,7 +435,7 @@ def run_campaign_agent(
             name: function
             for name, function in {
                 **read_tools,
-                "list_angles": TOOL_FUNCTIONS["list_angles"],
+                "list_angles": _list_angles_within(allowed_angles),
             }.items()
             if tool_is_on(name, settings)
         }
@@ -427,14 +444,36 @@ def run_campaign_agent(
         session.commit()
 
         tracer = tracer or active_tracer()
+        trace_id = uuid.uuid4().hex
+        root_span = tracer.start_span(
+            trace_id=trace_id,
+            name=CAMPAIGN_AGENT_PLAN,
+            input={"campaign_id": campaign_id, "slots_count": len(slots)},
+            metadata={"run_id": run_id, "model": llm_client.model},
+            as_type="agent",
+        )
+        traced_conv = traced_converse(
+            converse,
+            tracer=tracer,
+            trace_id=trace_id,
+            model=llm_client.model,
+            parent=root_span,
+            system=system_prompt,
+        )
+        traced_tool = traced_tool_call(
+            call_tool,
+            tracer=tracer,
+            trace_id=trace_id,
+            parent=root_span,
+        )
         with trace_scope(tracer, name=CAMPAIGN_AGENT_PLAN, tags=[TAG_AGENT, TAG_CAMPAIGN]):
             conversation = run_conversation_boundary(
                 {},
-                converse,
-                call_tool,
+                traced_conv,
+                traced_tool,
                 max_turns=DEFAULT_MAX_TURNS,
                 run_id=str(run_id),
-                trace_id=str(run_id),
+                trace_id=trace_id,
             )
 
         _require_saved_plans(session, run_id, len(slots), outcome, conversation.stopped_reason)
@@ -447,8 +486,20 @@ def run_campaign_agent(
         run.plan_report = _plan_report(campaign_id, contexts, outcome)
         run.finished_at = datetime.now(UTC)
         session.commit()
+
+        if root_span is not None:
+            tracer.end_span(
+                root_span,
+                output={"written": outcome.get("written", 0), "slots_count": len(slots)},
+            )
+            tracer.flush()
         return run
     except Exception as exc:
+        if root_span is not None:
+            tracer.end_span(
+                root_span, output={"error": str(exc)}, level="ERROR", status_message=str(exc)
+            )
+            tracer.flush()
         session.rollback()
         run = session.get(CampaignAgentRun, run_id)
         run.state = "failed"

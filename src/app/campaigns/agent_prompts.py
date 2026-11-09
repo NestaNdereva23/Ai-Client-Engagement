@@ -51,6 +51,22 @@ def active_prompt(session: Session, prompt_name: str, as_of: date) -> CampaignAg
 def campaign_prompt_text(session: Session, prompt_name: str, as_of: date) -> str:
     row = active_prompt(session, prompt_name, as_of)
     if row is not None and row.template.strip():
+        # Fall back to updated DEFAULTS if the active DB row still carries
+        # legacy unhardened stock text
+        if (
+            prompt_name == "campaign_suggest"
+            and "Workflow:" not in row.template
+            and "When you are done, reply with a short plain summary and no further tool call."
+            in row.template
+        ):
+            return DEFAULTS[prompt_name]
+        if (
+            prompt_name == "campaign_plan"
+            and "Workflow:" not in row.template
+            and "When it saves, reply with a short plain summary and make no further tool call."
+            in row.template
+        ):
+            return DEFAULTS[prompt_name]
         return row.template
     return DEFAULTS[prompt_name]
 

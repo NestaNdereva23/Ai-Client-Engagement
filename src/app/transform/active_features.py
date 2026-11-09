@@ -75,6 +75,7 @@ class ActiveFeatureMeasures:
     first_deposit_date: date | None
     deposit_trend: float | None
     largest_withdrawal: float | None
+    largest_withdrawal_date: date | None
     # The most recent date among real withdrawals specifically -- not the
     # same as last_withdrawal_slot_date on active_client_fund, which is the
     # most recent date among every withdrawal slot including system fee
@@ -117,6 +118,13 @@ def _largest_withdrawal(withdrawals: list[ActiveTxnRow], system_fee_max: float) 
     """The largest withdrawal above system_fee_max, or None if all are fee postings."""
     real = [w.amount for w in withdrawals if w.amount > system_fee_max]
     return max(real) if real else None
+
+
+def _largest_withdrawal_date(withdrawals: list[ActiveTxnRow], system_fee_max: float) -> date | None:
+    real = [w for w in withdrawals if w.amount > system_fee_max and w.date is not None]
+    if not real:
+        return None
+    return max(real, key=lambda w: (w.amount, w.date)).date
 
 
 def _last_withdrawal_date(withdrawals: list[ActiveTxnRow], system_fee_max: float) -> date | None:
@@ -225,6 +233,7 @@ def derive_active_measures(
             first_deposit_date=deposit_dates[0] if deposit_dates else None,
             deposit_trend=_log_slope(amounts),
             largest_withdrawal=largest_withdrawal,
+            largest_withdrawal_date=_largest_withdrawal_date(withdrawn, system_fee_max),
             last_withdrawal_date=_last_withdrawal_date(withdrawn, system_fee_max),
             withdrawal_pct=_withdrawal_pct(largest_withdrawal, row.balance),
             months_until_empty=_months_until_empty(row.balance, fee_per_month),

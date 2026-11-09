@@ -16,11 +16,13 @@ from dataclasses import dataclass
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from app.agents.channels import EMAIL_CHANNEL
 from app.agents.email_agent import build_system_prompt
 from app.agents.email_channel import build_default_agent
 from app.agents.orchestrator import Orchestrator
 from app.audit.log import record_audit
 from app.campaigns.cohorts import CohortSlot
+from app.campaigns.follow_up import follow_up_note, follow_up_rate_chunks
 from app.config import Settings
 from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog, TouchPlan
 from app.db.models.models import ClientFeatures
@@ -214,6 +216,33 @@ def _planned_orchestrator(
     return orchestrator
 
 
+def _follow_up_orchestrator(
+    session: Session,
+    enrollment: Enrollment,
+    step_no: int,
+    *,
+    settings: Settings,
+    tracer: Tracer | None,
+) -> Orchestrator:
+    orchestrator = Orchestrator()
+    orchestrator.register(
+        build_default_agent(
+            session,
+            settings,
+            audit=model_boundary_audit_sink(session),
+            tracer=tracer,
+            prompt_builder=functools.partial(
+                build_system_prompt,
+                touch_note=follow_up_note(session, enrollment.enrollment_id, step_no),
+            ),
+            extra_chunks=follow_up_rate_chunks(
+                session, resolve_product(session, enrollment.client_id)
+            ),
+        )
+    )
+    return orchestrator
+
+
 def generate_for_enrollment(
     session: Session,
     enrollment: Enrollment,
@@ -223,6 +252,7 @@ def generate_for_enrollment(
     channel: str | None = None,
     settings: Settings,
     tracer: Tracer | None = None,
+    follow_up: bool = True,
 ) -> OutreachMessage | None:
     """The real GenerateFn campaigns.touch expects: one enrollment's due step
     turned into a persisted, pending-review OutreachMessage, or None if
@@ -245,6 +275,10 @@ def generate_for_enrollment(
             client_id=enrollment.client_id,
             settings=settings,
             tracer=tracer,
+        )
+    elif follow_up and step_no > 1 and channel == EMAIL_CHANNEL:
+        orchestrator = _follow_up_orchestrator(
+            session, enrollment, step_no, settings=settings, tracer=tracer
         )
     return _generate_and_persist(
         session,

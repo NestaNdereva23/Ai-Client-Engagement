@@ -28,6 +28,8 @@ MAX_REPORT_PASSAGES = 4
 PASSAGE_LIMIT = 700
 DOMAIN_PATTERN = re.compile(r"^(?=.{4,253}$)([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$")
 NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+# Report passages carry the firm's own inboxes and phone lines, which the leak scan blocks.
+CONTACT = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+|(?:\d[\s().+-]?){7,}")
 
 TOOL_SWITCHES = {
     "get_weekly_report_facts": "campaign_agent_use_weekly_report",
@@ -71,7 +73,8 @@ def get_weekly_report_facts(session: Session, *, product: str) -> dict[str, Any]
     name = product.strip().lower() if isinstance(product, str) else ""
     if not name:
         return {"error": "empty_product", "message": "name a product, for example money market"}
-    hits = retrieve_product_facts(session, product=name, k=MAX_REPORT_PASSAGES)
+    # The section filter already narrows to the product; long rate passages score low.
+    hits = retrieve_product_facts(session, product=name, k=MAX_REPORT_PASSAGES, min_score=0.0)
     if not hits:
         return {
             "error": "no_weekly_report_facts",
@@ -87,7 +90,10 @@ def get_weekly_report_facts(session: Session, *, product: str) -> dict[str, Any]
         "report": title,
         "published_on": published_on.isoformat() if published_on else None,
         "passages": [
-            {"text": hit.text[:PASSAGE_LIMIT], "section": hit.metadata.get("section")}
+            {
+                "text": CONTACT.sub("", hit.text[:PASSAGE_LIMIT]),
+                "section": hit.metadata.get("section"),
+            }
             for hit in hits
         ],
         "retrieved_at": datetime.now(UTC).isoformat(),

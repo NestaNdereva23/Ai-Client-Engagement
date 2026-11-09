@@ -57,7 +57,7 @@ def build_sms_sender(
         if to_test_list:
             ensure_test_recipient(to, "sms")
 
-        result = gateway.send(SmsMessage(to=to, body=body))
+        result = gateway.send(SmsMessage(to=to, body=body, reference=message.message_id))
         status = "sent" if result.sent else "recorded"
         logger.info(
             "outreach_message.send",

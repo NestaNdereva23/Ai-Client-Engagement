@@ -13,14 +13,17 @@ import json
 import anthropic
 import httpx
 import pytest
+from botocore.exceptions import ClientError
 
 from app.config import Settings
 from app.privacy.bedrock_batch import BedrockBatchClient
 from app.privacy.boundary import run_conversation_boundary, run_model_boundary
 from app.privacy.llm_client import (
     AnthropicLLMClient,
+    BedrockConverseLLMClient,
     LlamaCppLLMClient,
     LLMClientError,
+    LLMUsage,
     OllamaLLMClient,
     ToolSpec,
     ToolUseRequest,
@@ -1185,3 +1188,179 @@ def test_get_batch_client_still_refuses_a_non_anthropic_non_bedrock_provider() -
     settings = make_settings(llm_provider="ollama")
     with pytest.raises(ValueError, match="anthropic"):
         get_batch_client(settings)
+
+
+def test_ollama_stream_thinking_prints_thinking_and_rebuilds_the_turn(capsys) -> None:
+    chunks = [
+        {"message": {"thinking": "check the "}, "done": False},
+        {"message": {"thinking": "facts"}, "done": False},
+        {
+            "message": {
+                "content": "",
+                "tool_calls": [{"function": {"name": "get_facts", "arguments": {}}}],
+            },
+            "done": False,
+        },
+        {"message": {"content": "ok"}, "done": True, "prompt_eval_count": 7, "eval_count": 3},
+    ]
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, content="\n".join(json.dumps(c) for c in chunks))
+
+    turn = _ollama_client(handler, stream_thinking=True).converse(system="s", messages=[])
+
+    assert seen["body"]["stream"] is True and seen["body"]["think"] is True
+    assert "check the facts" in capsys.readouterr().err
+    assert turn.text == "ok"
+    assert [r.tool_name for r in turn.tool_requests] == ["get_facts"]
+    assert turn.usage == LLMUsage(input_tokens=7, output_tokens=3)
+
+
+def test_ollama_sends_num_ctx_when_set() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"message": {"content": "{}"}})
+
+    _ollama_client(handler, num_ctx=16384).generate(system="s", user="u")
+    assert seen["body"]["options"]["num_ctx"] == 16384
+
+
+class FakeBedrockRuntime:
+    def __init__(self, replies: list[dict] | Exception) -> None:
+        self._replies = replies
+        self.calls: list[dict] = []
+
+    def converse(self, **kwargs):
+        self.calls.append(kwargs)
+        if isinstance(self._replies, Exception):
+            raise self._replies
+        return self._replies.pop(0)
+
+
+def _converse_reply(text: str = "", tool_uses: list[dict] | None = None, **extra) -> dict:
+    blocks = [{"text": text}] if text else []
+    blocks.extend({"toolUse": tool_use} for tool_use in tool_uses or [])
+    return {
+        "output": {"message": {"role": "assistant", "content": blocks}},
+        "stopReason": "tool_use" if tool_uses else "end_turn",
+        "usage": {"inputTokens": 11, "outputTokens": 5},
+        **extra,
+    }
+
+
+def _bedrock_converse_client(runtime: FakeBedrockRuntime, **overrides) -> BedrockConverseLLMClient:
+    return BedrockConverseLLMClient(
+        model="us.meta.llama3-1-70b-instruct-v1:0",
+        max_tokens=256,
+        client=runtime,
+        **overrides,
+    )
+
+
+def test_get_llm_client_sends_a_non_claude_bedrock_model_through_converse() -> None:
+    settings = make_settings(
+        llm_provider="bedrock",
+        llm_model="us.meta.llama3-1-70b-instruct-v1:0",
+        aws_region="us-east-1",
+    )
+    client = get_llm_client(settings)
+    assert isinstance(client, BedrockConverseLLMClient)
+    assert client.model == "us.meta.llama3-1-70b-instruct-v1:0"
+
+
+def test_get_llm_client_keeps_claude_on_bedrock_with_the_anthropic_client() -> None:
+    settings = make_settings(
+        llm_provider="bedrock", llm_model="us.anthropic.claude-sonnet-4-6", aws_region="us-east-1"
+    )
+    assert isinstance(get_llm_client(settings), AnthropicLLMClient)
+
+
+def test_bedrock_converse_generate_sends_the_converse_shape_and_reads_the_reply() -> None:
+    runtime = FakeBedrockRuntime([_converse_reply("hello")])
+    client = _bedrock_converse_client(runtime, temperature=0.3)
+
+    assert client.generate(system="be brief", user="hi") == "hello"
+    assert runtime.calls == [
+        {
+            "modelId": "us.meta.llama3-1-70b-instruct-v1:0",
+            "system": [{"text": "be brief"}],
+            "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+            "inferenceConfig": {"maxTokens": 256, "temperature": 0.3},
+        }
+    ]
+    assert client.last_usage == LLMUsage(input_tokens=11, output_tokens=5)
+
+
+def test_bedrock_converse_omits_temperature_when_not_configured() -> None:
+    runtime = FakeBedrockRuntime([_converse_reply("hello")])
+    _bedrock_converse_client(runtime).generate(system="s", user="u")
+    assert runtime.calls[0]["inferenceConfig"] == {"maxTokens": 256}
+
+
+def test_bedrock_converse_carries_a_tool_call_and_its_result_into_the_next_turn() -> None:
+    runtime = FakeBedrockRuntime(
+        [
+            _converse_reply(
+                tool_uses=[{"toolUseId": "call_1", "name": "list_groups", "input": {"limit": 2}}]
+            ),
+            _converse_reply("three groups need attention"),
+        ]
+    )
+    client = _bedrock_converse_client(runtime)
+    schema = {"type": "object", "properties": {}}
+    tools = [ToolSpec(name="list_groups", description="lists groups", input_schema=schema)]
+
+    result = run_conversation_boundary(
+        {},
+        as_converse_call(client, system="s", tools=tools),
+        lambda name, tool_input: {"groups": 3},
+        max_turns=4,
+    )
+
+    assert result.final_text == "three groups need attention"
+    assert runtime.calls[0]["toolConfig"] == {
+        "tools": [
+            {
+                "toolSpec": {
+                    "name": "list_groups",
+                    "description": "lists groups",
+                    "inputSchema": {"json": schema},
+                }
+            }
+        ]
+    }
+    history = runtime.calls[1]["messages"]
+    assert history[1] == {
+        "role": "assistant",
+        "content": [
+            {"toolUse": {"toolUseId": "call_1", "name": "list_groups", "input": {"limit": 2}}}
+        ],
+    }
+    assert history[2] == {
+        "role": "user",
+        "content": [
+            {"toolResult": {"toolUseId": "call_1", "content": [{"text": '{"groups": 3}'}]}}
+        ],
+    }
+
+
+def test_bedrock_converse_wraps_aws_errors() -> None:
+    error = ClientError({"Error": {"Code": "ValidationException", "Message": "bad"}}, "Converse")
+    client = _bedrock_converse_client(FakeBedrockRuntime(error))
+    with pytest.raises(LLMClientError, match="model request failed"):
+        client.generate(system="s", user="u")
+
+
+def test_bedrock_converse_raises_when_a_guardrail_blocks_the_reply() -> None:
+    runtime = FakeBedrockRuntime([_converse_reply("x", stopReason="guardrail_intervened")])
+    with pytest.raises(LLMClientError, match="declined"):
+        _bedrock_converse_client(runtime).generate(system="s", user="u")
+
+
+async def test_bedrock_converse_agenerate_returns_the_same_reply() -> None:
+    runtime = FakeBedrockRuntime([_converse_reply("hello")])
+    assert await _bedrock_converse_client(runtime).agenerate(system="s", user="u") == "hello"

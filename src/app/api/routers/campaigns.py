@@ -4,7 +4,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.agents.campaign_agent import CampaignPlanFailed
-from app.agents.campaign_runs import CampaignRunInProgress
+from app.agents.campaign_runs import CampaignRunInProgress, cancel_campaign_run
 from app.agents.email_channel import build_default_orchestrator
 from app.api.campaign_access import listing_fa_id, require_campaign_in_scope
 from app.api.reviewer_auth import get_current_reviewer_id
@@ -38,6 +38,7 @@ from app.schemas.campaigns import (
     CampaignExplainOut,
     CampaignListItemOut,
     CampaignPlanConfig,
+    CampaignProgressOut,
     CampaignReadinessOut,
     CampaignStepCreateRequest,
     CampaignStepOut,
@@ -85,6 +86,7 @@ from app.services.campaigns import (
     InstantiationBatchNotFound,
     add_campaign_step,
     campaign_explanation,
+    campaign_progress_view,
     campaign_readiness,
     campaign_summary,
     campaign_value,
@@ -387,6 +389,21 @@ def get_campaign_summary(
 
 
 @router.get(
+    "/{campaign_id}/progress",
+    response_model=CampaignProgressOut,
+    dependencies=[Depends(require_campaign_in_scope)],
+)
+def get_campaign_progress(
+    campaign_id: int, session: Session = Depends(get_session)
+) -> CampaignProgressOut:
+    try:
+        progress = campaign_progress_view(session, campaign_id)
+    except CampaignNotFound:
+        raise HTTPException(status_code=404, detail="campaign not found") from None
+    return CampaignProgressOut(campaign_id=campaign_id, **progress)
+
+
+@router.get(
     "/{campaign_id}/value",
     response_model=CampaignValueOut,
     dependencies=[Depends(require_campaign_in_scope)],
@@ -503,6 +520,19 @@ def post_campaign_plan_and_generate(
         )
         for o in outcomes
     ]
+
+
+@router.post(
+    "/{campaign_id}/agent-run/cancel",
+    response_model=dict,
+    dependencies=[Depends(require_campaign_in_scope)],
+)
+def post_cancel_campaign_run(campaign_id: int, session: Session = Depends(get_session)) -> dict:
+    run_id = cancel_campaign_run(session, campaign_id)
+    if run_id is None:
+        raise HTTPException(status_code=404, detail="no run is going for this campaign")
+    session.commit()
+    return {"cancelled_run_id": run_id}
 
 
 @router.get(
@@ -763,7 +793,15 @@ def post_campaign_dispatch(
             for o in outcomes
         ],
         deliveries=[
-            DeliveryOut(channel=d.channel, to=d.to, subject=d.subject, body=d.body, cc=list(d.cc))
+            DeliveryOut(
+                channel=d.channel,
+                to=d.to,
+                subject=d.subject,
+                body=d.body,
+                cc=list(d.cc),
+                touch_id=d.touch_id,
+                step_no=d.step_no,
+            )
             for d in deliveries
         ],
     )

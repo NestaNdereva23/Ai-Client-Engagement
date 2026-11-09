@@ -96,6 +96,7 @@ class ActiveClientFund(Base):
     # A genuine client-initiated withdrawal, filtered to exclude
     # system-driven withdrawals (the SYSTEM_FEE_MAX rule of thumb).
     largest_withdrawal: Mapped[float | None] = mapped_column(Float, nullable=True)
+    largest_withdrawal_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     # The most recent date among real withdrawals, not among every
     # withdrawal slot -- see transform/active_features.py::_last_withdrawal_date.
     last_withdrawal_date: Mapped[date | None] = mapped_column(Date, nullable=True)

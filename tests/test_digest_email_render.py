@@ -146,13 +146,15 @@ def _brief(**overrides) -> DailyBrief:
     return DailyBrief(**base)
 
 
-def test_the_subject_leads_with_what_is_urgent_then_counts_the_clients_to_review() -> None:
+def test_the_subject_leads_with_daily_brief_and_the_urgent_amount() -> None:
     calendar_only = (calendar_headline([CalendarItem(1, "meeting", "Meeting", "14:00")]),)
 
-    assert _brief().subject == "2 large withdrawals yesterday, 8 clients to review today"
-    assert _brief(headlines=calendar_only).subject == "8 clients to review today"
-    assert _brief(headlines=(), groups=()).subject == "Nothing new since yesterday"
-    assert _brief(worklist_clients=0).subject == "Nothing on your worklist today"
+    assert _brief().subject == "Daily Brief: KSh 1.9M withdrawn"
+    assert _brief(headlines=calendar_only).subject == "Daily Brief: KSh 4.3M at risk"
+    assert _brief(headlines=(), groups=(), at_risk_kes=0.0).subject == (
+        "Daily Brief: Nothing new since yesterday"
+    )
+    assert _brief(worklist_clients=0).subject == "Daily Brief: Nothing on your worklist today"
 
 
 def test_the_body_starts_with_what_happened_then_where_to_start() -> None:
@@ -277,10 +279,10 @@ def test_a_single_calendar_item_reads_as_one_sentence() -> None:
 def test_warning_signs_name_the_signals_behind_the_amount() -> None:
     assert warning_signs_fact({}, 3) is None
     assert warning_signs_fact({"sig_broken_pattern": 1}, 1) == (
-        "Warning signs: activity changed from usual."
+        "Warning signs: overdue on their usual deposit."
     )
     assert warning_signs_fact({"sig_heavy_withdrawal": 1, "sig_broken_pattern": 1}, 1) == (
-        "Warning signs: activity changed from usual and large withdrawal."
+        "Warning signs: overdue on their usual deposit and large withdrawal."
     )
     assert warning_signs_fact(
         {"sig_shrinking": 2, "sig_heavy_withdrawal": 5, "sig_dormant": 1}, 6

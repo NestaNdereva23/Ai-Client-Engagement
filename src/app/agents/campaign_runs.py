@@ -45,6 +45,30 @@ def fail_stale_campaign_runs(session: Session) -> list[int]:
     return [run.run_id for run in stale]
 
 
+CANCEL_REASON = "cancelled by a person"
+
+
+def cancel_campaign_run(session: Session, campaign_id: int) -> int | None:
+    run = session.scalar(
+        select(CampaignAgentRun).where(
+            CampaignAgentRun.state == "running", CampaignAgentRun.campaign_id == campaign_id
+        )
+    )
+    if run is None:
+        return None
+    run.state = "failed"
+    run.finished_at = datetime.now(UTC)
+    run.failure_reason = CANCEL_REASON
+    record_audit(
+        session,
+        entity_type="campaign_agent_run",
+        action="cancelled",
+        entity_id=str(run.run_id),
+        detail={"campaign_id": campaign_id},
+    )
+    return run.run_id
+
+
 def start_campaign_run(
     session: Session, *, kind: str, campaign_id: int | None = None, trigger: str = "manual"
 ) -> CampaignAgentRun:

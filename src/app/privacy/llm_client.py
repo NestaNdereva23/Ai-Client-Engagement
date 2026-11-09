@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Literal, Protocol, runtime_checkable
 
 import anthropic
+import boto3
 import httpx
 import structlog
 from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
 from anthropic.types.messages.batch_create_params import Request as BatchRequest
+from botocore.config import Config as BotoConfig
+from botocore.exceptions import BotoCoreError, ClientError
 
 from app.config import Settings, get_settings
 from app.privacy.bedrock_batch import BedrockBatchClient
@@ -26,6 +31,10 @@ from app.privacy.boundary import (
 logger = structlog.get_logger(__name__)
 
 DEFAULT_MAX_TURNS = 8
+
+BEDROCK_READ_TIMEOUT_SECONDS = 300
+BEDROCK_BLOCKED_STOP_REASONS = frozenset({"guardrail_intervened", "content_filtered"})
+BEDROCK_CLAUDE_MARKER = "anthropic."
 
 
 class LLMClientError(RuntimeError):
@@ -434,6 +443,29 @@ class AnthropicLLMClient:
         return ConversationResult(final_text=None, turns=tuple(turns), stopped_reason="turn_limit")
 
 
+def _print_thinking(text: str) -> None:
+    # Raw text to the server console so it reads live, not one log line per token.
+    print(text, end="", file=sys.stderr, flush=True)
+
+
+def _fold_stream_line(reply: dict[str, Any], line: str) -> None:
+    """Add one streamed Ollama chunk to the reply, printing any thinking as it lands."""
+    if not line:
+        return
+    chunk = json.loads(line)
+    if "error" in chunk:
+        raise LLMClientError(f"model request failed: {chunk['error']}")
+    part = chunk.get("message") or {}
+    if part.get("thinking"):
+        _print_thinking(part["thinking"])
+    message = reply.setdefault("message", {"content": "", "tool_calls": []})
+    message["content"] += part.get("content") or ""
+    message["tool_calls"].extend(part.get("tool_calls") or [])
+    if chunk.get("done"):
+        reply["prompt_eval_count"] = chunk.get("prompt_eval_count", 0)
+        reply["eval_count"] = chunk.get("eval_count", 0)
+
+
 class OllamaLLMClient:
     """Talks to a local Ollama server, with a blocking client and an async one."""
 
@@ -446,6 +478,8 @@ class OllamaLLMClient:
         base_url: str = "http://localhost:11434",
         timeout: float = 120.0,
         json_output: bool = True,
+        stream_thinking: bool = False,
+        num_ctx: int | None = None,
         client: httpx.Client | None = None,
         async_client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -453,6 +487,8 @@ class OllamaLLMClient:
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.json_output = json_output
+        self.stream_thinking = stream_thinking
+        self.num_ctx = num_ctx
         self.last_usage: LLMUsage | None = None
         self._base_url = base_url
         self._timeout = timeout
@@ -473,6 +509,9 @@ class OllamaLLMClient:
 
     def _options(self) -> dict[str, Any]:
         options: dict[str, Any] = {"num_predict": self.max_tokens}
+        # Ollama cuts the oldest tokens past its window, system prompt first.
+        if self.num_ctx is not None:
+            options["num_ctx"] = self.num_ctx
         if self.temperature is not None:
             options["temperature"] = self.temperature
         return options
@@ -484,8 +523,8 @@ class OllamaLLMClient:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "stream": False,
-            "think": False,
+            "stream": self.stream_thinking,
+            "think": self.stream_thinking,
             "options": self._options(),
         }
         if self.json_output:
@@ -498,8 +537,8 @@ class OllamaLLMClient:
         body: dict[str, Any] = {
             "model": self.model,
             "messages": _openai_messages(system, messages, arguments_as_object=True),
-            "stream": False,
-            "think": False,
+            "stream": self.stream_thinking,
+            "think": self.stream_thinking,
             "options": self._options(),
         }
         if tools:
@@ -530,6 +569,8 @@ class OllamaLLMClient:
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         try:
+            if self.stream_thinking:
+                return self._post_streaming(body)
             response = self._client.post("/api/chat", json=body)
             response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -539,12 +580,34 @@ class OllamaLLMClient:
 
     async def _apost(self, body: dict[str, Any]) -> dict[str, Any]:
         try:
+            if self.stream_thinking:
+                return await self._apost_streaming(body)
             response = await self.async_client.post("/api/chat", json=body)
             response.raise_for_status()
         except httpx.HTTPError as exc:
             logger.warning("llm_client.request_failed", model=self.model, error=str(exc))
             raise LLMClientError(f"model request failed: {exc}") from exc
         return response.json()
+
+    def _post_streaming(self, body: dict[str, Any]) -> dict[str, Any]:
+        reply: dict[str, Any] = {}
+        _print_thinking(f"\n[{self.model} thinking]\n")
+        with self._client.stream("POST", "/api/chat", json=body) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                _fold_stream_line(reply, line)
+        _print_thinking("\n[end thinking]\n")
+        return reply
+
+    async def _apost_streaming(self, body: dict[str, Any]) -> dict[str, Any]:
+        reply: dict[str, Any] = {}
+        _print_thinking(f"\n[{self.model} thinking]\n")
+        async with self.async_client.stream("POST", "/api/chat", json=body) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                _fold_stream_line(reply, line)
+        _print_thinking("\n[end thinking]\n")
+        return reply
 
     def generate(self, *, system: str, user: str) -> str:
         """Send one system/user turn to the local model and return the reply text."""
@@ -719,6 +782,156 @@ class LlamaCppLLMClient:
         return self._reply_turn(await self._apost(self._converse_body(system, messages, tools)))
 
 
+def _bedrock_content_blocks(content: Any) -> list[dict[str, Any]]:
+    if isinstance(content, str):
+        return [{"text": content}]
+    blocks: list[dict[str, Any]] = []
+    for block in content:
+        kind = block.get("type")
+        if kind == "text":
+            blocks.append({"text": block["text"]})
+        elif kind == "tool_use":
+            blocks.append(
+                {
+                    "toolUse": {
+                        "toolUseId": block["id"],
+                        "name": block["name"],
+                        "input": block["input"],
+                    }
+                }
+            )
+        elif kind == "tool_result":
+            blocks.append(
+                {
+                    "toolResult": {
+                        "toolUseId": block["tool_use_id"],
+                        "content": [{"text": block["content"]}],
+                    }
+                }
+            )
+    return blocks
+
+
+def _bedrock_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {"role": message["role"], "content": _bedrock_content_blocks(message["content"])}
+        for message in messages
+    ]
+
+
+def _bedrock_tool_config(tools: Sequence[ToolSpec]) -> dict[str, Any]:
+    return {
+        "tools": [
+            {
+                "toolSpec": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "inputSchema": {"json": tool.input_schema},
+                }
+            }
+            for tool in tools
+        ]
+    }
+
+
+class BedrockConverseLLMClient:
+    def __init__(
+        self,
+        *,
+        model: str,
+        max_tokens: int,
+        temperature: float | None = None,
+        region: str = "",
+        client: Any | None = None,
+    ) -> None:
+        self.model = model
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.last_usage: LLMUsage | None = None
+        self._client = client or boto3.client(
+            "bedrock-runtime",
+            region_name=region or None,
+            config=BotoConfig(
+                read_timeout=BEDROCK_READ_TIMEOUT_SECONDS, retries={"mode": "standard"}
+            ),
+        )
+
+    def _request(
+        self, system: str, messages: list[dict[str, Any]], tools: Sequence[ToolSpec]
+    ) -> dict[str, Any]:
+        inference_config: dict[str, Any] = {"maxTokens": self.max_tokens}
+        if self.temperature is not None:
+            inference_config["temperature"] = self.temperature
+        request: dict[str, Any] = {
+            "modelId": self.model,
+            "system": [{"text": system}],
+            "messages": _bedrock_messages(messages),
+            "inferenceConfig": inference_config,
+        }
+        if tools:
+            request["toolConfig"] = _bedrock_tool_config(tools)
+        return request
+
+    def _read_turn(self, response: Mapping[str, Any]) -> ConversationTurn:
+        stop_reason = response["stopReason"]
+        if stop_reason in BEDROCK_BLOCKED_STOP_REASONS:
+            raise LLMClientError("model declined the request")
+        usage = LLMUsage(
+            input_tokens=response["usage"]["inputTokens"],
+            output_tokens=response["usage"]["outputTokens"],
+        )
+        self.last_usage = usage
+        blocks = response["output"]["message"]["content"]
+        return ConversationTurn(
+            text="".join(block["text"] for block in blocks if "text" in block),
+            tool_requests=tuple(
+                ToolUseRequest(
+                    call_id=block["toolUse"]["toolUseId"],
+                    tool_name=block["toolUse"]["name"],
+                    tool_input=block["toolUse"]["input"],
+                )
+                for block in blocks
+                if "toolUse" in block
+            ),
+            usage=usage,
+            stop_reason=stop_reason,
+        )
+
+    def _send(
+        self, system: str, messages: list[dict[str, Any]], tools: Sequence[ToolSpec]
+    ) -> ConversationTurn:
+        try:
+            response = self._client.converse(**self._request(system, messages, tools))
+        except (BotoCoreError, ClientError) as exc:
+            logger.warning("llm_client.request_failed", model=self.model, error=str(exc))
+            raise LLMClientError(f"model request failed: {exc}") from exc
+        return self._read_turn(response)
+
+    def generate(self, *, system: str, user: str) -> str:
+        return self._send(system, [{"role": "user", "content": user}], ()).text
+
+    async def agenerate(self, *, system: str, user: str) -> str:
+        return await asyncio.to_thread(self.generate, system=system, user=user)
+
+    def converse(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: Sequence[ToolSpec] = (),
+    ) -> ConversationTurn:
+        return self._send(system, messages, tools)
+
+    async def aconverse(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: Sequence[ToolSpec] = (),
+    ) -> ConversationTurn:
+        return await asyncio.to_thread(self.converse, system=system, messages=messages, tools=tools)
+
+
 def _build_llm_client(
     *,
     provider: str,
@@ -732,10 +945,14 @@ def _build_llm_client(
     llamacpp_base_url: str,
     llamacpp_timeout: float,
     json_output: bool = True,
-) -> AnthropicLLMClient | OllamaLLMClient | LlamaCppLLMClient:
+) -> AnthropicLLMClient | BedrockConverseLLMClient | OllamaLLMClient | LlamaCppLLMClient:
     if provider == "anthropic":
         return AnthropicLLMClient(
             api_key=anthropic_api_key, model=model, max_tokens=max_tokens, temperature=temperature
+        )
+    if provider == "bedrock" and BEDROCK_CLAUDE_MARKER not in model:
+        return BedrockConverseLLMClient(
+            model=model, max_tokens=max_tokens, temperature=temperature, region=aws_region
         )
     if provider == "bedrock":
         # AnthropicBedrock/AsyncAnthropicBedrock sign with the default AWS
@@ -757,6 +974,8 @@ def _build_llm_client(
             base_url=ollama_base_url,
             timeout=ollama_timeout,
             json_output=json_output,
+            stream_thinking=get_settings().ollama_stream_thinking,
+            num_ctx=get_settings().ollama_num_ctx,
         )
     if provider == "llamacpp":
         return LlamaCppLLMClient(
@@ -907,6 +1126,8 @@ class CampaignAgentNotConfigured(Exception):
 def campaign_provider_problem(provider: str, settings: Settings) -> str | None:
     if provider == "anthropic" and not settings.campaign_agent_llm_api_key:
         return "anthropic needs CAMPAIGN_AGENT_LLM_API_KEY in the server environment"
+    if provider == "bedrock" and not settings.aws_region:
+        return "bedrock needs AWS_REGION in the server environment"
     if provider in ("ollama", "llamacpp") and not settings.campaign_agent_llm_base_url:
         return f"{provider} needs CAMPAIGN_AGENT_LLM_BASE_URL in the server environment"
     return None
@@ -928,6 +1149,7 @@ def get_campaign_agent_llm_client(settings: Settings | None = None) -> Conversin
         max_tokens=settings.campaign_agent_llm_max_tokens,
         temperature=settings.campaign_agent_llm_temperature,
         anthropic_api_key=settings.campaign_agent_llm_api_key,
+        aws_region=settings.aws_region,
         ollama_base_url=settings.campaign_agent_llm_base_url,
         ollama_timeout=timeout,
         llamacpp_base_url=settings.campaign_agent_llm_base_url,

@@ -133,6 +133,7 @@ def advisor_book(db):
                     HEAVY_RECENT,
                     balance=410_000.0,
                     largest_withdrawal=660_000.0,
+                    largest_withdrawal_date=yesterday,
                     last_withdrawal_date=yesterday,
                 ),
                 _fund(SMALL_WITHDRAWER, balance=900_000.0, largest_withdrawal=100.0),

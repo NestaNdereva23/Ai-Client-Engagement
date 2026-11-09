@@ -41,6 +41,25 @@ class OutreachTrendOut(BaseModel):
     points: list[OutreachTrendPointOut]
 
 
+class CampaignProgressClientsOut(BaseModel):
+    waiting: int
+    in_progress: int
+    finished: int
+    stopped: int
+
+
+class CampaignProgressOut(BaseModel):
+    campaign_id: int
+    status: str
+    step_days: list[int]
+    cooldown_days: int
+    plan_length_days: int
+    clients: CampaignProgressClientsOut
+    next_send_at: datetime | None
+    last_sent_at: datetime | None
+    expected_complete_at: datetime | None
+
+
 class CampaignSummaryOut(BaseModel):
     """One campaign's enrollment counts, including rows suppressed as a duplicate person."""
 
@@ -603,6 +622,8 @@ class DeliveryOut(BaseModel):
     subject: str | None
     body: str
     cc: list[str] = Field(default_factory=list)
+    touch_id: int | None = None
+    step_no: int | None = None
 
 
 class CampaignDispatchOut(BaseModel):

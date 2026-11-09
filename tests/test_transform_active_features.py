@@ -226,6 +226,7 @@ def test_last_withdrawal_date_is_the_most_recent_not_the_largest() -> None:
         )
     )
     assert m.largest_withdrawal == 80000.0
+    assert m.largest_withdrawal_date == date(2024, 2, 1)
     assert m.last_withdrawal_date == date(2024, 6, 1)
 
 
@@ -237,6 +238,7 @@ def test_last_withdrawal_date_ignores_system_fee_postings() -> None:
         )
     )
     assert m.largest_withdrawal is None
+    assert m.largest_withdrawal_date is None
     assert m.last_withdrawal_date is None
 
 

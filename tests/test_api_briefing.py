@@ -74,6 +74,7 @@ def seeded_client(db):
                 n_withdrawals=1,
                 last_deposit_date=date(2024, 1, 1),
                 last_withdrawal_date=date(2024, 6, 1),
+                largest_withdrawal_date=date(2024, 6, 1),
                 largest_withdrawal=200_000.0,
                 deposit_count_capped=False,
                 withdrawal_history_hidden=False,

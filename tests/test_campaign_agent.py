@@ -153,7 +153,11 @@ def fund_and_clients(db: None):
 @pytest.fixture
 def campaign_with_steps(fund_and_clients: None):
     with SessionLocal() as session:
-        campaign = Campaign(name="test campaign agent campaign", is_test=True)
+        campaign = Campaign(
+            name="test campaign agent campaign",
+            is_test=True,
+            cohort_definition={"priority_tier": "low_depositors"},
+        )
         session.add(campaign)
         session.commit()
         campaign_id = campaign.campaign_id
@@ -860,3 +864,39 @@ def test_the_information_sources_are_offered_while_they_are_switched_on(
         "get_campaign_results",
     } <= client_stub.tool_names
     assert "Not available in this run" not in client_stub.system
+
+
+def test_a_hot_leads_plan_is_offered_only_angles_meant_for_hot_leads(
+    campaign_with_steps: int,
+) -> None:
+    with SessionLocal() as session:
+        session.get(Campaign, campaign_with_steps).cohort_definition = {
+            "priority_tier": "hot_leads"
+        }
+        session.commit()
+        _make_enrollment(session, campaign_id=campaign_with_steps, client_id=_CLIENT_A)
+    decision = {**_one_slot_decision(), "angle": "start_win_back"}
+    client_stub = _RecordingClient([_choose_touch_plan_turn([decision]), _final_answer()])
+    offered: list = []
+    original = client_stub.converse
+
+    def converse(*, system, messages, tools=()):
+        offered.extend(tools)
+        return original(system=system, messages=messages, tools=tools)
+
+    client_stub.converse = converse
+
+    with SessionLocal() as session:
+        run_campaign_agent(session, campaign_with_steps, llm_client=client_stub)
+
+    plan_tool = next(tool for tool in offered if tool.name == "choose_touch_plan")
+    angles = set(
+        plan_tool.input_schema["properties"]["decisions"]["items"]["properties"]["angle"]["enum"]
+    )
+    assert angles == {
+        "start_win_back",
+        "follow_up_when_no_one_called",
+        "send_learning_note",
+        "onboarding_retry",
+        "first_deposit_welcome",
+    }

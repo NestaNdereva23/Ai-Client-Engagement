@@ -124,11 +124,10 @@ CALENDAR_PHRASES = {
 }
 TIMED_KINDS = ("call", "meeting")
 PHRASES_SHOWN = 3
-URGENT_HEADLINE_KINDS = ("large_withdrawals", "overdue_calls")
 
 BRIEF_SIGNAL_WORDS = {
     **{name: label.lower() for name, label in SIGNAL_LABELS.items()},
-    "sig_broken_pattern": "activity changed from usual",
+    "sig_broken_pattern": "overdue on their usual deposit",
     "sig_heavy_withdrawal": "large withdrawal",
     "sig_shrinking": "deposits getting smaller",
 }
@@ -195,18 +194,13 @@ class DailyBrief:
     @property
     def subject(self) -> str:
         if self.worklist_clients == 0:
-            return "Nothing on your worklist today"
-        parts = []
-        urgent = next((h for h in self.headlines if h.kind in URGENT_HEADLINE_KINDS), None)
-        if urgent is not None:
-            parts.append(urgent.short)
-        to_review = sum(group.clients for group in self.groups)
-        if to_review:
-            parts.append(f"{to_review:,} {plural(to_review, 'client')} to review today")
-        if not parts:
-            return "Nothing new since yesterday"
-        text = ", ".join(parts)
-        return text[0].upper() + text[1:]
+            return "Daily Brief: Nothing on your worklist today"
+        withdrawals = next((h for h in self.headlines if h.kind == "large_withdrawals"), None)
+        if withdrawals is not None and withdrawals.amount_kes:
+            return f"Daily Brief: {compact_money(withdrawals.amount_kes)} withdrawn"
+        if self.at_risk_kes:
+            return f"Daily Brief: {compact_money(self.at_risk_kes)} at risk"
+        return "Daily Brief: Nothing new since yesterday"
 
 
 def group_code_for_rank(rank: int | None) -> str | None:
@@ -359,18 +353,18 @@ def withdrawal_reason(
     heavy: bool,
     amount: float | None,
     balance: float | None,
-    last_withdrawal: date | None,
+    largest_withdrawal_date: date | None,
     today: date,
 ) -> str:
-    ending = (
-        f" Last withdrawal {relative_day(last_withdrawal, today)}."
-        if last_withdrawal is not None
-        else ""
-    )
     if heavy and amount is not None and balance is not None and balance + amount > 0:
         share = round(amount / (balance + amount) * 100)
-        return f"Took out {compact_money(amount)}, {share}% of the balance, at once.{ending}"
-    return f"Has taken out money while deposits slowed.{ending}"
+        when = (
+            f", {relative_day(largest_withdrawal_date, today)}"
+            if largest_withdrawal_date is not None
+            else ""
+        )
+        return f"Took out {compact_money(amount)}, {share}% of the balance, at once{when}."
+    return "Has taken out money while deposits slowed."
 
 
 def quiet_reason(
@@ -422,7 +416,7 @@ def client_reason(code: str, row, today: date) -> str:
             bool(row.sig_heavy_withdrawal),
             row.largest_withdrawal,
             row.balance,
-            row.last_withdrawal_date,
+            row.largest_withdrawal_date,
             today,
         )
     if code == STOPPED:

@@ -293,6 +293,7 @@ def load_client_profile_context(session: Session, client_id: int, product: str) 
     if indicators is None:
         raise ValueError(f"no resolved message indicators for client {client_id!r}")
 
+    features = session.get(ClientFeatures, client_id)
     return ClientContext(
         raw_context=dict(row),
         angle=indicators.message_angle,
@@ -300,6 +301,9 @@ def load_client_profile_context(session: Session, client_id: int, product: str) 
         chunks=(),
         facts=load_client_facts(session, client_id, dict(row)),
         priority_tier=indicators.priority_tier,
+        balance_band=features.balance_band if features is not None else None,
+        has_balance=features.has_balance if features is not None else None,
+        high_value=features.high_value if features is not None else None,
         rule_version=indicators.rule_version,
     )
 

@@ -6,7 +6,9 @@ advancing the enrollment. Only the last step has two modes.
 
 Normally, each message is captured as a ready-to-send Delivery and returned;
 the Ticketing app queues it and sends it later. Nothing is reported back, so
-a claimed message counts as sent as soon as Ticketing accepts the batch.
+a claimed message counts as sent as soon as Ticketing accepts the batch. Each
+delivery carries its touch id and step number, so Ticketing can tell one touch
+to a client from the next.
 
 When settings.dispatch_direct_send is on, ACE sends each message itself
 during this same call, through Ticketing's plain send-email/send-sms
@@ -19,14 +21,16 @@ separately from the caller's own limit.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.guardrails import sms_part_count
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT
 from app.campaigns.touch import SendOutcome
 from app.config import Settings, get_settings
+from app.db.models.campaigns import TouchLog
 from app.delivery.mailer import EmailMessage, Mailer, SendResult
 from app.delivery.sender import build_email_sender
 from app.delivery.sms_gateway import SmsGateway, SmsMessage, SmsSendResult
@@ -41,6 +45,9 @@ class Delivery:
     body: str
     subject: str | None = None
     cc: tuple[str, ...] = ()
+    message_id: str | None = None
+    touch_id: int | None = None
+    step_no: int | None = None
 
 
 @dataclass
@@ -55,6 +62,7 @@ class CapturingMailer:
                 subject=message.subject,
                 body=message.text_body,
                 cc=message.cc,
+                message_id=message.reference,
             )
         )
         return SendResult(
@@ -70,7 +78,9 @@ class CapturingSmsGateway:
     deliveries: list[Delivery] = field(default_factory=list)
 
     def send(self, message: SmsMessage) -> SmsSendResult:
-        self.deliveries.append(Delivery(channel="sms", to=message.to, body=message.body))
+        self.deliveries.append(
+            Delivery(channel="sms", to=message.to, body=message.body, message_id=message.reference)
+        )
         return SmsSendResult(
             sent=True,
             sender="ticketing",
@@ -81,6 +91,27 @@ class CapturingSmsGateway:
 
     def close(self) -> None:
         pass
+
+
+def _with_touches(session: Session, deliveries: list[Delivery]) -> list[Delivery]:
+    # A delivery with no touch row still goes out: ACE has already claimed it,
+    # and Ticketing falls back to the recipient when the touch id is missing.
+    if not deliveries:
+        return deliveries
+    message_ids = [d.message_id for d in deliveries if d.message_id]
+    touches = {
+        message_id: (touch_id, step_no)
+        for message_id, touch_id, step_no in session.execute(
+            select(TouchLog.message_id, TouchLog.touch_id, TouchLog.step_no).where(
+                TouchLog.message_id.in_(message_ids)
+            )
+        )
+    }
+    resolved = []
+    for delivery in deliveries:
+        touch_id, step_no = touches.get(delivery.message_id, (None, None))
+        resolved.append(replace(delivery, touch_id=touch_id, step_no=step_no))
+    return resolved
 
 
 def dispatch_campaign(
@@ -120,4 +151,4 @@ def dispatch_campaign(
         },
         limit=limit,
     )
-    return outcomes, deliveries
+    return outcomes, _with_touches(session, deliveries)

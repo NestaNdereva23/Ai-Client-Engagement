@@ -106,7 +106,11 @@ def _ago(days: int) -> datetime:
 def book(db: None):
     with SessionLocal() as session:
         session.add(Funds(unit_fund_id=_FUND_ID, unit_fund_name="Slot Fund"))
-        campaign = Campaign(name="slot context campaign", is_test=True)
+        campaign = Campaign(
+            name="slot context campaign",
+            is_test=True,
+            cohort_definition={"priority_tier": "low_depositors"},
+        )
         session.add(campaign)
         session.commit()
         campaign_id = campaign.campaign_id
@@ -434,7 +438,10 @@ def test_the_tools_show_days_and_bands_and_never_ids_or_dates(book: int) -> None
     for leaked in ("enrollment_id", "client_id", "987210", str(datetime.now(UTC).year)):
         assert leaked not in rendered
     assert tools["get_touch_history"](None, slot=5)["error"] == "unknown_slot"
-    assert tools["get_campaign_context"](None)["touch_points"] == 3
+    with SessionLocal() as session:
+        context = tools["get_campaign_context"](session)
+    assert context["touch_points"] == 3
+    assert isinstance(context["client_guides"], list)
 
 
 def test_the_planner_only_sees_slots_that_can_still_be_planned(book: int) -> None:

@@ -49,6 +49,10 @@ CAMPAIGN_PROHIBITIONS = (
     "Never state a number that is not in the facts you were given. Do not "
     "calculate, round, or combine them into a new one.",
     "Never promise a return, a rate, or a guarantee.",
+    "Never write an email address, phone number, or any other contact channel "
+    "anywhere in the subject or body, including in a sign-off or closing line. "
+    "This applies even to the fund's own publicly known contact details: omit a "
+    "closing contact line entirely rather than including one.",
     "Never open the email by asking the client to confirm their contact details, "
     "identity, or preferred email address. Do not use contact verification as a "
     "generic opener, a personalization technique, or a safety habit, only when the "
@@ -410,6 +414,7 @@ def build_system_prompt(
     default_sign_off: str | None = None,
     base_instructions: str | None = None,
     mix_instruction: str | None = None,
+    touch_note: str | None = None,
 ) -> str:
     sections = [
         template_text(
@@ -448,6 +453,9 @@ def build_system_prompt(
             "those, exactly as written, and omit any claim you have no fact for."
         )
 
+    if touch_note:
+        sections.append(touch_note)
+
     sections.append(f"Facts you may cite (only these, verbatim):\n{render_facts(chunks)}")
     return "\n\n".join(sections)
 
@@ -468,6 +476,7 @@ def build_system_prompt_blocks(
     facts: Mapping[str, Any] | None = None,
     extra_prohibitions: Sequence[str] = (),
     base_instructions: str | None = None,
+    touch_note: str | None = None,
 ) -> SystemPromptBlocks:
     cached_sections = [template_text(prompt_variant, base_instructions=base_instructions)]
 
@@ -495,6 +504,8 @@ def build_system_prompt_blocks(
             "The client's own figures are given in the user message. Use only "
             "those, exactly as written, and omit any claim you have no fact for."
         )
+    if touch_note:
+        dynamic_sections.append(touch_note)
 
     return SystemPromptBlocks(
         cached="\n\n".join(cached_sections), dynamic="\n\n".join(dynamic_sections)

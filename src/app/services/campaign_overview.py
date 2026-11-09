@@ -232,8 +232,11 @@ def _cited_facts(session: Session, run_id: int | None) -> list[dict[str, Any]]:
             TouchPlan.run_id == run_id, TouchPlan.cited_facts.is_not(None)
         )
     ):
+        if not facts:
+            continue
         for fact in facts:
-            seen.setdefault((fact["text"], fact.get("url")), fact)
+            if isinstance(fact, dict) and "text" in fact:
+                seen.setdefault((fact["text"], fact.get("url")), fact)
     return list(seen.values())[:FACT_LIMIT]
 
 

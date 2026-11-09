@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import functools
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -50,6 +50,7 @@ from app.agents.graph import ClientContext, ContextLoader, load_client_context
 from app.agents.guardrails import GuardrailFailure, enabled_checks, guardrails_on
 from app.audit.log import record_audit
 from app.campaigns.eligibility import check_eligibility
+from app.campaigns.follow_up import follow_up_note, follow_up_rate_chunks
 from app.campaigns.generation import (
     model_boundary_audit_sink,
     resolve_product,
@@ -67,6 +68,7 @@ from app.privacy.bedrock_batch import BEDROCK_BATCH_MIN_RECORDS
 from app.privacy.boundary import prepare_batch_payload, scan_batch_result, to_model_context
 from app.privacy.llm_client import build_batch_request, get_batch_client, render_model_context
 from app.privacy.scanners import InboundLeak, OutboundLeak
+from app.rag.grounding import merge_chunks
 from app.schemas.email_draft import DraftValidationError
 from app.services.review import create_outreach_message
 
@@ -137,11 +139,11 @@ class BatchIngestResult:
 
 
 def _prompt_blocks_for_channel(
-    channel: str, spec: ChannelSpec, **kwargs: Any
+    channel: str, spec: ChannelSpec, touch_note: str | None = None, **kwargs: Any
 ) -> SystemPromptBlocks:
     # Only email has a real cache/dynamic split; other channels get one block.
     if channel == EMAIL_CHANNEL:
-        return build_system_prompt_blocks(**kwargs)
+        return build_system_prompt_blocks(touch_note=touch_note, **kwargs)
     return SystemPromptBlocks(cached=spec.prompt_builder(**kwargs), dynamic="")
 
 
@@ -268,6 +270,13 @@ def _build_request(
             "chunk_count": len(context.chunks),
         },
     )
+    touch_note = None
+    if step_no > 1 and channel == EMAIL_CHANNEL:
+        touch_note = follow_up_note(session, enrollment.enrollment_id, step_no)
+        context = replace(
+            context,
+            chunks=merge_chunks(context.chunks, follow_up_rate_chunks(session, product)),
+        )
 
     assemble_span = tracer.start_span(
         trace_id=trace_id,
@@ -283,6 +292,7 @@ def _build_request(
         brief=context.brief,
         contract=context.contract,
         facts=context.facts,
+        touch_note=touch_note,
     )
     raw_payload = dict(context.facts) if context.facts else to_model_context(context.raw_context)
     tracer.end_span(

@@ -102,7 +102,14 @@ def build_email_sender(
         # shared client services inbox; every other campaign is unaffected.
         from_email = cc[0] if cc and _is_advisor_requested_queue(message.campaign_id) else None
         result = mailer.send(
-            EmailMessage(to=to, subject=subject, text_body=body, cc=cc, from_email=from_email)
+            EmailMessage(
+                to=to,
+                subject=subject,
+                text_body=body,
+                cc=cc,
+                from_email=from_email,
+                reference=message.message_id,
+            )
         )
         status = "sent" if result.sent else "recorded"
         logger.info("outreach_message.send", message_id=message.message_id, status=status)

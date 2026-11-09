@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.agents.campaign_runs import (
     CampaignRunInProgress,
+    cancel_campaign_run,
     fail_stale_campaign_runs,
     start_campaign_run,
 )
@@ -27,6 +28,7 @@ from app.db.session import SessionLocal
 from app.editable_settings import SettingValueError
 from app.main import app
 from app.privacy.llm_client import (
+    BedrockConverseLLMClient,
     CampaignAgentNotConfigured,
     ConversationTurn,
     LLMUsage,
@@ -102,6 +104,18 @@ def test_a_run_that_never_finished_is_marked_failed(campaign_ids) -> None:
         assert start_campaign_run(session, kind=PLAN_RUN, campaign_id=campaign_ids[0])
 
 
+def test_cancelling_a_run_frees_the_campaign_for_a_new_one(campaign_ids) -> None:
+    with SessionLocal() as session:
+        run = start_campaign_run(session, kind=PLAN_RUN, campaign_id=campaign_ids[0])
+
+        assert cancel_campaign_run(session, campaign_ids[0]) == run.run_id
+        session.commit()
+        session.refresh(run)
+        assert run.state == "failed"
+        assert cancel_campaign_run(session, campaign_ids[0]) is None
+        assert start_campaign_run(session, kind=PLAN_RUN, campaign_id=campaign_ids[0])
+
+
 def test_the_tool_runner_runs_only_the_tools_it_was_given(campaign_ids) -> None:
     with SessionLocal() as session:
         run = start_campaign_run(session, kind=PLAN_RUN, campaign_id=campaign_ids[0])
@@ -128,7 +142,11 @@ def test_the_campaign_model_must_be_chosen_and_have_its_key() -> None:
         get_campaign_agent_llm_client(Settings(campaign_agent_llm_model=""))
     with pytest.raises(CampaignAgentNotConfigured, match="CAMPAIGN_AGENT_LLM_API_KEY"):
         get_campaign_agent_llm_client(
-            Settings(campaign_agent_llm_provider="anthropic", campaign_agent_llm_model="m")
+            Settings(
+                campaign_agent_llm_provider="anthropic",
+                campaign_agent_llm_model="m",
+                campaign_agent_llm_api_key="",
+            )
         )
     assert get_campaign_agent_llm_client(Settings(campaign_agent_llm_model="phi4-mini"))
 
@@ -138,13 +156,45 @@ def test_a_provider_without_its_credentials_cannot_be_chosen_on_the_settings_scr
 ) -> None:
     from app.services import app_settings
 
-    monkeypatch.setattr(app_settings, "get_settings", lambda: Settings())
+    monkeypatch.setattr(
+        app_settings, "get_settings", lambda: Settings(campaign_agent_llm_api_key="")
+    )
 
     with SessionLocal() as session:
         with pytest.raises(SettingValueError, match="CAMPAIGN_AGENT_LLM_API_KEY"):
             update_app_settings(
                 session,
                 changes={"campaign_agent_llm_provider": "anthropic"},
+                reason="trying a provider",
+                confirm_live=False,
+                actor_id="test",
+            )
+
+
+def test_a_bedrock_campaign_model_needs_a_region_and_uses_the_converse_client() -> None:
+    chosen = {
+        "campaign_agent_llm_provider": "bedrock",
+        "campaign_agent_llm_model": "qwen.qwen3-235b-a22b-2507-v1:0",
+    }
+    with pytest.raises(CampaignAgentNotConfigured, match="AWS_REGION"):
+        get_campaign_agent_llm_client(Settings(**chosen, aws_region=""))
+
+    built = get_campaign_agent_llm_client(Settings(**chosen, aws_region="us-east-1"))
+
+    assert isinstance(built, BedrockConverseLLMClient)
+    assert built.model == "qwen.qwen3-235b-a22b-2507-v1:0"
+
+
+def test_bedrock_cannot_be_chosen_on_the_settings_screen_without_a_region(monkeypatch) -> None:
+    from app.services import app_settings
+
+    monkeypatch.setattr(app_settings, "get_settings", lambda: Settings(aws_region=""))
+
+    with SessionLocal() as session:
+        with pytest.raises(SettingValueError, match="AWS_REGION"):
+            update_app_settings(
+                session,
+                changes={"campaign_agent_llm_provider": "bedrock"},
                 reason="trying a provider",
                 confirm_live=False,
                 actor_id="test",
@@ -221,7 +271,9 @@ def test_a_source_list_keeps_website_names_only() -> None:
 def test_the_settings_screen_refuses_a_source_that_is_not_a_website_name(monkeypatch) -> None:
     from app.services import app_settings
 
-    monkeypatch.setattr(app_settings, "get_settings", lambda: Settings())
+    monkeypatch.setattr(
+        app_settings, "get_settings", lambda: Settings(campaign_agent_llm_api_key="")
+    )
 
     with SessionLocal() as session:
         with pytest.raises(SettingValueError, match="not a website name"):

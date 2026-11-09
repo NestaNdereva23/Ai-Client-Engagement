@@ -142,7 +142,7 @@ def build_roster_ranking(sort: str) -> RosterRanking:
             (
                 and_(
                     ClientRiskFeatures.sig_heavy_withdrawal.is_(True),
-                    ActiveClientFund.last_withdrawal_date >= recent_window,
+                    ActiveClientFund.largest_withdrawal_date >= recent_window,
                 ),
                 2,
             ),

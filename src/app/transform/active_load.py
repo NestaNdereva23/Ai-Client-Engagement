@@ -50,6 +50,7 @@ _ACTIVE_CLIENT_FUND_UPDATE = [
     "last_deposit_amount",
     "deposit_trend",
     "largest_withdrawal",
+    "largest_withdrawal_date",
     "last_withdrawal_date",
     "months_until_empty",
 ]
@@ -97,6 +98,7 @@ def _active_client_fund_dict(c: ActiveClientRow, measures: ActiveFeatureMeasures
         "last_deposit_amount": measures.last_deposit_amount,
         "deposit_trend": measures.deposit_trend,
         "largest_withdrawal": measures.largest_withdrawal,
+        "largest_withdrawal_date": measures.largest_withdrawal_date,
         "last_withdrawal_date": measures.last_withdrawal_date,
         "months_until_empty": measures.months_until_empty,
     }

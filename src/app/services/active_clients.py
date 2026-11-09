@@ -454,6 +454,7 @@ def list_active_roster(
             ActiveClientFund.last_deposit_amount,
             ActiveClientFund.typical_gap_days,
             ActiveClientFund.largest_withdrawal,
+            ActiveClientFund.largest_withdrawal_date,
             ActiveClientFund.last_withdrawal_date,
             ActiveClientFund.deposit_trend,
             ActiveClientFund.months_until_empty,

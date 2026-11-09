@@ -174,6 +174,7 @@ def seeded(db, configured_reviewers, monkeypatch):
                     last_deposit_date=today - timedelta(days=25),
                     typical_gap_days=67,
                     largest_withdrawal=1_050_600.0,
+                    largest_withdrawal_date=today - timedelta(days=3),
                     last_withdrawal_date=today - timedelta(days=3),
                 ),
                 ClientRiskFeatures(
