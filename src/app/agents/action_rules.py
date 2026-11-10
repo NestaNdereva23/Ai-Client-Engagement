@@ -50,8 +50,12 @@ def already_offered(session: Session, client_id: int, action: AgentActionCatalog
     )
 
 
-def lacks_an_approved_guide(session: Session, action: AgentActionCatalog) -> bool:
-    return action.action_code in NEEDS_A_GUIDE and not guides_for_action(session, action)
+def lacks_an_approved_guide(
+    session: Session, action: AgentActionCatalog, *, doc_ids: tuple[int, ...] | None = None
+) -> bool:
+    return action.action_code in NEEDS_A_GUIDE and not guides_for_action(
+        session, action, doc_ids=doc_ids
+    )
 
 
 def tell_account_managers(

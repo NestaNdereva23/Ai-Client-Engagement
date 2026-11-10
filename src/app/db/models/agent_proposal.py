@@ -100,6 +100,8 @@ class AgentProposal(Base):
     # Null for an action that sends no message.
     angle: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_mix: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The client guide versions its drafts were given, so the next run can skip them.
+    guide_version_ids: Mapped[list[int] | None] = mapped_column(JSONB, nullable=True)
     response_kind: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Which version of the message this group got, once a two version test is running.
     variant: Mapped[str | None] = mapped_column(Text, nullable=True)

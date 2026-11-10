@@ -431,7 +431,11 @@ def _action_codes(
     catalog: dict[str, AgentActionCatalog],
     proposals: Sequence[AgentProposal],
 ) -> list[str]:
-    stored = session.scalars(select(AgentPermission.action_code).distinct())
+    stored = session.scalars(
+        select(AgentPermission.action_code)
+        .where(AgentPermission.action_code.is_not(None))
+        .distinct()
+    )
     codes = set(catalog) | set(stored) | {proposal.action_code for proposal in proposals}
     return sorted(codes)
 

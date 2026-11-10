@@ -65,6 +65,7 @@ from app.db.models.agent_insight import AgentInsight
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.campaigns import CampaignStep, Enrollment
 from app.db.models.outreach import AGENT_PROPOSAL_CAMPAIGN_TYPE, Campaign, OutreachMessage
+from app.db.models.rag import DOC_TYPE_CLIENT_GUIDE
 from app.llmops.operations import active_tracer, trace_operation
 from app.llmops.trace_names import (
     AGENT_CAMPAIGN_RUN,
@@ -78,6 +79,7 @@ from app.llmops.trace_names import (
 )
 from app.llmops.tracing import Tracer
 from app.privacy.llm_client import ToolSpec
+from app.rag.retrieve import Retrieved
 from app.services.active_clients import ActiveClientNotFound, record_interaction
 
 logger = structlog.get_logger(__name__)
@@ -206,6 +208,7 @@ def _orchestrator_for(
     tracer: Tracer,
 ) -> Orchestrator:
     guide_brief = guide_brief_for_campaign(session, campaign_id, variant=variant)
+    _remember_guides(session, campaign_id, guide_brief.guides)
     return build_default_orchestrator(
         session,
         settings,
@@ -217,6 +220,16 @@ def _orchestrator_for(
         ),
         extra_chunks=guide_brief.guides,
     )
+
+
+def _remember_guides(session: Session, campaign_id: int, chunks: Sequence[Retrieved]) -> None:
+    # Kept once per proposal, so the group's next run can avoid repeating them.
+    proposal = session.scalar(select(AgentProposal).where(AgentProposal.campaign_id == campaign_id))
+    if proposal is None or proposal.guide_version_ids is not None:
+        return
+    proposal.guide_version_ids = [
+        chunk.version_id for chunk in chunks if chunk.doc_type == DOC_TYPE_CLIENT_GUIDE
+    ]
 
 
 def _angle_for(split: Split | None, client_id: int, default: str) -> str:

@@ -21,7 +21,7 @@ from app.agents.action_catalog import load_action, selectable_actions
 from app.agents.angle_brief import angle_for_proposal
 from app.agents.events import NO_EVENTS, EventLog, RunEventLog
 from app.agents.fa_scope import current_fa_id, fa_scope
-from app.agents.permissions import effective_permission
+from app.agents.permissions import effective_permission, load_group_settings
 from app.agents.prompt_versioning import AGENT_LOOP_CHOOSE, AGENT_LOOP_PLAN, active_prompt
 from app.agents.proposal_state import transition_proposal
 from app.agents.propose import (
@@ -875,7 +875,10 @@ def build_agent_loop_steps(
                 evidence_detail=evidence_detail,
                 reason=decision.reason,
                 angle=angle,
-                content_mix=decision.action.content_mix,
+                content_mix=load_group_settings(
+                    session, group.name, current_fa_id(), as_of
+                ).content_mix
+                or decision.action.content_mix,
                 response_kind=decision.action.response_kind,
                 permission_applied=effective_permission(
                     session,
@@ -883,6 +886,7 @@ def build_agent_loop_steps(
                     money_total_kes=money_total_kes,
                     money_ceiling_kes=decision.action.money_ceiling_kes,
                     at=as_of,
+                    group_name=group.name,
                 ),
                 skip_reason_counts=skip_reason_counts(decision.skip_reasons),
                 status="proposed",

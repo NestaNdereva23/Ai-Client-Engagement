@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.agents.action_catalog import action_is_paused, load_action
 from app.agents.action_rules import already_offered, lacks_an_approved_guide
 from app.agents.fa_scope import current_fa_id
-from app.agents.permissions import effective_permission
+from app.agents.permissions import apply_group_rules, effective_permission, load_group_settings
 from app.agents.situation_action_mapping import action_code_for_situation
 from app.agents.situations import (
     APPROACHING_PRESERVATION_LINE,
@@ -229,15 +229,17 @@ def group_skip_reasons(
     Shared with the model driven flow, so both run the same gates."""
     if action_is_paused(session, action.action_code, as_of):
         return {member_key(member): ACTION_PAUSED for member in members}
-    if lacks_an_approved_guide(session, action):
+    group = load_group_settings(session, group_name, current_fa_id(), as_of)
+    if lacks_an_approved_guide(session, action, doc_ids=group.guide_doc_ids):
         return {member_key(member): NO_APPROVED_GUIDE for member in members}
 
     settings = get_settings()
     cooldown = settings.agent_contact_cooldown_days if cooldown_days is None else cooldown_days
-    return {
+    reasons = {
         member_key(member): member_skip_reason(session, member, group_name, action, as_of, cooldown)
         for member in members
     }
+    return apply_group_rules(session, group_name, members, reasons, as_of)
 
 
 def member_skip_reason(
@@ -337,7 +339,8 @@ def _save_proposal(
         evidence=group_evidence(group, thresholds),
         reason=_reason(action, group, included_count=included_count, total_count=total_count),
         angle=action.message_angle,
-        content_mix=action.content_mix,
+        content_mix=load_group_settings(session, group.name, current_fa_id(), as_of).content_mix
+        or action.content_mix,
         response_kind=action.response_kind,
         permission_applied=effective_permission(
             session,
@@ -345,6 +348,7 @@ def _save_proposal(
             money_total_kes=money_total,
             money_ceiling_kes=action.money_ceiling_kes,
             at=as_of,
+            group_name=group.name,
         ),
         skip_reason_counts=skip_reason_counts(skip_reasons),
         status="proposed",

@@ -128,7 +128,12 @@ def run_batch_simulation(session: Session, as_of: date) -> BatchSimulationResult
         action = load_action(session, action_code, as_of)
         ceiling = action.money_ceiling_kes if action is not None else None
         permission = effective_permission(
-            session, action_code, money_total_kes=money, money_ceiling_kes=ceiling, at=as_of
+            session,
+            action_code,
+            money_total_kes=money,
+            money_ceiling_kes=ceiling,
+            at=as_of,
+            group_name=situation,
         )
         if permission != ACT_ALONE:
             needs_approval += client_count
@@ -228,6 +233,7 @@ def current_configuration(session: Session, as_of: date) -> ConfigurationSummary
     settings = get_settings()
     permission_rows = session.scalars(
         select(AgentPermission).where(
+            AgentPermission.action_code.is_not(None),
             AgentPermission.valid_from <= as_of,
             or_(AgentPermission.valid_to.is_(None), AgentPermission.valid_to > as_of),
         )

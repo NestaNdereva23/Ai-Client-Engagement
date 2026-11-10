@@ -184,6 +184,7 @@ def test_the_drafting_step_hands_the_mix_and_the_guide_to_the_prompt(monkeypatch
     monkeypatch.setattr(write_tools, "load_split_for_campaign", lambda session, campaign_id: None)
     monkeypatch.setattr(write_tools, "build_default_orchestrator", fake_orchestrator)
     monkeypatch.setattr(write_tools, "run_due_enrollments", lambda *args, **kwargs: [])
+    monkeypatch.setattr(write_tools, "_remember_guides", lambda *args: None)
 
     write_tools.draft_into_review_queue(None, campaign_id=1, prohibitions=("Never say X.",))
 
