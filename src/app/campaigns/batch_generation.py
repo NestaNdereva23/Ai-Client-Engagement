@@ -366,7 +366,9 @@ def submit_batch(
     services.campaigns.submit_campaign_batch) checks that first, the same
     place run_campaign_generation's check lives.
     """
-    context_loader = context_loader or functools.partial(load_client_context, session)
+    context_loader = context_loader or functools.partial(
+        load_client_context, session, use_rag=settings.rag_enabled
+    )
     tracer = tracer or NullTracer()
     batch = GenerationBatch(
         generation_batch_id=str(uuid.uuid4()),

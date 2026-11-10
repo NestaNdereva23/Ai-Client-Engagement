@@ -369,7 +369,9 @@ def draft_templates_for_campaign(
     audit: AuditSink | None = None,
     tracer: Tracer | None = None,
 ) -> TemplateDraftOutcome:
-    context_loader = context_loader or functools.partial(load_client_context, session)
+    context_loader = context_loader or functools.partial(
+        load_client_context, session, use_rag=settings.rag_enabled
+    )
     groups = _group_due_clients(
         resolve_due_profile_keys(session, campaign_id, limit=discovery_limit)
     )

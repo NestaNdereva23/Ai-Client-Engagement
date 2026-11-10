@@ -664,6 +664,30 @@ def test_deterministic_order_with_no_limit_drafts_every_bucket(multi_bucket_coho
         assert plan.policy_source == "default"
 
 
+@pytest.mark.parametrize("rag_enabled", [True, False])
+def test_template_drafting_follows_the_weekly_report_switch(
+    multi_bucket_cohort: int, monkeypatch: pytest.MonkeyPatch, rag_enabled: bool
+) -> None:
+    seen: list[bool] = []
+
+    def recording_loader(session, client_id, product, *, use_rag):
+        seen.append(use_rag)
+        return _fixed_context_loader(client_id, product)
+
+    monkeypatch.setattr("app.campaigns.template_generation.load_client_context", recording_loader)
+    llm = ScriptedLLMClient([draft_json(body="Dear {{first_name}}, come back to us.")] * 3)
+    settings = make_settings().model_copy(update={"rag_enabled": rag_enabled})
+
+    with SessionLocal() as session:
+        draft_templates_for_campaign(
+            session, multi_bucket_cohort, settings=settings, llm_client=llm
+        )
+        session.commit()
+
+    assert seen
+    assert set(seen) == {rag_enabled}
+
+
 def test_a_narrow_discovery_window_hides_buckets_a_wide_one_finds(
     multi_bucket_cohort: int,
 ) -> None:
