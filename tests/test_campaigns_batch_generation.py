@@ -375,7 +375,12 @@ def test_submit_batch_with_nothing_eligible_never_calls_the_provider(db: None) -
 def test_submit_batch_raises_when_bedrock_cohort_is_below_the_provider_minimum(
     campaign: int, client: int
 ) -> None:
-    settings = make_settings(llm_provider="bedrock")
+    settings = make_settings(llm_provider="bedrock").model_copy(
+        update={
+            "bedrock_batch_s3_bucket": "ace-batch-bucket",
+            "bedrock_batch_role_arn": "arn:aws:iam::123456789012:role/ace-batch",
+        }
+    )
     with SessionLocal() as session:
         with pytest.raises(BatchTooSmall):
             submit_batch(

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import structlog
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select
@@ -19,6 +20,8 @@ from app.db.models.fa_assignment import FaAssignment
 from app.db.models.user_access import ROLE_ADMIN, UserAccess, normalize_email
 from app.db.session import get_session
 from app.services.user_access import advisor_fa_id, find_access
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -51,11 +54,19 @@ def get_access(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     session: Session = Depends(get_session),
 ) -> Access:
-    email = decode_bearer_token(credentials).get("email")
+    claims = decode_bearer_token(credentials)
+    email = claims.get("email")
     if not email:
         raise HTTPException(status_code=401, detail="invalid or missing bearer token")
     row = find_access(session, email)
     if row is None or not row.active:
+        logger.warning(
+            "access_denied",
+            email=email,
+            known=row is not None,
+            sub=claims.get("sub"),
+            iss=claims.get("iss"),
+        )
         raise _forbidden("this account has no access to client data")
     return access_for(session, row)
 

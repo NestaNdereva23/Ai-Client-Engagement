@@ -18,7 +18,7 @@ from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
 
 from app.config import Settings, get_settings
-from app.privacy.bedrock_batch import BedrockBatchClient
+from app.privacy.bedrock_batch import BedrockBatchClient, SyncLoopBatchClient
 from app.privacy.boundary import (
     AsyncConverseCall,
     ConverseCall,
@@ -266,11 +266,20 @@ class AnthropicLLMClient:
             await self._async_client.close()
 
     def _generate_kwargs(self, system: str, user: str) -> dict[str, Any]:
+        # The Anthropic API (direct or via AnthropicBedrock) rejects a blank
+        # user message outright ("user messages must have non-empty
+        # content"). An empty turn is a real, legitimate case here: the
+        # privacy boundary can allow-list zero facts for a given
+        # client/angle (see app.agents.graph's fact-eligibility gate) while
+        # the system prompt alone still carries everything needed, so
+        # there's nothing wrong with the call itself.
         kwargs: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,
             "system": system,
-            "messages": [{"role": "user", "content": user}],
+            "messages": [
+                {"role": "user", "content": user or "(no additional client facts for this draft)"}
+            ],
         }
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
@@ -1234,10 +1243,17 @@ def get_batch_client(settings: Settings | None = None) -> Any:
     """The batch client for whichever provider is configured."""
     settings = settings or get_settings()
     if settings.llm_provider == "bedrock":
-        return BedrockBatchClient(
-            region=settings.aws_region,
-            bucket=settings.bedrock_batch_s3_bucket,
-            role_arn=settings.bedrock_batch_role_arn,
-            model_id=settings.llm_model,
-        )
+        if settings.bedrock_batch_s3_bucket and settings.bedrock_batch_role_arn:
+            return BedrockBatchClient(
+                region=settings.aws_region,
+                bucket=settings.bedrock_batch_s3_bucket,
+                role_arn=settings.bedrock_batch_role_arn,
+                model_id=settings.llm_model,
+            )
+        # No S3 bucket / IAM role configured for AWS's real batch-inference
+        # API -- fall back to running each record as an ordinary sync call
+        # in a loop instead. Slower and without batch-rate pricing, but
+        # needs no new AWS infrastructure. Set both settings to switch back
+        # to the real batch API once they're provisioned.
+        return SyncLoopBatchClient(region=settings.aws_region, model_id=settings.llm_model)
     return _AnthropicBatchAdapter(get_anthropic_batch_client(settings))

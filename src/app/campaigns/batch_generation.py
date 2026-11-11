@@ -424,7 +424,16 @@ def submit_batch(
         )
         return batch
 
-    if settings.llm_provider == "bedrock" and len(requests) < BEDROCK_BATCH_MIN_RECORDS:
+    _using_real_bedrock_batch_api = (
+        settings.llm_provider == "bedrock"
+        and settings.bedrock_batch_s3_bucket
+        and settings.bedrock_batch_role_arn
+    )
+    if _using_real_bedrock_batch_api and len(requests) < BEDROCK_BATCH_MIN_RECORDS:
+        # Only AWS's real CreateModelInvocationJob batch API enforces this
+        # minimum. When no S3 bucket / IAM role is configured, get_batch_client
+        # falls back to SyncLoopBatchClient, which runs each record as an
+        # ordinary call and has no such floor.
         raise BatchTooSmall(len(requests), BEDROCK_BATCH_MIN_RECORDS)
 
     client = client or get_batch_client(settings)
