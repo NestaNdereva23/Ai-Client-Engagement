@@ -200,9 +200,10 @@ def find_guides(
 ) -> list[Retrieved]:
     embedder = embedder or get_embedder()
     vector = embedder.embed([query])[0]
-    conditions = []
+    # A group's own ticked guides replace the match on the action.
+    conditions = [RagChunk.chunk_metadata.contains({"actions": [action_code]})]
     if doc_ids is not None:
-        conditions.append(RagDocument.doc_id.in_(list(doc_ids)))
+        conditions = [RagDocument.doc_id.in_(list(doc_ids))]
     if skip_version_ids:
         conditions.append(RagChunk.version_id.not_in(list(skip_version_ids)))
     matching = (
@@ -219,7 +220,6 @@ def find_guides(
             RagChunk.embedding.isnot(None),
             RagDocumentVersion.is_active.is_(True),
             RagDocument.doc_type == DOC_TYPE_CLIENT_GUIDE,
-            RagChunk.chunk_metadata.contains({"actions": [action_code]}),
             *conditions,
         )
         .offset(0)

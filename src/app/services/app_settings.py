@@ -80,10 +80,12 @@ def update_app_settings(
 
 def _turns_live_on(cleaned: dict[str, Any], current: Settings) -> str | None:
     """The key of a change that would start sending to real clients, if any."""
-    if cleaned.get("delivery_mode") == "live" and current.delivery_mode != "live":
-        return "delivery_mode"
-    if cleaned.get("live_sms_to_test_list") is False and current.live_sms_to_test_list:
-        return "live_sms_to_test_list"
+    for key in ("delivery_mode", "active_delivery_mode"):
+        if cleaned.get(key) == "live" and getattr(current, key) != "live":
+            return key
+    for key in ("live_sms_to_test_list", "active_live_sms_to_test_list"):
+        if cleaned.get(key) is False and getattr(current, key):
+            return key
     return None
 
 

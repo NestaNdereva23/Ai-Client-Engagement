@@ -7,13 +7,14 @@ from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select, true
 from sqlalchemy.orm import Session
 
 from app.agents.action_catalog import action_is_paused, load_action
 from app.agents.action_rules import already_offered, lacks_an_approved_guide
 from app.agents.fa_scope import current_fa_id
 from app.agents.permissions import apply_group_rules, effective_permission, load_group_settings
+from app.agents.proposal_state import transition_proposal
 from app.agents.situation_action_mapping import action_code_for_situation
 from app.agents.situations import (
     APPROACHING_PRESERVATION_LINE,
@@ -87,6 +88,36 @@ SITUATION_PRIORITY: tuple[str, ...] = (
 )
 
 
+WAITING_STATUS = "proposed"
+REPLACED_REASON = "a newer run replaced it before anyone decided"
+LAPSED_REASON = "nobody decided before the end of the day it was made"
+
+
+def still_fresh():
+    """True for a suggestion that is not waiting, or was made today (the session runs on EAT)."""
+    return or_(
+        AgentProposal.status != WAITING_STATUS,
+        func.date(AgentProposal.created_at) >= func.current_date(),
+    )
+
+
+def expire_waiting_proposals(session: Session, *, keep_run_id: int | None = None) -> int:
+    """Expire group suggestions still waiting from earlier runs, in the current adviser scope.
+    Approved and running ones stay, so later runs still know which clients are covered."""
+    fa_id = current_fa_id()
+    waiting = session.scalars(
+        select(AgentProposal).where(
+            AgentProposal.status == WAITING_STATUS,
+            AgentProposal.insight_id.is_(None),
+            AgentProposal.fa_id.is_(None) if fa_id is None else AgentProposal.fa_id == fa_id,
+            true() if keep_run_id is None else AgentProposal.run_id.is_distinct_from(keep_run_id),
+        )
+    ).all()
+    for proposal in waiting:
+        transition_proposal(session, proposal, to_status="expired", reason=REPLACED_REASON)
+    return len(waiting)
+
+
 class ProposalActionMissing(LookupError):
     """The rule table points at an action the live catalogue does not carry."""
 
@@ -104,6 +135,7 @@ def propose_watchlist(
     if thresholds is None:
         thresholds = load_thresholds(session, as_of)
     groups = build_watchlist(session, as_of, thresholds)
+    expire_waiting_proposals(session)
     winners = situation_winners(groups)
     proposals = []
     for group in groups:

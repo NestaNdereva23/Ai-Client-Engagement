@@ -226,8 +226,23 @@ def seed_default_permissions(
     return written
 
 
+# What a person reads for each level on the Autonomy screen.
+LEVEL_COPY = {
+    "suggest_only": (
+        "Only suggest",
+        "It appears as a suggestion for a person to take up or turn down.",
+    ),
+    "approve_each": ("A person approves each one", "It waits for a person to approve it first."),
+    "approve_sample": (
+        "A person checks a sample first",
+        "A person checks a few drafts. If they look right, the rest go on to review.",
+    ),
+    "act_alone": ("Starts on its own", "It starts by itself, without waiting for a person."),
+}
+
 OUTSIDE_BALANCE_RANGE = "outside_balance_range"
 OVER_GROUP_LIMIT = "over_group_limit"
+OVER_SEND_LIMIT = "over_send_limit"
 GROUP_PAUSED = "group_paused"
 
 GROUP_FIELDS = (
@@ -288,24 +303,31 @@ def group_row(
 def load_group_settings(
     session: Session, group_name: str, fa_id: str | None, at: date | None = None
 ) -> GroupSettings:
-    rows = [group_row(session, group_name, None, at)]
+    settings = merge_group_values(
+        GroupSettings(), _row_values(group_row(session, group_name, None, at))
+    )
     if fa_id is not None:
-        rows.append(group_row(session, group_name, fa_id, at))
-    values: dict[str, Any] = {}
-    for row in rows:
-        if row is None:
-            continue
-        for field in GROUP_FIELDS:
-            if field in BALANCE_FIELDS:
-                continue
-            value = getattr(row, field)
-            if value is not None:
-                values[field] = value
-        if row.balance_filter is not None:
-            values.update({field: getattr(row, field) for field in BALANCE_FIELDS})
-    if values.get("guide_doc_ids") is not None:
-        values["guide_doc_ids"] = tuple(values["guide_doc_ids"])
-    return GroupSettings(**values)
+        settings = merge_group_values(
+            settings, _row_values(group_row(session, group_name, fa_id, at))
+        )
+    return settings
+
+
+def _row_values(row: AgentPermission | None) -> dict[str, Any]:
+    return {} if row is None else {field: getattr(row, field) for field in GROUP_FIELDS}
+
+
+def merge_group_values(base: GroupSettings, values: Mapping[str, Any]) -> GroupSettings:
+    """Lay set values over base; the balance fields only move as one."""
+    merged = {field: getattr(base, field) for field in GROUP_FIELDS}
+    for field in GROUP_FIELDS:
+        if field not in BALANCE_FIELDS and values.get(field) is not None:
+            merged[field] = values[field]
+    if values.get("balance_filter") is not None:
+        merged.update({field: values.get(field) for field in BALANCE_FIELDS})
+    if merged["guide_doc_ids"] is not None:
+        merged["guide_doc_ids"] = tuple(merged["guide_doc_ids"])
+    return GroupSettings(**merged)
 
 
 def _group_snapshot(row: AgentPermission | None) -> dict[str, Any] | None:

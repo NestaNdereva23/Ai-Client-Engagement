@@ -11,6 +11,7 @@ from app.config import Settings, get_settings
 from app.db.models.models import PiiVault
 from app.db.models.outreach import OutreachMessage
 from app.db.session import restricted_session
+from app.delivery.send_settings import settings_for_message
 from app.delivery.sms_gateway import SmsGateway, SmsMessage, SmsSendResult, get_sms_gateway
 from app.delivery.test_recipients import ensure_test_recipient, pick_test_recipient
 
@@ -36,17 +37,18 @@ def build_sms_sender(
 ) -> SenderFn:
     settings = settings or get_settings()
     gateway = gateway if gateway is not None else get_sms_gateway(settings)
-    test_mode = settings.delivery_mode == "test"
-    to_test_list = test_mode or settings.live_sms_to_test_list
 
     def send(message: OutreachMessage) -> SendResult:
+        sending = settings_for_message(message.campaign_id, settings)
+        test_mode = sending.delivery_mode == "test"
+        to_test_list = test_mode or sending.live_sms_to_test_list
         content = message.personalized_content
         if not content:
             raise SendBlocked("no_personalized_content")
 
         body = content["body"]
         if test_mode:
-            body = f"{settings.test_subject_prefix.strip()} {body} (client {message.client_id})"
+            body = f"{sending.test_subject_prefix.strip()} {body} (client {message.client_id})"
         if to_test_list:
             to = pick_test_recipient(message.client_id, "sms", message.campaign_id)
         else:

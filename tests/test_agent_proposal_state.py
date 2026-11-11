@@ -170,3 +170,43 @@ def test_every_declared_status_is_reachable_or_terminal_by_design() -> None:
 
     assert set(ALLOWED_TRANSITIONS) == set(PROPOSAL_STATUSES)
     assert TERMINAL_STATUSES == {"rejected", "expired", "blocked", "stopped", "measured"}
+
+
+def test_a_new_run_expires_only_what_is_still_waiting(db: None) -> None:
+    from app.agents.fa_scope import fa_scope
+    from app.agents.propose import expire_waiting_proposals
+
+    adviser = "trial_expire_adviser"
+    with SessionLocal() as session:
+        rows = {
+            status: AgentProposal(
+                action_code="start_win_back",
+                catalog_version=1,
+                group_name="test expire group",
+                client_count=1,
+                evidence="e",
+                reason="r",
+                permission_applied="suggest_only",
+                status=status,
+                fa_id=adviser,
+            )
+            for status in ("proposed", "running")
+        }
+        session.add_all(rows.values())
+        session.commit()
+        ids = [row.proposal_id for row in rows.values()]
+
+        with fa_scope(adviser):
+            assert expire_waiting_proposals(session) == 1
+        session.commit()
+        assert rows["proposed"].status == "expired"
+        assert rows["running"].status == "running"
+
+        session.execute(
+            delete(AuditLog).where(
+                AuditLog.entity_type == "agent_proposal",
+                AuditLog.entity_id.in_([str(i) for i in ids]),
+            )
+        )
+        session.execute(delete(AgentProposal).where(AgentProposal.proposal_id.in_(ids)))
+        session.commit()

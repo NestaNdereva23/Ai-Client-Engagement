@@ -21,6 +21,7 @@ from dataclasses import asdict, dataclass
 
 import anyio
 
+from app.agents.event_lines import event_line, group_label
 from app.config import Settings
 from app.db.async_session import AsyncSessionLocal
 from app.services.agent_events import (
@@ -83,11 +84,14 @@ def keepalive() -> str:
 
 
 def event_payload(event) -> dict:
+    text, tone = event_line(event.kind, event.detail)
     return {
         "ordinal": event.ordinal,
         "kind": event.kind,
         "detail": event.detail or {},
         "created_at": event.created_at,
+        "text": text,
+        "tone": tone,
     }
 
 
@@ -135,7 +139,7 @@ async def _pump(session, run_id: int, after: int, settings: Settings) -> AsyncIt
     quiet_for = 0.0
     waited = 0.0
 
-    yield frame(PROGRESS_MESSAGE, asdict(walk.progress()), ordinal=cursor)
+    yield frame(PROGRESS_MESSAGE, progress_payload(walk.progress()), ordinal=cursor)
 
     while True:
         events = await list_run_events_async(session, run_id, after=cursor, limit=EVENT_PAGE_LIMIT)
@@ -146,7 +150,7 @@ async def _pump(session, run_id: int, after: int, settings: Settings) -> AsyncIt
 
         if events:
             quiet_for = 0.0
-            yield frame(PROGRESS_MESSAGE, asdict(walk.progress()), ordinal=cursor)
+            yield frame(PROGRESS_MESSAGE, progress_payload(walk.progress()), ordinal=cursor)
             if len(events) == EVENT_PAGE_LIMIT:
                 continue
 
@@ -167,3 +171,9 @@ async def _pump(session, run_id: int, after: int, settings: Settings) -> AsyncIt
         await anyio.sleep(settings.agent_stream_poll_seconds)
         quiet_for += settings.agent_stream_poll_seconds
         waited += settings.agent_stream_poll_seconds
+
+
+def progress_payload(progress) -> dict:
+    payload = asdict(progress)
+    payload["doing_now_label"] = group_label(progress.doing_now) if progress.doing_now else None
+    return payload

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
+
+from app.agents.event_lines import event_line, group_label
 
 
 class AgentEventOut(BaseModel):
@@ -16,6 +18,14 @@ class AgentEventOut(BaseModel):
     kind: str
     detail: dict
     created_at: datetime
+    # The plain sentence a person reads; empty means the screen hides it.
+    text: str | None = None
+    tone: str = "plain"
+
+    @model_validator(mode="after")
+    def _add_line(self) -> AgentEventOut:
+        self.text, self.tone = event_line(self.kind, self.detail)
+        return self
 
 
 class RunProgressOut(BaseModel):
@@ -30,6 +40,12 @@ class RunProgressOut(BaseModel):
     doing_now: str | None
     finished: bool
     outcome: str | None
+    doing_now_label: str | None = None
+
+    @model_validator(mode="after")
+    def _add_label(self) -> RunProgressOut:
+        self.doing_now_label = group_label(self.doing_now) if self.doing_now else None
+        return self
 
 
 class RunActivityOut(BaseModel):

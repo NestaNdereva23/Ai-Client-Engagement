@@ -29,9 +29,10 @@ from sqlalchemy.orm import Session
 from app.agents.guardrails import sms_part_count
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT
 from app.campaigns.touch import SendOutcome
-from app.config import Settings, get_settings
+from app.config import Settings
 from app.db.models.campaigns import TouchLog
 from app.delivery.mailer import EmailMessage, Mailer, SendResult
+from app.delivery.send_settings import settings_for_campaign
 from app.delivery.sender import build_email_sender
 from app.delivery.sms_gateway import SmsGateway, SmsMessage, SmsSendResult
 from app.delivery.sms_sender import build_sms_sender
@@ -123,7 +124,7 @@ def dispatch_campaign(
     mailer: Mailer | None = None,
     sms_gateway: SmsGateway | None = None,
 ) -> tuple[list[SendOutcome], list[Delivery]]:
-    settings = settings or get_settings()
+    settings = settings_for_campaign(session, campaign_id, settings)
     if settings.dispatch_direct_send:
         limit = min(limit, settings.dispatch_direct_send_max_batch)
         email_sender = build_email_sender(mailer, settings=settings)

@@ -29,6 +29,7 @@ from app.agents.propose import (
     DO_NOTHING_ACTION,
     WATCH_FOR_NOW_ACTION,
     default_action_code_for_group,
+    expire_waiting_proposals,
     group_evidence,
     group_evidence_detail,
     group_skip_reasons,
@@ -828,6 +829,9 @@ def build_agent_loop_steps(
         return {"checked": checked}
 
     def propose(state: AgentLoopState, span: Any) -> dict[str, Any]:
+        # Only this run's suggestions stay waiting; a resumed run keeps its own.
+        expire_waiting_proposals(session, keep_run_id=run_id)
+        session.commit()
         proposals: list[AgentProposal] = []
         decided_groups = [g for g in state["groups"] if state["checked"].get(g.name) is not None]
         for index, group in enumerate(decided_groups):

@@ -39,7 +39,7 @@ from app.agents.guardrails import (
 )
 from app.audit.log import record_audit
 from app.campaigns.cohorts import CohortSlot, resolve_cohort_slot
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.db.models.llmops import Evaluation, GenerationRun, PromptVersion
 from app.db.models.message_template import MessageTemplate
 from app.db.models.models import Clients, Funds, PiiVault
@@ -53,6 +53,7 @@ from app.db.models.outreach import (
 from app.db.models.rules import MessageAngleCatalog, TierContract
 from app.db.models.views import llm_client_context
 from app.db.session import restricted_session
+from app.delivery.send_settings import settings_for_campaign
 from app.pagination import (
     DEFAULT_LIMIT,
     clamp_limit,
@@ -264,8 +265,13 @@ def _resolve_fund_name(session: Session, client_id: int) -> str:
     return fund.unit_fund_name if fund else _FALLBACK_FUND_NAME
 
 
-def _resolve_first_name(client_id: int, *, vault_session: Session | None = None) -> str:
-    settings = get_settings()
+def _resolve_first_name(
+    client_id: int,
+    *,
+    vault_session: Session | None = None,
+    settings: Settings | None = None,
+) -> str:
+    settings = settings or get_settings()
     # Test sends go to staff inboxes, so the real name is never read or shown.
     if settings.delivery_mode == "test":
         return settings.test_client_first_name
@@ -304,7 +310,9 @@ def create_outreach_message(
     explicitly instead, so a regenerate doesn't consume a second slot.
     """
     fund_name = _resolve_fund_name(session, run.client_id)
-    first_name = _resolve_first_name(run.client_id)
+    first_name = _resolve_first_name(
+        run.client_id, settings=settings_for_campaign(session, campaign_id)
+    )
     _raw_facts, placeholder_kwargs = _placeholder_facts_for_client(session, run.client_id)
 
     personalized = personalize_content(
@@ -490,7 +498,11 @@ def instantiate_message_for_template(
     vault_session: Session | None = None,
 ) -> OutreachMessage | None:
     fund_name = _resolve_fund_name(session, client_id)
-    first_name = _resolve_first_name(client_id, vault_session=vault_session)
+    first_name = _resolve_first_name(
+        client_id,
+        vault_session=vault_session,
+        settings=settings_for_campaign(session, campaign_id),
+    )
     client_raw_facts, placeholder_kwargs = _placeholder_facts_for_client(session, client_id)
 
     personalized = personalize_content(
@@ -844,7 +856,9 @@ def _personalized_edit(session: Session, message: OutreachMessage, edited_conten
     _raw_facts, placeholder_kwargs = _placeholder_facts_for_client(session, message.client_id)
     personalized = personalize_content(
         merged,
-        first_name=_resolve_first_name(message.client_id),
+        first_name=_resolve_first_name(
+            message.client_id, settings=settings_for_campaign(session, message.campaign_id)
+        ),
         fund_name=_resolve_fund_name(session, message.client_id),
         **placeholder_kwargs,
     )

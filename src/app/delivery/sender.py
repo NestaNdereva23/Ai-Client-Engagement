@@ -21,6 +21,7 @@ from app.db.models.outreach import (
 )
 from app.db.session import SessionLocal, restricted_session
 from app.delivery.mailer import EmailMessage, Mailer, get_mailer, is_cytonn_address
+from app.delivery.send_settings import settings_for_type
 from app.delivery.test_recipients import ensure_test_recipient, pick_test_recipient
 
 logger = structlog.get_logger(__name__)
@@ -61,9 +62,12 @@ def _advisor_emails(client_id: int) -> tuple[str, ...]:
     )
 
 
-def _is_advisor_requested_queue(campaign_id: int) -> bool:
+def _campaign_of(campaign_id: int) -> Campaign | None:
     with SessionLocal() as session:
-        campaign = session.get(Campaign, campaign_id)
+        return session.get(Campaign, campaign_id)
+
+
+def _is_advisor_requested_queue(campaign: Campaign | None) -> bool:
     return (
         campaign is not None
         and campaign.campaign_type == AGENT_PROPOSAL_CAMPAIGN_TYPE
@@ -76,9 +80,11 @@ def build_email_sender(
 ) -> SenderFn:
     settings = settings or get_settings()
     mailer = mailer if mailer is not None else get_mailer(settings)
-    test_mode = settings.delivery_mode == "test"
 
     def send(message: OutreachMessage) -> SendResult:
+        campaign = _campaign_of(message.campaign_id)
+        sending = settings_for_type(campaign.campaign_type if campaign else None, settings)
+        test_mode = sending.delivery_mode == "test"
         content = message.personalized_content
         if not content:
             raise SendBlocked("no_personalized_content")
@@ -87,7 +93,7 @@ def build_email_sender(
         body = content["body"]
         if test_mode:
             to = pick_test_recipient(message.client_id, "email", message.campaign_id)
-            subject = f"{settings.test_subject_prefix.strip()} {subject}"
+            subject = f"{sending.test_subject_prefix.strip()} {subject}"
         else:
             to = _contact_email(message.client_id)
         if not to:
@@ -100,7 +106,7 @@ def build_email_sender(
         cc = () if test_mode else _advisor_emails(message.client_id)
         # The advisor-requested queue sends as the client's own FA, not the
         # shared client services inbox; every other campaign is unaffected.
-        from_email = cc[0] if cc and _is_advisor_requested_queue(message.campaign_id) else None
+        from_email = cc[0] if cc and _is_advisor_requested_queue(campaign) else None
         result = mailer.send(
             EmailMessage(
                 to=to,

@@ -42,6 +42,7 @@ from app.agents.guide_mix import guide_brief_for_campaign
 from app.agents.insight_members import resolve_insight_members
 from app.agents.insight_proposal import ACCEPTED, gate_members, save_insight_proposal
 from app.agents.orchestrator import Orchestrator
+from app.agents.permissions import OVER_SEND_LIMIT
 from app.agents.proposal_split import Split, load_split, load_split_for_campaign
 from app.agents.proposal_state import transition_proposal
 from app.agents.propose import (
@@ -66,6 +67,7 @@ from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.campaigns import CampaignStep, Enrollment
 from app.db.models.outreach import AGENT_PROPOSAL_CAMPAIGN_TYPE, Campaign, OutreachMessage
 from app.db.models.rag import DOC_TYPE_CLIENT_GUIDE
+from app.delivery.send_settings import active_settings, enrollment_cap
 from app.llmops.operations import active_tracer, trace_operation
 from app.llmops.trace_names import (
     AGENT_CAMPAIGN_RUN,
@@ -308,6 +310,7 @@ def _start_proposal_work(
         return _refuse("no_clients_left", f"proposal {proposal_id} has nobody included on it")
 
     settings = get_settings()
+    sending = active_settings(settings)
     cooldown = settings.agent_contact_cooldown_days if cooldown_days is None else cooldown_days
     with trace_operation(AGENT_RECHECK_CLIENTS, input={"clients": len(members)}) as recheck:
         blocked = {
@@ -317,6 +320,11 @@ def _start_proposal_work(
             for member in members
         }
         recheck.output = {"left_out": sum(1 for reason in blocked.values() if reason)}
+    send_cap = enrollment_cap(sending)
+    if send_cap:
+        within_cap = [member for member in members if blocked[member_key(member)] is None]
+        for member in within_cap[send_cap:]:
+            blocked[member_key(member)] = OVER_SEND_LIMIT
     still_allowed = [member for member in members if blocked[member_key(member)] is None]
     dropped = {
         reason: sum(1 for value in blocked.values() if value == reason)
@@ -374,6 +382,7 @@ def _start_proposal_work(
         campaign_type=CAMPAIGN_TYPE,
         cohort_definition=proposal.group_definition,
         status=RUNNING,
+        is_test=sending.delivery_mode == "test",
         start_date=day,
     )
     session.add(campaign)

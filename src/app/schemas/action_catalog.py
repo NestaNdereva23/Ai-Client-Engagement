@@ -64,17 +64,44 @@ class GroupValues(BaseModel):
     paused: bool | None = None
 
 
+class BalanceBucketOut(BaseModel):
+    low: float
+    high: float | None
+    total: int
+    kept: int
+
+
 class GroupCountsOut(BaseModel):
     in_group: int
     in_range: int
     would_join: int
+    money_in_range: float
+    buckets: list[BalanceBucketOut]
+
+
+class LevelOut(BaseModel):
+    code: str
+    name: str
+    text: str
+
+
+class MixOut(BaseModel):
+    code: str
+    label: str
+    guide_share: int
+    text: str
 
 
 class GroupSettingOut(BaseModel):
     group_name: str
+    label: str
+    description: str
+    urgency: int
     action_code: str | None
     action_title: str | None
     sends_message: bool
+    needs_a_person: bool
+    money_ceiling_kes: float | None
     all_advisers: GroupValues
     own: GroupValues | None
     effective: GroupValues
@@ -83,6 +110,8 @@ class GroupSettingOut(BaseModel):
 
 class GroupSettingListOut(BaseModel):
     fa_id: str | None
+    levels: list[LevelOut]
+    mixes: list[MixOut]
     groups: list[GroupSettingOut]
 
 

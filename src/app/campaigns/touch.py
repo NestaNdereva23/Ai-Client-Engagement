@@ -38,11 +38,11 @@ from app.campaigns.scheduler import (
     count_stale_contacts,
     select_due_enrollments,
 )
-from app.config import get_settings
 from app.db.models.campaigns import Enrollment, TouchLog, TouchPlan
 from app.db.models.outreach import Campaign, OutreachMessage
 from app.db.models.routing import ClientSide
 from app.delivery.gate import MessageNotApproved, authorize_send
+from app.delivery.send_settings import settings_for_type
 
 logger = structlog.get_logger(__name__)
 
@@ -240,8 +240,8 @@ def send_touch(session: Session, touch: TouchLog, *, sender: SenderFn = stub_sen
         session.commit()
         raise
 
-    mode = get_settings().delivery_mode
     campaign = session.get(Campaign, message.campaign_id)
+    mode = settings_for_type(campaign.campaign_type if campaign else None).delivery_mode
     is_test = campaign.is_test if campaign is not None else False
     # A test campaign sends only in test mode, and a real one only in live mode.
     if is_test != (mode == "test"):

@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.agents.proposal_state import transition_proposal
-from app.agents.propose import DO_NOTHING_ACTION
+from app.agents.propose import DO_NOTHING_ACTION, LAPSED_REASON, still_fresh
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.outreach import Campaign
@@ -35,6 +35,10 @@ class ProposalNotFound(Exception):
     """No agent_proposal exists with the given id."""
 
 
+class ProposalExpired(Exception):
+    """The suggestion lapsed at the end of its day, so it can no longer be decided."""
+
+
 def _proposal_filters(
     *,
     status: str | None,
@@ -44,11 +48,13 @@ def _proposal_filters(
     group_name: str | None = None,
     fa_id: str | None = None,
 ) -> list[Any]:
-    clauses: list[Any] = []
+    # A waiting suggestion only lives for the day it was made.
+    clauses: list[Any] = [still_fresh()]
     if fa_id is not None:
         clauses.append(AgentProposal.fa_id == fa_id)
     if status is not None:
-        clauses.append(AgentProposal.status == status)
+        # A comma list asks for several statuses at once, such as everything approved.
+        clauses.append(AgentProposal.status.in_(status.split(",")))
     if proposal_date is not None:
         clauses.append(func.date(AgentProposal.created_at) == proposal_date)
     if action_code is not None:
@@ -315,6 +321,13 @@ def decide_proposal(
 ) -> AgentProposal:
     """Approve or reject one proposal, recording who decided and why."""
     proposal = get_proposal(session, proposal_id)
+    lapsed = not session.scalar(
+        select(still_fresh()).where(AgentProposal.proposal_id == proposal_id)
+    )
+    if lapsed:
+        transition_proposal(session, proposal, to_status="expired", reason=LAPSED_REASON)
+        session.commit()
+        raise ProposalExpired(proposal_id)
     proposal = transition_proposal(
         session,
         proposal,

@@ -12,6 +12,7 @@ from sqlalchemy import delete, select
 
 from app.agents import insight_members as insight_members_module
 from app.agents.action_catalog import load_action
+from app.agents.permissions import OVER_SEND_LIMIT
 from app.agents.proposal_state import transition_proposal
 from app.agents.propose import ON_DO_NOT_CONTACT_LIST
 from app.agents.situations import FIRST_DEPOSIT_NO_REPEAT
@@ -23,6 +24,7 @@ from app.agents.write_tools import (
     WRITE_PROPOSAL,
     make_write_tools,
 )
+from app.config import get_settings
 from app.db.models.active_clients import (
     FLAGGED_FOR_ACCOUNT_MANAGER,
     ActiveClientFund,
@@ -491,6 +493,37 @@ def test_run_proposal_drops_a_client_suppressed_since_it_was_written() -> None:
         (SUPPRESSED_CLIENT, False, ON_DO_NOT_CONTACT_LIST),
     ]
     assert list(enrolled) == [ELIGIBLE_CLIENT]
+
+
+def test_run_proposal_in_active_test_mode_flags_the_campaign_and_caps_it(monkeypatch) -> None:
+    monkeypatch.setenv("ACTIVE_DELIVERY_MODE", "test")
+    monkeypatch.setenv("ACTIVE_TEST_CAMPAIGN_MAX_CLIENTS", "1")
+    get_settings.cache_clear()
+    _seed_client(ELIGIBLE_CLIENT)
+    _seed_client(SUPPRESSED_CLIENT)
+    insight_id = _write_insight()
+    tools = _tools(draft=FakeDrafter())
+
+    try:
+        with SessionLocal() as session:
+            proposal_id = _proposed(session, tools, insight_id)["proposal_id"]
+            transition_proposal(
+                session,
+                session.get(AgentProposal, proposal_id),
+                to_status="approved",
+                reason="a person said yes",
+                decided_by="reviewer_1",
+            )
+            session.commit()
+            result = tools[RUN_PROPOSAL](session, proposal_id=proposal_id)
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()
+
+    assert result["enrolled_count"] == 1
+    assert result["dropped_since_proposed"] == {OVER_SEND_LIMIT: 1}
+    with SessionLocal() as session:
+        assert session.get(Campaign, result["campaign_id"]).is_test is True
 
 
 def test_record_no_action_keeps_the_group_the_count_and_the_reason() -> None:

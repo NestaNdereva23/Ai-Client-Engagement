@@ -6,6 +6,9 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.agents import card_copy
+from app.agents.action_catalog import load_action
+from app.agents.guide_mix import MIX_LABELS
+from app.agents.permissions import LEVEL_COPY
 from app.agents.proposal_state import InvalidTransition
 from app.api.agent_scope import AgentScope, get_agent_scope, require_proposal_in_scope
 from app.api.reviewer_auth import get_current_reviewer_id
@@ -21,6 +24,7 @@ from app.schemas.agent_proposals import (
     ProposalVersionsOut,
 )
 from app.services.agent_proposals import (
+    ProposalExpired,
     ProposalNotFound,
     angle_brief_for_proposal,
     count_proposals,
@@ -96,6 +100,7 @@ def list_agent_proposals(
                 screen_label=copy.screen_label,
                 why_now=copy.why_now,
                 suggested_owner=card_copy.suggested_owner_for(p.response_kind),
+                **_plain_words(session, p, included_count),
             )
         )
     return Page(
@@ -103,6 +108,31 @@ def list_agent_proposals(
         next_cursor=next_cursor,
         total_count=total_count,
     )
+
+
+def _plain_words(session: Session, proposal, included_count: int | None) -> dict:
+    action = load_action(session, proposal.action_code, proposal.created_at.date())
+    title = action.title if action is not None else proposal.action_code.replace("_", " ")
+    sends = bool(proposal.angle)
+    level = LEVEL_COPY.get(proposal.permission_applied)
+    clients = included_count if included_count is not None else proposal.client_count
+    sentence = (
+        f'If you approve, the assistant will take "{title}" for {clients:,} clients '
+        f"holding KES {proposal.money_total_kes or 0:,.0f}. "
+    )
+    sentence += (
+        "Every email still waits for a person in the review queue before it is sent."
+        if sends
+        else "No email is sent. Each adviser sees the task for their own clients."
+    )
+    return {
+        "action_title": title,
+        "sends_message": sends,
+        "level_name": level[0] if level else None,
+        "level_rank": list(LEVEL_COPY).index(proposal.permission_applied) + 1 if level else None,
+        "mix_label": MIX_LABELS.get(proposal.content_mix or ""),
+        "approve_sentence": sentence,
+    }
 
 
 @router.get(
@@ -137,6 +167,7 @@ def get_agent_proposal(
         screen_label=copy.screen_label,
         why_now=copy.why_now,
         suggested_owner=card_copy.suggested_owner_for(proposal.response_kind),
+        **_plain_words(session, proposal, included_count),
         group_definition=proposal.group_definition,
         evidence=proposal.evidence,
         evidence_detail=proposal.evidence_detail,
@@ -243,6 +274,12 @@ def decide_agent_proposal(
     except ProposalNotFound:
         session.rollback()
         raise HTTPException(status_code=404, detail="proposal not found") from None
+    except ProposalExpired:
+        raise HTTPException(
+            status_code=409,
+            detail="This suggestion expired at the end of the day it was made. "
+            "The next run makes a fresh one.",
+        ) from None
     except InvalidTransition as exc:
         session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from None

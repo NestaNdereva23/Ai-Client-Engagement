@@ -36,6 +36,7 @@ from app.db.models.routing import ClientSide
 from app.db.models.rules import ClientMessageIndicators
 from app.db.models.suppression import Suppression
 from app.db.session import restricted_session
+from app.delivery.send_settings import settings_for_type
 from app.delivery.test_list import active_test_contacts
 from app.routing.sides import SIDE_INACTIVE
 from app.rules.catalog import angle_is_held
@@ -104,6 +105,7 @@ def check_eligibility(
         require_contact=get_settings().require_deliverable_contact,
         vault_session=vault_session,
         dormant_only=_dormant_only(campaign),
+        test_mode=_test_mode(campaign),
     )
     if stop is not None:
         reason, terminal_status, detail = stop
@@ -149,7 +151,12 @@ def check_stop_conditions(
         return _skip(session, enrollment, reason="angle_held", terminal=False)
 
     stop = _stop_reason(
-        session, enrollment, channel, require_contact=True, dormant_only=_dormant_only(campaign)
+        session,
+        enrollment,
+        channel,
+        require_contact=True,
+        dormant_only=_dormant_only(campaign),
+        test_mode=_test_mode(campaign),
     )
     if stop is not None:
         reason, terminal_status, detail = stop
@@ -167,6 +174,10 @@ def check_stop_conditions(
 
 def _dormant_only(campaign: Campaign) -> bool:
     return campaign.campaign_type != AGENT_PROPOSAL_CAMPAIGN_TYPE
+
+
+def _test_mode(campaign: Campaign) -> bool:
+    return settings_for_type(campaign.campaign_type).delivery_mode == "test"
 
 
 def _moved_off_inactive(session: Session, client_id: int) -> bool:
@@ -211,6 +222,7 @@ def _stop_reason(
     require_contact: bool,
     vault_session: Session | None = None,
     dormant_only: bool = True,
+    test_mode: bool | None = None,
 ) -> tuple[str, str, str | None] | None:
     """(reason, terminal_status, detail) for a permanent stop signal, or None."""
     suppression_reason = session.get(Suppression, enrollment.client_id)
@@ -221,7 +233,7 @@ def _stop_reason(
         return "suppressed", status, suppression_reason.reason
 
     opted_out, has_contact = _vault_signals(
-        enrollment.client_id, channel, vault_session=vault_session
+        enrollment.client_id, channel, vault_session=vault_session, test_mode=test_mode
     )
     if opted_out:
         return "opted_out", "stopped_optout", None
@@ -296,17 +308,25 @@ def _has_unresolved_touch(session: Session, enrollment_id: int) -> bool:
 
 
 def _vault_signals(
-    client_id: int, channel: str, *, vault_session: Session | None = None
+    client_id: int,
+    channel: str,
+    *,
+    vault_session: Session | None = None,
+    test_mode: bool | None = None,
 ) -> tuple[bool, bool]:
     """(opted_out, has_deliverable_contact), read under the restricted role."""
+    if test_mode is None:
+        test_mode = get_settings().delivery_mode == "test"
     if vault_session is not None:
-        return _read_vault_signals(vault_session, client_id, channel)
+        return _read_vault_signals(vault_session, client_id, channel, test_mode)
     with restricted_session() as session:
-        return _read_vault_signals(session, client_id, channel)
+        return _read_vault_signals(session, client_id, channel, test_mode)
 
 
-def _read_vault_signals(session: Session, client_id: int, channel: str) -> tuple[bool, bool]:
-    if get_settings().delivery_mode == "test":
+def _read_vault_signals(
+    session: Session, client_id: int, channel: str, test_mode: bool
+) -> tuple[bool, bool]:
+    if test_mode:
         return _read_test_mode_signals(session, client_id, channel)
     vault = session.get(PiiVault, client_id)
     record_audit(

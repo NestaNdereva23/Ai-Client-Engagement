@@ -34,6 +34,13 @@ class AgentProposalSummaryOut(BaseModel):
     screen_label: str
     why_now: str
     suggested_owner: str | None
+    # Plain words for the screen, so Ticketing never builds them from codes.
+    action_title: str | None = None
+    sends_message: bool = False
+    level_name: str | None = None
+    level_rank: int | None = None
+    mix_label: str | None = None
+    approve_sentence: str | None = None
 
 
 class AgentProposalClientOut(BaseModel):

@@ -311,6 +311,15 @@ class Settings(BaseSettings):
     # Live campaigns enroll at most this many clients; 0 means no limit.
     live_campaign_max_clients: int = 0
 
+    active_delivery_mode: Literal["test", "live"] = "test"
+    active_live_sms_to_test_list: bool = True
+    active_dispatch_direct_send: bool = False
+    active_dispatch_direct_send_max_batch: int = 50
+    active_live_campaign_max_clients: int = 0
+    active_test_campaign_max_clients: int = 1
+    active_test_client_first_name: str = "Test Client"
+    active_test_subject_prefix: str = "[TEST]"
+
     # A dormant touch an agent approves on its own waits this long, unseen,
     # before it actually sends, so a reviewer who gets the heads up email has
     # a real window to step in. Seconds, not days, so it can be shrunk for a

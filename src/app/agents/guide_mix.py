@@ -23,6 +23,14 @@ MIX_LABELS = {
     "mostly_ask": "Mostly asking",
 }
 
+# What a person reads on the Autonomy screen, and the rough share that explains.
+MIX_SUMMARIES = {
+    "learning_only": (100, "Only explains one idea from a guide. It asks the client for nothing."),
+    "mostly_learning": (78, "Mostly explains one idea, then ends with one soft invitation."),
+    "balanced": (50, "A short explanation from a guide, then one clear ask."),
+    "mostly_ask": (20, "Leads with the ask. At most one sentence from a guide on why it helps."),
+}
+
 MIX_INSTRUCTIONS = {
     "learning_only": (
         "This message only explains. Use the client guide to explain one idea in plain "
