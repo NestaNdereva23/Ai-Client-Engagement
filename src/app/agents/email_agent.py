@@ -296,7 +296,9 @@ def _resolved_instructions(
 _BASE_INSTRUCTIONS = _resolved_instructions()
 
 _DEFAULT_VARIANT_GUIDANCE = (
-    "Offer a flexible, low pressure way back in, grounded only in the facts provided."
+    "Follow the angle brief. Use only the facts provided. If no fact gives a reason to "
+    "reconnect, say less. Do not say the fund is open, has no minimum, accepts any amount, "
+    "or has no commitment unless a supplied fact says so."
 )
 
 
@@ -330,7 +332,10 @@ def template_text(
     base_instructions: str | None = None,
 ) -> str:
     base = _resolved_instructions(voice_text, safety_words, safety_phrases, base_instructions)
-    return f"{base}\n\n{variant_guidance(prompt_variant, session=session, at=at)}"
+    guidance = variant_guidance(prompt_variant, session=session, at=at)
+    if voice_text is not None and guidance == variant_guidance(None):
+        return base
+    return f"{base}\n\n{guidance}"
 
 
 def conditional_prohibitions(facts: Mapping[str, Any] | None) -> list[str]:
@@ -373,7 +378,7 @@ def prohibitions_block(
 
 def brief_block(brief: AngleBrief) -> str:
     lines = [
-        f"Angle: {brief.headline}\n"
+        f"Angle (internal name, never use it in the subject or body): {brief.headline}\n"
         f"What is true about this client: {brief.claim}\n"
         f"What to ask them for: {brief.ask}"
     ]

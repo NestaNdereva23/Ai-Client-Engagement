@@ -10,6 +10,7 @@ from sqlalchemy import delete, select
 from app.db.models.prompt_config import ActiveConfiguration
 from app.db.models.rules import MessageAngleCatalog
 from app.db.session import SessionLocal
+from app.rules import versioning
 from app.rules.catalog import (
     AngleSpec,
     CatalogValidationError,
@@ -17,6 +18,7 @@ from app.rules.catalog import (
     angle_fits,
     load_active_angles,
     load_angle,
+    publish_angle_draft,
     publish_single_angle,
     save_catalog_version,
     validate_angles,
@@ -270,6 +272,70 @@ def test_publish_single_angle_does_not_hide_the_rest_of_the_catalogue(
         after = load_active_angles(session, today)
     assert set(after) == before | {generated_angle}
     assert after[generated_angle].headline == "A generated headline"
+
+
+def test_publishing_an_angle_draft_keeps_every_other_angle_active(db: None) -> None:
+    on = date(2026, 9, 20)
+    angle = SEEDED_ANGLES[-1]
+    with SessionLocal() as session:
+        before = load_active_angles(session, on)
+        current = before[angle]
+        draft_version = versioning.save_draft(
+            session,
+            "message_angle_catalog",
+            angle,
+            [
+                {
+                    "headline": current.headline,
+                    "who": current.who,
+                    "claim": "An edited claim",
+                    "ask": current.ask,
+                    "never": current.never,
+                    "use": current.use,
+                    "cta": current.cta,
+                    "held": current.held,
+                }
+            ],
+        )
+        before_audience = list(current.audience)
+        before_codes = set(before)
+        new_version = publish_angle_draft(session, angle, draft_version, at=on)
+        after = load_active_angles(session, on)
+        after_codes = set(after)
+        edited_claim = after[angle].claim
+        edited_audience = list(after[angle].audience)
+        versions = {row.version for row in after.values()}
+        session.rollback()
+
+    assert after_codes == before_codes
+    assert edited_claim == "An edited claim"
+    assert edited_audience == before_audience
+    assert versions == {new_version}
+
+
+def test_publishing_an_angle_draft_with_a_blank_field_is_refused(db: None) -> None:
+    on = date(2026, 9, 20)
+    angle = SEEDED_ANGLES[-1]
+    with SessionLocal() as session:
+        current = load_active_angles(session, on)[angle]
+        draft_version = versioning.save_draft(
+            session,
+            "message_angle_catalog",
+            angle,
+            [
+                {
+                    "headline": current.headline,
+                    "who": current.who,
+                    "claim": current.claim,
+                    "ask": current.ask,
+                    "never": current.never,
+                    "use": "  ",
+                }
+            ],
+        )
+        with pytest.raises(CatalogValidationError, match="empty 'use'"):
+            publish_angle_draft(session, angle, draft_version, at=on)
+        session.rollback()
 
 
 @pytest.mark.parametrize(

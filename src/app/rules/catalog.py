@@ -12,10 +12,10 @@ together stay in step.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.models.rules import MessageAngleCatalog
@@ -84,7 +84,18 @@ def save_catalog_version(
     never edited underneath a message that already cited it.
     """
     validate_angles(angles)
+    return _write_version(session, version, angles, valid_from=valid_from, valid_to=valid_to)
 
+
+def _write_version(
+    session: Session,
+    version: int,
+    angles: Sequence[AngleSpec],
+    *,
+    valid_from: date,
+    valid_to: date | None = None,
+    published_by: str | None = None,
+) -> int:
     if versioning.version_exists(session, "message_angle_catalog", version):
         raise CatalogValidationError(f"version {version} already exists and may not be mutated")
 
@@ -107,6 +118,7 @@ def save_catalog_version(
             valid_from=valid_from,
             valid_to=valid_to,
             status="published",
+            published_by=published_by,
             published_at=published_at,
         )
         for spec in angles
@@ -120,6 +132,66 @@ def save_catalog_version(
             )
 
     return len(angles)
+
+
+def _spec_from_row(row: MessageAngleCatalog) -> AngleSpec:
+    return AngleSpec(
+        angle=row.angle,
+        headline=row.headline,
+        who=row.who,
+        claim=row.claim,
+        ask=row.ask,
+        never=row.never,
+        use=row.use or "",
+        held=row.held,
+        cta=row.cta,
+        family=row.family,
+        tone=row.tone,
+        audience=tuple(row.audience or ()),
+    )
+
+
+def publish_angle_draft(
+    session: Session,
+    angle: str,
+    draft_version: int,
+    *,
+    by: str | None = None,
+    at: date | None = None,
+) -> int:
+    when = at or date.today()
+    draft = session.scalar(
+        select(MessageAngleCatalog).where(
+            MessageAngleCatalog.angle == angle, MessageAngleCatalog.version == draft_version
+        )
+    )
+    if draft is None:
+        raise versioning.VersioningError(
+            f"no version {draft_version} found for message_angle_catalog:{angle}"
+        )
+    if draft.status != "draft":
+        raise versioning.VersioningError(
+            f"version {draft_version} of message_angle_catalog:{angle} is not a draft"
+        )
+
+    carried = {code: _spec_from_row(row) for code, row in load_active_angles(session, when).items()}
+    edited = _spec_from_row(draft)
+    previous = carried.get(angle)
+    if previous is not None:
+        edited = replace(
+            edited,
+            family=edited.family or previous.family,
+            tone=edited.tone or previous.tone,
+            audience=edited.audience or previous.audience,
+        )
+    validate_angles([edited])
+    carried[angle] = edited
+
+    session.delete(draft)
+    session.flush()
+    new_version = session.scalar(select(func.max(MessageAngleCatalog.version))) + 1
+    _write_version(session, new_version, list(carried.values()), valid_from=when, published_by=by)
+    return new_version
 
 
 def publish_single_angle(

@@ -109,7 +109,10 @@ def template_text(
     base_instructions: str | None = None,
 ) -> str:
     base = _resolved_instructions(voice_text, safety_words, safety_phrases, base_instructions)
-    return f"{base}\n\n{variant_guidance(prompt_variant, session=session, at=at)}"
+    guidance = variant_guidance(prompt_variant, session=session, at=at)
+    if voice_text is not None and guidance == variant_guidance(None):
+        return base
+    return f"{base}\n\n{guidance}"
 
 
 def build_sms_system_prompt(

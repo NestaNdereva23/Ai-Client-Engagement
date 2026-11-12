@@ -56,6 +56,16 @@ def test_unknown_prompt_variant_falls_back_without_erroring() -> None:
     assert fallback in prompt
 
 
+def test_stored_voice_text_replaces_the_default_variant_guidance() -> None:
+    stored = build_system_prompt(
+        angle="pick_up_again", prompt_variant=None, voice_text="Stored voice."
+    )
+    assert "Stored voice." in stored
+    assert variant_guidance(None) not in stored
+    hardcoded = build_system_prompt(angle="pick_up_again", prompt_variant=None)
+    assert variant_guidance(None) in hardcoded
+
+
 def test_facts_render_only_what_was_retrieved() -> None:
     chunks = [FakeChunk(chunk_id=1, text="the fund yielded 11.35% this week")]
     prompt = build_system_prompt(

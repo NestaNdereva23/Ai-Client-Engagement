@@ -27,6 +27,7 @@ from app.agents.graph import (
     load_client_context,
     new_generation_state,
 )
+from app.agents.prompt_config import resolve_active_configuration
 from app.audit.log import record_audit
 from app.campaigns.bucketing import (
     Bucket,
@@ -82,15 +83,19 @@ class _PlaceholderChunk:
     text: str
 
 
-def bucket_placeholder_chunks(profile_key: ProfileKey) -> tuple[GroundingChunk, ...]:
+def bucket_placeholder_chunks(
+    profile_key: ProfileKey, allowed_fields: Sequence[str] | None = None
+) -> tuple[GroundingChunk, ...]:
     """One synthetic chunk per placeholder-filled fact. The cadence interval
     only appears when the bucket actually has one.
     """
+    allowed = None if allowed_fields is None else set(allowed_fields)
+    labels = [pair for pair in _PLACEHOLDER_CHUNK_LABELS if allowed is None or pair[1] in allowed]
     chunks = [
         _PlaceholderChunk(chunk_id=-(index + 1), text=f"{label}: {placeholder_token(field)}")
-        for index, (label, field) in enumerate(_PLACEHOLDER_CHUNK_LABELS)
+        for index, (label, field) in enumerate(labels)
     ]
-    if profile_key.has_cadence:
+    if profile_key.has_cadence and (allowed is None or "cadence_interval_days" in allowed):
         chunks.append(
             _PlaceholderChunk(
                 chunk_id=-(len(chunks) + 1),
@@ -104,7 +109,7 @@ def bucket_facts(profile_key: ProfileKey) -> dict[str, Any]:
     """The real, shared facts a bucket draft's scanned payload may carry.
     Deliberately narrow: nothing placeholder-filled belongs here.
     """
-    facts: dict[str, Any] = {"stale_contact": profile_key.stale_contact}
+    facts: dict[str, Any] = {}
     if profile_key.exit_reason_charge_settled:
         facts["exit_reason"] = "charge_settled"
     if profile_key.fund_name_known:
@@ -115,7 +120,7 @@ def bucket_facts(profile_key: ProfileKey) -> dict[str, Any]:
     return facts
 
 
-def bucket_context(bucket: Bucket) -> ClientContext:
+def bucket_context(bucket: Bucket, allowed_fields: Sequence[str] | None = None) -> ClientContext:
     """The ClientContext a bucket draft is generated against.
 
     angle, brief, contract, tier, and version fields are pure functions of
@@ -127,11 +132,26 @@ def bucket_context(bucket: Bucket) -> ClientContext:
         representative,
         raw_context={},
         facts=bucket_facts(bucket.profile_key),
-        chunks=(*representative.chunks, *bucket_placeholder_chunks(bucket.profile_key)),
+        chunks=(
+            *representative.chunks,
+            *bucket_placeholder_chunks(bucket.profile_key, allowed_fields),
+        ),
     )
 
 
-def _bucket_prompt_builder(profile_key: ProfileKey) -> Callable[..., str]:
+def _subjects_note(used_subjects: Sequence[str]) -> str | None:
+    if not used_subjects:
+        return None
+    listed = "; ".join(f"'{subject}'" for subject in used_subjects)
+    return (
+        "Subjects already used in this campaign. Do not reuse the first three words of any of "
+        f"them and do not write a near copy: {listed}."
+    )
+
+
+def _bucket_prompt_builder(
+    profile_key: ProfileKey, used_subjects: Sequence[str] = ()
+) -> Callable[..., str]:
     """Same assembly as the profile's own channel would use, but the
     conditional prohibition is decided from the profile's own booleans,
     not the facts dict the graph passes in.
@@ -142,6 +162,7 @@ def _bucket_prompt_builder(profile_key: ProfileKey) -> Callable[..., str]:
         "exit_reason": "charge_settled" if profile_key.exit_reason_charge_settled else None,
     }
     channel_prompt_builder = channel_spec(profile_key.channel).prompt_builder
+    note = _subjects_note(used_subjects)
 
     def build(
         *,
@@ -151,7 +172,10 @@ def _bucket_prompt_builder(profile_key: ProfileKey) -> Callable[..., str]:
         brief: AngleBrief | None = None,
         contract: FormatContract | None = None,
         facts: Any = None,
+        **configuration: Any,
     ) -> str:
+        if note is not None:
+            configuration["touch_note"] = note
         return channel_prompt_builder(
             angle=angle,
             prompt_variant=prompt_variant,
@@ -159,6 +183,7 @@ def _bucket_prompt_builder(profile_key: ProfileKey) -> Callable[..., str]:
             brief=brief,
             contract=contract,
             facts=prohibition_facts,
+            **configuration,
         )
 
     return build
@@ -174,8 +199,25 @@ def draft_template(
     guardrail_checks: Sequence[GuardrailCheck] | None = None,
     audit: AuditSink | None = None,
     tracer: Tracer | None = None,
+    used_subjects: Sequence[str] = (),
 ) -> MessageTemplate | None:
-    context = bucket_context(bucket)
+    configuration = replace(
+        resolve_active_configuration(
+            session,
+            angle=bucket.profile_key.message_angle,
+            tier=bucket.profile_key.priority_tier,
+            channel=bucket.profile_key.channel,
+            settings=settings,
+        ),
+        fact_eligibility=None,
+    )
+    context = bucket_context(bucket, configuration.allowed_placeholder_fields)
+    if context.brief is None:
+        logger.warning(
+            "draft_template.no_angle_brief",
+            campaign_id=campaign_id,
+            angle=context.angle,
+        )
     representative_client_id = bucket.members[0].enrollment.client_id
     tracer = tracer or NullTracer()
     spec = channel_spec(bucket.profile_key.channel)
@@ -188,8 +230,9 @@ def draft_template(
         context_loader=loader,
         llm_client=llm_client,
         guardrail_checks=checks,
-        prompt_builder=_bucket_prompt_builder(bucket.profile_key),
+        prompt_builder=_bucket_prompt_builder(bucket.profile_key, used_subjects),
         draft_parser=spec.draft_parser,
+        config_resolver=lambda **_: configuration,
         audit=audit,
         tracer=tracer,
     )
@@ -339,6 +382,15 @@ def _ordered_by_priority(
     )
 
 
+def _campaign_subjects(session: Session, campaign_id: int) -> list[str]:
+    drafts = session.scalars(
+        select(MessageTemplate.ai_draft_content)
+        .where(MessageTemplate.campaign_id == campaign_id)
+        .order_by(MessageTemplate.created_at)
+    )
+    return [draft["subject"] for draft in drafts if draft and draft.get("subject")]
+
+
 def _representative_bucket(
     session: Session, group: _DueGroup, context_loader: ContextLoader
 ) -> Bucket | None:
@@ -398,6 +450,7 @@ def draft_templates_for_campaign(
     to_draft = to_draft[:MAX_DRAFTS_PER_CALL]
 
     templates: list[MessageTemplate] = []
+    used_subjects = _campaign_subjects(session, campaign_id)
     failed_guardrails = 0
     failed_errors = 0
     started = time.monotonic()
@@ -429,6 +482,7 @@ def draft_templates_for_campaign(
                 guardrail_checks=guardrail_checks,
                 audit=audit,
                 tracer=tracer,
+                used_subjects=tuple(used_subjects),
             )
         except Exception:
             session.rollback()
@@ -442,6 +496,9 @@ def draft_templates_for_campaign(
 
         if template is not None:
             templates.append(template)
+            subject = template.ai_draft_content.get("subject")
+            if subject:
+                used_subjects.append(subject)
         else:
             failed_guardrails += 1
         session.commit()

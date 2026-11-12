@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 
 from app.agents import email_agent, sms_agent
-from app.agents.email_agent import CAMPAIGN_PROHIBITIONS, build_system_prompt
+from app.agents.email_agent import CAMPAIGN_PROHIBITIONS, build_system_prompt, variant_guidance
 from app.agents.email_channel import EmailAgent
 from app.agents.graph import ClientContext
 from app.agents.prompt_config import build_voice_block, resolve_active_configuration
@@ -149,7 +149,7 @@ def test_resolve_active_configuration_returns_none_for_an_unpublished_date(db: N
         (None, None),
     ],
 )
-def test_v1_db_driven_prompt_matches_the_hardcoded_prompt_byte_for_byte(
+def test_v1_db_driven_prompt_matches_the_hardcoded_prompt_apart_from_the_default_guidance(
     db: None, angle: str | None, tier: str | None
 ) -> None:
     facts = {"fund_name": "Cytonn Money Market Fund", "typical_contribution_kes": 20000}
@@ -169,7 +169,7 @@ def test_v1_db_driven_prompt_matches_the_hardcoded_prompt_byte_for_byte(
     )
     hardcoded = build_system_prompt(angle=angle, prompt_variant=None, facts=facts)
 
-    assert from_db == hardcoded
+    assert from_db == hardcoded.replace(f"\n\n{variant_guidance(None)}", "", 1)
 
 
 @pytest.fixture

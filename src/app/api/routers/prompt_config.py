@@ -19,6 +19,7 @@ from app.personalization.eligibility import (
     set_global_fact_eligibility,
 )
 from app.rules import versioning
+from app.rules.catalog import CatalogValidationError, publish_angle_draft
 from app.schemas.prompt_config import (
     AngleVersionMetricsOut,
     BootstrapEntryOut,
@@ -155,10 +156,14 @@ def publish_component(
         except PromptValidationError as error:
             raise HTTPException(status_code=422, detail=str(error)) from None
     try:
-        versioning.publish(
-            session, component_type, body.component_key, version, by=body.by, at=body.at
-        )
-    except versioning.VersioningError as error:
+        if component_type == "message_angle_catalog":
+            publish_angle_draft(session, body.component_key, version, by=body.by, at=body.at)
+        else:
+            versioning.publish(
+                session, component_type, body.component_key, version, by=body.by, at=body.at
+            )
+    except (versioning.VersioningError, CatalogValidationError) as error:
+        session.rollback()
         raise HTTPException(status_code=422, detail=str(error)) from None
     session.commit()
 
