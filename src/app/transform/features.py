@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date
 from statistics import median
 
-from app.transform.flatten import PURCHASE_CAP, ClientRow, FlattenResult
+from app.transform.flatten import DORMANT_FEE_AMOUNT, PURCHASE_CAP, ClientRow, FlattenResult
 
 WAVE_MONTHS = frozenset(
     {
@@ -38,8 +38,6 @@ MIN_TREND_CHANGE = 0.15
 REGULAR_GAP_DAYS = 45
 CADENCE_REGULAR_DAYS = 90
 CADENCE_PERIODIC_DAYS = 365
-
-DORMANT_FEE_AMOUNT = 50.0
 
 LOW_DEPOSITOR_THRESHOLD_KES = 6_000.0
 HIGH_VALUE_THRESHOLD_KES = 100_000.0
