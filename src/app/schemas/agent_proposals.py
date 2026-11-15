@@ -34,6 +34,13 @@ class AgentProposalSummaryOut(BaseModel):
     screen_label: str
     why_now: str
     suggested_owner: str | None
+    # Plain words for the screen, so Ticketing never builds them from codes.
+    action_title: str | None = None
+    sends_message: bool = False
+    level_name: str | None = None
+    level_rank: int | None = None
+    mix_label: str | None = None
+    approve_sentence: str | None = None
 
 
 class AgentProposalClientOut(BaseModel):
@@ -43,6 +50,7 @@ class AgentProposalClientOut(BaseModel):
 
     client_id: int
     unit_fund_id: int
+    fund_short_name: str | None = None
     included: bool
     skip_reason: str | None
     variant: str | None
@@ -53,8 +61,12 @@ class AgentProposalDetailOut(AgentProposalSummaryOut):
 
     group_definition: dict | None
     evidence: str
+    evidence_detail: dict | None
     reason: str
     angle: str | None
+    angle_headline: str | None = None
+    angle_claim: str | None = None
+    angle_ask: str | None = None
     campaign_id: int | None
     decided_by: str | None
 

@@ -46,6 +46,13 @@ def _worker(client, page_fetcher) -> IngestionWorker:
     )
 
 
+def test_both_feeds_ask_for_1000_records_per_page() -> None:
+    settings = get_settings()
+
+    assert resolve_endpoint("active-clients", settings).page_size == 1000
+    assert resolve_endpoint("inactive-clients", settings).page_size == 1000
+
+
 def _client_row(client_id=1, balance=15000.0, amount="100", date="2025-01-01", sale_type=None):
     return {
         "client_id": client_id,

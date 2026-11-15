@@ -9,6 +9,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     Numeric,
@@ -17,6 +18,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -102,6 +104,34 @@ class TouchLog(Base):
     provider_status: Mapped[str | None] = mapped_column(Text, nullable=True)
     parts: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    side_at_send: Mapped[str | None] = mapped_column(Text, nullable=True)
+    balance_at_send: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class TouchPlan(Base):
+    __tablename__ = "touch_plan"
+    __table_args__ = (
+        UniqueConstraint("enrollment_id", "step_no", name="uq_touch_plan_enrollment_step"),
+    )
+
+    plan_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    enrollment_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("enrollment.enrollment_id"), nullable=False, index=True
+    )
+    step_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    angle: Mapped[str] = mapped_column(Text, nullable=False)
+    gap_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    run_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("campaign_agent_run.run_id"), nullable=False, index=True
+    )
+    # Each fact is {text, url, retrieved_at, tool}, matched to a tool answer from this run.
+    cited_facts: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
+    next_time_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suggested_subject: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

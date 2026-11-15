@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+import importlib.util
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
+from app.agents.campaign_agent import make_choose_touch_plan_tool
 from app.campaigns.touch import (
     SendBlocked,
     SendResult,
@@ -18,10 +21,12 @@ from app.campaigns.touch import (
 )
 from app.config import Settings, get_settings
 from app.db.models.audit import AuditLog
-from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog
-from app.db.models.llmops import GenerationRun
+from app.db.models.campaign_agent_run import PLAN_RUN, CampaignAgentRun
+from app.db.models.campaigns import CampaignStep, ContactEvent, Enrollment, TouchLog, TouchPlan
+from app.db.models.llmops import GenerationRun, TraceRef
 from app.db.models.models import Clients, Funds, PiiVault
 from app.db.models.outreach import Campaign, OutreachMessage
+from app.db.models.routing import ClientSide
 from app.db.models.rules import ClientMessageIndicators, MessageAngleCatalog
 from app.db.models.suppression import Suppression
 from app.db.models.test_recipient import TestRecipient
@@ -29,6 +34,7 @@ from app.db.session import SessionLocal, restricted_session
 from app.delivery.mailer import NullMailer
 from app.delivery.sender import build_email_sender
 from app.delivery.test_recipients import _sends_so_far
+from app.llmops.tracing import NullTracer
 from app.llmops.versions import persist_generation_run
 from app.rules.catalog import active_catalog_version
 from app.services.campaigns import campaign_readiness
@@ -1140,7 +1146,7 @@ def test_a_test_campaign_sends_to_the_tester_and_audits_mode_and_address(
 
     assert [m.to for m in mailer.sent_messages] == [tester_on_list]
     assert mailer.sent_messages[0].subject == "[TEST] Hello"
-    assert f"Test send for client {client_row}" in mailer.sent_messages[0].text_body
+    assert mailer.sent_messages[0].text_body == "Body"
     with SessionLocal() as session:
         audit = session.scalar(
             select(AuditLog).where(
@@ -1193,3 +1199,285 @@ def test_sends_so_far_counts_only_sent_touches_of_that_campaign_and_channel(
     assert _sends_so_far(campaign_with_steps, "email") == 1
     assert _sends_so_far(campaign_with_steps, "sms") == 0
     assert _sends_so_far(-1, "email") == 0
+
+
+def test_send_touch_saves_the_side_and_balance_at_the_time_of_the_send(
+    campaign_with_steps: int, client_row: int
+) -> None:
+    with SessionLocal() as session:
+        session.add(
+            ClientSide(
+                client_id=client_row,
+                side="inactive",
+                balance=450.0,
+                threshold_kes=6000.0,
+                source_feed="inactive",
+            )
+        )
+        enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=client_row
+        )
+        message = _make_message(
+            session, campaign_id=campaign_with_steps, client_id=client_row, status="approved"
+        )
+        touch = record_touch(session, enrollment, 1)
+        touch.message_id = message.message_id
+        session.commit()
+
+        try:
+            send_touch(session, touch)
+            session.commit()
+            saved = (touch.side_at_send, touch.balance_at_send)
+        finally:
+            session.execute(delete(ClientSide).where(ClientSide.client_id == client_row))
+            session.commit()
+
+    assert saved == ("inactive", 450.0)
+
+
+def test_send_touch_leaves_the_side_blank_when_the_client_has_none(
+    campaign_with_steps: int, client_row: int
+) -> None:
+    with SessionLocal() as session:
+        enrollment = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=client_row
+        )
+        message = _make_message(
+            session, campaign_id=campaign_with_steps, client_id=client_row, status="approved"
+        )
+        touch = record_touch(session, enrollment, 1)
+        touch.message_id = message.message_id
+        session.commit()
+
+        send_touch(session, touch)
+        session.commit()
+
+        assert (touch.side_at_send, touch.balance_at_send) == (None, None)
+
+
+def _planned_second_touch(session, *, campaign_id: int, client_id: int) -> TouchLog:
+    enrollment = _make_enrollment(
+        session,
+        campaign_id=campaign_id,
+        client_id=client_id,
+        current_step=1,
+        status="in_progress",
+    )
+    run = CampaignAgentRun(trigger="manual", kind=PLAN_RUN, state="completed")
+    session.add(run)
+    session.flush()
+    plan_tool = make_choose_touch_plan_tool(
+        slots=[
+            {
+                "slot": 0,
+                "enrollment_id": enrollment.enrollment_id,
+                "step_no": 2,
+                "prior_angle": None,
+            }
+        ],
+        allowed_angles={"winback_value"},
+        min_gap_days=2,
+        max_gap_days=10,
+        run_id=run.run_id,
+        outcome={},
+    )
+    planned = plan_tool(
+        session,
+        decisions=[
+            {
+                "slot": 0,
+                "angle": "winback_value",
+                "gap_days": 5,
+                "reason": "second touch",
+                "next_time": "check in",
+            }
+        ],
+    )
+    assert planned["status"] == "written"
+    message = _make_message(
+        session, campaign_id=campaign_id, client_id=client_id, status="approved"
+    )
+    touch = record_touch(session, enrollment, 2)
+    touch.message_id = message.message_id
+    session.commit()
+    return touch
+
+
+def _forget_planning(client_id: int) -> None:
+    with SessionLocal() as session:
+        enrollment_ids = session.scalars(
+            select(Enrollment.enrollment_id).where(Enrollment.client_id == client_id)
+        ).all()
+        session.execute(delete(ContactEvent).where(ContactEvent.client_id == client_id))
+        session.execute(delete(TouchPlan).where(TouchPlan.enrollment_id.in_(enrollment_ids)))
+        session.execute(delete(AuditLog).where(AuditLog.entity_type == "touch_plan"))
+        session.execute(delete(CampaignAgentRun).where(CampaignAgentRun.kind == PLAN_RUN))
+        session.commit()
+
+
+def test_a_reply_that_arrives_after_planning_stops_the_send(
+    campaign_with_steps: int, client_row: int, delivery_mode
+) -> None:
+    delivery_mode("live")
+    try:
+        with SessionLocal() as session:
+            touch = _planned_second_touch(
+                session, campaign_id=campaign_with_steps, client_id=client_row
+            )
+            session.add(
+                ContactEvent(
+                    client_id=client_row,
+                    type="reply",
+                    occurred_at=datetime.now(UTC) + timedelta(minutes=1),
+                )
+            )
+            session.commit()
+
+            with pytest.raises(SendBlocked) as blocked:
+                send_touch(session, touch)
+            session.commit()
+
+            assert blocked.value.reason == "replied"
+            assert touch.sent_at is None
+            assert session.get(Enrollment, touch.enrollment_id).status == "stopped_reply"
+    finally:
+        _forget_planning(client_row)
+
+
+def test_a_deposit_that_arrives_after_planning_stops_the_send(
+    campaign_with_steps: int, client_row: int, delivery_mode
+) -> None:
+    delivery_mode("live")
+    try:
+        with SessionLocal() as session:
+            touch = _planned_second_touch(
+                session, campaign_id=campaign_with_steps, client_id=client_row
+            )
+            session.get(Clients, client_row).last_activity_date = date.today() + timedelta(days=1)
+            session.commit()
+
+            with pytest.raises(SendBlocked) as blocked:
+                send_touch(session, touch)
+            session.commit()
+
+            assert blocked.value.reason == "reengaged"
+            assert touch.sent_at is None
+            assert session.get(Enrollment, touch.enrollment_id).status == "stopped_reengaged"
+    finally:
+        _forget_planning(client_row)
+
+
+def _load_inactive_script(name: str, monkeypatch):
+    path = Path(__file__).resolve().parent.parent / "scripts" / "inactive" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"inactive_script_{name}", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "configure_logging", lambda level: None)
+    return module
+
+
+def _approved_unsent_touch(campaign_id: int, client_id: int) -> tuple[int, int]:
+    with SessionLocal() as session:
+        enrollment = _make_enrollment(session, campaign_id=campaign_id, client_id=client_id)
+        message = _make_message(
+            session, campaign_id=campaign_id, client_id=client_id, status="approved"
+        )
+        touch = record_touch(session, enrollment, 1)
+        touch.message_id = message.message_id
+        session.commit()
+        return touch.touch_id, enrollment.enrollment_id
+
+
+def _plan_count(enrollment_id: int) -> int:
+    with SessionLocal() as session:
+        return session.scalar(
+            select(func.count())
+            .select_from(TouchPlan)
+            .where(TouchPlan.enrollment_id == enrollment_id)
+        )
+
+
+def test_the_send_script_sends_a_fixed_step_campaign_with_no_agent_involved(
+    campaign_with_steps: int, client_row: int, delivery_mode, monkeypatch, capsys
+) -> None:
+    delivery_mode("live")
+    script = _load_inactive_script("send_approved_touches", monkeypatch)
+    touch_id, enrollment_id = _approved_unsent_touch(campaign_with_steps, client_row)
+
+    assert script.main(["--campaign-id", str(campaign_with_steps)]) == 0
+
+    with SessionLocal() as session:
+        touch = session.get(TouchLog, touch_id)
+        enrollment = session.get(Enrollment, enrollment_id)
+        assert touch.delivery_status == "stubbed"
+        assert (enrollment.current_step, enrollment.status) == (1, "in_progress")
+        assert enrollment.next_due_at - touch.sent_at == timedelta(days=7)
+    assert _plan_count(enrollment_id) == 0
+    assert "1 sent, 0 blocked" in capsys.readouterr().out
+
+
+def test_the_send_script_reports_a_blocked_touch_and_leaves_it_unsent(
+    campaign_with_steps: int, client_row: int, delivery_mode, monkeypatch, capsys
+) -> None:
+    delivery_mode("live")
+    script = _load_inactive_script("send_approved_touches", monkeypatch)
+    touch_id, enrollment_id = _approved_unsent_touch(campaign_with_steps, client_row)
+    with SessionLocal() as session:
+        session.add(Suppression(client_id=client_row, reason="unsubscribe"))
+        session.commit()
+
+    assert script.main(["--campaign-id", str(campaign_with_steps)]) == 0
+
+    with SessionLocal() as session:
+        assert session.get(TouchLog, touch_id).sent_at is None
+    assert "0 sent, 1 blocked" in capsys.readouterr().out
+
+
+@pytest.fixture
+def forget_trace_refs(client_row: int):
+    yield
+    with SessionLocal() as session:
+        session.execute(
+            delete(TraceRef).where(
+                TraceRef.run_id.in_(
+                    select(GenerationRun.run_id).where(GenerationRun.client_id == client_row)
+                )
+            )
+        )
+        session.commit()
+
+
+class _OneDraftGraph:
+    def __init__(self, client_id: int) -> None:
+        self.client_id = client_id
+
+    def stream(self, state, stream_mode):
+        yield {"finalize": accepted_state(self.client_id)}
+
+
+def test_the_cycle_script_drafts_a_fixed_step_campaign_without_planning_or_sending(
+    campaign_with_steps: int, client_row: int, forget_trace_refs, monkeypatch, capsys
+) -> None:
+    script = _load_inactive_script("run_campaign_cycle", monkeypatch)
+    monkeypatch.setattr(script, "get_llm_client", lambda settings: object())
+    monkeypatch.setattr(script, "get_tracer", lambda settings: NullTracer())
+    monkeypatch.setattr(
+        script, "build_generation_graph", lambda **kwargs: _OneDraftGraph(client_row)
+    )
+    with SessionLocal() as session:
+        enrollment_id = _make_enrollment(
+            session, campaign_id=campaign_with_steps, client_id=client_row
+        ).enrollment_id
+
+    assert script.main(["--campaign-id", str(campaign_with_steps)]) == 0
+
+    with SessionLocal() as session:
+        touch = session.scalar(
+            select(TouchLog).where(TouchLog.enrollment_id == enrollment_id, TouchLog.step_no == 1)
+        )
+        message = session.get(OutreachMessage, touch.message_id)
+        enrollment = session.get(Enrollment, enrollment_id)
+        assert (message.status, touch.sent_at) == ("pending_review", None)
+        assert enrollment.current_step == 0
+    assert _plan_count(enrollment_id) == 0
+    assert "1 generated, 0 skipped" in capsys.readouterr().out

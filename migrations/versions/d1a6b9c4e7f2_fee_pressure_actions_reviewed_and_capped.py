@@ -14,10 +14,8 @@ stands in until one exists.
 
 from collections.abc import Sequence
 
+import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.orm import Session
-
-from app.agents.permissions import set_permission
 
 revision: str = "d1a6b9c4e7f2"
 down_revision: str | Sequence[str] | None = "c7e2a5f8d3b6"
@@ -30,19 +28,49 @@ _BACK_TO = "suggest_only"
 _CHANGED_BY = "delivery"
 _DAILY_CAP = 100
 
+# The columns as they stood when this migration shipped, before agent_permission
+# was versioned with valid_from/valid_to.
+_PERMISSION_COLUMNS = (
+    "action_code",
+    "priority_tier",
+    "risk_band",
+    "permission",
+    "max_clients_per_day",
+    "changed_by",
+    "changed_reason",
+)
+_PERMISSION_TABLE = sa.table("agent_permission", *(sa.column(name) for name in _PERMISSION_COLUMNS))
+
 
 def _set(level: str, reason: str, *, max_clients_per_day: int | None) -> None:
-    session = Session(bind=op.get_bind())
+    bind = op.get_bind()
     for action_code in _ACTIONS:
-        set_permission(
-            session,
-            action_code,
-            level,
-            changed_by=_CHANGED_BY,
-            changed_reason=reason,
-            max_clients_per_day=max_clients_per_day,
+        result = bind.execute(
+            _PERMISSION_TABLE.update()
+            .where(
+                _PERMISSION_TABLE.c.action_code == action_code,
+                _PERMISSION_TABLE.c.priority_tier.is_(None),
+                _PERMISSION_TABLE.c.risk_band.is_(None),
+            )
+            .values(
+                permission=level,
+                max_clients_per_day=max_clients_per_day,
+                changed_by=_CHANGED_BY,
+                changed_reason=reason,
+            )
         )
-    session.flush()
+        if result.rowcount == 0:
+            bind.execute(
+                _PERMISSION_TABLE.insert().values(
+                    action_code=action_code,
+                    priority_tier=None,
+                    risk_band=None,
+                    permission=level,
+                    max_clients_per_day=max_clients_per_day,
+                    changed_by=_CHANGED_BY,
+                    changed_reason=reason,
+                )
+            )
 
 
 def upgrade() -> None:

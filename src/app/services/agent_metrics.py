@@ -470,11 +470,14 @@ def cost_metric(session: Session, window: MetricWindow) -> CostOut:
     )
     contacted_clients = session.scalar(
         select(func.count(func.distinct(ActionResult.client_id))).where(
-            ActionResult.sent_at >= start, ActionResult.sent_at < end
+            ActionResult.proposal_id.is_not(None),
+            ActionResult.sent_at >= start,
+            ActionResult.sent_at < end,
         )
     )
     money_in = session.scalar(
         select(func.coalesce(func.sum(ActionResult.deposit_amount_kes), 0.0)).where(
+            ActionResult.proposal_id.is_not(None),
             ActionResult.window_days == window.window_days,
             ActionResult.sent_at >= start,
             ActionResult.sent_at < end,

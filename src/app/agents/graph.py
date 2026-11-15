@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -14,8 +15,17 @@ from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agents.email_agent import build_system_prompt, resolve_allowed_placeholders
-from app.agents.guardrails import DEFAULT_GUARDRAIL_CHECKS, GuardrailFailure
+from app.agents.email_agent import (
+    build_system_prompt,
+    required_placeholders,
+    resolve_allowed_placeholders,
+)
+from app.agents.guardrails import (
+    DEFAULT_GUARDRAIL_CHECKS,
+    GuardrailFailure,
+    enabled_checks,
+    guardrails_on,
+)
 from app.db.models.models import ClientFeatures
 from app.db.models.rules import ClientMessageIndicators
 from app.db.models.views import (
@@ -133,6 +143,11 @@ class GenerationState(TypedDict, total=False):
 GuardrailCheck = Callable[[GenerationState], None]
 
 
+def _rejection_summary(reason: str) -> str:
+    match = re.search(r"Value error, (.*?) \[type=", reason, re.DOTALL)
+    return match.group(1).strip() if match else reason.splitlines()[0]
+
+
 def new_generation_state(*, client_id: int | None, product: str) -> GenerationState:
     return {
         "client_id": client_id,
@@ -216,6 +231,7 @@ def load_client_context(
     at: date | None = None,
     use_rag: bool = True,
     extra_chunks: Sequence[GroundingChunk] = (),
+    angle_override: str | None = None,
 ) -> ClientContext:
     row = (
         session.execute(
@@ -231,19 +247,16 @@ def load_client_context(
     if indicators is None:
         raise ValueError(f"no resolved message indicators for client {client_id!r}")
 
-    chunks = (
-        retrieve_product_facts(session, product=product, angle=indicators.message_angle)
-        if use_rag
-        else ()
-    )
+    angle = angle_override or indicators.message_angle
+    chunks = retrieve_product_facts(session, product=product, angle=angle) if use_rag else ()
     chunks = (*chunks, *extra_chunks)
     on = at or date.today()
-    brief = load_angle(session, indicators.message_angle, on)
+    brief = load_angle(session, angle, on)
     contract = load_tier(session, indicators.priority_tier, on)
     features = session.get(ClientFeatures, client_id)
     return ClientContext(
         raw_context=dict(row),
-        angle=indicators.message_angle,
+        angle=angle,
         prompt_variant=indicators.prompt_variant,
         chunks=chunks,
         brief=brief,
@@ -280,6 +293,7 @@ def load_client_profile_context(session: Session, client_id: int, product: str) 
     if indicators is None:
         raise ValueError(f"no resolved message indicators for client {client_id!r}")
 
+    features = session.get(ClientFeatures, client_id)
     return ClientContext(
         raw_context=dict(row),
         angle=indicators.message_angle,
@@ -287,6 +301,9 @@ def load_client_profile_context(session: Session, client_id: int, product: str) 
         chunks=(),
         facts=load_client_facts(session, client_id, dict(row)),
         priority_tier=indicators.priority_tier,
+        balance_band=features.balance_band if features is not None else None,
+        has_balance=features.has_balance if features is not None else None,
+        high_value=features.high_value if features is not None else None,
         rule_version=indicators.rule_version,
     )
 
@@ -342,7 +359,8 @@ def build_generation_graph(
     audit: AuditSink | None = None,
     tracer: Tracer | None = None,
 ) -> CompiledStateGraph:
-    checks = tuple(guardrail_checks)
+    checks = enabled_checks(guardrail_checks)
+    scan_output = guardrails_on()
     tracer = tracer or NullTracer()
 
     def _retry_or_reject(attempts: int, guardrail: str, reason: str) -> dict[str, Any]:
@@ -449,9 +467,20 @@ def build_generation_graph(
             "latency_ms": latency_ms,
         }
 
+    def system_for_attempt(state: GenerationState) -> str:
+        if state.get("failed_guardrail") != "structured_output" or not state.get("reason"):
+            return state["system_prompt"]
+        required = ", ".join(required_placeholders(state.get("facts")))
+        return (
+            f"{state['system_prompt']}\n\n"
+            f"Your last draft was rejected: {_rejection_summary(state['reason'])}. "
+            f"Write it again. The email must contain these exact tokens: {required}."
+        )
+
     def generate(state: GenerationState) -> dict[str, Any]:
         attempts = state.get("attempts", 0) + 1
-        model_call = as_model_call(llm_client, system=state["system_prompt"])
+        system_prompt = system_for_attempt(state)
+        model_call = as_model_call(llm_client, system=system_prompt)
         started = time.monotonic()
         try:
             draft = run_model_boundary(
@@ -461,6 +490,7 @@ def build_generation_graph(
                 run_id=state["run_id"],
                 trace_id=state["trace_id"],
                 audit=audit,
+                scan_output=scan_output,
             )
         except OutboundLeak as leak:
             latency_ms = int((time.monotonic() - started) * 1000)
@@ -476,7 +506,7 @@ def build_generation_graph(
         latency_ms = int((time.monotonic() - started) * 1000)
         calls = [
             *state.get("llm_calls", ()),
-            _call_record(attempts, state["system_prompt"], draft, latency_ms),
+            _call_record(attempts, system_prompt, draft, latency_ms),
         ]
         return {
             "draft": draft,

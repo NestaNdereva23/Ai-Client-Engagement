@@ -1,11 +1,10 @@
-"""The nightly agent loop: one graph, run once a night and on demand, that
-gathers tonight's groups, plans in plain words, chooses an action for the
-groups that matter, checks every gate, writes the proposals, and reports
-what happened.
-"""
+"""The nightly agent loop: gather tonight's groups, plan, choose an action per group,
+check every gate, write the proposals, and report."""
 
 from __future__ import annotations
 
+import json
+import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, is_dataclass
@@ -13,37 +12,42 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any, TypedDict
 
 import structlog
-from langgraph.graph import END, START, StateGraph
-from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agents import card_copy
 from app.agents.action_brief import proposal_prohibitions
 from app.agents.action_catalog import load_action, selectable_actions
+from app.agents.angle_brief import angle_for_proposal
 from app.agents.events import NO_EVENTS, EventLog, RunEventLog
-from app.agents.permissions import effective_permission
+from app.agents.fa_scope import current_fa_id, fa_scope
+from app.agents.permissions import effective_permission, load_group_settings
 from app.agents.prompt_versioning import AGENT_LOOP_CHOOSE, AGENT_LOOP_PLAN, active_prompt
 from app.agents.proposal_state import transition_proposal
 from app.agents.propose import (
+    ALREADY_IN_A_RUNNING_PROPOSAL,
     DO_NOTHING_ACTION,
     WATCH_FOR_NOW_ACTION,
     default_action_code_for_group,
+    expire_waiting_proposals,
     group_evidence,
+    group_evidence_detail,
     group_skip_reasons,
     load_action_or_raise,
     member_key,
     skip_reason_counts,
 )
 from app.agents.run_cost import run_cost_kes
+from app.agents.situation_action_mapping import actions_for_situation
+from app.agents.situations import (
+    DEPOSIT_SIZE_FALLING,
+    FREQUENT_DEPOSITOR_ONE_FUND,
+    RISK_ROSE_NO_CALL,
+)
 from app.agents.tool_runtime import make_tool_executor
-from app.agents.tools import TOOL_SPECS
+from app.agents.tools import GROUP_LEVEL_TOOL_SPECS
 from app.agents.watchlist import (
-    FEE_PRESSURE_ACTIVE_CONTRIBUTOR,
-    FEE_PRESSURE_GONE_QUIET,
-    GETTING_SMALLER,
-    HEALTHY_ONE_FUND,
-    MORE_URGENT_BUT_NOT_CALLED,
-    VERY_SMALL_AND_QUIET,
+    GROUP_TO_SITUATION,
     GroupMember,
     WatchGroup,
     WatchlistThresholds,
@@ -59,6 +63,7 @@ from app.db.models.agent_event import (
     APPROVAL_GIVEN,
     APPROVAL_NEEDED,
     ERROR,
+    PAUSED,
     PROPOSAL_CREATED,
     RUN_COMPLETED,
     RUN_STARTED,
@@ -84,6 +89,7 @@ from app.privacy.llm_client import (
     as_converse_call,
     get_agent_llm_client,
 )
+from app.privacy.scanners import OutboundLeak
 from app.schemas.agent_choice import AgentChoice
 
 logger = structlog.get_logger(__name__)
@@ -91,6 +97,7 @@ logger = structlog.get_logger(__name__)
 DEFAULT_PLAN_MAX_TURNS = 6
 DEFAULT_CHOOSE_MAX_TURNS = 6
 DEFAULT_MAX_CHOOSE_ATTEMPTS = 2
+DEFAULT_MAX_PLAN_ATTEMPTS = 2
 
 FALLBACK_PLAN_TEXT = "The model did not settle on a plan tonight, so no group is treated as urgent."
 
@@ -99,6 +106,9 @@ NOT_SELECTED_TONIGHT = "not_selected_tonight"
 CHOOSE_ACTION_TOOL_NAME = "choose_action"
 
 ACTS_ALONE = "act_alone"
+
+PAUSE = "pause"
+CANCEL = "cancel"
 
 # These groups always get an outreach attempt: the model may still pick
 # which action and angle fits best, but it may not leave the group with
@@ -110,12 +120,9 @@ ACTS_ALONE = "act_alone"
 # proposal already covered them.
 MUST_REACH_OUT_GROUPS = frozenset(
     {
-        VERY_SMALL_AND_QUIET,
-        GETTING_SMALLER,
-        HEALTHY_ONE_FUND,
-        MORE_URGENT_BUT_NOT_CALLED,
-        FEE_PRESSURE_GONE_QUIET,
-        FEE_PRESSURE_ACTIVE_CONTRIBUTOR,
+        DEPOSIT_SIZE_FALLING,
+        FREQUENT_DEPOSITOR_ONE_FUND,
+        RISK_ROSE_NO_CALL,
     }
 )
 NO_MESSAGE_ACTIONS = (DO_NOTHING_ACTION, WATCH_FOR_NOW_ACTION)
@@ -125,12 +132,19 @@ class AgentRunInProgress(RuntimeError):
     """Raised when a run is asked to start while another one is still running."""
 
 
+# Unwind a step back to the driver without tripping its error handling.
+class _RunPaused(Exception):
+    pass
+
+
+class _RunCancelled(Exception):
+    pass
+
+
 @dataclass(frozen=True)
 class GroupDecision:
-    """One group's outcome after the check step: the action that will
-    actually be proposed, and who is in or out of it, with a reason for
-    every member who is out.
-    """
+    """One group's outcome after the check step: the action to propose and who is in or out.
+    Every member who is out has a reason."""
 
     action: AgentActionCatalog
     angle: str | None
@@ -173,11 +187,8 @@ def _trace_proposal(proposal: AgentProposal) -> dict[str, Any]:
 
 
 def _trace_value(value: Any) -> Any:
-    """A value from AgentLoopState, made safe and readable for a trace.
-
-    Every group and proposal here collapses to counts and codes, never a
-    client id: the same rule the tools and the model itself already follow.
-    """
+    """A value from AgentLoopState, made safe for a trace.
+    Groups and proposals collapse to counts and codes, never a client id."""
     if isinstance(value, AgentActionCatalog):
         return _trace_action(value)
     if isinstance(value, WatchGroup):
@@ -195,6 +206,19 @@ def _trace_value(value: Any) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [_trace_value(item) for item in value]
     return value
+
+
+_GROUP_LEVEL_TOOL_NAMES = frozenset(spec.name for spec in GROUP_LEVEL_TOOL_SPECS)
+
+
+def _is_unmade_tool_call(text: str, tool_names: frozenset[str]) -> bool:
+    """True when text is a tool call the model wrote out instead of making,
+    e.g. the literal string {"list_groups": {}}."""
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return False
+    return isinstance(parsed, dict) and bool(parsed) and set(parsed) <= tool_names
 
 
 def _span_input(state: AgentLoopState) -> dict[str, Any]:
@@ -264,10 +288,7 @@ def build_choose_action_tool_spec(
     *, actions: Mapping[str, AgentActionCatalog], candidate_group_names: Sequence[str]
 ) -> ToolSpec:
     """The tool the choose step's model calls to record one group's decision.
-
-    Offered only during choose, alongside the read tools: this is how the
-    step's answer leaves the model, so there is no reply text left to parse.
-    """
+    Offered only during choose, so there is no reply text left to parse."""
     return ToolSpec(
         name=CHOOSE_ACTION_TOOL_NAME,
         description=(
@@ -308,19 +329,12 @@ def make_choose_action_tool(
     *,
     candidate_group_names: Sequence[str],
     actions: Mapping[str, AgentActionCatalog],
+    group_to_allowed_action_codes: Mapping[str, frozenset[str]],
     choices: dict[str, AgentChoice],
     refusals: list[str],
 ) -> Callable[..., dict[str, Any]]:
     """Build the choose_action tool function for one attempt at the choose step.
-
-    Recording happens by writing into `choices`, so the caller reads it back
-    once the conversation ends; every refusal's message is appended to
-    `refusals` too, so a run that never settles can still say what the model
-    last got wrong. Nothing here raises: a bad call comes back as a plain
-    error dict the model sees on its next turn, the same way every other
-    tool refuses, so the model can correct itself instead of the run falling
-    back straight away.
-    """
+    Choices and refusals are written into the lists passed in; a bad call returns an error dict."""
     valid_names = set(candidate_group_names)
 
     def choose_action(
@@ -341,6 +355,12 @@ def make_choose_action_tool(
             message = f"'{action_code}' is not on tonight's list of actions"
             refusals.append(message)
             return {"error": "unknown_action", "message": message}
+
+        allowed = group_to_allowed_action_codes.get(group_name, frozenset())
+        if action_code not in NO_MESSAGE_ACTIONS and action_code not in allowed:
+            message = f"'{action_code}' is not mapped to '{group_name}' tonight"
+            refusals.append(message)
+            return {"error": "wrong_action", "message": message}
 
         if angle != action.message_angle:
             message = f"'{action_code}' takes the angle {action.message_angle!r}, not {angle!r}"
@@ -365,7 +385,7 @@ def make_choose_action_tool(
     return choose_action
 
 
-def build_agent_loop_graph(
+def build_agent_loop_steps(
     *,
     session: Session,
     run_id: int,
@@ -377,8 +397,8 @@ def build_agent_loop_graph(
     tracer: Tracer | None = None,
     audit: AuditSink | None = None,
     events: EventLog = NO_EVENTS,
-) -> CompiledStateGraph:
-    """Wire the six steps into a compiled graph, ready to invoke() once."""
+) -> list[tuple[str, Callable[[AgentLoopState], dict[str, Any]]]]:
+    """The six steps, named and traced, in the order a run takes them."""
     tracer = tracer or NullTracer()
 
     def _traced(name: str, fn):
@@ -394,6 +414,9 @@ def build_agent_loop_graph(
             events.record(STEP_STARTED, step=name)
             try:
                 result = fn(state, handle)
+            except (_RunPaused, _RunCancelled):
+                tracer.end_span(handle, output={"stopped": "pause_or_cancel"})
+                raise
             except Exception as exc:
                 tracer.end_span(
                     handle, output={"error": str(exc)}, level="ERROR", status_message=str(exc)
@@ -441,6 +464,10 @@ def build_agent_loop_graph(
         return {"groups": groups, "actions": actions, "thresholds": thresholds}
 
     def plan(state: AgentLoopState, span: Any) -> dict[str, Any]:
+        resumed_row = session.get(AgentRun, run_id)
+        if resumed_row.plan_text is not None:
+            return {"plan_text": resumed_row.plan_text}
+
         system_prompt, prompt_version = build_plan_system_prompt(session, as_of)
         tally = ModelCallTally()
         call_tool = traced_tool_call(
@@ -451,7 +478,8 @@ def build_agent_loop_graph(
         )
         converse = traced_converse(
             counting_converse(
-                as_converse_call(llm_client, system=system_prompt, tools=TOOL_SPECS), tally
+                as_converse_call(llm_client, system=system_prompt, tools=GROUP_LEVEL_TOOL_SPECS),
+                tally,
             ),
             tracer=tracer,
             trace_id=trace_id,
@@ -460,23 +488,47 @@ def build_agent_loop_graph(
             system=system_prompt,
         )
 
-        result = run_conversation_boundary(
-            {},
-            converse,
-            call_tool,
-            max_turns=DEFAULT_PLAN_MAX_TURNS,
-            run_id=str(run_id),
-            trace_id=trace_id,
-            audit=audit,
-        )
-        plan_text = (result.final_text or "").strip()
-        if result.stopped_reason != "final_answer" or not plan_text:
+        # A weak model occasionally echoes a tool call as plain text instead
+        # of actually calling the tool, e.g. the reply is the literal string
+        # {"list_groups": {}}. That is never a real plan, so give it one more
+        # try before falling back. The privacy boundary blocking a turn (a
+        # free-text reply that happened to match a phone/account-shaped
+        # pattern) gets the same retry, rather than failing the whole run.
+        result = None
+        plan_text = ""
+        for _ in range(DEFAULT_MAX_PLAN_ATTEMPTS):
+            try:
+                result = run_conversation_boundary(
+                    {},
+                    converse,
+                    call_tool,
+                    max_turns=DEFAULT_PLAN_MAX_TURNS,
+                    run_id=str(run_id),
+                    trace_id=trace_id,
+                    audit=audit,
+                )
+            except OutboundLeak:
+                result = None
+                continue
+            plan_text = (result.final_text or "").strip()
+            if result.stopped_reason != "final_answer" or not _is_unmade_tool_call(
+                plan_text, _GROUP_LEVEL_TOOL_NAMES
+            ):
+                break
+
+        if (
+            result is None
+            or result.stopped_reason != "final_answer"
+            or not plan_text
+            or _is_unmade_tool_call(plan_text, _GROUP_LEVEL_TOOL_NAMES)
+        ):
             plan_text = FALLBACK_PLAN_TEXT
 
+        stopped_reason = result.stopped_reason if result is not None else "boundary_blocked"
         logger.info(
             "agent_loop.plan",
             run_id=run_id,
-            stopped_reason=result.stopped_reason,
+            stopped_reason=stopped_reason,
             plan_text=plan_text,
             **tally.as_detail(),
         )
@@ -488,7 +540,7 @@ def build_agent_loop_graph(
             run_id=str(run_id),
             detail={
                 "plan_text": plan_text,
-                "stopped_reason": result.stopped_reason,
+                "stopped_reason": stopped_reason,
                 **tally.as_detail(),
             },
         )
@@ -507,9 +559,25 @@ def build_agent_loop_graph(
         }
 
     def choose(state: AgentLoopState, span: Any) -> dict[str, Any]:
+        resumed_row = session.get(AgentRun, run_id)
+        if resumed_row.choices is not None:
+            return {
+                "choices": {
+                    name: AgentChoice.model_validate(value)
+                    for name, value in resumed_row.choices.items()
+                }
+            }
+
         groups = state["groups"]
         actions = state["actions"]
         candidate_names = [g.name for g in groups if g.members]
+        group_to_allowed_action_codes = {
+            name: frozenset(
+                row.action_code
+                for row in actions_for_situation(session, GROUP_TO_SITUATION.get(name, name), as_of)
+            )
+            for name in candidate_names
+        }
 
         choices: dict[str, AgentChoice] = {}
         fell_back = False
@@ -528,11 +596,12 @@ def build_agent_loop_graph(
                 as_of=as_of,
             )
             tools = (
-                *TOOL_SPECS,
+                *GROUP_LEVEL_TOOL_SPECS,
                 build_choose_action_tool_spec(
                     actions=actions, candidate_group_names=candidate_names
                 ),
             )
+            tool_names = frozenset(spec.name for spec in tools)
             converse = traced_converse(
                 counting_converse(
                     as_converse_call(llm_client, system=system_prompt, tools=tools), tally
@@ -550,6 +619,7 @@ def build_agent_loop_graph(
                 choose_action_tool = make_choose_action_tool(
                     candidate_group_names=candidate_names,
                     actions=actions,
+                    group_to_allowed_action_codes=group_to_allowed_action_codes,
                     choices=attempt_choices,
                     refusals=refusals,
                 )
@@ -565,15 +635,20 @@ def build_agent_loop_graph(
                     parent=span,
                 )
 
-                result = run_conversation_boundary(
-                    {},
-                    converse,
-                    call_tool,
-                    max_turns=DEFAULT_CHOOSE_MAX_TURNS,
-                    run_id=str(run_id),
-                    trace_id=trace_id,
-                    audit=audit,
-                )
+                try:
+                    result = run_conversation_boundary(
+                        {},
+                        converse,
+                        call_tool,
+                        max_turns=DEFAULT_CHOOSE_MAX_TURNS,
+                        run_id=str(run_id),
+                        trace_id=trace_id,
+                        audit=audit,
+                    )
+                except OutboundLeak:
+                    attempts += 1
+                    last_error = "the model's reply was blocked by the privacy boundary"
+                    continue
                 attempts += 1
                 if result.stopped_reason != "final_answer":
                     last_error = (
@@ -581,6 +656,12 @@ def build_agent_loop_graph(
                         if refusals
                         else "the model did not settle on a final answer before the turn cap"
                     )
+                    continue
+                if not attempt_choices and _is_unmade_tool_call(
+                    (result.final_text or "").strip(), tool_names
+                ):
+                    last_error = "the model wrote a tool call instead of making one"
+
                     continue
                 choices = attempt_choices
                 fell_back = False
@@ -616,8 +697,9 @@ def build_agent_loop_graph(
                 **tally.as_detail(),
             },
         )
+        run_row = session.get(AgentRun, run_id)
+        run_row.choices = {name: choice.model_dump() for name, choice in choices.items()}
         if prompt_version is not None:
-            run_row = session.get(AgentRun, run_id)
             run_row.prompt_versions = {
                 **(run_row.prompt_versions or {}),
                 AGENT_LOOP_CHOOSE: prompt_version,
@@ -665,7 +747,7 @@ def build_agent_loop_graph(
                 reason = (
                     choice.reason
                     if choice is not None
-                    else "the model did not choose an action for this group tonight"
+                    else "the AI Assistant did not choose an action for this group tonight"
                 )
                 checked[group.name] = GroupDecision(
                     action=action,
@@ -681,12 +763,14 @@ def build_agent_loop_graph(
             action = load_action_or_raise(session, chosen_code, as_of)
             angle = action.message_angle if overridden else choice.angle
             reason = (
-                f"{action.title} is this group's required outreach action; the model chose "
-                "not to send anything tonight, so this fixed default was used instead."
+                f"{action.title} is this group's required outreach action; the AI Assistant "
+                "chose not to send anything tonight, so this fixed default was used instead."
                 if overridden
                 else choice.reason
             )
-            skip_reasons = group_skip_reasons(session, group.members, action, as_of, cooldown_days)
+            skip_reasons = group_skip_reasons(
+                session, group.name, group.members, action, as_of, cooldown_days
+            )
             included = tuple(
                 member for member in group.members if skip_reasons[member_key(member)] is None
             )
@@ -730,34 +814,83 @@ def build_agent_loop_graph(
             },
         )
         session.commit()
+        already_running_count = sum(
+            1
+            for decision in checked.values()
+            for reason in decision.skip_reasons.values()
+            if reason == ALREADY_IN_A_RUNNING_PROPOSAL
+        )
+        events.record(
+            RUN_STATUS,
+            stage="checked",
+            group_count=len(checked),
+            already_running_count=already_running_count,
+        )
         return {"checked": checked}
 
-    def propose(state: AgentLoopState, _span: Any) -> dict[str, Any]:
+    def propose(state: AgentLoopState, span: Any) -> dict[str, Any]:
+        # Only this run's suggestions stay waiting; a resumed run keeps its own.
+        expire_waiting_proposals(session, keep_run_id=run_id)
+        session.commit()
         proposals: list[AgentProposal] = []
-        for group in state["groups"]:
-            decision = state["checked"].get(group.name)
-            if decision is None:
+        decided_groups = [g for g in state["groups"] if state["checked"].get(g.name) is not None]
+        for index, group in enumerate(decided_groups):
+            decision = state["checked"][group.name]
+
+            # A resumed run already committed some groups; show them again, don't redo them.
+            existing = session.scalar(
+                select(AgentProposal).where(
+                    AgentProposal.run_id == run_id, AgentProposal.group_name == group.name
+                )
+            )
+            if existing is not None:
+                proposals.append(existing)
                 continue
 
             money_total_kes = sum(member.balance for member in decision.included)
+            evidence = group_evidence(group, state["thresholds"])
+            evidence_detail = group_evidence_detail(session, group)
+            angle = angle_for_proposal(
+                session,
+                action=decision.action,
+                group_name=group.name,
+                client_count=group.client_count,
+                money_total_kes=money_total_kes,
+                evidence=evidence,
+                evidence_detail=evidence_detail,
+                run_id=run_id,
+                as_of=as_of,
+                llm_client=llm_client,
+                audit=audit,
+                tracer=tracer,
+                trace_id=trace_id,
+                parent=span,
+            )
             proposal = AgentProposal(
                 run_id=run_id,
+                fa_id=current_fa_id(),
                 action_code=decision.action.action_code,
                 catalog_version=decision.action.version,
                 group_name=group.name,
                 group_definition=dict(group.definition),
                 client_count=group.client_count,
                 money_total_kes=money_total_kes,
-                evidence=group_evidence(group, state["thresholds"]),
+                evidence=evidence,
+                evidence_detail=evidence_detail,
                 reason=decision.reason,
-                angle=decision.action.message_angle,
-                content_mix=decision.action.content_mix,
+                angle=angle,
+                content_mix=load_group_settings(
+                    session, group.name, current_fa_id(), as_of
+                ).content_mix
+                or decision.action.content_mix,
                 response_kind=decision.action.response_kind,
                 permission_applied=effective_permission(
                     session,
                     decision.action.action_code,
                     money_total_kes=money_total_kes,
                     money_ceiling_kes=decision.action.money_ceiling_kes,
+                    at=as_of,
+                    group_name=group.name,
                 ),
                 skip_reason_counts=skip_reason_counts(decision.skip_reasons),
                 status="proposed",
@@ -796,15 +929,25 @@ def build_agent_loop_graph(
                     "group_name": group.name,
                     "action_code": decision.action.action_code,
                     "included_count": len(decision.included),
+                    "angle": proposal.angle,
                 },
             )
+            session.commit()
+            copy = card_copy.copy_for_history(group.name)
             events.record(
                 PROPOSAL_CREATED,
                 proposal_id=proposal.proposal_id,
                 group_name=group.name,
                 action_code=decision.action.action_code,
+                client_count=proposal.client_count,
                 included_count=len(decision.included),
+                money_total_kes=money_total_kes,
+                skip_reason_counts=proposal.skip_reason_counts,
                 permission_applied=proposal.permission_applied,
+                card_title=copy.card_title,
+                screen_label=copy.screen_label,
+                why_now=copy.why_now,
+                suggested_owner=card_copy.suggested_owner_for(decision.action.response_kind),
             )
             if decision.action.action_code != DO_NOTHING_ACTION:
                 if proposal.permission_applied == ACTS_ALONE:
@@ -839,6 +982,7 @@ def build_agent_loop_graph(
                             run_id=run_id,
                             as_of=as_of,
                             cooldown_days=cooldown_days,
+                            tracer=tracer,
                         )
                     except Exception as exc:
                         session.rollback()
@@ -867,6 +1011,11 @@ def build_agent_loop_graph(
                         included_count=len(decision.included),
                     )
             proposals.append(proposal)
+
+            if index < len(decided_groups) - 1:
+                _wait_between_groups(
+                    session, run_id, events, next_group=decided_groups[index + 1].name
+                )
 
         record_audit(
             session,
@@ -932,30 +1081,99 @@ def build_agent_loop_graph(
         session.commit()
         return {"summary": summary, "cost_kes": cost_kes}
 
-    graph = StateGraph(AgentLoopState)
-    graph.add_node("gather", _traced("gather", gather))
-    graph.add_node("plan", _traced("plan", plan))
-    graph.add_node("choose", _traced("choose", choose))
-    graph.add_node("check", _traced("check", check))
-    graph.add_node("propose", _traced("propose", propose))
-    graph.add_node("report", _traced("report", report))
+    return [
+        ("gather", _traced("gather", gather)),
+        ("plan", _traced("plan", plan)),
+        ("choose", _traced("choose", choose)),
+        ("check", _traced("check", check)),
+        ("propose", _traced("propose", propose)),
+        ("report", _traced("report", report)),
+    ]
 
-    graph.add_edge(START, "gather")
-    graph.add_edge("gather", "plan")
-    graph.add_edge("plan", "choose")
-    graph.add_edge("choose", "check")
-    graph.add_edge("check", "propose")
-    graph.add_edge("propose", "report")
-    graph.add_edge("report", END)
 
-    return graph.compile()
+def _control_requested(session: Session, run_id: int) -> str | None:
+    return session.scalar(select(AgentRun.control_requested).where(AgentRun.run_id == run_id))
+
+
+def _wait_between_groups(
+    session: Session, run_id: int, events: EventLog, *, next_group: str
+) -> None:
+    window = get_settings().agent_group_pause_window_seconds
+    waited = 0
+    while waited < window:
+        control = _control_requested(session, run_id)
+        if control == PAUSE:
+            raise _RunPaused()
+        if control == CANCEL:
+            raise _RunCancelled()
+        events.record(
+            RUN_STATUS, stage="group_wait", seconds_left=window - waited, next_group=next_group
+        )
+        time.sleep(1)
+        waited += 1
+
+
+def _settle_paused(session: Session, run_id: int, events: EventLog) -> None:
+    session.rollback()
+    run = session.get(AgentRun, run_id)
+    run.state = "paused"
+    run.control_requested = None
+    record_audit(
+        session, entity_type="agent_run", action="paused", entity_id=str(run_id), run_id=str(run_id)
+    )
+    session.commit()
+    events.record(PAUSED)
+    logger.info("agent_loop.run_paused", run_id=run_id)
+
+
+def _settle_cancelled(session: Session, run_id: int, events: EventLog) -> None:
+    session.rollback()
+    run = session.get(AgentRun, run_id)
+    run.state = "cancelled"
+    run.control_requested = None
+    run.finished_at = datetime.now(UTC)
+    record_audit(
+        session,
+        entity_type="agent_run",
+        action="cancelled",
+        entity_id=str(run_id),
+        run_id=str(run_id),
+    )
+    session.commit()
+    events.record(RUN_COMPLETED, state="cancelled")
+    logger.info("agent_loop.run_cancelled", run_id=run_id)
+
+
+def _run_steps(
+    steps: list[tuple[str, Callable[[AgentLoopState], dict[str, Any]]]],
+    *,
+    session: Session,
+    run_id: int,
+    events: EventLog,
+) -> str:
+    state: AgentLoopState = {}
+    for _name, fn in steps:
+        control = _control_requested(session, run_id)
+        if control == PAUSE:
+            _settle_paused(session, run_id, events)
+            return "paused"
+        if control == CANCEL:
+            _settle_cancelled(session, run_id, events)
+            return "cancelled"
+        try:
+            state.update(fn(state))
+        except _RunPaused:
+            _settle_paused(session, run_id, events)
+            return "paused"
+        except _RunCancelled:
+            _settle_cancelled(session, run_id, events)
+            return "cancelled"
+    return "completed"
 
 
 def _latest_completed_risk_run_id(session: Session) -> str | None:
-    """The most recently finished risk run, or None if there has never been
-    one. The agent reads whatever is on file at the moment it runs; this is
-    only a record of which risk run that happened to be, not a dependency.
-    """
+    """The most recently finished risk run, or None if there has never been one.
+    A record of which run was on file, not a dependency."""
     return session.scalar(
         select(RiskRun.run_id)
         .where(RiskRun.state == "completed")
@@ -998,29 +1216,33 @@ def start_agent_run(
     as_of: date | None = None,
     kind: str = NIGHTLY_AGENT,
     insight_id: int | None = None,
+    fa_id: str | None = None,
 ) -> AgentRun:
     """Open a new agent_run row and commit it, ready for execute_agent_run.
-
-    A run that reads the whole book refuses with AgentRunInProgress when
-    another one of those is already under way, rather than queuing silently.
-    An action run answers one finding a person has just accepted, so it
-    starts whatever else is going and holds nothing up itself. Records which
-    risk run's data is on file right now, or that there is none -- the agent
-    never needs a risk run to exist.
-    """
+    A whole book run refuses with AgentRunInProgress when another is under way."""
     as_of = as_of or date.today()
     fail_stale_runs(session, max_runtime_minutes=get_settings().agent_run_stale_after_minutes)
     if kind in BOOK_WIDE_AGENTS:
         in_progress = session.scalar(
             select(AgentRun)
-            .where(AgentRun.state == "running", AgentRun.agent_kind.in_(BOOK_WIDE_AGENTS))
+            .where(
+                AgentRun.state == "running",
+                AgentRun.agent_kind.in_(BOOK_WIDE_AGENTS),
+                AgentRun.fa_id.is_(None) if fa_id is None else AgentRun.fa_id == fa_id,
+            )
             .limit(1)
         )
         if in_progress is not None:
             raise AgentRunInProgress(f"agent run {in_progress.run_id} is already running")
 
     risk_run_id = _latest_completed_risk_run_id(session)
-    run = AgentRun(trigger=trigger, risk_run_id=risk_run_id, agent_kind=kind, insight_id=insight_id)
+    run = AgentRun(
+        trigger=trigger,
+        risk_run_id=risk_run_id,
+        agent_kind=kind,
+        insight_id=insight_id,
+        fa_id=fa_id,
+    )
     session.add(run)
     session.commit()
     logger.info(
@@ -1036,14 +1258,7 @@ def start_agent_run(
 
 def _resume_running_campaigns(session: Session, *, events: EventLog) -> dict[str, int]:
     """Draft the next batch for campaigns an earlier proposal already started.
-
-    Drafting only ever handles one batch at a time (see
-    campaigns.scheduler.DEFAULT_BATCH_LIMIT), so a cohort bigger than that is
-    never lost: whatever did not fit last time stays enrolled, waiting for
-    this call the next time the agent runs, until the whole cohort is
-    drafted. Runs before tonight's own proposing, so last night's leftovers
-    go out before anything new is decided.
-    """
+    Runs before tonight's proposing, so last night's leftovers go out first."""
     proposals = session.scalars(
         select(AgentProposal).where(
             AgentProposal.status == "running",
@@ -1104,17 +1319,9 @@ def execute_agent_run(
     audit: AuditSink | None = None,
     events: EventLog | None = None,
 ) -> AgentRun:
-    """Run the six-step graph against an agent_run row start_agent_run
-    already opened.
-
-    Always returns the agent_run row, whether it finished or failed. A step
-    that raises leaves the run in the failed state with the reason recorded,
-    and never leaves a half written proposal behind: everything a failing
-    step had not yet committed is rolled back before the run is marked
-    failed. Split out from start_agent_run so a caller that must answer
-    quickly, such as the API, can hand the run id back the moment it exists
-    and run this part in the background.
-    """
+    """Run the six steps against an agent_run row start_agent_run opened.
+    Always returns the row; a step that raises leaves the run failed with the reason recorded.
+    Also used to resume a paused run: it re-enters the same steps, skipping what is already done."""
     llm_client = llm_client or get_agent_llm_client()
     as_of = as_of or date.today()
     tracer = tracer or NullTracer()
@@ -1138,7 +1345,7 @@ def execute_agent_run(
         model=llm_client.model,
     )
 
-    graph = build_agent_loop_graph(
+    steps = build_agent_loop_steps(
         session=session,
         run_id=run_id,
         trace_id=trace_id,
@@ -1155,12 +1362,14 @@ def execute_agent_run(
         try:
             if get_settings().agent_resume_campaigns_enabled:
                 events.record(STEP_STARTED, step="resume_campaigns")
-                resume_summary = _resume_running_campaigns(session, events=events)
+                with fa_scope(run.fa_id):
+                    resume_summary = _resume_running_campaigns(session, events=events)
                 events.record(STEP_COMPLETED, step="resume_campaigns", **resume_summary)
             else:
                 logger.info("agent_loop.resume_campaigns_skipped", run_id=run_id)
 
-            graph.invoke({})
+            with fa_scope(run.fa_id):
+                outcome = _run_steps(steps, session=session, run_id=run_id, events=events)
         except Exception as exc:
             logger.exception("agent_loop.run_failed", run_id=run_id, reason=str(exc))
             events.record(ERROR, about="run", reason=str(exc))
@@ -1181,6 +1390,10 @@ def execute_agent_run(
             session.commit()
             tracer.flush()
             return run
+
+        if outcome != "completed":
+            tracer.flush()
+            return session.get(AgentRun, run_id)
 
         run = session.get(AgentRun, run_id)
         run.state = "completed"
@@ -1211,15 +1424,11 @@ def run_nightly_agent(
     tracer: Tracer | None = None,
     audit: AuditSink | None = None,
     events: EventLog | None = None,
+    fa_id: str | None = None,
 ) -> AgentRun:
     """Start a run and take it all the way through, in one call.
-
-    The entry point for a caller that can afford to wait: a script, the
-    optional hook after the risk run, and the tests. The API instead calls
-    start_agent_run and execute_agent_run separately, so it can answer with
-    the run id before the run has finished.
-    """
-    run = start_agent_run(session, trigger=trigger, as_of=as_of)
+    For a caller that can wait; the API calls start_agent_run and execute_agent_run apart."""
+    run = start_agent_run(session, trigger=trigger, as_of=as_of, fa_id=fa_id)
     return execute_agent_run(
         session,
         run,

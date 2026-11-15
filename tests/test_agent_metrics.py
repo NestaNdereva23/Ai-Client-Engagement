@@ -97,7 +97,7 @@ def _insight(session, *, kind, state, title, dismissed_reason=None) -> AgentInsi
     insight = AgentInsight(
         kind=kind,
         title=title,
-        group_name="getting_smaller",
+        group_name="deposit_size_falling",
         client_count=1,
         confidence="high",
         confidence_reason="counted it",
@@ -116,7 +116,7 @@ def _proposal(session, *, action_code, permission) -> AgentProposal:
     proposal = AgentProposal(
         action_code=action_code,
         catalog_version=1,
-        group_name="getting_smaller",
+        group_name="deposit_size_falling",
         client_count=1,
         evidence="the balance keeps falling",
         reason="worth a nudge",

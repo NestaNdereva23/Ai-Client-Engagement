@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import functools
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -47,9 +47,10 @@ from sqlalchemy.orm import Session
 from app.agents.channels import EMAIL_CHANNEL, ChannelSpec, channel_spec
 from app.agents.email_agent import SystemPromptBlocks, build_system_prompt_blocks
 from app.agents.graph import ClientContext, ContextLoader, load_client_context
-from app.agents.guardrails import GuardrailFailure
+from app.agents.guardrails import GuardrailFailure, enabled_checks, guardrails_on
 from app.audit.log import record_audit
 from app.campaigns.eligibility import check_eligibility
+from app.campaigns.follow_up import follow_up_note, follow_up_rate_chunks
 from app.campaigns.generation import (
     model_boundary_audit_sink,
     resolve_product,
@@ -63,13 +64,11 @@ from app.db.models.generation_batch import GenerationBatch, GenerationBatchItem
 from app.llmops.telemetry import persist_generation_telemetry
 from app.llmops.tracing import NullTracer, Tracer
 from app.llmops.versions import persist_generation_run
+from app.privacy.bedrock_batch import BEDROCK_BATCH_MIN_RECORDS
 from app.privacy.boundary import prepare_batch_payload, scan_batch_result, to_model_context
-from app.privacy.llm_client import (
-    build_batch_request,
-    get_anthropic_batch_client,
-    render_model_context,
-)
+from app.privacy.llm_client import build_batch_request, get_batch_client, render_model_context
 from app.privacy.scanners import InboundLeak, OutboundLeak
+from app.rag.grounding import merge_chunks
 from app.schemas.email_draft import DraftValidationError
 from app.services.review import create_outreach_message
 
@@ -87,6 +86,15 @@ _PROVIDER_ENDED_STATUSES = ("ended",)
 
 class BatchNotFound(Exception):
     """No generation_batch exists with the given id."""
+
+
+class BatchTooSmall(Exception):
+    """Fewer eligible clients than the provider's batch minimum."""
+
+    def __init__(self, count: int, minimum: int) -> None:
+        super().__init__(f"{count} eligible clients, provider needs at least {minimum}")
+        self.count = count
+        self.minimum = minimum
 
 
 @dataclass(frozen=True)
@@ -131,11 +139,11 @@ class BatchIngestResult:
 
 
 def _prompt_blocks_for_channel(
-    channel: str, spec: ChannelSpec, **kwargs: Any
+    channel: str, spec: ChannelSpec, touch_note: str | None = None, **kwargs: Any
 ) -> SystemPromptBlocks:
     # Only email has a real cache/dynamic split; other channels get one block.
     if channel == EMAIL_CHANNEL:
-        return build_system_prompt_blocks(**kwargs)
+        return build_system_prompt_blocks(touch_note=touch_note, **kwargs)
     return SystemPromptBlocks(cached=spec.prompt_builder(**kwargs), dynamic="")
 
 
@@ -262,6 +270,13 @@ def _build_request(
             "chunk_count": len(context.chunks),
         },
     )
+    touch_note = None
+    if step_no > 1 and channel == EMAIL_CHANNEL:
+        touch_note = follow_up_note(session, enrollment.enrollment_id, step_no)
+        context = replace(
+            context,
+            chunks=merge_chunks(context.chunks, follow_up_rate_chunks(session, product)),
+        )
 
     assemble_span = tracer.start_span(
         trace_id=trace_id,
@@ -277,6 +292,7 @@ def _build_request(
         brief=context.brief,
         contract=context.contract,
         facts=context.facts,
+        touch_note=touch_note,
     )
     raw_payload = dict(context.facts) if context.facts else to_model_context(context.raw_context)
     tracer.end_span(
@@ -350,7 +366,9 @@ def submit_batch(
     services.campaigns.submit_campaign_batch) checks that first, the same
     place run_campaign_generation's check lives.
     """
-    context_loader = context_loader or functools.partial(load_client_context, session)
+    context_loader = context_loader or functools.partial(
+        load_client_context, session, use_rag=settings.rag_enabled
+    )
     tracer = tracer or NullTracer()
     batch = GenerationBatch(
         generation_batch_id=str(uuid.uuid4()),
@@ -406,8 +424,22 @@ def submit_batch(
         )
         return batch
 
-    client = client or get_anthropic_batch_client(settings)
-    provider_batch = client.messages.batches.create(requests=requests)
+    _using_real_bedrock_batch_api = (
+        settings.llm_provider == "bedrock"
+        and settings.bedrock_batch_s3_bucket
+        and settings.bedrock_batch_role_arn
+    )
+    if _using_real_bedrock_batch_api and len(requests) < BEDROCK_BATCH_MIN_RECORDS:
+        # Only AWS's real CreateModelInvocationJob batch API enforces this
+        # minimum. When no S3 bucket / IAM role is configured, get_batch_client
+        # falls back to SyncLoopBatchClient, which runs each record as an
+        # ordinary call and has no such floor.
+        raise BatchTooSmall(len(requests), BEDROCK_BATCH_MIN_RECORDS)
+
+    client = client or get_batch_client(settings)
+    provider_batch = client.messages.batches.create(
+        requests=requests, batch_id=batch.generation_batch_id
+    )
 
     batch.provider_batch_id = provider_batch.id
     batch.status = "submitted"
@@ -581,13 +613,14 @@ def _ingest_one(
 
     audit = model_boundary_audit_sink(session)
     try:
-        scan_batch_result(
-            raw_output,
-            entity_id=str(item.client_id),
-            run_id=item.custom_id,
-            trace_id=item.trace_id,
-            audit=audit,
-        )
+        if guardrails_on():
+            scan_batch_result(
+                raw_output,
+                entity_id=str(item.client_id),
+                run_id=item.custom_id,
+                trace_id=item.trace_id,
+                audit=audit,
+            )
     except OutboundLeak as leak:
         return _persist_result(
             session,
@@ -627,7 +660,7 @@ def _ingest_one(
         name="guardrails",
         input=content,
     )
-    for check in spec.guardrail_checks:
+    for check in enabled_checks(spec.guardrail_checks):
         try:
             check(check_state)
         except GuardrailFailure as failure:
@@ -689,7 +722,7 @@ def ingest_batch(
     if batch.provider_batch_id is None:
         return BatchIngestResult(batch=batch, outcomes=[])
 
-    client = client or get_anthropic_batch_client(settings)
+    client = client or get_batch_client(settings)
     provider_batch = client.messages.batches.retrieve(batch.provider_batch_id)
 
     if provider_batch.processing_status not in _PROVIDER_ENDED_STATUSES:

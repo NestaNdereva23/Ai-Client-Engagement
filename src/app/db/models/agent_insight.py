@@ -98,6 +98,7 @@ class AgentInsight(Base):
     suggestion: Mapped[str] = mapped_column(Text, nullable=False)
     # What a message about this finding must not claim.
     avoid_saying: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fa_id: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     why_now: Mapped[str] = mapped_column(Text, nullable=False)
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="new")
     # Required whenever the state is dismissed. Null otherwise.

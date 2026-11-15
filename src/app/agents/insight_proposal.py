@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.agent_loop import ACTS_ALONE, GroupDecision
 from app.agents.events import NO_EVENTS, EventLog
+from app.agents.fa_scope import current_fa_id
 from app.agents.insight_state import transition_insight
 from app.agents.permissions import effective_permission
 from app.agents.propose import (
@@ -90,13 +91,14 @@ def gate_members(
     session: Session,
     *,
     action: AgentActionCatalog,
+    group_name: str,
     members: Sequence[GroupMember],
     as_of: date,
     cooldown_days: int | None,
 ) -> dict[tuple[int, int], str | None]:
     """Why each client fund was left out of this response, or None if it stays."""
     if contact_checks_apply(action):
-        return group_skip_reasons(session, members, action, as_of, cooldown_days)
+        return group_skip_reasons(session, group_name, members, action, as_of, cooldown_days)
     return {member_key(member): None for member in members}
 
 
@@ -113,6 +115,7 @@ def save_insight_proposal(
     insight: AgentInsight,
     decision: GroupDecision,
     members: Sequence[GroupMember],
+    as_of: date,
     run_id: int | None = None,
     events: EventLog = NO_EVENTS,
 ) -> AgentProposal:
@@ -126,6 +129,7 @@ def save_insight_proposal(
     money_total_kes = sum(member.balance for member in decision.included)
     proposal = AgentProposal(
         run_id=run_id,
+        fa_id=insight.fa_id or current_fa_id(),
         insight_id=insight.insight_id,
         action_code=decision.action.action_code,
         catalog_version=decision.action.version,
@@ -145,6 +149,7 @@ def save_insight_proposal(
             decision.action.action_code,
             money_total_kes=money_total_kes,
             money_ceiling_kes=decision.action.money_ceiling_kes,
+            at=as_of,
         ),
         skip_reason_counts=skip_reason_counts(decision.skip_reasons),
         status="proposed",

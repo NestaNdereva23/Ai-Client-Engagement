@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import delete, select
 
 from app.agents.proposal_state import InvalidTransition
+from app.db.models.active_clients import ActiveClientFund
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.audit import AuditLog
 from app.db.session import SessionLocal
@@ -253,6 +254,43 @@ def test_list_proposal_clients_filters_by_included(proposal_with_clients: int) -
     with SessionLocal() as session:
         rows, _ = list_proposal_clients(session, proposal_with_clients, included=False)
     assert [row.client_id for row in rows] == [SKIPPED_CLIENT]
+
+
+def test_list_proposal_clients_filters_by_trend_range(proposal_with_clients: int) -> None:
+    with SessionLocal() as session:
+        session.add_all(
+            [
+                ActiveClientFund(
+                    client_id=INCLUDED_CLIENT,
+                    unit_fund_id=FUND_ID,
+                    n_deposits=1,
+                    n_withdrawals=0,
+                    deposit_trend=-0.8,
+                ),
+                ActiveClientFund(
+                    client_id=SKIPPED_CLIENT,
+                    unit_fund_id=FUND_ID,
+                    n_deposits=1,
+                    n_withdrawals=0,
+                    deposit_trend=-0.1,
+                ),
+            ]
+        )
+        session.commit()
+    try:
+        with SessionLocal() as session:
+            rows, _ = list_proposal_clients(
+                session, proposal_with_clients, min_trend=-0.9, max_trend=-0.5
+            )
+        assert [row.client_id for row in rows] == [INCLUDED_CLIENT]
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(ActiveClientFund).where(
+                    ActiveClientFund.client_id.in_([INCLUDED_CLIENT, SKIPPED_CLIENT])
+                )
+            )
+            session.commit()
 
 
 def test_list_client_proposals_returns_the_clients_history(proposal_with_clients: int) -> None:

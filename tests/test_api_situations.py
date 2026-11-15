@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
 
 from app.agents.signals import recompute_new_client_signals
-from app.agents.situations import NEW_CLIENT_SINGLE_DEPOSIT, recompute_new_client_single_deposit
+from app.agents.situations import FIRST_DEPOSIT_NO_REPEAT, recompute_first_deposit_no_repeat
 from app.db.models.active_clients import ActiveClientFund
+from app.db.models.routing import ClientTier
 from app.db.models.signals import (
     ClientSignalSnapshot,
     ClientSignalState,
@@ -20,7 +21,7 @@ from app.main import app
 
 client = TestClient(app)
 
-DELTA_URL = f"/api/v1/agent/situations/{NEW_CLIENT_SINGLE_DEPOSIT}/delta"
+DELTA_URL = f"/api/v1/agent/situations/{FIRST_DEPOSIT_NO_REPEAT}/delta"
 
 FUND_ID = 9712
 NEW_ARRIVAL_CLIENT = 971201
@@ -73,6 +74,7 @@ def _purge(session) -> None:
     )
     session.execute(delete(ClientSignalState).where(ClientSignalState.client_id.in_(CLIENT_IDS)))
     session.execute(delete(ActiveClientFund).where(ActiveClientFund.client_id.in_(CLIENT_IDS)))
+    session.execute(delete(ClientTier).where(ClientTier.client_id.in_(CLIENT_IDS)))
     session.commit()
 
 
@@ -88,6 +90,18 @@ def book(db: None):
                 _fund(PERSIST_CLIENT),
             ]
         )
+        session.add_all(
+            ClientTier(
+                client_id=client_id,
+                purchased_recently=True,
+                real_withdrawer=False,
+                tier="frequent_depositor",
+                segment="active_active",
+                computed_at=datetime(2026, 10, 13, 6, 0, tzinfo=UTC),
+                thresholds_version=1,
+            )
+            for client_id in CLIENT_IDS
+        )
         session.commit()
 
     yield
@@ -99,7 +113,7 @@ def book(db: None):
 def _recompute(as_of: date) -> None:
     with SessionLocal() as session:
         run = recompute_new_client_signals(session, as_of)
-        recompute_new_client_single_deposit(session, as_of, run.run_id)
+        recompute_first_deposit_no_repeat(session, as_of, run.run_id)
 
 
 def test_a_run_with_new_arrivals_counts_them(book: None) -> None:
@@ -109,7 +123,7 @@ def test_a_run_with_new_arrivals_counts_them(book: None) -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["situation_code"] == NEW_CLIENT_SINGLE_DEPOSIT
+    assert body["situation_code"] == FIRST_DEPOSIT_NO_REPEAT
     assert body["run_id"] is not None
     assert body["newly_active"] == 4
     assert body["newly_resolved"] == 0

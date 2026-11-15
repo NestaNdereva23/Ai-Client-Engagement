@@ -43,8 +43,11 @@ def _insight_filters(
     insight_date: date | None,
     kind: str | None,
     state: str | None,
+    fa_id: str | None = None,
 ) -> list[Any]:
     clauses: list[Any] = []
+    if fa_id is not None:
+        clauses.append(AgentInsight.fa_id == fa_id)
     if run_id is not None:
         clauses.append(AgentInsight.run_id == run_id)
     if insight_date is not None:
@@ -63,13 +66,16 @@ def list_insights(
     insight_date: date | None = None,
     kind: str | None = None,
     state: str | None = None,
+    fa_id: str | None = None,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> tuple[list[AgentInsight], str | None]:
     """One page of findings, newest first."""
     limit = clamp_limit(limit)
     query = select(AgentInsight).where(
-        *_insight_filters(run_id=run_id, insight_date=insight_date, kind=kind, state=state)
+        *_insight_filters(
+            run_id=run_id, insight_date=insight_date, kind=kind, state=state, fa_id=fa_id
+        )
     )
     if cursor is not None:
         query = query.where(AgentInsight.insight_id < decode_id_cursor(cursor))
@@ -90,12 +96,17 @@ def count_insights(
     insight_date: date | None = None,
     kind: str | None = None,
     state: str | None = None,
+    fa_id: str | None = None,
 ) -> int:
     """How many findings list_insights' filters would return in total."""
     return session.scalar(
         select(func.count())
         .select_from(AgentInsight)
-        .where(*_insight_filters(run_id=run_id, insight_date=insight_date, kind=kind, state=state))
+        .where(
+            *_insight_filters(
+                run_id=run_id, insight_date=insight_date, kind=kind, state=state, fa_id=fa_id
+            )
+        )
     )
 
 
@@ -105,13 +116,18 @@ def count_insights_by_kind(
     run_id: int | None = None,
     insight_date: date | None = None,
     state: str | None = None,
+    fa_id: str | None = None,
 ) -> dict[str, int]:
     """How many findings of each kind the same filters return, counted in
     the database so the screen's headline numbers never depend on the page.
     """
     rows = session.execute(
         select(AgentInsight.kind, func.count())
-        .where(*_insight_filters(run_id=run_id, insight_date=insight_date, kind=None, state=state))
+        .where(
+            *_insight_filters(
+                run_id=run_id, insight_date=insight_date, kind=None, state=state, fa_id=fa_id
+            )
+        )
         .group_by(AgentInsight.kind)
     ).all()
     return {kind: count for kind, count in rows}

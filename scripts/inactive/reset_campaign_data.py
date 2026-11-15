@@ -7,12 +7,12 @@ from pathlib import Path
 # Make the app package importable when run as a plain script.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
-from sqlalchemy import func, select, true  # noqa: E402
+from sqlalchemy import func, select  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
 from app.config import get_settings  # noqa: E402
 from app.db.models.agent_proposal import AgentProposal  # noqa: E402
-from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog  # noqa: E402
+from app.db.models.campaigns import CampaignStep, Enrollment, TouchLog, TouchPlan  # noqa: E402
 from app.db.models.generation_batch import GenerationBatch, GenerationBatchItem  # noqa: E402
 from app.db.models.instantiation_batch import InstantiationBatch  # noqa: E402
 from app.db.models.llmops import (  # noqa: E402
@@ -32,11 +32,6 @@ from app.db.session import SessionLocal  # noqa: E402
 from app.logging_config import configure_logging  # noqa: E402
 
 
-def _in_or_all(column, ids: list | None):
-    """column.in_(ids), or an unconditional true() when ids is None (no scoping)."""
-    return true() if ids is None else column.in_(ids)
-
-
 def _resolve_run_ids(session: Session, campaign_ids: list[int]) -> list[str]:
     """generation_runs reachable from these campaigns, via outreach_message or message_template."""
     from_messages = select(OutreachMessage.generation_run_id).where(
@@ -50,21 +45,21 @@ def _resolve_run_ids(session: Session, campaign_ids: list[int]) -> list[str]:
     return list(run_ids)
 
 
-def _build_steps(campaign_ids: list[int] | None, run_ids: list[str] | None):
+def _build_steps(campaign_ids: list[int], run_ids: list[str]):
     """One (label, model, where_clause) per table, in child-before-parent order."""
     template_ids = select(MessageTemplate.template_id).where(
-        _in_or_all(MessageTemplate.campaign_id, campaign_ids)
+        MessageTemplate.campaign_id.in_(campaign_ids)
     )
     message_ids = select(OutreachMessage.message_id).where(
-        _in_or_all(OutreachMessage.campaign_id, campaign_ids)
+        OutreachMessage.campaign_id.in_(campaign_ids)
     )
     enrollment_ids = select(Enrollment.enrollment_id).where(
-        _in_or_all(Enrollment.campaign_id, campaign_ids)
+        Enrollment.campaign_id.in_(campaign_ids)
     )
     batch_ids = select(GenerationBatch.generation_batch_id).where(
-        _in_or_all(GenerationBatch.campaign_id, campaign_ids)
+        GenerationBatch.campaign_id.in_(campaign_ids)
     )
-    request_ids = select(LLMRequest.request_id).where(_in_or_all(LLMRequest.run_id, run_ids))
+    request_ids = select(LLMRequest.request_id).where(LLMRequest.run_id.in_(run_ids))
 
     # Each table below has its own campaign_id column; the filter must bind to
     # that table's column, not a shared expression, or SQLAlchemy adds the
@@ -72,10 +67,10 @@ def _build_steps(campaign_ids: list[int] | None, run_ids: list[str] | None):
     return [
         ("token_usage", TokenUsage, TokenUsage.request_id.in_(request_ids)),
         ("llm_responses", LLMResponse, LLMResponse.request_id.in_(request_ids)),
-        ("evaluations", Evaluation, _in_or_all(Evaluation.run_id, run_ids)),
-        ("tool_calls", ToolCall, _in_or_all(ToolCall.run_id, run_ids)),
-        ("trace_refs", TraceRef, _in_or_all(TraceRef.run_id, run_ids)),
-        ("llm_requests", LLMRequest, _in_or_all(LLMRequest.run_id, run_ids)),
+        ("evaluations", Evaluation, Evaluation.run_id.in_(run_ids)),
+        ("tool_calls", ToolCall, ToolCall.run_id.in_(run_ids)),
+        ("trace_refs", TraceRef, TraceRef.run_id.in_(run_ids)),
+        ("llm_requests", LLMRequest, LLMRequest.run_id.in_(run_ids)),
         (
             "message_template_review_action",
             TemplateReviewAction,
@@ -83,6 +78,7 @@ def _build_steps(campaign_ids: list[int] | None, run_ids: list[str] | None):
         ),
         ("review_action", ReviewAction, ReviewAction.message_id.in_(message_ids)),
         ("touch_log", TouchLog, TouchLog.enrollment_id.in_(enrollment_ids)),
+        ("touch_plan", TouchPlan, TouchPlan.enrollment_id.in_(enrollment_ids)),
         (
             "generation_batch_item",
             GenerationBatchItem,
@@ -91,35 +87,35 @@ def _build_steps(campaign_ids: list[int] | None, run_ids: list[str] | None):
         (
             "outreach_message",
             OutreachMessage,
-            _in_or_all(OutreachMessage.campaign_id, campaign_ids),
+            OutreachMessage.campaign_id.in_(campaign_ids),
         ),
         (
             "message_template",
             MessageTemplate,
-            _in_or_all(MessageTemplate.campaign_id, campaign_ids),
+            MessageTemplate.campaign_id.in_(campaign_ids),
         ),
-        ("generation_runs", GenerationRun, _in_or_all(GenerationRun.run_id, run_ids)),
+        ("generation_runs", GenerationRun, GenerationRun.run_id.in_(run_ids)),
         (
             "generation_batch",
             GenerationBatch,
-            _in_or_all(GenerationBatch.campaign_id, campaign_ids),
+            GenerationBatch.campaign_id.in_(campaign_ids),
         ),
         (
             "template_generation_plan",
             TemplateGenerationPlan,
-            _in_or_all(TemplateGenerationPlan.campaign_id, campaign_ids),
+            TemplateGenerationPlan.campaign_id.in_(campaign_ids),
         ),
         (
             "campaign_template_policy",
             CampaignTemplatePolicy,
-            _in_or_all(CampaignTemplatePolicy.campaign_id, campaign_ids),
+            CampaignTemplatePolicy.campaign_id.in_(campaign_ids),
         ),
-        ("enrollment", Enrollment, _in_or_all(Enrollment.campaign_id, campaign_ids)),
-        ("campaign_step", CampaignStep, _in_or_all(CampaignStep.campaign_id, campaign_ids)),
+        ("enrollment", Enrollment, Enrollment.campaign_id.in_(campaign_ids)),
+        ("campaign_step", CampaignStep, CampaignStep.campaign_id.in_(campaign_ids)),
         (
             "instantiation_batch",
             InstantiationBatch,
-            _in_or_all(InstantiationBatch.campaign_id, campaign_ids),
+            InstantiationBatch.campaign_id.in_(campaign_ids),
         ),
         # campaign_id is nullable here on purpose: an agent_proposal is the
         # agent's own decision record, not campaign data, so unlinking it
@@ -128,23 +124,29 @@ def _build_steps(campaign_ids: list[int] | None, run_ids: list[str] | None):
         (
             "agent_proposal (unlinked)",
             AgentProposal,
-            _in_or_all(AgentProposal.campaign_id, campaign_ids),
+            AgentProposal.campaign_id.in_(campaign_ids),
             "null_campaign_id",
         ),
-        ("campaign", Campaign, _in_or_all(Campaign.campaign_id, campaign_ids)),
+        ("campaign", Campaign, Campaign.campaign_id.in_(campaign_ids)),
     ]
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Delete campaign/enrollment/outreach data for a clean campaign re-test."
+        description=(
+            "Delete the campaign/enrollment/outreach data of the campaigns you name, "
+            "for a clean campaign re-test. Other campaigns are never touched."
+        )
     )
     parser.add_argument(
         "--campaign-id",
         type=int,
-        action="append",
+        nargs="+",
+        action="extend",
+        required=True,
+        metavar="ID",
         dest="campaign_ids",
-        help="Only clear this campaign (repeatable). Omit to clear every campaign.",
+        help="Campaign id(s) to clear: one or several, e.g. --campaign-id 23 24 25. Required.",
     )
     parser.add_argument(
         "--yes",
@@ -156,22 +158,20 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(get_settings().log_level)
 
     with SessionLocal() as session:
-        campaign_ids = args.campaign_ids
-        run_ids: list[str] | None = None
-        if campaign_ids is not None:
-            found = set(
-                session.execute(
-                    select(Campaign.campaign_id).where(Campaign.campaign_id.in_(campaign_ids))
-                ).scalars()
-            )
-            missing = set(campaign_ids) - found
-            if missing:
-                parser.error(f"no campaign with id(s): {sorted(missing)}")
-            run_ids = _resolve_run_ids(session, campaign_ids)
+        campaign_ids = sorted(set(args.campaign_ids))
+        found = set(
+            session.execute(
+                select(Campaign.campaign_id).where(Campaign.campaign_id.in_(campaign_ids))
+            ).scalars()
+        )
+        missing = set(campaign_ids) - found
+        if missing:
+            parser.error(f"no campaign with id(s): {sorted(missing)}")
+        run_ids = _resolve_run_ids(session, campaign_ids)
 
         steps = _build_steps(campaign_ids, run_ids)
 
-        print(f"scope: {'all campaigns' if campaign_ids is None else campaign_ids}")
+        print(f"scope: campaigns {campaign_ids}")
         print(f"mode:  {'DELETE' if args.yes else 'dry run (pass --yes to actually delete)'}")
         print()
 

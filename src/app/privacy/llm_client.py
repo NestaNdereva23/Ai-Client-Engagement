@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Literal, Protocol, runtime_checkable
 
 import anthropic
+import boto3
 import httpx
 import structlog
 from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
 from anthropic.types.messages.batch_create_params import Request as BatchRequest
+from botocore.config import Config as BotoConfig
+from botocore.exceptions import BotoCoreError, ClientError
 
 from app.config import Settings, get_settings
+from app.privacy.bedrock_batch import BedrockBatchClient, SyncLoopBatchClient
 from app.privacy.boundary import (
     AsyncConverseCall,
     ConverseCall,
@@ -24,6 +31,10 @@ from app.privacy.boundary import (
 logger = structlog.get_logger(__name__)
 
 DEFAULT_MAX_TURNS = 8
+
+BEDROCK_READ_TIMEOUT_SECONDS = 300
+BEDROCK_BLOCKED_STOP_REASONS = frozenset({"guardrail_intervened", "content_filtered"})
+BEDROCK_CLAUDE_MARKER = "anthropic."
 
 
 class LLMClientError(RuntimeError):
@@ -143,9 +154,14 @@ def _openai_tool_specs(tools: Sequence[ToolSpec]) -> list[dict[str, Any]]:
     ]
 
 
-def _openai_messages(system: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _openai_messages(
+    system: str, messages: list[dict[str, Any]], *, arguments_as_object: bool = False
+) -> list[dict[str, Any]]:
     """The Anthropic content block messages run_conversation_boundary builds,
     translated into the plain chat messages Ollama and llama.cpp expect.
+
+    llama.cpp wants a tool call's arguments as a JSON string. Ollama's own chat
+    endpoint wants them as an object and answers 400 to a string.
     """
     translated: list[dict[str, Any]] = [{"role": "system", "content": system}]
     for message in messages:
@@ -162,7 +178,12 @@ def _openai_messages(system: str, messages: list[dict[str, Any]]) -> list[dict[s
                 {
                     "id": block["id"],
                     "type": "function",
-                    "function": {"name": block["name"], "arguments": json.dumps(block["input"])},
+                    "function": {
+                        "name": block["name"],
+                        "arguments": block["input"]
+                        if arguments_as_object
+                        else json.dumps(block["input"]),
+                    },
                 }
                 for block in content
                 if block.get("type") == "tool_use"
@@ -245,11 +266,20 @@ class AnthropicLLMClient:
             await self._async_client.close()
 
     def _generate_kwargs(self, system: str, user: str) -> dict[str, Any]:
+        # The Anthropic API (direct or via AnthropicBedrock) rejects a blank
+        # user message outright ("user messages must have non-empty
+        # content"). An empty turn is a real, legitimate case here: the
+        # privacy boundary can allow-list zero facts for a given
+        # client/angle (see app.agents.graph's fact-eligibility gate) while
+        # the system prompt alone still carries everything needed, so
+        # there's nothing wrong with the call itself.
         kwargs: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,
             "system": system,
-            "messages": [{"role": "user", "content": user}],
+            "messages": [
+                {"role": "user", "content": user or "(no additional client facts for this draft)"}
+            ],
         }
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
@@ -422,6 +452,29 @@ class AnthropicLLMClient:
         return ConversationResult(final_text=None, turns=tuple(turns), stopped_reason="turn_limit")
 
 
+def _print_thinking(text: str) -> None:
+    # Raw text to the server console so it reads live, not one log line per token.
+    print(text, end="", file=sys.stderr, flush=True)
+
+
+def _fold_stream_line(reply: dict[str, Any], line: str) -> None:
+    """Add one streamed Ollama chunk to the reply, printing any thinking as it lands."""
+    if not line:
+        return
+    chunk = json.loads(line)
+    if "error" in chunk:
+        raise LLMClientError(f"model request failed: {chunk['error']}")
+    part = chunk.get("message") or {}
+    if part.get("thinking"):
+        _print_thinking(part["thinking"])
+    message = reply.setdefault("message", {"content": "", "tool_calls": []})
+    message["content"] += part.get("content") or ""
+    message["tool_calls"].extend(part.get("tool_calls") or [])
+    if chunk.get("done"):
+        reply["prompt_eval_count"] = chunk.get("prompt_eval_count", 0)
+        reply["eval_count"] = chunk.get("eval_count", 0)
+
+
 class OllamaLLMClient:
     """Talks to a local Ollama server, with a blocking client and an async one."""
 
@@ -434,6 +487,8 @@ class OllamaLLMClient:
         base_url: str = "http://localhost:11434",
         timeout: float = 120.0,
         json_output: bool = True,
+        stream_thinking: bool = False,
+        num_ctx: int | None = None,
         client: httpx.Client | None = None,
         async_client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -441,6 +496,8 @@ class OllamaLLMClient:
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.json_output = json_output
+        self.stream_thinking = stream_thinking
+        self.num_ctx = num_ctx
         self.last_usage: LLMUsage | None = None
         self._base_url = base_url
         self._timeout = timeout
@@ -461,6 +518,9 @@ class OllamaLLMClient:
 
     def _options(self) -> dict[str, Any]:
         options: dict[str, Any] = {"num_predict": self.max_tokens}
+        # Ollama cuts the oldest tokens past its window, system prompt first.
+        if self.num_ctx is not None:
+            options["num_ctx"] = self.num_ctx
         if self.temperature is not None:
             options["temperature"] = self.temperature
         return options
@@ -472,8 +532,8 @@ class OllamaLLMClient:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "stream": False,
-            "think": False,
+            "stream": self.stream_thinking,
+            "think": self.stream_thinking,
             "options": self._options(),
         }
         if self.json_output:
@@ -485,9 +545,9 @@ class OllamaLLMClient:
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": self.model,
-            "messages": _openai_messages(system, messages),
-            "stream": False,
-            "think": False,
+            "messages": _openai_messages(system, messages, arguments_as_object=True),
+            "stream": self.stream_thinking,
+            "think": self.stream_thinking,
             "options": self._options(),
         }
         if tools:
@@ -518,6 +578,8 @@ class OllamaLLMClient:
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         try:
+            if self.stream_thinking:
+                return self._post_streaming(body)
             response = self._client.post("/api/chat", json=body)
             response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -527,12 +589,34 @@ class OllamaLLMClient:
 
     async def _apost(self, body: dict[str, Any]) -> dict[str, Any]:
         try:
+            if self.stream_thinking:
+                return await self._apost_streaming(body)
             response = await self.async_client.post("/api/chat", json=body)
             response.raise_for_status()
         except httpx.HTTPError as exc:
             logger.warning("llm_client.request_failed", model=self.model, error=str(exc))
             raise LLMClientError(f"model request failed: {exc}") from exc
         return response.json()
+
+    def _post_streaming(self, body: dict[str, Any]) -> dict[str, Any]:
+        reply: dict[str, Any] = {}
+        _print_thinking(f"\n[{self.model} thinking]\n")
+        with self._client.stream("POST", "/api/chat", json=body) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                _fold_stream_line(reply, line)
+        _print_thinking("\n[end thinking]\n")
+        return reply
+
+    async def _apost_streaming(self, body: dict[str, Any]) -> dict[str, Any]:
+        reply: dict[str, Any] = {}
+        _print_thinking(f"\n[{self.model} thinking]\n")
+        async with self.async_client.stream("POST", "/api/chat", json=body) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                _fold_stream_line(reply, line)
+        _print_thinking("\n[end thinking]\n")
+        return reply
 
     def generate(self, *, system: str, user: str) -> str:
         """Send one system/user turn to the local model and return the reply text."""
@@ -707,6 +791,156 @@ class LlamaCppLLMClient:
         return self._reply_turn(await self._apost(self._converse_body(system, messages, tools)))
 
 
+def _bedrock_content_blocks(content: Any) -> list[dict[str, Any]]:
+    if isinstance(content, str):
+        return [{"text": content}]
+    blocks: list[dict[str, Any]] = []
+    for block in content:
+        kind = block.get("type")
+        if kind == "text":
+            blocks.append({"text": block["text"]})
+        elif kind == "tool_use":
+            blocks.append(
+                {
+                    "toolUse": {
+                        "toolUseId": block["id"],
+                        "name": block["name"],
+                        "input": block["input"],
+                    }
+                }
+            )
+        elif kind == "tool_result":
+            blocks.append(
+                {
+                    "toolResult": {
+                        "toolUseId": block["tool_use_id"],
+                        "content": [{"text": block["content"]}],
+                    }
+                }
+            )
+    return blocks
+
+
+def _bedrock_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {"role": message["role"], "content": _bedrock_content_blocks(message["content"])}
+        for message in messages
+    ]
+
+
+def _bedrock_tool_config(tools: Sequence[ToolSpec]) -> dict[str, Any]:
+    return {
+        "tools": [
+            {
+                "toolSpec": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "inputSchema": {"json": tool.input_schema},
+                }
+            }
+            for tool in tools
+        ]
+    }
+
+
+class BedrockConverseLLMClient:
+    def __init__(
+        self,
+        *,
+        model: str,
+        max_tokens: int,
+        temperature: float | None = None,
+        region: str = "",
+        client: Any | None = None,
+    ) -> None:
+        self.model = model
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.last_usage: LLMUsage | None = None
+        self._client = client or boto3.client(
+            "bedrock-runtime",
+            region_name=region or None,
+            config=BotoConfig(
+                read_timeout=BEDROCK_READ_TIMEOUT_SECONDS, retries={"mode": "standard"}
+            ),
+        )
+
+    def _request(
+        self, system: str, messages: list[dict[str, Any]], tools: Sequence[ToolSpec]
+    ) -> dict[str, Any]:
+        inference_config: dict[str, Any] = {"maxTokens": self.max_tokens}
+        if self.temperature is not None:
+            inference_config["temperature"] = self.temperature
+        request: dict[str, Any] = {
+            "modelId": self.model,
+            "system": [{"text": system}],
+            "messages": _bedrock_messages(messages),
+            "inferenceConfig": inference_config,
+        }
+        if tools:
+            request["toolConfig"] = _bedrock_tool_config(tools)
+        return request
+
+    def _read_turn(self, response: Mapping[str, Any]) -> ConversationTurn:
+        stop_reason = response["stopReason"]
+        if stop_reason in BEDROCK_BLOCKED_STOP_REASONS:
+            raise LLMClientError("model declined the request")
+        usage = LLMUsage(
+            input_tokens=response["usage"]["inputTokens"],
+            output_tokens=response["usage"]["outputTokens"],
+        )
+        self.last_usage = usage
+        blocks = response["output"]["message"]["content"]
+        return ConversationTurn(
+            text="".join(block["text"] for block in blocks if "text" in block),
+            tool_requests=tuple(
+                ToolUseRequest(
+                    call_id=block["toolUse"]["toolUseId"],
+                    tool_name=block["toolUse"]["name"],
+                    tool_input=block["toolUse"]["input"],
+                )
+                for block in blocks
+                if "toolUse" in block
+            ),
+            usage=usage,
+            stop_reason=stop_reason,
+        )
+
+    def _send(
+        self, system: str, messages: list[dict[str, Any]], tools: Sequence[ToolSpec]
+    ) -> ConversationTurn:
+        try:
+            response = self._client.converse(**self._request(system, messages, tools))
+        except (BotoCoreError, ClientError) as exc:
+            logger.warning("llm_client.request_failed", model=self.model, error=str(exc))
+            raise LLMClientError(f"model request failed: {exc}") from exc
+        return self._read_turn(response)
+
+    def generate(self, *, system: str, user: str) -> str:
+        return self._send(system, [{"role": "user", "content": user}], ()).text
+
+    async def agenerate(self, *, system: str, user: str) -> str:
+        return await asyncio.to_thread(self.generate, system=system, user=user)
+
+    def converse(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: Sequence[ToolSpec] = (),
+    ) -> ConversationTurn:
+        return self._send(system, messages, tools)
+
+    async def aconverse(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: Sequence[ToolSpec] = (),
+    ) -> ConversationTurn:
+        return await asyncio.to_thread(self.converse, system=system, messages=messages, tools=tools)
+
+
 def _build_llm_client(
     *,
     provider: str,
@@ -714,15 +948,32 @@ def _build_llm_client(
     max_tokens: int,
     temperature: float | None,
     anthropic_api_key: str,
+    aws_region: str = "",
     ollama_base_url: str,
     ollama_timeout: float,
     llamacpp_base_url: str,
     llamacpp_timeout: float,
     json_output: bool = True,
-) -> AnthropicLLMClient | OllamaLLMClient | LlamaCppLLMClient:
+) -> AnthropicLLMClient | BedrockConverseLLMClient | OllamaLLMClient | LlamaCppLLMClient:
     if provider == "anthropic":
         return AnthropicLLMClient(
             api_key=anthropic_api_key, model=model, max_tokens=max_tokens, temperature=temperature
+        )
+    if provider == "bedrock" and BEDROCK_CLAUDE_MARKER not in model:
+        return BedrockConverseLLMClient(
+            model=model, max_tokens=max_tokens, temperature=temperature, region=aws_region
+        )
+    if provider == "bedrock":
+        # AnthropicBedrock/AsyncAnthropicBedrock sign with the default AWS
+        # credential chain (env vars, shared config, instance/task role) when
+        # no explicit access key is passed.
+        return AnthropicLLMClient(
+            api_key="",
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            client=anthropic.AnthropicBedrock(aws_region=aws_region),
+            async_client=anthropic.AsyncAnthropicBedrock(aws_region=aws_region),
         )
     if provider == "ollama":
         return OllamaLLMClient(
@@ -732,6 +983,8 @@ def _build_llm_client(
             base_url=ollama_base_url,
             timeout=ollama_timeout,
             json_output=json_output,
+            stream_thinking=get_settings().ollama_stream_thinking,
+            num_ctx=get_settings().ollama_num_ctx,
         )
     if provider == "llamacpp":
         return LlamaCppLLMClient(
@@ -754,6 +1007,7 @@ def get_llm_client(settings: Settings | None = None) -> LLMClient:
         max_tokens=settings.llm_max_tokens,
         temperature=settings.llm_temperature,
         anthropic_api_key=settings.anthropic_api_key,
+        aws_region=settings.aws_region,
         ollama_base_url=settings.ollama_base_url,
         ollama_timeout=settings.ollama_timeout_seconds,
         llamacpp_base_url=settings.llamacpp_base_url,
@@ -779,6 +1033,7 @@ def get_judge_llm_client(settings: Settings | None = None) -> LLMClient:
         max_tokens=max_tokens,
         temperature=temperature,
         anthropic_api_key=settings.anthropic_api_key,
+        aws_region=settings.aws_region,
         ollama_base_url=settings.ollama_base_url,
         ollama_timeout=settings.ollama_timeout_seconds,
         llamacpp_base_url=settings.llamacpp_base_url,
@@ -804,6 +1059,7 @@ def get_briefing_llm_client(settings: Settings | None = None) -> LLMClient:
         max_tokens=max_tokens,
         temperature=temperature,
         anthropic_api_key=settings.anthropic_api_key,
+        aws_region=settings.aws_region,
         ollama_base_url=settings.ollama_base_url,
         ollama_timeout=settings.ollama_timeout_seconds,
         llamacpp_base_url=settings.llamacpp_base_url,
@@ -864,10 +1120,49 @@ def get_agent_llm_client(settings: Settings | None = None) -> ConversingLLMClien
         max_tokens=max_tokens,
         temperature=temperature,
         anthropic_api_key=settings.anthropic_api_key,
+        aws_region=settings.aws_region,
         ollama_base_url=settings.ollama_base_url,
         ollama_timeout=settings.ollama_timeout_seconds,
         llamacpp_base_url=settings.llamacpp_base_url,
         llamacpp_timeout=settings.llamacpp_timeout_seconds,
+    )
+
+
+class CampaignAgentNotConfigured(Exception):
+    pass
+
+
+def campaign_provider_problem(provider: str, settings: Settings) -> str | None:
+    if provider == "anthropic" and not settings.campaign_agent_llm_api_key:
+        return "anthropic needs CAMPAIGN_AGENT_LLM_API_KEY in the server environment"
+    if provider == "bedrock" and not settings.aws_region:
+        return "bedrock needs AWS_REGION in the server environment"
+    if provider in ("ollama", "llamacpp") and not settings.campaign_agent_llm_base_url:
+        return f"{provider} needs CAMPAIGN_AGENT_LLM_BASE_URL in the server environment"
+    return None
+
+
+def get_campaign_agent_llm_client(settings: Settings | None = None) -> ConversingLLMClient:
+    settings = settings or get_settings()
+    if not settings.campaign_agent_llm_model:
+        raise CampaignAgentNotConfigured(
+            "no model is chosen for the campaign agents; pick one in Settings"
+        )
+    problem = campaign_provider_problem(settings.campaign_agent_llm_provider, settings)
+    if problem:
+        raise CampaignAgentNotConfigured(problem)
+    timeout = float(settings.campaign_agent_llm_timeout_seconds)
+    return _build_llm_client(
+        provider=settings.campaign_agent_llm_provider,
+        model=settings.campaign_agent_llm_model,
+        max_tokens=settings.campaign_agent_llm_max_tokens,
+        temperature=settings.campaign_agent_llm_temperature,
+        anthropic_api_key=settings.campaign_agent_llm_api_key,
+        aws_region=settings.aws_region,
+        ollama_base_url=settings.campaign_agent_llm_base_url,
+        ollama_timeout=timeout,
+        llamacpp_base_url=settings.campaign_agent_llm_base_url,
+        llamacpp_timeout=timeout,
     )
 
 
@@ -888,7 +1183,7 @@ def build_batch_request(
     system_dynamic: str = "",
     user: str,
     settings: Settings | None = None,
-) -> BatchRequest:
+) -> BatchRequest | dict[str, Any]:
     """One client's entry for client.messages.batches.create(requests=[...]).
 
     system_cached carries the ephemeral cache_control breakpoint, so every
@@ -903,6 +1198,19 @@ def build_batch_request(
     if system_dynamic:
         system_blocks.append({"type": "text", "text": system_dynamic})
 
+    if settings.llm_provider == "bedrock":
+        # Bedrock's batch record has no "model" field -- the model is chosen
+        # once per job, not per record -- and needs anthropic_version instead.
+        model_input: dict[str, Any] = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": settings.llm_max_tokens,
+            "system": system_blocks,
+            "messages": [{"role": "user", "content": user}],
+        }
+        if settings.llm_temperature is not None:
+            model_input["temperature"] = settings.llm_temperature
+        return {"recordId": custom_id, "modelInput": model_input}
+
     params: dict[str, Any] = {
         "model": settings.llm_model,
         "max_tokens": settings.llm_max_tokens,
@@ -912,3 +1220,40 @@ def build_batch_request(
     if settings.llm_temperature is not None:
         params["temperature"] = settings.llm_temperature
     return BatchRequest(custom_id=custom_id, params=MessageCreateParamsNonStreaming(**params))
+
+
+class _AnthropicBatchAdapter:
+    """Same .messages.batches.create/retrieve/results shape as BedrockBatchClient."""
+
+    def __init__(self, client: anthropic.Anthropic) -> None:
+        self._client = client
+        self.messages = SimpleNamespace(batches=self)
+
+    def create(self, *, requests: list[Any], batch_id: str | None = None) -> Any:
+        return self._client.messages.batches.create(requests=requests)
+
+    def retrieve(self, provider_batch_id: str) -> Any:
+        return self._client.messages.batches.retrieve(provider_batch_id)
+
+    def results(self, provider_batch_id: str) -> Any:
+        return self._client.messages.batches.results(provider_batch_id)
+
+
+def get_batch_client(settings: Settings | None = None) -> Any:
+    """The batch client for whichever provider is configured."""
+    settings = settings or get_settings()
+    if settings.llm_provider == "bedrock":
+        if settings.bedrock_batch_s3_bucket and settings.bedrock_batch_role_arn:
+            return BedrockBatchClient(
+                region=settings.aws_region,
+                bucket=settings.bedrock_batch_s3_bucket,
+                role_arn=settings.bedrock_batch_role_arn,
+                model_id=settings.llm_model,
+            )
+        # No S3 bucket / IAM role configured for AWS's real batch-inference
+        # API -- fall back to running each record as an ordinary sync call
+        # in a loop instead. Slower and without batch-rate pricing, but
+        # needs no new AWS infrastructure. Set both settings to switch back
+        # to the real batch API once they're provisioned.
+        return SyncLoopBatchClient(region=settings.aws_region, model_id=settings.llm_model)
+    return _AnthropicBatchAdapter(get_anthropic_batch_client(settings))

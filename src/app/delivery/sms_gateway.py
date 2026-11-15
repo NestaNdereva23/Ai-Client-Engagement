@@ -17,6 +17,7 @@ logger = structlog.get_logger(__name__)
 class SmsMessage:
     to: str
     body: str
+    reference: str | None = None
 
 
 @dataclass(frozen=True)

@@ -25,6 +25,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.agents.events import NO_EVENTS, EventLog
+from app.agents.fa_scope import current_fa_id
 from app.agents.query_fields import (
     FIELD_NAMES,
     FUND_TABLE,
@@ -192,6 +193,7 @@ def make_insight_tools(
 
         insight = AgentInsight(
             run_id=run_id,
+            fa_id=current_fa_id(),
             kind=kind,
             title=_text(title),
             group_name=_text(group_name),

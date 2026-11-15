@@ -37,7 +37,8 @@ def is_cytonn_address(email: str) -> bool:
 class EmailMessage:
     """One message to send. Plain text is required; HTML is optional and is
     added as an alternative part so a text-only reader still sees the body.
-    cc lists any other addresses to copy on the message.
+    cc lists any other addresses to copy on the message. reference is the
+    outreach message id, kept so a captured delivery can be tied to its touch.
     """
 
     to: str
@@ -45,6 +46,8 @@ class EmailMessage:
     text_body: str
     html_body: str | None = None
     cc: tuple[str, ...] = ()
+    from_email: str | None = None
+    reference: str | None = None
 
 
 @dataclass(frozen=True)
@@ -220,6 +223,8 @@ class TicketingMailer:
         }
         if message.cc:
             payload["cc"] = list(message.cc)
+        if message.from_email:
+            payload["from"] = message.from_email
         try:
             response = self._http().post(
                 TICKETING_EMAIL_PATH,

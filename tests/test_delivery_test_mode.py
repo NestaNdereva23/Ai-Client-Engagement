@@ -11,7 +11,7 @@ from app.campaigns.touch import SendBlocked
 from app.config import get_settings
 from app.db.models.campaigns import Enrollment
 from app.db.models.models import Clients, Funds, PiiVault
-from app.db.models.outreach import Campaign, OutreachMessage
+from app.db.models.outreach import AGENT_PROPOSAL_CAMPAIGN_TYPE, Campaign, OutreachMessage
 from app.db.models.test_recipient import TestRecipient
 from app.db.session import SessionLocal, restricted_session
 from app.delivery.mailer import EmailMessage
@@ -448,3 +448,41 @@ def test_a_second_campaign_against_the_same_cohort_picks_up_where_the_first_left
         session.execute(delete(Funds).where(Funds.unit_fund_id == fund_id))
         session.commit()
     get_settings.cache_clear()
+
+
+@pytest.fixture
+def active_campaign(db: None):
+    with SessionLocal() as session:
+        campaign = Campaign(
+            name="Active side", campaign_type=AGENT_PROPOSAL_CAMPAIGN_TYPE, status="running"
+        )
+        session.add(campaign)
+        session.commit()
+        campaign_id = campaign.campaign_id
+    yield campaign_id
+    with SessionLocal() as session:
+        session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
+        session.commit()
+
+
+def _dormant_live_active_test():
+    return get_settings().model_copy(
+        update={"delivery_mode": "live", "active_delivery_mode": "test"}
+    )
+
+
+def test_an_active_campaign_follows_the_active_mode(tester: None, active_campaign: int):
+    message = a_message()
+    message.campaign_id = active_campaign
+    mailer = FakeMailer()
+    build_email_sender(mailer, settings=_dormant_live_active_test())(message)
+
+    assert mailer.sent_messages[0].to == TESTER_EMAIL
+    assert mailer.sent_messages[0].subject == "[TEST] Hello"
+
+
+def test_a_dormant_campaign_ignores_the_active_mode(tester: None):
+    mailer = FakeMailer()
+    build_email_sender(mailer, settings=_dormant_live_active_test())(a_message())
+
+    assert mailer.sent_messages[0].to == REAL_EMAIL

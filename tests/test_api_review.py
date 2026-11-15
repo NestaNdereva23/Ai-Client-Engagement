@@ -261,6 +261,40 @@ def test_decide_edit_approve_stores_the_edit(
     assert response.json()["action"]["edited_content"] == edited
 
 
+def test_after_an_edit_the_message_shows_the_edited_text(
+    configured_reviewers, message, reviewer_1_headers
+) -> None:
+    message_id, _campaign_id = message
+    edited = {"subject": "New subject", "body": "New body"}
+    client.post(
+        f"{REVIEWS}/{message_id}/decide",
+        json={"outcome": "edit_approve", "edited_content": edited},
+        headers=reviewer_1_headers,
+    )
+
+    body = client.get(f"{REVIEWS}/{message_id}").json()
+
+    assert body["personalized_content"] == edited
+    assert body["ai_draft_content"]["body"] == "Dear {{first_name}}, we miss you."
+
+
+def test_an_edit_with_a_placeholder_that_has_no_value_is_refused(
+    configured_reviewers, message, reviewer_1_headers
+) -> None:
+    message_id, _campaign_id = message
+    response = client.post(
+        f"{REVIEWS}/{message_id}/decide",
+        json={
+            "outcome": "edit_approve",
+            "edited_content": {"subject": "Hi", "body": "Dear {{no_such_fact}}"},
+        },
+        headers=reviewer_1_headers,
+    )
+
+    assert response.status_code == 422
+    assert client.get(f"{REVIEWS}/{message_id}").json()["status"] == "pending_review"
+
+
 def test_decide_twice_is_a_conflict(
     configured_reviewers, message, reviewer_1_headers, reviewer_2_headers
 ) -> None:

@@ -23,7 +23,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -96,6 +96,9 @@ class MessageAngleCatalog(Base):
     cta: Mapped[str | None] = mapped_column(Text, nullable=True)
     family: Mapped[str | None] = mapped_column(Text, nullable=True)
     tone: Mapped[str | None] = mapped_column(Text, nullable=True)
+    audience: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, server_default=text("'{}'::text[]")
+    )
     # A client still resolves, generates, and reviews normally; only the
     # final send is held. Lifted by a catalogue change, not a deploy.
     held: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))

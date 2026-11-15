@@ -5,12 +5,22 @@ from __future__ import annotations
 from datetime import date
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from app.agents.agent_loop import AgentRunInProgress
 from app.agents.run_report_email import announce_run_finished
-from app.api.reviewer_auth import get_current_reviewer_id
+from app.api.access import require_ai_assistant
+from app.api.agent_scope import (
+    AgentScope,
+    advisor_for_new_run,
+    check_run_in_scope,
+    get_agent_scope,
+    require_run_in_scope,
+)
+from app.api.reviewer_auth import bearer_scheme, get_current_reviewer_id
 from app.config import get_settings
 from app.db.async_session import AsyncSessionLocal
 from app.db.session import get_session
@@ -34,8 +44,14 @@ from app.services.agent_events import (
 from app.services.agent_run_reports import get_run_report
 from app.services.agent_runs import (
     AgentRunNotFound,
+    AgentRunNotPaused,
+    AgentRunNotRunning,
     get_agent_run,
     list_agent_runs,
+    request_cancel,
+    request_pause,
+    resume_agent_in_background,
+    resume_paused_run,
     run_agent_in_background,
     start_manual_run,
 )
@@ -47,14 +63,21 @@ router = APIRouter(
 )
 
 
-@router.post("", response_model=AgentRunOut, status_code=202)
+@router.post(
+    "",
+    response_model=AgentRunOut,
+    status_code=202,
+    dependencies=[Depends(require_ai_assistant)],
+)
 def post_agent_run(
     background_tasks: BackgroundTasks,
     as_of: date | None = None,
+    scope: AgentScope = Depends(get_agent_scope),
     session: Session = Depends(get_session),
 ) -> AgentRunOut:
+    fa_id = advisor_for_new_run(scope)
     try:
-        run = start_manual_run(session, as_of=as_of)
+        run = start_manual_run(session, as_of=as_of, fa_id=fa_id)
         session.commit()
     except AgentRunInProgress as exc:
         session.rollback()
@@ -67,7 +90,72 @@ def post_agent_run(
     return AgentRunOut.model_validate(run)
 
 
-@router.get("/{run_id}/report", response_model=RunReportOut)
+@router.post(
+    "/{run_id}/pause",
+    response_model=AgentRunOut,
+    dependencies=[Depends(require_ai_assistant), Depends(require_run_in_scope)],
+)
+def post_agent_run_pause(
+    run_id: int,
+    reviewer_id: str = Depends(get_current_reviewer_id),
+    session: Session = Depends(get_session),
+) -> AgentRunOut:
+    try:
+        run = request_pause(session, run_id, actor_id=reviewer_id)
+    except AgentRunNotFound:
+        raise HTTPException(status_code=404, detail="agent run not found") from None
+    except AgentRunNotRunning as exc:
+        raise HTTPException(status_code=409, detail=f"run is {exc}") from None
+    return AgentRunOut.model_validate(run)
+
+
+@router.post(
+    "/{run_id}/cancel",
+    response_model=AgentRunOut,
+    dependencies=[Depends(require_ai_assistant), Depends(require_run_in_scope)],
+)
+def post_agent_run_cancel(
+    run_id: int,
+    reviewer_id: str = Depends(get_current_reviewer_id),
+    session: Session = Depends(get_session),
+) -> AgentRunOut:
+    try:
+        run = request_cancel(session, run_id, actor_id=reviewer_id)
+    except AgentRunNotFound:
+        raise HTTPException(status_code=404, detail="agent run not found") from None
+    except AgentRunNotRunning as exc:
+        raise HTTPException(status_code=409, detail=f"run is {exc}") from None
+    return AgentRunOut.model_validate(run)
+
+
+@router.post(
+    "/{run_id}/resume",
+    response_model=AgentRunOut,
+    status_code=202,
+    dependencies=[Depends(require_ai_assistant), Depends(require_run_in_scope)],
+)
+def post_agent_run_resume(
+    run_id: int,
+    background_tasks: BackgroundTasks,
+    reviewer_id: str = Depends(get_current_reviewer_id),
+    session: Session = Depends(get_session),
+) -> AgentRunOut:
+    try:
+        run = resume_paused_run(session, run_id, actor_id=reviewer_id)
+    except AgentRunNotFound:
+        raise HTTPException(status_code=404, detail="agent run not found") from None
+    except AgentRunNotPaused as exc:
+        raise HTTPException(status_code=409, detail=f"run is {exc}") from None
+    background_tasks.add_task(resume_agent_in_background, run.run_id, settings=get_settings())
+    background_tasks.add_task(announce_run_finished, run.run_id)
+    return AgentRunOut.model_validate(run)
+
+
+@router.get(
+    "/{run_id}/report",
+    response_model=RunReportOut,
+    dependencies=[Depends(require_ai_assistant), Depends(require_run_in_scope)],
+)
 def get_agent_run_report(run_id: int, session: Session = Depends(get_session)) -> RunReportOut:
     try:
         return get_run_report(session, run_id)
@@ -75,7 +163,11 @@ def get_agent_run_report(run_id: int, session: Session = Depends(get_session)) -
         raise HTTPException(status_code=404, detail="agent run not found") from None
 
 
-@router.get("/{run_id}", response_model=AgentRunOut)
+@router.get(
+    "/{run_id}",
+    response_model=AgentRunOut,
+    dependencies=[Depends(require_ai_assistant), Depends(require_run_in_scope)],
+)
 def get_agent_run_route(run_id: int, session: Session = Depends(get_session)) -> AgentRunOut:
     try:
         run = get_agent_run(session, run_id)
@@ -92,8 +184,10 @@ async def get_agent_run_event_stream(
     run_id: int,
     after: int = Query(default=0, ge=0),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> StreamingResponse:
     settings = get_settings()
+    await run_in_threadpool(check_run_in_scope, credentials, run_id)
     open_streams.limit = settings.agent_stream_max_open
 
     async with AsyncSessionLocal() as session:
@@ -116,7 +210,11 @@ async def get_agent_run_event_stream(
     )
 
 
-@router.get("/{run_id}/events", response_model=RunActivityOut)
+@router.get(
+    "/{run_id}/events",
+    response_model=RunActivityOut,
+    dependencies=[Depends(require_run_in_scope)],
+)
 def get_agent_run_events(
     run_id: int,
     after: int = Query(default=0, ge=0),
@@ -138,14 +236,19 @@ def get_agent_run_events(
     )
 
 
-@router.get("", response_model=Page[AgentRunOut])
+@router.get(
+    "",
+    response_model=Page[AgentRunOut],
+    dependencies=[Depends(require_ai_assistant)],
+)
 def get_agent_runs(
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    scope: AgentScope = Depends(get_agent_scope),
     session: Session = Depends(get_session),
 ) -> Page[AgentRunOut]:
     try:
-        runs, next_cursor = list_agent_runs(session, cursor=cursor, limit=limit)
+        runs, next_cursor = list_agent_runs(session, cursor=cursor, limit=limit, fa_id=scope.fa_id)
     except InvalidCursor:
         raise HTTPException(status_code=400, detail="invalid cursor") from None
     return Page(

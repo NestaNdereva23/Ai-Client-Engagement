@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqladmin import Admin
 from starlette.middleware.sessions import SessionMiddleware
 
+from app.admin.audit import AdminScreenAudit
 from app.admin.auth import AdminAuth
 from app.admin.table_sizes import TableSizesView
 from app.admin.views import ADMIN_VIEWS
@@ -22,7 +23,7 @@ from app.api.middleware import CorrelationIdMiddleware
 from app.api.routers import health, reviewer_ui
 from app.config import Settings, get_settings
 from app.db.async_session import dispose_async_engine
-from app.db.session import engine
+from app.db.session import SessionLocal, engine
 from app.llmops.tracing import shutdown_shared_tracer
 from app.logging_config import configure_logging
 
@@ -33,7 +34,6 @@ _ADMIN_TEMPLATES_DIR = Path(__file__).resolve().parent / "admin" / "templates"
 
 def _reclaim_orphaned_agent_runs(settings: Settings) -> None:
     from app.agents.agent_loop import fail_stale_runs
-    from app.db.session import SessionLocal
 
     try:
         with SessionLocal() as session:
@@ -97,6 +97,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app,
         engine,
         authentication_backend=AdminAuth(secret_key=settings.admin_secret_key),
+        audit_backend=AdminScreenAudit(SessionLocal),
         templates_dir=str(_ADMIN_TEMPLATES_DIR),
     )
     for view in ADMIN_VIEWS:

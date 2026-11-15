@@ -10,6 +10,7 @@ from app.db.models.active_clients import (
     INTERACTION_TYPES,
     ActiveClientFund,
     ActiveClientInteraction,
+    ActiveClientTouchpoint,
     ActiveTransaction,
 )
 from app.db.models.agent import (
@@ -37,9 +38,12 @@ from app.db.models.agent_proposal import (
 from app.db.models.agent_run import AGENT_RUN_STATES, AGENT_RUN_TRIGGERS, AgentRun, AgentToolCall
 from app.db.models.api import IdempotencyKey
 from app.db.models.app_setting import AppSetting
+from app.db.models.assistant_starter import AssistantStarter
 from app.db.models.audit import AuditLog
 from app.db.models.auth import REVIEWER_ROLES, ReviewerUser
 from app.db.models.briefing import BriefingNarrative
+from app.db.models.campaign_agent_prompt import CampaignAgentPrompt
+from app.db.models.campaign_agent_run import CampaignAgentRun, CampaignAgentToolCall
 from app.db.models.campaigns import (
     CONTACT_EVENT_TYPES,
     ENROLLMENT_STATUSES,
@@ -47,6 +51,7 @@ from app.db.models.campaigns import (
     ContactEvent,
     Enrollment,
     TouchLog,
+    TouchPlan,
 )
 from app.db.models.chat import ChatSession, ChatTurn
 from app.db.models.client_lifecycle import (
@@ -120,7 +125,7 @@ from app.db.models.prompt_config import (
 )
 from app.db.models.rag import RagChunk, RagDocument, RagDocumentVersion
 from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion, RiskRun, RiskSnapshot
-from app.db.models.routing import ClientSide
+from app.db.models.routing import ClientSide, ClientTier, ClientTierThresholds
 from app.db.models.rules import (
     BusinessRule,
     ClientMessageIndicators,
@@ -139,6 +144,8 @@ from app.db.models.suppression import Suppression
 from app.db.models.template_generation_plan import TemplateGenerationPlan
 from app.db.models.template_policy import CampaignTemplatePolicy, TemplatePolicyConfigVersion
 from app.db.models.test_recipient import TestRecipient
+from app.db.models.user_access import UserAccess
+from app.db.models.verified_rate import VerifiedRateFact
 
 __all__ = [
     "AGENT_EVENT_KINDS",
@@ -181,6 +188,7 @@ __all__ = [
     "ActionResult",
     "ActiveClientFund",
     "ActiveClientInteraction",
+    "ActiveClientTouchpoint",
     "ActiveConfiguration",
     "ActiveTransaction",
     "AgentActionCatalog",
@@ -201,8 +209,12 @@ __all__ = [
     "BriefingNarrative",
     "BusinessRule",
     "Campaign",
+    "CampaignAgentPrompt",
+    "CampaignAgentRun",
+    "CampaignAgentToolCall",
     "CampaignStep",
     "CampaignTemplatePolicy",
+    "AssistantStarter",
     "ChatSession",
     "ChatTurn",
     "ClientComplaint",
@@ -212,6 +224,8 @@ __all__ = [
     "ClientMessageIndicators",
     "ClientRiskFeatures",
     "ClientSide",
+    "ClientTier",
+    "ClientTierThresholds",
     "ClientSignalSnapshot",
     "ClientSignalState",
     "Clients",
@@ -262,6 +276,9 @@ __all__ = [
     "TemplateReviewAction",
     "TierContract",
     "TouchLog",
+    "TouchPlan",
     "Transactions",
+    "UserAccess",
+    "VerifiedRateFact",
     "VoiceContract",
 ]

@@ -16,9 +16,6 @@ from datetime import date
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.orm import Session
-
-from app.agents.permissions import seed_default_permissions
 
 # revision identifiers, used by Alembic.
 revision: str = "c4e8a2d6f7b1"
@@ -29,6 +26,7 @@ depends_on: str | Sequence[str] | None = None
 _SEEDED_ON = date(2026, 9, 7)
 _SEEDED_BY = "system"
 _SEEDED_REASON = "starting setting: nothing runs without a person saying yes"
+_DEFAULT_PERMISSION = "suggest_only"
 
 # The columns as they stood when this migration shipped. Written out here,
 # instead of importing the live agent_action_catalog model, so a column added
@@ -36,6 +34,16 @@ _SEEDED_REASON = "starting setting: nothing runs without a person saying yes"
 # from scratch.
 _CATALOG_COLUMNS = ("catalog_id", "version", "action_code", "valid_from", "valid_to")
 _CATALOG_TABLE = sa.table("agent_action_catalog", *(sa.column(name) for name in _CATALOG_COLUMNS))
+
+_PERMISSION_COLUMNS = (
+    "action_code",
+    "priority_tier",
+    "risk_band",
+    "permission",
+    "changed_by",
+    "changed_reason",
+)
+_PERMISSION_TABLE = sa.table("agent_permission", *(sa.column(name) for name in _PERMISSION_COLUMNS))
 
 
 def _active_action_codes(bind: sa.engine.Connection, at: date) -> list[str]:
@@ -108,14 +116,21 @@ def upgrade() -> None:
 
     bind = op.get_bind()
     action_codes = _active_action_codes(bind, _SEEDED_ON)
-    session = Session(bind=bind)
-    seed_default_permissions(
-        session,
-        action_codes,
-        changed_by=_SEEDED_BY,
-        changed_reason=_SEEDED_REASON,
-    )
-    session.flush()
+    if action_codes:
+        bind.execute(
+            _PERMISSION_TABLE.insert(),
+            [
+                {
+                    "action_code": action_code,
+                    "priority_tier": None,
+                    "risk_band": None,
+                    "permission": _DEFAULT_PERMISSION,
+                    "changed_by": _SEEDED_BY,
+                    "changed_reason": _SEEDED_REASON,
+                }
+                for action_code in action_codes
+            ],
+        )
 
 
 def downgrade() -> None:

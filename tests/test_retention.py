@@ -94,14 +94,14 @@ def signal_runs(db: None):
                     run_id=run_id,
                     client_id=CLIENT_ID,
                     unit_fund_id=FUND_ID,
-                    situation_code="follow_up_overdue",
+                    situation_code="fa_call_overdue",
                     is_active=True,
                     signal_codes=[],
                 )
             )
             session.add(
                 SituationRunCount(
-                    run_id=run_id, situation_code="follow_up_overdue", active_count=number
+                    run_id=run_id, situation_code="fa_call_overdue", active_count=number
                 )
             )
         session.commit()
@@ -143,7 +143,7 @@ def test_snapshot_cleanup_keeps_two_runs_and_studio_compare_still_works(
     for run_ids in left.values():
         assert run_ids == {"ret-sig-2", "ret-sig-3"}
     assert kept_runs == set(SIGNAL_RUNS)
-    row = next(r for r in comparison.rows if r.situation == "waiting_on_a_call")
+    row = next(r for r in comparison.rows if r.situation == "fa_call_overdue")
     assert (row.count_a, row.count_b) == (1, 3)
 
 
@@ -159,7 +159,7 @@ def test_recording_counts_keeps_only_active_rows_and_can_be_repeated(db: None) -
                     run_id=run_id,
                     client_id=CLIENT_ID + offset,
                     unit_fund_id=FUND_ID,
-                    situation_code="follow_up_overdue",
+                    situation_code="fa_call_overdue",
                     is_active=active,
                     signal_codes=[],
                 )
@@ -177,4 +177,4 @@ def test_recording_counts_keeps_only_active_rows_and_can_be_repeated(db: None) -
         finally:
             _purge_signal_runs(session)
 
-    assert counts == [("follow_up_overdue", 2)]
+    assert counts == [("fa_call_overdue", 2)]

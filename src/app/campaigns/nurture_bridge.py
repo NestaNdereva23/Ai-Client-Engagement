@@ -203,6 +203,15 @@ def _resolve_and_upsert_indicator(
     upsert(session, ClientMessageIndicators, [row], "client_id", _INDICATOR_UPDATE)
 
 
+def ensure_active_client_row(session: Session, client_id: int) -> ClientAggregate | None:
+    aggregate = _aggregate_active_funds(session, client_id)
+    if aggregate is None:
+        return None
+    _ensure_funds(session, aggregate.fund_ids)
+    _insert_client_if_absent(session, aggregate)
+    return aggregate
+
+
 def prepare_client_for_drafting(
     session: Session,
     client_id: int,
@@ -220,11 +229,9 @@ def prepare_client_for_drafting(
     False when the client holds nothing in the active book, so there is
     nothing to write a message about.
     """
-    aggregate = _aggregate_active_funds(session, client_id)
+    aggregate = ensure_active_client_row(session, client_id)
     if aggregate is None:
         return False
-    _ensure_funds(session, aggregate.fund_ids)
-    _insert_client_if_absent(session, aggregate)
     priority_tier = _priority_tier_for(session, client_id)
     _upsert_client_features(
         session,

@@ -11,11 +11,15 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.agents.proposal_state import transition_proposal
-from app.agents.propose import DO_NOTHING_ACTION
+from app.agents.propose import DO_NOTHING_ACTION, LAPSED_REASON, still_fresh
+from app.db.models.active_clients import ActiveClientFund
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.outreach import Campaign
+from app.db.models.rules import MessageAngleCatalog
 from app.db.session import SessionLocal
+from app.llmops.tracing import get_shared_tracer
 from app.pagination import DEFAULT_LIMIT, clamp_limit, decode_id_cursor, encode_id_cursor
+from app.rules.catalog import load_angle
 
 logger = structlog.get_logger(__name__)
 
@@ -31,6 +35,10 @@ class ProposalNotFound(Exception):
     """No agent_proposal exists with the given id."""
 
 
+class ProposalExpired(Exception):
+    """The suggestion lapsed at the end of its day, so it can no longer be decided."""
+
+
 def _proposal_filters(
     *,
     status: str | None,
@@ -38,10 +46,15 @@ def _proposal_filters(
     action_code: str | None,
     exclude_action_code: str | None,
     group_name: str | None = None,
+    fa_id: str | None = None,
 ) -> list[Any]:
-    clauses: list[Any] = []
+    # A waiting suggestion only lives for the day it was made.
+    clauses: list[Any] = [still_fresh()]
+    if fa_id is not None:
+        clauses.append(AgentProposal.fa_id == fa_id)
     if status is not None:
-        clauses.append(AgentProposal.status == status)
+        # A comma list asks for several statuses at once, such as everything approved.
+        clauses.append(AgentProposal.status.in_(status.split(",")))
     if proposal_date is not None:
         clauses.append(func.date(AgentProposal.created_at) == proposal_date)
     if action_code is not None:
@@ -76,6 +89,7 @@ def list_proposals(
     action_code: str | None = None,
     exclude_action_code: str | None = None,
     group_name: str | None = None,
+    fa_id: str | None = None,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> tuple[list[tuple[AgentProposal, int | None]], str | None]:
@@ -90,6 +104,7 @@ def list_proposals(
         action_code=action_code,
         exclude_action_code=exclude_action_code,
         group_name=group_name,
+        fa_id=fa_id,
     )
     query = select(AgentProposal).where(*filters)
     if cursor is not None:
@@ -116,6 +131,7 @@ def count_proposals(
     action_code: str | None = None,
     exclude_action_code: str | None = None,
     group_name: str | None = None,
+    fa_id: str | None = None,
 ) -> int:
     """How many proposals list_proposals' filters would return in total."""
     return session.scalar(
@@ -128,6 +144,7 @@ def count_proposals(
                 action_code=action_code,
                 exclude_action_code=exclude_action_code,
                 group_name=group_name,
+                fa_id=fa_id,
             )
         )
     )
@@ -139,6 +156,14 @@ def get_proposal(session: Session, proposal_id: int) -> AgentProposal:
     if proposal is None:
         raise ProposalNotFound(proposal_id)
     return proposal
+
+
+def angle_brief_for_proposal(
+    session: Session, proposal: AgentProposal
+) -> MessageAngleCatalog | None:
+    if proposal.angle is None:
+        return None
+    return load_angle(session, proposal.angle, proposal.created_at.date())
 
 
 def get_proposal_clients(session: Session, proposal_id: int) -> list[AgentProposalClient]:
@@ -176,6 +201,8 @@ def list_proposal_clients(
     proposal_id: int,
     *,
     included: bool | None = None,
+    min_trend: float | None = None,
+    max_trend: float | None = None,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> tuple[list[AgentProposalClient], str | None]:
@@ -184,6 +211,15 @@ def list_proposal_clients(
     if included is not None:
         clauses.append(AgentProposalClient.included.is_(included))
     query = select(AgentProposalClient).where(*clauses)
+    if min_trend is not None and max_trend is not None:
+        # Matches one evidence_detail third by the same trend_low/trend_high
+        # range it was reported with; a trend tied exactly on a boundary
+        # value can land in whichever neighbouring third shares that edge.
+        query = query.join(
+            ActiveClientFund,
+            (ActiveClientFund.client_id == AgentProposalClient.client_id)
+            & (ActiveClientFund.unit_fund_id == AgentProposalClient.unit_fund_id),
+        ).where(ActiveClientFund.deposit_trend.between(min_trend, max_trend))
     if cursor is not None:
         after_id = decode_id_cursor(cursor)
         query = query.where(AgentProposalClient.proposal_client_id > after_id)
@@ -285,6 +321,13 @@ def decide_proposal(
 ) -> AgentProposal:
     """Approve or reject one proposal, recording who decided and why."""
     proposal = get_proposal(session, proposal_id)
+    lapsed = not session.scalar(
+        select(still_fresh()).where(AgentProposal.proposal_id == proposal_id)
+    )
+    if lapsed:
+        transition_proposal(session, proposal, to_status="expired", reason=LAPSED_REASON)
+        session.commit()
+        raise ProposalExpired(proposal_id)
     proposal = transition_proposal(
         session,
         proposal,
@@ -304,7 +347,7 @@ def run_proposal_in_background(proposal_id: int) -> None:
 
     with SessionLocal() as session:
         try:
-            run_proposal(session, proposal_id)
+            run_proposal(session, proposal_id, tracer=get_shared_tracer())
         except Exception:
             session.rollback()
             logger.exception("decide_proposal.run_proposal_failed", proposal_id=proposal_id)

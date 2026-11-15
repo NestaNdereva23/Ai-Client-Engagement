@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -125,7 +125,7 @@ def _insight(session, run_id: int, state: str, **extra) -> AgentInsight:
         run_id=run_id,
         kind="risk",
         title=f"{TITLE_PREFIX} {state}",
-        group_name="getting_smaller",
+        group_name="deposit_size_falling",
         client_count=5,
         confidence="high",
         confidence_reason="counted twice",
@@ -197,7 +197,7 @@ def _proposal(session, *, insight_id, run_id, campaign_id, status, included, ski
         insight_id=insight_id,
         action_code=ACTION,
         catalog_version=1,
-        group_name="getting_smaller",
+        group_name="deposit_size_falling",
         client_count=len(included) + len(skipped),
         evidence="evidence",
         reason="reason",
@@ -256,13 +256,21 @@ def test_a_run_with_sends_reports_every_number_from_the_records() -> None:
             included=SENT_CLIENTS,
             skipped=((993390, "contacted_recently"), (993391, "open_complaint")),
         )
-        set_permission(session, ACTION, "approve_each", changed_by="lead", changed_reason="on")
+        set_permission(
+            session,
+            ACTION,
+            "approve_each",
+            changed_by="lead",
+            changed_reason="on",
+            valid_from=date(2026, 9, 30),
+        )
         set_permission(
             session,
             ACTION,
             "approve_sample",
             changed_by="lead",
             changed_reason="34 approved, 3 edited",
+            valid_from=date(2026, 9, 30),
         )
         session.commit()
         run_id = run.run_id

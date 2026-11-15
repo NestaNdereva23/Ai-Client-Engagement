@@ -28,7 +28,16 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
+AGENT_PROPOSAL_CAMPAIGN_TYPE = "agent_proposal"
+ADVISOR_REQUESTED_QUEUE_NAME = "Advisor requested email drafts"
 CAMPAIGN_STATUSES = ("draft", "running", "paused", "completed")
+FIXED_STEPS_PLANNING_MODE = "fixed_steps"
+AGENT_PLANNING_MODE = "agent"
+PLANNING_MODES = (FIXED_STEPS_PLANNING_MODE, AGENT_PLANNING_MODE)
+SUGGESTION_PENDING = "pending"
+SUGGESTION_APPROVED = "approved"
+SUGGESTION_DISMISSED = "dismissed"
+SUGGESTION_STATES = (SUGGESTION_PENDING, SUGGESTION_APPROVED, SUGGESTION_DISMISSED)
 MESSAGE_STATUSES = ("pending_review", "approved", "rejected", "escalated", "held")
 REVIEW_OUTCOMES = ("approve", "edit_approve", "reject", "escalate", "hold")
 COHORT_STATUSES = ("sampling", "ready_to_approve_rest", "completed")
@@ -40,6 +49,13 @@ class Campaign(Base):
         CheckConstraint(
             "status IN ('draft', 'running', 'paused', 'completed')", name="ck_campaign_status"
         ),
+        CheckConstraint(
+            "planning_mode IN ('fixed_steps', 'agent')", name="ck_campaign_planning_mode"
+        ),
+        CheckConstraint(
+            "suggestion_state IS NULL OR suggestion_state IN ('pending', 'approved', 'dismissed')",
+            name="ck_campaign_suggestion_state",
+        ),
     )
 
     campaign_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -50,6 +66,15 @@ class Campaign(Base):
     # Allow-listed feature values (segment, tier, bucket) the cohort was selected
     # on, not a free-text description, so enrollment can re-derive membership.
     cohort_definition: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    agent_touch_policy: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    planning_mode: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=FIXED_STEPS_PLANNING_MODE
+    )
+    proposed_by_run_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("campaign_agent_run.run_id"), nullable=True, index=True
+    )
+    suggestion: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    suggestion_state: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="draft")
     default_channel: Mapped[str] = mapped_column(Text, nullable=False, server_default="email")
     is_test: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())

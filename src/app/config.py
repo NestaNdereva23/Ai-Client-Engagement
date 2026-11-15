@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any, Literal
 
 import structlog
@@ -15,20 +15,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.durations import parse_hours
 
 
-@dataclass(frozen=True)
-class FaRecord:
-    fa_id: str
-    name: str
-    email: str
-    daily_capacity: int
-
-
 class Settings(BaseSettings):
     """Runtime configuration, read from the environment and a local .env file.
-
-    Environment variables are matched case-insensitively, so ``APP_ENV`` in the
-    environment populates ``app_env`` here.
-    """
+    Environment variables are matched case-insensitively."""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -104,6 +93,20 @@ class Settings(BaseSettings):
     rag_retrieval_k: int = 3
     rag_min_score: float = 0.1
 
+    exa_api_key: str = Field(default="", validation_alias=AliasChoices("EXA_API_KEY"))
+    web_research_allowed_domains: str = Field(
+        default="", validation_alias=AliasChoices("WEB_RESEARCH_ALLOWED_DOMAINS")
+    )
+
+    @property
+    def web_research_allowed_domains_list(self) -> list[str]:
+        return [
+            d.strip().lower() for d in self.web_research_allowed_domains.split(",") if d.strip()
+        ]
+
+    # A verified rate older than this is withheld rather than quoted as current.
+    verified_rate_max_age_hours: int = 24
+
     cytonn_api_base_url: str = Field(
         default="",
         validation_alias=AliasChoices("CY_API_BASE_URL", "CYTONN_API_BASE_URL"),
@@ -125,9 +128,17 @@ class Settings(BaseSettings):
 
     ollama_base_url: str = "http://localhost:11434"
     ollama_timeout_seconds: float = 300.0
+    ollama_stream_thinking: bool = False
+    ollama_num_ctx: int | None = 16384
 
     llamacpp_base_url: str = "http://localhost:8080"
     llamacpp_timeout_seconds: float = 300.0
+
+    aws_region: str = ""
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    bedrock_batch_role_arn: str = ""
+    bedrock_batch_s3_bucket: str = ""
 
     judge_llm_provider: str = ""
     judge_llm_model: str = ""
@@ -140,6 +151,8 @@ class Settings(BaseSettings):
     briefing_llm_temperature: float | None = None
     briefing_llm_max_tokens: int = 1024
     briefing_prewarm_limit: int = 200
+    client_email_draft_daily_cap: int = 20
+    next_action_quiet_days: int = 7
 
     agent_llm_provider: str = ""
     agent_llm_model: str = ""
@@ -147,8 +160,13 @@ class Settings(BaseSettings):
     agent_llm_max_tokens: int = 2048
     agent_run_after_risk_detection: bool = False
     agent_resume_campaigns_enabled: bool = True
+    agent_angle_generation_enabled: bool = False
+    agent_fa_scoped: bool = False
     agent_run_stale_after_minutes: int = 120
     agent_report_recipients: str = ""
+    # How long propose() waits after one group's proposal, before moving to
+    # the next, so a person has a window to pause.
+    agent_group_pause_window_seconds: int = 10
 
     langfuse_base_url: str = ""
     langfuse_public_key: str = ""
@@ -156,39 +174,42 @@ class Settings(BaseSettings):
 
     complaints_source: str = "stub"
     fa_assignment_source: str = ""
-    fa_roster: str = Field(default="", validation_alias=AliasChoices("ACE_FA_ROSTER", "fa_roster"))
-
-    @property
-    def fa_records(self) -> tuple[FaRecord, ...]:
-        """`fa_roster`, parsed into records in the order given. Malformed
-        entries (wrong field count, empty id, name, or email, unparseable
-        capacity) and repeats of an id already seen are dropped rather than
-        raising, so one typo does not take the whole roster down.
-        """
-        records: list[FaRecord] = []
-        seen: set[str] = set()
-        for entry in self.fa_roster.split(","):
-            parts = [part.strip() for part in entry.split(":")]
-            if len(parts) != 4:
-                continue
-            fa_id, name, email, raw_capacity = parts
-            if not fa_id or not name or not email:
-                continue
-            try:
-                capacity = int(raw_capacity)
-            except ValueError:
-                continue
-            if capacity <= 0 or fa_id in seen:
-                continue
-            seen.add(fa_id)
-            records.append(FaRecord(fa_id=fa_id, name=name, email=email, daily_capacity=capacity))
-        return tuple(records)
+    fa_least_loaded_fallback: bool = True
+    digest_mode: str = "selected"
+    digest_redirect_to: str | None = None
 
     ai_outreach_jwt_secret: str = Field(
         default="", validation_alias=AliasChoices("AI_OUTREACH_JWT_SECRET")
     )
 
     campaign_cooldown_days: int = 1
+
+    campaign_agent_llm_provider: Literal["anthropic", "bedrock", "ollama", "llamacpp"] = "ollama"
+    campaign_agent_llm_model: str = ""
+    campaign_agent_llm_temperature: float | None = None
+    campaign_agent_llm_max_tokens: int = 2048
+    campaign_agent_llm_timeout_seconds: int = 180
+    campaign_agent_llm_api_key: str = ""
+    campaign_agent_llm_base_url: str = "http://localhost:11434"
+    campaign_agent_run_stale_after_minutes: int = 30
+    campaign_agent_min_group_size: int = 5
+    campaign_agent_open_mode: Literal["person_approves", "agent_opens"] = "person_approves"
+    campaign_agent_use_weekly_report: bool = True
+    campaign_agent_use_web_research: bool = True
+    campaign_agent_use_campaign_results: bool = True
+    campaign_agent_web_domains: str | None = ""
+
+    @property
+    def campaign_agent_web_domains_list(self) -> list[str]:
+        return [
+            d.strip().lower()
+            for d in (self.campaign_agent_web_domains or "").split(",")
+            if d.strip()
+        ]
+
+    agent_campaign_max_live: int = 2
+    agent_campaign_pause_share: float = 0.05
+    agent_campaign_pause_min_sent: int = 20
 
     agent_new_client_days: int = 2
     agent_awaiting_call_days: int = 2
@@ -197,8 +218,6 @@ class Settings(BaseSettings):
     agent_daily_send_limit: int | None = None
     agent_first_run_limit: int = 50
     agent_force_approve_each: bool = False
-
-    signal_situation_source: Literal["legacy", "situations"] = "situations"
 
     # What one investigation of a group may spend on its own queries.
     agent_query_call_budget: int = 12
@@ -269,6 +288,9 @@ class Settings(BaseSettings):
 
     rag_enabled: bool = True
 
+    # No default on purpose: generation refuses to run until this is set to true or false.
+    guardrail_checks: bool | None = None
+
     cohort_sample_cap: int = 25
 
     require_deliverable_contact: bool = False
@@ -289,6 +311,21 @@ class Settings(BaseSettings):
     # Live campaigns enroll at most this many clients; 0 means no limit.
     live_campaign_max_clients: int = 0
 
+    active_delivery_mode: Literal["test", "live"] = "test"
+    active_live_sms_to_test_list: bool = True
+    active_dispatch_direct_send: bool = False
+    active_dispatch_direct_send_max_batch: int = 50
+    active_live_campaign_max_clients: int = 0
+    active_test_campaign_max_clients: int = 1
+    active_test_client_first_name: str = "Test Client"
+    active_test_subject_prefix: str = "[TEST]"
+
+    # A dormant touch an agent approves on its own waits this long, unseen,
+    # before it actually sends, so a reviewer who gets the heads up email has
+    # a real window to step in. Seconds, not days, so it can be shrunk for a
+    # test run without a code change.
+    agent_autosend_notice_seconds: int = 43200
+
     smtp_host: str = ""
     smtp_port: int = 1025
     smtp_username: str = ""
@@ -298,13 +335,9 @@ class Settings(BaseSettings):
     email_sender: str = ""
 
     # smtp sends directly; ticketing sends through the Ticketing app's Gmail mailbox.
-    mail_transport: Literal["smtp", "ticketing"] = "smtp"
+    mail_transport: Literal["smtp", "ticketing"] = "ticketing"
     ticketing_base_url: str = ""
     ticketing_timeout_seconds: float = 30.0
-
-    console_base_url: str = Field(
-        default="", validation_alias=AliasChoices("CONSOLE_BASE_URL", "console_base_url")
-    )
 
     admin_username: str = Field(default="", validation_alias=AliasChoices("ADMIN_USERNAME"))
     admin_password: str = Field(default="", validation_alias=AliasChoices("ADMIN_PASSWORD"))
@@ -340,6 +373,17 @@ logger = structlog.get_logger(__name__)
 OVERRIDE_REFRESH_SECONDS = 10.0
 
 
+def export_aws_credentials(settings: Settings) -> None:
+    """AWS libraries read real environment variables, not the .env file, so
+    copy the AWS keys from settings into them. A variable already set wins."""
+    for name, value in (
+        ("AWS_ACCESS_KEY_ID", settings.aws_access_key_id),
+        ("AWS_SECRET_ACCESS_KEY", settings.aws_secret_access_key),
+    ):
+        if value:
+            os.environ.setdefault(name, value)
+
+
 class SettingsProvider:
     def __init__(self) -> None:
         self._env: Settings | None = None
@@ -352,6 +396,7 @@ class SettingsProvider:
     def __call__(self) -> Settings:
         if self._env is None:
             self._env = Settings()
+            export_aws_credentials(self._env)
             self._merged = None
         if self._loader is not None and self._is_stale():
             self._reload()

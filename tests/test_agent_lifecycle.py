@@ -18,7 +18,7 @@ from app.agents.intelligence import investigation_tool_specs, run_intelligence_a
 from app.agents.lifecycle_policy import PolicyRefused, set_policy
 from app.agents.lifecycle_rules import run_lifecycle_rules
 from app.agents.lifecycle_tools import WRITE_LIFECYCLE_CHANGE, make_lifecycle_tools
-from app.agents.watchlist import VERY_SMALL_AND_QUIET
+from app.agents.situations import DEPOSIT_SIZE_FALLING
 from app.config import get_settings
 from app.db.async_session import dispose_async_engine
 from app.db.models.active_clients import ActiveClientFund, ActiveClientInteraction
@@ -448,7 +448,7 @@ async def test_a_run_notices_the_change_and_the_rules_step_makes_it(book: int, m
         "conditions": EVERYONE,
     }
     scripts = {
-        VERY_SMALL_AND_QUIET: [
+        DEPOSIT_SIZE_FALLING: [
             _calls((WRITE_LIFECYCLE_CHANGE, arguments)),
             _final_answer("One change written."),
         ]

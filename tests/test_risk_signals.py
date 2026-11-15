@@ -41,6 +41,7 @@ def _row(**overrides) -> ActiveFeatureMeasures:
         first_deposit_date=None,
         deposit_trend=0.0,
         largest_withdrawal=None,
+        largest_withdrawal_date=None,
         last_withdrawal_date=None,
         withdrawal_pct=None,
         months_until_empty=None,

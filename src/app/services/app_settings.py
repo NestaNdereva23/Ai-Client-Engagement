@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.audit.log import record_audit
+from app.campaigns.agent_information import clean_domain_list
 from app.config import Settings, get_settings
 from app.db.models.app_setting import AppSetting
 from app.editable_settings import (
@@ -14,6 +15,7 @@ from app.editable_settings import (
     SettingValueError,
     editable_setting,
 )
+from app.privacy.llm_client import campaign_provider_problem
 from app.schemas.app_settings import AppSettingOut, AppSettingsOut, ModelInUseOut
 
 _MODEL_JOBS = (
@@ -43,6 +45,16 @@ def update_app_settings(
 ) -> None:
     cleaned = {key: editable_setting(key).clean(value) for key, value in changes.items()}
     current = get_settings()
+    domains = cleaned.get("campaign_agent_web_domains")
+    if isinstance(domains, str):
+        try:
+            cleaned["campaign_agent_web_domains"] = clean_domain_list(domains)
+        except ValueError as error:
+            raise SettingValueError("campaign_agent_web_domains", str(error)) from None
+    provider = cleaned.get("campaign_agent_llm_provider")
+    problem = campaign_provider_problem(provider, current) if provider else None
+    if problem:
+        raise SettingValueError("campaign_agent_llm_provider", problem)
     live_key = _turns_live_on(cleaned, current)
     if live_key and not confirm_live:
         raise SettingValueError(live_key, "sending to real clients needs confirmation")
@@ -68,10 +80,12 @@ def update_app_settings(
 
 def _turns_live_on(cleaned: dict[str, Any], current: Settings) -> str | None:
     """The key of a change that would start sending to real clients, if any."""
-    if cleaned.get("delivery_mode") == "live" and current.delivery_mode != "live":
-        return "delivery_mode"
-    if cleaned.get("live_sms_to_test_list") is False and current.live_sms_to_test_list:
-        return "live_sms_to_test_list"
+    for key in ("delivery_mode", "active_delivery_mode"):
+        if cleaned.get(key) == "live" and getattr(current, key) != "live":
+            return key
+    for key in ("live_sms_to_test_list", "active_live_sms_to_test_list"):
+        if cleaned.get(key) is False and getattr(current, key):
+            return key
     return None
 
 

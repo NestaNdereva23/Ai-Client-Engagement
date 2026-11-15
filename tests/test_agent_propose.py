@@ -1,10 +1,5 @@
 """Turning tonight's watch list into proposals with plain rules, no model.
-
-Groups are built by hand for the eligibility tests, since the watch list
-filters themselves already have their own tests. One end to end test builds
-a small book and runs the real watch list, to prove a nightly run actually
-leaves proposals behind.
-"""
+Groups are built by hand for the eligibility tests; one end to end test runs the real list."""
 
 from __future__ import annotations
 
@@ -22,18 +17,17 @@ from app.agents.propose import (
     ON_DO_NOT_CONTACT_LIST,
     OPEN_COMPLAINT,
     ProposalActionMissing,
+    group_evidence_detail,
     propose_group,
     propose_watchlist,
     skip_reason_counts,
 )
-from app.agents.watchlist import (
-    FEE_PRESSURE_GONE_QUIET,
-    SIGNED_UP_RECENTLY,
-    VERY_SMALL_AND_QUIET,
-    GroupMember,
-    WatchGroup,
-    WatchlistThresholds,
+from app.agents.situations import (
+    APPROACHING_PRESERVATION_LINE,
+    DEPOSIT_SIZE_FALLING,
+    FIRST_DEPOSIT_NO_REPEAT,
 )
+from app.agents.watchlist import GroupMember, WatchGroup, WatchlistThresholds
 from app.db.models.active_clients import ActiveClientFund, ActiveClientInteraction
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.audit import AuditLog
@@ -118,7 +112,7 @@ def _included(proposal_id: int) -> dict[int, str | None]:
 
 
 def test_an_empty_group_gets_no_proposal(clean: None) -> None:
-    group = WatchGroup(name=VERY_SMALL_AND_QUIET, definition={}, members=())
+    group = WatchGroup(name=DEPOSIT_SIZE_FALLING, definition={}, members=())
     with SessionLocal() as session:
         result = propose_group(session, group, THRESHOLDS, AS_OF)
     assert result is None
@@ -126,8 +120,8 @@ def test_an_empty_group_gets_no_proposal(clean: None) -> None:
 
 def test_an_eligible_client_is_included_under_the_mapped_action(clean: None) -> None:
     group = WatchGroup(
-        name=SIGNED_UP_RECENTLY,
-        definition={"situation_code": "new_client_single_deposit"},
+        name=FIRST_DEPOSIT_NO_REPEAT,
+        definition={"situation_code": "first_deposit_no_repeat"},
         members=(_member(ELIGIBLE_CLIENT),),
     )
     with SessionLocal() as session:
@@ -137,8 +131,25 @@ def test_an_eligible_client_is_included_under_the_mapped_action(clean: None) -> 
 
     assert proposal.action_code == "welcome_and_top_up"
     assert proposal.status == "proposed"
-    assert proposal.permission_applied == "approve_each"
+    assert proposal.permission_applied == "suggest_only"
     assert proposal.campaign_id is None
+    assert _included(proposal_id) == {ELIGIBLE_CLIENT: True}
+
+
+def test_a_client_heading_below_the_line_gets_an_advisor_task_suggestion(clean: None) -> None:
+    group = WatchGroup(
+        name=APPROACHING_PRESERVATION_LINE,
+        definition={"situation_code": APPROACHING_PRESERVATION_LINE},
+        members=(_member(ELIGIBLE_CLIENT, balance=7_000.0),),
+    )
+    with SessionLocal() as session:
+        proposal = propose_group(session, group, THRESHOLDS, date(2026, 10, 14))
+        session.commit()
+        proposal_id = proposal.proposal_id
+
+    assert proposal.action_code == "give_advisor_a_task"
+    assert proposal.permission_applied == "suggest_only"
+    assert "below the active line" in proposal.evidence
     assert _included(proposal_id) == {ELIGIBLE_CLIENT: True}
 
 
@@ -148,7 +159,7 @@ def test_a_suppressed_client_is_left_out_with_a_reason(clean: None) -> None:
         session.commit()
 
     group = WatchGroup(
-        name=VERY_SMALL_AND_QUIET,
+        name=DEPOSIT_SIZE_FALLING,
         definition={},
         members=(_member(ELIGIBLE_CLIENT), _member(SUPPRESSED_CLIENT)),
     )
@@ -157,7 +168,7 @@ def test_a_suppressed_client_is_left_out_with_a_reason(clean: None) -> None:
         session.commit()
         proposal_id = proposal.proposal_id
 
-    assert proposal.action_code == "start_win_back"
+    assert proposal.action_code == "ask_what_changed"
     included = _included(proposal_id)
     assert included[ELIGIBLE_CLIENT] is True
     assert included[SUPPRESSED_CLIENT] == ON_DO_NOT_CONTACT_LIST
@@ -177,7 +188,7 @@ def test_a_client_with_an_open_complaint_is_left_out_with_a_reason(clean: None) 
         session.commit()
 
     group = WatchGroup(
-        name=VERY_SMALL_AND_QUIET, definition={}, members=(_member(COMPLAINT_CLIENT),)
+        name=DEPOSIT_SIZE_FALLING, definition={}, members=(_member(COMPLAINT_CLIENT),)
     )
     with SessionLocal() as session:
         proposal = propose_group(session, group, THRESHOLDS, AS_OF)
@@ -203,14 +214,14 @@ def test_a_closed_complaint_does_not_exclude_a_client(clean: None) -> None:
         session.commit()
 
     group = WatchGroup(
-        name=VERY_SMALL_AND_QUIET, definition={}, members=(_member(COMPLAINT_CLIENT),)
+        name=DEPOSIT_SIZE_FALLING, definition={}, members=(_member(COMPLAINT_CLIENT),)
     )
     with SessionLocal() as session:
         proposal = propose_group(session, group, THRESHOLDS, AS_OF)
         session.commit()
         proposal_id = proposal.proposal_id
 
-    assert proposal.action_code == "start_win_back"
+    assert proposal.action_code == "ask_what_changed"
     assert _included(proposal_id)[COMPLAINT_CLIENT] is True
 
 
@@ -228,7 +239,7 @@ def test_a_recently_contacted_client_is_left_out_with_a_reason(clean: None) -> N
         session.commit()
 
     group = WatchGroup(
-        name=VERY_SMALL_AND_QUIET, definition={}, members=(_member(CONTACTED_CLIENT),)
+        name=DEPOSIT_SIZE_FALLING, definition={}, members=(_member(CONTACTED_CLIENT),)
     )
     with SessionLocal() as session:
         proposal = propose_group(session, group, THRESHOLDS, AS_OF, cooldown_days=7)
@@ -253,14 +264,14 @@ def test_a_contact_outside_the_cooldown_window_does_not_exclude_a_client(clean: 
         session.commit()
 
     group = WatchGroup(
-        name=VERY_SMALL_AND_QUIET, definition={}, members=(_member(CONTACTED_CLIENT),)
+        name=DEPOSIT_SIZE_FALLING, definition={}, members=(_member(CONTACTED_CLIENT),)
     )
     with SessionLocal() as session:
         proposal = propose_group(session, group, THRESHOLDS, AS_OF, cooldown_days=7)
         session.commit()
         proposal_id = proposal.proposal_id
 
-    assert proposal.action_code == "start_win_back"
+    assert proposal.action_code == "ask_what_changed"
     assert _included(proposal_id)[CONTACTED_CLIENT] is True
 
 
@@ -278,14 +289,14 @@ def test_a_snoozed_interaction_does_not_count_as_contact(clean: None) -> None:
         session.commit()
 
     group = WatchGroup(
-        name=VERY_SMALL_AND_QUIET, definition={}, members=(_member(CONTACTED_CLIENT),)
+        name=DEPOSIT_SIZE_FALLING, definition={}, members=(_member(CONTACTED_CLIENT),)
     )
     with SessionLocal() as session:
         proposal = propose_group(session, group, THRESHOLDS, AS_OF)
         session.commit()
         proposal_id = proposal.proposal_id
 
-    assert proposal.action_code == "start_win_back"
+    assert proposal.action_code == "ask_what_changed"
     assert _included(proposal_id)[CONTACTED_CLIENT] is True
 
 
@@ -293,7 +304,7 @@ def test_a_held_angle_leaves_the_client_out(clean: None, monkeypatch) -> None:
     monkeypatch.setattr(propose_module, "angle_is_held", lambda session, angle, at: True)
 
     group = WatchGroup(
-        name=VERY_SMALL_AND_QUIET, definition={}, members=(_member(ELIGIBLE_CLIENT),)
+        name=DEPOSIT_SIZE_FALLING, definition={}, members=(_member(ELIGIBLE_CLIENT),)
     )
     with SessionLocal() as session:
         proposal = propose_group(session, group, THRESHOLDS, AS_OF)
@@ -308,7 +319,7 @@ def test_a_paused_action_becomes_do_nothing_for_the_whole_group(clean: None, mon
     monkeypatch.setattr(propose_module, "action_is_paused", lambda session, code, at: True)
 
     group = WatchGroup(
-        name=VERY_SMALL_AND_QUIET,
+        name=DEPOSIT_SIZE_FALLING,
         definition={},
         members=(_member(ELIGIBLE_CLIENT), _member(SUPPRESSED_CLIENT)),
     )
@@ -327,7 +338,7 @@ def test_a_paused_action_becomes_do_nothing_for_the_whole_group(clean: None, mon
 def test_a_client_with_two_funds_counts_once_in_the_qualifying_number(clean: None) -> None:
     second_fund = FUND_ID + 1
     group = WatchGroup(
-        name=VERY_SMALL_AND_QUIET,
+        name=DEPOSIT_SIZE_FALLING,
         definition={},
         members=(
             _member(ELIGIBLE_CLIENT),
@@ -348,7 +359,7 @@ def test_money_total_only_counts_the_included_clients(clean: None) -> None:
         session.commit()
 
     group = WatchGroup(
-        name=VERY_SMALL_AND_QUIET,
+        name=DEPOSIT_SIZE_FALLING,
         definition={},
         members=(
             _member(ELIGIBLE_CLIENT, balance=300_000.0),
@@ -365,19 +376,83 @@ def test_money_total_only_counts_the_included_clients(clean: None) -> None:
 
 def test_the_reason_and_evidence_are_written_in_plain_words(clean: None) -> None:
     group = WatchGroup(
-        name=VERY_SMALL_AND_QUIET, definition={}, members=(_member(ELIGIBLE_CLIENT),)
+        name=DEPOSIT_SIZE_FALLING, definition={}, members=(_member(ELIGIBLE_CLIENT),)
     )
     with SessionLocal() as session:
         proposal = propose_group(session, group, THRESHOLDS, AS_OF)
         session.commit()
 
-    assert "Start the win back sequence" in proposal.reason
+    assert "Ask whether something changed" in proposal.reason
     assert "1 " in proposal.evidence or "1 clients" in proposal.evidence
+
+
+def test_group_evidence_detail_ranks_the_group_into_thirds(clean: None) -> None:
+    trend_clients = (952101, 952102, 952103)
+    balances = (100_000.0, 200_000.0, 300_000.0)
+    trends = (-0.9, -0.5, -0.11)
+    with SessionLocal() as session:
+        session.execute(
+            delete(ActiveClientFund).where(ActiveClientFund.client_id.in_(trend_clients))
+        )
+        session.add_all(
+            ActiveClientFund(
+                client_id=cid,
+                unit_fund_id=FUND_ID,
+                balance=balance,
+                n_deposits=1,
+                n_withdrawals=0,
+                deposit_trend=trend,
+            )
+            for cid, balance, trend in zip(trend_clients, balances, trends, strict=True)
+        )
+        session.commit()
+
+    group = WatchGroup(
+        name=DEPOSIT_SIZE_FALLING,
+        definition={},
+        members=tuple(
+            _member(cid, balance) for cid, balance in zip(trend_clients, balances, strict=True)
+        ),
+    )
+    try:
+        with SessionLocal() as session:
+            detail = group_evidence_detail(session, group)
+        assert detail["ranked_on"] == 3
+        assert detail["not_ranked"] == 0
+        assert [third["label"] for third in detail["thirds"]] == ["sharpest", "middle", "mildest"]
+        assert detail["thirds"][0]["client_count"] == 1
+        assert detail["thirds"][0]["balance_kes"] == 100_000.0
+        assert detail["thirds"][2]["balance_kes"] == 300_000.0
+        assert detail["thirds"][0]["title"] == "Declining sharply"
+        assert detail["thirds"][2]["title"] == "Declining slowly"
+        assert "-0.9" in detail["thirds"][0]["description"]
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                delete(ActiveClientFund).where(ActiveClientFund.client_id.in_(trend_clients))
+            )
+            session.commit()
+
+
+def test_group_evidence_detail_is_none_for_other_situations(clean: None) -> None:
+    group = WatchGroup(
+        name=FIRST_DEPOSIT_NO_REPEAT, definition={}, members=(_member(ELIGIBLE_CLIENT),)
+    )
+    with SessionLocal() as session:
+        assert group_evidence_detail(session, group) is None
+
+
+def test_group_evidence_detail_is_none_with_too_few_ranked(clean: None) -> None:
+    group = WatchGroup(
+        name=DEPOSIT_SIZE_FALLING, definition={}, members=(_member(ELIGIBLE_CLIENT),)
+    )
+    with SessionLocal() as session:
+        assert group_evidence_detail(session, group) is None
 
 
 def test_every_proposal_writes_an_audit_row(clean: None) -> None:
     group = WatchGroup(
-        name=VERY_SMALL_AND_QUIET, definition={}, members=(_member(ELIGIBLE_CLIENT),)
+        name=DEPOSIT_SIZE_FALLING, definition={}, members=(_member(ELIGIBLE_CLIENT),)
     )
     with SessionLocal() as session:
         proposal = propose_group(session, group, THRESHOLDS, AS_OF)
@@ -393,7 +468,7 @@ def test_every_proposal_writes_an_audit_row(clean: None) -> None:
             )
         )
     assert row is not None
-    assert row.detail["group_name"] == VERY_SMALL_AND_QUIET
+    assert row.detail["group_name"] == DEPOSIT_SIZE_FALLING
 
 
 def test_a_group_missing_from_the_rule_table_is_refused(clean: None) -> None:
@@ -409,7 +484,7 @@ def test_a_rule_table_action_missing_from_the_catalogue_is_refused(
     monkeypatch.setattr(propose_module, "load_action", lambda session, code, at: None)
 
     group = WatchGroup(
-        name=VERY_SMALL_AND_QUIET, definition={}, members=(_member(ELIGIBLE_CLIENT),)
+        name=DEPOSIT_SIZE_FALLING, definition={}, members=(_member(ELIGIBLE_CLIENT),)
     )
     with SessionLocal() as session:
         with pytest.raises(ProposalActionMissing):
@@ -420,9 +495,6 @@ def test_propose_watchlist_proposes_and_excludes_across_a_full_run(
     clean: None, monkeypatch
 ) -> None:
     monkeypatch.setattr(propose_module, "load_thresholds", lambda session, as_of: THRESHOLDS)
-    from app.agents import watchlist as watchlist_module
-
-    monkeypatch.setattr(watchlist_module, "latest_completed_run_id", lambda session: None)
 
     run_as_of = date(2026, 9, 16)
 
@@ -489,7 +561,7 @@ def test_propose_watchlist_proposes_and_excludes_across_a_full_run(
                 ClientSituationState(
                     client_id=client_id,
                     unit_fund_id=FUND_ID,
-                    situation_code=FEE_PRESSURE_GONE_QUIET,
+                    situation_code=FIRST_DEPOSIT_NO_REPEAT,
                     is_active=True,
                     signal_codes=["fee_pressure_close"],
                     since=run_as_of,
@@ -505,11 +577,11 @@ def test_propose_watchlist_proposes_and_excludes_across_a_full_run(
         session.commit()
 
     by_group = {p.group_name: p for p in proposals}
-    assert FEE_PRESSURE_GONE_QUIET in by_group
-    fee_proposal = by_group[FEE_PRESSURE_GONE_QUIET]
-    assert fee_proposal.action_code == "fee_pressure_warning_dormant"
+    assert FIRST_DEPOSIT_NO_REPEAT in by_group
+    new_client_proposal = by_group[FIRST_DEPOSIT_NO_REPEAT]
+    assert new_client_proposal.action_code == "welcome_and_top_up"
 
-    included = _included(fee_proposal.proposal_id)
+    included = _included(new_client_proposal.proposal_id)
     assert included[ELIGIBLE_CLIENT] is True
     assert included[SUPPRESSED_CLIENT] == ON_DO_NOT_CONTACT_LIST
 

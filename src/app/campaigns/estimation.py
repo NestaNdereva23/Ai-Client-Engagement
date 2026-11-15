@@ -213,7 +213,9 @@ def _resolve_eligible_profile_keys(
         if step_no not in steps_by_no:
             continue
         features = features_by_client.get(enrollment.client_id)
-        if features is None or features.purchase_depth == "none":
+        if features is None:
+            continue
+        if features.purchase_depth == "none" and not features.never_funded:
             continue
         if enrollment.client_id not in indicators_by_client:
             continue

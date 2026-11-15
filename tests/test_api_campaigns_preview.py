@@ -22,6 +22,8 @@ def _authed(configured_reviewers, reviewer_1_headers):
 
 
 CAMPAIGNS = "/api/v1/campaigns"
+
+
 FUND_ID = 97780
 
 
@@ -251,10 +253,8 @@ def test_list_campaigns_filters_on_a_boolean_cohort_field(
 
 
 def test_list_campaigns_with_no_cohort_params_is_unaffected(
-    campaigns_with_different_cohorts,
+    campaigns_with_different_cohorts, all_pages
 ) -> None:
     campaign_a, campaign_b, campaign_c, campaign_d = campaigns_with_different_cohorts
-    response = client.get(CAMPAIGNS, params={"limit": 200})
-    assert response.status_code == 200
-    ids = {row["campaign_id"] for row in response.json()["items"]}
+    ids = {row["campaign_id"] for row in all_pages(client, CAMPAIGNS)}
     assert {campaign_a, campaign_b, campaign_c, campaign_d} <= ids

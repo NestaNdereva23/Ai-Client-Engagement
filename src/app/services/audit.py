@@ -18,6 +18,7 @@ def browse_audit_log(
     session: Session,
     *,
     entity_type: str | None = None,
+    entity_id: str | None = None,
     run_id: str | None = None,
     trace_id: str | None = None,
     cursor: str | None = None,
@@ -28,6 +29,8 @@ def browse_audit_log(
     query = select(AuditLog)
     if entity_type is not None:
         query = query.where(AuditLog.entity_type == entity_type)
+    if entity_id is not None:
+        query = query.where(AuditLog.entity_id == entity_id)
     if run_id is not None:
         query = query.where(AuditLog.run_id == run_id)
     if trace_id is not None:

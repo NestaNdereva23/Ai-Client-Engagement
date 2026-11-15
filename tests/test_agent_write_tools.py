@@ -1,9 +1,5 @@
-"""The write tools: the agent records a decision and starts real work, and
-every attempt to go around a check is refused and recorded.
-
-Each tool is called the way the executor calls it, session first, so these
-prove the tool itself rather than the conversation around it.
-"""
+"""The write tools: the agent records a decision and starts real work, and every attempt
+to go around a check is refused and recorded."""
 
 from __future__ import annotations
 
@@ -16,9 +12,11 @@ from sqlalchemy import delete, select
 
 from app.agents import insight_members as insight_members_module
 from app.agents.action_catalog import load_action
+from app.agents.permissions import OVER_SEND_LIMIT
 from app.agents.proposal_state import transition_proposal
 from app.agents.propose import ON_DO_NOT_CONTACT_LIST
-from app.agents.watchlist import FEE_PRESSURE_GONE_QUIET, WatchlistThresholds
+from app.agents.situations import FIRST_DEPOSIT_NO_REPEAT
+from app.agents.watchlist import WatchlistThresholds
 from app.agents.write_tools import (
     FLAG_FOR_ACCOUNT_MANAGER,
     RECORD_NO_ACTION,
@@ -26,6 +24,7 @@ from app.agents.write_tools import (
     WRITE_PROPOSAL,
     make_write_tools,
 )
+from app.config import get_settings
 from app.db.models.active_clients import (
     FLAGGED_FOR_ACCOUNT_MANAGER,
     ActiveClientFund,
@@ -207,7 +206,7 @@ def _seed_client(client_id: int) -> None:
             ClientSituationState(
                 client_id=client_id,
                 unit_fund_id=FUND_ID,
-                situation_code=FEE_PRESSURE_GONE_QUIET,
+                situation_code=FIRST_DEPOSIT_NO_REPEAT,
                 is_active=True,
                 signal_codes=["fee_pressure_close"],
                 since=AS_OF,
@@ -222,7 +221,7 @@ def _write_insight(*, state: str = "accepted") -> int:
         insight = AgentInsight(
             kind="risk",
             title=INSIGHT_TITLE,
-            group_name=FEE_PRESSURE_GONE_QUIET,
+            group_name=FIRST_DEPOSIT_NO_REPEAT,
             client_count=1,
             money_total_kes=200_000.0,
             confidence="high",
@@ -379,6 +378,59 @@ def test_run_proposal_creates_the_campaign_enrolls_and_drafts_into_review() -> N
     assert any("nearly empty" in line for line in drafter.calls[0]["prohibitions"])
 
 
+class SpanRecorder:
+    def __init__(self) -> None:
+        self.spans: list[dict] = []
+
+    def start_span(
+        self, *, trace_id, name, input, metadata=None, as_type="span", model=None, parent=None
+    ):
+        span = {"trace_id": trace_id, "name": name, "parent": parent, "output": None}
+        self.spans.append(span)
+        return span
+
+    def end_span(self, handle, *, output, usage_details=None, level=None, status_message=None):
+        handle["output"] = output
+        handle["level"] = level
+
+    def flush(self) -> None:
+        return None
+
+
+def test_run_proposal_puts_each_step_on_one_named_trace() -> None:
+    _seed_client(ELIGIBLE_CLIENT)
+    insight_id = _write_insight()
+    recorder = SpanRecorder()
+    tools = make_write_tools(
+        run_id=RUN_ID, as_of=AS_OF, draft=FakeDrafter(drafted=1), tracer=recorder
+    )
+
+    with SessionLocal() as session:
+        proposal_id = _proposed(session, tools, insight_id)["proposal_id"]
+        transition_proposal(
+            session,
+            session.get(AgentProposal, proposal_id),
+            to_status="approved",
+            reason="a person said yes",
+            decided_by="reviewer_1",
+        )
+        session.commit()
+        tools[RUN_PROPOSAL](session, proposal_id=proposal_id)
+
+    names = [span["name"] for span in recorder.spans]
+    assert names == [
+        "Agent campaign enrollment and email drafting",
+        "Re-check clients before enrolling",
+        "Enroll clients into the campaign",
+        "Draft emails into review queue",
+        "Tell account managers",
+    ]
+    root = recorder.spans[0]
+    assert {span["trace_id"] for span in recorder.spans} == {root["trace_id"]}
+    assert all(span["parent"] is root for span in recorder.spans[1:])
+    assert recorder.spans[3]["output"] == {"drafted": 1}
+
+
 def test_run_proposal_refuses_one_nobody_approved() -> None:
     _seed_client(ELIGIBLE_CLIENT)
     insight_id = _write_insight()
@@ -443,6 +495,37 @@ def test_run_proposal_drops_a_client_suppressed_since_it_was_written() -> None:
     assert list(enrolled) == [ELIGIBLE_CLIENT]
 
 
+def test_run_proposal_in_active_test_mode_flags_the_campaign_and_caps_it(monkeypatch) -> None:
+    monkeypatch.setenv("ACTIVE_DELIVERY_MODE", "test")
+    monkeypatch.setenv("ACTIVE_TEST_CAMPAIGN_MAX_CLIENTS", "1")
+    get_settings.cache_clear()
+    _seed_client(ELIGIBLE_CLIENT)
+    _seed_client(SUPPRESSED_CLIENT)
+    insight_id = _write_insight()
+    tools = _tools(draft=FakeDrafter())
+
+    try:
+        with SessionLocal() as session:
+            proposal_id = _proposed(session, tools, insight_id)["proposal_id"]
+            transition_proposal(
+                session,
+                session.get(AgentProposal, proposal_id),
+                to_status="approved",
+                reason="a person said yes",
+                decided_by="reviewer_1",
+            )
+            session.commit()
+            result = tools[RUN_PROPOSAL](session, proposal_id=proposal_id)
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()
+
+    assert result["enrolled_count"] == 1
+    assert result["dropped_since_proposed"] == {OVER_SEND_LIMIT: 1}
+    with SessionLocal() as session:
+        assert session.get(Campaign, result["campaign_id"]).is_test is True
+
+
 def test_record_no_action_keeps_the_group_the_count_and_the_reason() -> None:
     _seed_client(ELIGIBLE_CLIENT)
     insight_id = _write_insight()
@@ -456,7 +539,7 @@ def test_record_no_action_keeps_the_group_the_count_and_the_reason() -> None:
         session.commit()
 
     assert result["status"] == "recorded"
-    assert result["group_name"] == FEE_PRESSURE_GONE_QUIET
+    assert result["group_name"] == FIRST_DEPOSIT_NO_REPEAT
     assert result["client_count"] == 1
 
     with SessionLocal() as session:
@@ -579,9 +662,7 @@ def _reachable_from(module: str) -> set[str]:
     ["app.agents.write_tools", "app.agents.tools", "app.agents.insight_tools"],
 )
 def test_no_agent_tool_can_reach_the_mailer(module: str) -> None:
-    """Sending stays behind the send gate, so no tool the agent can call may
-    even import its way to the mailer.
-    """
+    """Sending stays behind the send gate, so no tool the agent can call may import the mailer."""
     reachable = _reachable_from(module)
     assert "app.delivery.mailer" not in reachable
     assert "app.delivery.sender" not in reachable

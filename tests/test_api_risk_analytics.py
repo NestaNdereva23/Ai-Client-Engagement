@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete
 
 from app.db.models.risk import ClientRiskFeatures
+from app.db.models.routing import ClientSide
 from app.db.session import SessionLocal
 from app.main import app
 
@@ -86,6 +87,7 @@ def cleanup():
         session.execute(
             delete(ClientRiskFeatures).where(ClientRiskFeatures.client_id.in_(client_ids))
         )
+        session.execute(delete(ClientSide).where(ClientSide.client_id.in_(client_ids)))
         session.commit()
 
 
@@ -118,6 +120,30 @@ def test_total_fund_at_risk_reflects_a_newly_scored_client(cleanup) -> None:
 
     after = _analytics()["total_fund_at_risk"]
     assert after == pytest.approx(before + 2_500.0)
+
+
+def test_a_client_on_the_inactive_side_is_left_out_of_the_book_wide_numbers(cleanup) -> None:
+    client_ids = cleanup
+    client_id = 94510
+    client_ids.append(client_id)
+    before = _analytics()["total_fund_at_risk"]
+
+    with SessionLocal() as session:
+        row = _row(client_id, risk_band="High", route=None, signals=_ALL_FALSE)
+        row.fund_at_risk = 2_500.0
+        session.add(row)
+        session.add(
+            ClientSide(
+                client_id=client_id,
+                side="inactive",
+                balance=100.0,
+                threshold_kes=6_000.0,
+                source_feed="active",
+            )
+        )
+        session.commit()
+
+    assert _analytics()["total_fund_at_risk"] == pytest.approx(before)
 
 
 def test_by_risk_band_reflects_a_newly_scored_client(cleanup) -> None:

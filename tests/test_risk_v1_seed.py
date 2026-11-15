@@ -1,6 +1,5 @@
-"""The seeded v1 risk config: re-proves what the migration proved on write,
-against what is actually stored.
-"""
+"""The seeded risk configs: re-proves what the migrations proved on write,
+against what is actually stored."""
 
 from __future__ import annotations
 
@@ -12,6 +11,8 @@ from app.risk.store import active_config_version, load_active_config
 
 V1_VERSION = 1
 IN_FORCE = date(2026, 8, 11)
+V2_VERSION = 2
+V2_IN_FORCE = date(2026, 10, 13)
 
 
 def test_v1_is_the_active_version(db) -> None:
@@ -28,10 +29,8 @@ def test_v1_weights_name_every_signal_and_sum_to_100(db) -> None:
 
 
 def test_v1_currency_thresholds_are_kes_not_usd(db) -> None:
-    """TINY_BALANCE, WORTH_A_CALL_BALANCE, and SYSTEM_FEE_MAX are all read
-    directly off KES-denominated figures in the notebook -- none of them
-    are a USD amount needing conversion.
-    """
+    """TINY_BALANCE, WORTH_A_CALL_BALANCE and SYSTEM_FEE_MAX are KES figures,
+    none needing conversion."""
     with SessionLocal() as session:
         config = load_active_config(session, IN_FORCE)
     assert config is not None
@@ -56,10 +55,21 @@ def test_v1_digest_cap_matches_the_notebook(db) -> None:
     assert config.digest_cap_per_group == 12
 
 
+def test_v2_moves_only_the_withdrawal_line_to_the_monthly_fee(db) -> None:
+    with SessionLocal() as session:
+        before = load_active_config(session, IN_FORCE)
+        after = load_active_config(session, V2_IN_FORCE)
+    assert (before.version, after.version) == (V1_VERSION, V2_VERSION)
+    assert after.thresholds["SYSTEM_FEE_MAX"] == after.thresholds["FEE_PER_MONTH"] == 50
+    assert {**before.thresholds, "SYSTEM_FEE_MAX": 50} == after.thresholds
+    assert after.weights == before.weights
+    assert after.fa_call_capacity == before.fa_call_capacity
+    assert after.at_risk_min == before.at_risk_min
+
+
 def test_v1_band_cutoffs_match_the_notebooks_pd_cut(db) -> None:
     """The notebook bins with pd.cut(risk_score, [-1, 0, 24, 49, 74, 100]);
-    the four interior edges are what's stored.
-    """
+    the four interior edges are what's stored."""
     with SessionLocal() as session:
         config = load_active_config(session, IN_FORCE)
     assert config is not None

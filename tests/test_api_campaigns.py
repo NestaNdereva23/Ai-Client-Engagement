@@ -569,12 +569,10 @@ def test_get_campaign_detail_404s_for_an_unknown_campaign(db: None) -> None:
 
 
 def test_list_campaigns_carries_its_own_enrollment_counts(
-    campaign_with_a_suppressed_row,
+    campaign_with_a_suppressed_row, all_pages
 ) -> None:
     campaign_id = campaign_with_a_suppressed_row
-    response = client.get(CAMPAIGNS, params={"limit": 200})
-    assert response.status_code == 200
-    rows = {row["campaign_id"]: row for row in response.json()["items"]}
+    rows = {row["campaign_id"]: row for row in all_pages(client, CAMPAIGNS)}
     assert campaign_id in rows
     row = rows[campaign_id]
     assert row["total_enrolled"] == 2
@@ -584,12 +582,12 @@ def test_list_campaigns_carries_its_own_enrollment_counts(
     assert row["default_channel"] == "email"
 
 
-def test_list_campaigns_filters_by_channel(campaign_with_a_suppressed_row) -> None:
+def test_list_campaigns_filters_by_channel(campaign_with_a_suppressed_row, all_pages) -> None:
     campaign_id = campaign_with_a_suppressed_row
-    matched = client.get(CAMPAIGNS, params={"limit": 200, "channel": "email"})
-    unmatched = client.get(CAMPAIGNS, params={"limit": 200, "channel": "sms"})
-    assert campaign_id in {row["campaign_id"] for row in matched.json()["items"]}
-    assert campaign_id not in {row["campaign_id"] for row in unmatched.json()["items"]}
+    matched = all_pages(client, CAMPAIGNS, channel="email")
+    unmatched = all_pages(client, CAMPAIGNS, channel="sms")
+    assert campaign_id in {row["campaign_id"] for row in matched}
+    assert campaign_id not in {row["campaign_id"] for row in unmatched}
 
 
 def test_get_campaign_enrollments_returns_the_roster(

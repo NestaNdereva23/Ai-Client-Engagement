@@ -12,31 +12,36 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import BigInteger, Row, any_, cast, func, select, tuple_
+from sqlalchemy import BigInteger, Row, any_, cast, func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session
 
+from app.agents.campaign_agent import run_campaign_agent
 from app.agents.orchestrator import Orchestrator
 from app.audit.log import record_audit
 from app.campaigns.batch_generation import BatchIngestResult, BatchNotFound
 from app.campaigns.batch_generation import ingest_batch as ingest_campaign_batch_run
 from app.campaigns.batch_generation import submit_batch as submit_campaign_batch_run
+from app.campaigns.completion import campaign_progress, complete_if_finished
 from app.campaigns.enrollment import enroll_cohort
 from app.campaigns.estimation import (
     DEFAULT_ESTIMATE_LIMIT,
     TemplateEstimate,
     estimate_templates_sql,
 )
+from app.campaigns.explain import explain_campaign
 from app.campaigns.generation import generate_for_enrollment
 from app.campaigns.generation_cost import DEFAULT_MODEL, CampaignCostEstimate
 from app.campaigns.generation_cost import estimate_generation_cost as _estimate_generation_cost
 from app.campaigns.generation_cost import (
     list_generation_cost_models as _list_generation_cost_models,
 )
+from app.campaigns.health import pause_if_unhealthy
 from app.campaigns.instantiation import instantiate_template as instantiate_template_run
 from app.campaigns.preview import BatchCohortPreview, CohortPreview
 from app.campaigns.preview import preview_cohort as preview_cohort_run
 from app.campaigns.preview import preview_cohort_batch as preview_cohort_batch_run
+from app.campaigns.readiness import campaign_readiness_problems, require_campaign_ready
 from app.campaigns.scheduler import DEFAULT_BATCH_LIMIT, SCHEDULABLE_STATUSES
 from app.campaigns.template_generation import TemplateDraftOutcome, draft_templates_for_campaign
 from app.campaigns.template_policy import (
@@ -52,6 +57,7 @@ from app.campaigns.touch import (
     run_due_enrollments,
 )
 from app.campaigns.touch import send_due_touches as send_due_touches_run
+from app.campaigns.waiting_pool import waiting_client_ids
 from app.config import Settings, get_settings
 from app.db.models.campaigns import (
     CONTACT_EVENT_TYPES,
@@ -59,13 +65,14 @@ from app.db.models.campaigns import (
     ContactEvent,
     Enrollment,
     TouchLog,
+    TouchPlan,
 )
 from app.db.models.generation_batch import GenerationBatch
 from app.db.models.generation_cost import GenerationCostConfigVersion
 from app.db.models.instantiation_batch import InstantiationBatch
 from app.db.models.message_template import MessageTemplate
 from app.db.models.models import ClientFeatures, Clients
-from app.db.models.outreach import Campaign, OutreachMessage, ReviewAction
+from app.db.models.outreach import AGENT_PLANNING_MODE, Campaign, OutreachMessage, ReviewAction
 from app.db.models.rules import ClientMessageIndicators
 from app.delivery.sender import build_email_sender
 from app.delivery.sms_sender import build_sms_sender
@@ -79,6 +86,8 @@ from app.pagination import (
     encode_id_cursor,
 )
 from app.privacy.llm_client import LLMClient
+from app.schemas.campaigns import CampaignPlanConfig
+from app.services.agent_campaign_scope import campaign_visible_to
 from app.services.clients import resolve_cohort_client_ids
 from app.services.template_review import TemplateNotFound
 
@@ -259,7 +268,8 @@ def campaign_value(session: Session, campaign_id: int) -> dict[str, float | int]
 
 def campaign_readiness(session: Session, campaign_id: int) -> dict[str, object]:
     """Per-status counts for one campaign's templates and messages, plus how much is unsent."""
-    if session.get(Campaign, campaign_id) is None:
+    campaign = session.get(Campaign, campaign_id)
+    if campaign is None:
         raise CampaignNotFound(campaign_id)
 
     template_rows = session.execute(
@@ -304,6 +314,7 @@ def campaign_readiness(session: Session, campaign_id: int) -> dict[str, object]:
         "sendable_now": sendable_now or 0,
         "sent_count": sent_count or 0,
         "next_due_at": next_due_at,
+        "problems": campaign_readiness_problems(session, campaign),
     }
 
 
@@ -328,6 +339,9 @@ def list_campaigns(
     high_value: bool | None = None,
     message_angle: str | None = None,
     channel: str | None = None,
+    campaign_type: str | None = None,
+    exclude_campaign_type: str | None = None,
+    fa_id: str | None = None,
 ) -> tuple[list[Row], str | None]:
     """Campaigns oldest-first, each carrying its own enrollment counts.
 
@@ -353,12 +367,19 @@ def list_campaigns(
         )
         .select_from(Campaign)
         .join(Enrollment, Enrollment.campaign_id == Campaign.campaign_id, isouter=True)
+        .where(or_(Campaign.suggestion_state.is_(None), Campaign.suggestion_state == "approved"))
         .group_by(Campaign.campaign_id)
     )
     if status is not None:
         query = query.where(Campaign.status == status)
     if channel is not None:
         query = query.where(Campaign.default_channel == channel)
+    if fa_id is not None:
+        query = query.where(campaign_visible_to(fa_id))
+    if campaign_type is not None:
+        query = query.where(Campaign.campaign_type == campaign_type)
+    if exclude_campaign_type is not None:
+        query = query.where(Campaign.campaign_type != exclude_campaign_type)
     cohort_filters = {
         "fund_id": fund_id,
         "value_band": value_band,
@@ -400,6 +421,49 @@ def _already_enrolled_client_ids(session: Session, client_ids: Sequence[int]) ->
     return set(session.scalars(stmt))
 
 
+def create_campaign_record(
+    session: Session,
+    *,
+    name: str,
+    campaign_type: str,
+    cohort_filters: dict,
+    start_date=None,
+    end_date=None,
+    default_channel: str = "email",
+    is_test: bool = False,
+    **columns: object,
+) -> Campaign:
+    campaign = Campaign(
+        name=name,
+        campaign_type=campaign_type,
+        cohort_definition=cohort_filters,
+        start_date=start_date,
+        end_date=end_date,
+        default_channel=default_channel,
+        is_test=is_test,
+        **columns,
+    )
+    session.add(campaign)
+    session.flush()
+    return campaign
+
+
+def enroll_campaign_cohort(
+    session: Session, campaign: Campaign, *, waiting_only: bool = False
+) -> int:
+    client_ids = resolve_cohort_client_ids(session, **campaign.cohort_definition)
+    if waiting_only:
+        client_ids = waiting_client_ids(session, client_ids)
+    else:
+        already_enrolled = _already_enrolled_client_ids(session, client_ids)
+        client_ids = [cid for cid in client_ids if cid not in already_enrolled]
+    cap = _enrollment_cap(campaign.is_test)
+    if cap:
+        client_ids = sorted(client_ids)[:cap]
+    enroll_cohort(session, campaign_id=campaign.campaign_id, client_ids=client_ids)
+    return len(client_ids)
+
+
 def create_campaign(
     session: Session,
     *,
@@ -412,25 +476,17 @@ def create_campaign(
     default_channel: str = "email",
     is_test: bool = False,
 ) -> tuple[Campaign, int, list[CampaignStep]]:
-    campaign = Campaign(
+    campaign = create_campaign_record(
+        session,
         name=name,
         campaign_type=campaign_type,
-        cohort_definition=cohort_filters,
+        cohort_filters=cohort_filters,
         start_date=start_date,
         end_date=end_date,
         default_channel=default_channel,
         is_test=is_test,
     )
-    session.add(campaign)
-    session.flush()
-
-    client_ids = resolve_cohort_client_ids(session, **cohort_filters)
-    already_enrolled = _already_enrolled_client_ids(session, client_ids)
-    client_ids = [cid for cid in client_ids if cid not in already_enrolled]
-    cap = _enrollment_cap(is_test)
-    if cap:
-        client_ids = sorted(client_ids)[:cap]
-    enroll_cohort(session, campaign_id=campaign.campaign_id, client_ids=client_ids)
+    enrolled_count = enroll_campaign_cohort(session, campaign)
 
     created_steps = [
         add_campaign_step(
@@ -451,13 +507,13 @@ def create_campaign(
         entity_id=str(campaign.campaign_id),
         detail={
             "cohort_filters": cohort_filters,
-            "matched_count": len(client_ids),
+            "matched_count": enrolled_count,
             "step_count": len(created_steps),
             "is_test": is_test,
         },
     )
     session.flush()
-    return campaign, len(client_ids), created_steps
+    return campaign, enrolled_count, created_steps
 
 
 def add_campaign_step(
@@ -553,6 +609,106 @@ def run_campaign_generation(
     return run_due_enrollments(session, campaign_id=campaign_id, generate=generate, limit=limit)
 
 
+def set_campaign_plan_config(
+    session: Session, campaign_id: int, config: CampaignPlanConfig
+) -> dict:
+    config = CampaignPlanConfig.model_validate(config.model_dump())
+    campaign = get_campaign(session, campaign_id)
+    before = {"planning_mode": campaign.planning_mode, "config": campaign.agent_touch_policy}
+    campaign.agent_touch_policy = config.model_dump()
+    campaign.planning_mode = AGENT_PLANNING_MODE
+    session.flush()
+    record_audit(
+        session,
+        entity_type="campaign",
+        action="set_campaign_plan_config",
+        entity_id=str(campaign_id),
+        detail={
+            "from": before,
+            "to": {"planning_mode": campaign.planning_mode, "config": campaign.agent_touch_policy},
+        },
+    )
+    return campaign.agent_touch_policy
+
+
+def plan_and_run_due_enrollments(
+    session: Session,
+    campaign_id: int,
+    *,
+    orchestrator: Orchestrator,
+    settings: Settings,
+    tracer: Tracer | None = None,
+    limit: int = DEFAULT_BATCH_LIMIT,
+) -> list[TouchRunOutcome]:
+    campaign = session.get(Campaign, campaign_id)
+    if campaign is None:
+        raise CampaignNotFound(campaign_id)
+    require_campaign_ready(session, campaign)
+    if pause_if_unhealthy(session, campaign) is not None:
+        return []
+
+    run_campaign_agent(session, campaign_id, tracer=tracer)
+    return run_campaign_generation(
+        session,
+        campaign_id,
+        orchestrator=orchestrator,
+        settings=settings,
+        tracer=tracer,
+        limit=limit,
+    )
+
+
+def campaign_explanation(session: Session, campaign_id: int) -> dict:
+    if session.get(Campaign, campaign_id) is None:
+        raise CampaignNotFound(campaign_id)
+    return explain_campaign(session, campaign_id)
+
+
+def latest_campaign_plan(session: Session, campaign_id: int) -> list[dict]:
+    if session.get(Campaign, campaign_id) is None:
+        raise CampaignNotFound(campaign_id)
+
+    latest_run_id = session.execute(
+        select(func.max(TouchPlan.run_id))
+        .join(Enrollment, Enrollment.enrollment_id == TouchPlan.enrollment_id)
+        .where(Enrollment.campaign_id == campaign_id)
+    ).scalar_one_or_none()
+    if latest_run_id is None:
+        return []
+
+    rows = list(
+        session.execute(
+            select(TouchPlan, Enrollment.client_id)
+            .join(Enrollment, Enrollment.enrollment_id == TouchPlan.enrollment_id)
+            .where(TouchPlan.run_id == latest_run_id)
+            .order_by(TouchPlan.plan_id)
+        ).all()
+    )
+
+    plans = []
+    for plan, client_id in rows:
+        prior = session.execute(
+            select(TouchPlan.angle).where(
+                TouchPlan.enrollment_id == plan.enrollment_id,
+                TouchPlan.step_no == plan.step_no - 1,
+            )
+        ).scalar_one_or_none()
+        plans.append(
+            {
+                "enrollment_id": plan.enrollment_id,
+                "client_id": client_id,
+                "step_no": plan.step_no,
+                "prior_angle": prior,
+                "angle": plan.angle,
+                "gap_days": plan.gap_days,
+                "reason": plan.reason,
+                "next_time_note": plan.next_time_note,
+                "cited_facts": plan.cited_facts,
+            }
+        )
+    return plans
+
+
 def _close_sender(send_fn: SenderFn) -> None:
     for attr in ("mailer", "gateway"):
         close = getattr(getattr(send_fn, attr, None), "close", None)
@@ -571,6 +727,9 @@ def send_campaign(
     campaign = session.get(Campaign, campaign_id)
     if campaign is None:
         raise CampaignNotFound(campaign_id)
+    if campaign.status == "draft":
+        require_campaign_ready(session, campaign)
+    pause_if_unhealthy(session, campaign)
 
     email_sender = sender or build_email_sender()
     channel_senders = (
@@ -603,6 +762,7 @@ def send_campaign(
             entity_id=str(campaign_id),
             detail={"from": "draft", "to": "running"},
         )
+    complete_if_finished(session, campaign)
     return outcomes
 
 
@@ -1033,3 +1193,10 @@ def outreach_trend(session: Session, *, days: int = 30) -> list[OutreachTrendPoi
         )
         day += timedelta(days=1)
     return points
+
+
+def campaign_progress_view(session: Session, campaign_id: int) -> dict:
+    campaign = session.get(Campaign, campaign_id)
+    if campaign is None:
+        raise CampaignNotFound(campaign_id)
+    return {"status": campaign.status, **campaign_progress(session, campaign)}

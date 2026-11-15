@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from sqladmin import ModelView
+from wtforms import SelectField
 
 from app.db.models.active_clients import (
     ActiveClientFund,
@@ -18,6 +19,8 @@ from app.db.models.api import IdempotencyKey
 from app.db.models.audit import AuditLog
 from app.db.models.auth import ReviewerUser
 from app.db.models.briefing import BriefingNarrative
+from app.db.models.campaign_agent_prompt import CampaignAgentPrompt
+from app.db.models.campaign_agent_run import CampaignAgentRun, CampaignAgentToolCall
 from app.db.models.campaigns import CampaignStep, ContactEvent, Enrollment, TouchLog
 from app.db.models.complaints import ClientComplaint
 from app.db.models.digest import DigestEmailSend, DigestLine, DigestRun
@@ -79,6 +82,7 @@ from app.db.models.suppression import Suppression
 from app.db.models.template_generation_plan import TemplateGenerationPlan
 from app.db.models.template_policy import CampaignTemplatePolicy, TemplatePolicyConfigVersion
 from app.db.models.test_recipient import TestRecipient
+from app.db.models.user_access import SOURCE_MANUAL, USER_ROLES, UserAccess
 
 
 class _ReadOnlyView(ModelView):
@@ -647,6 +651,55 @@ class ReviewerUserAdmin(_ReadOnlyView, model=ReviewerUser):
     column_default_sort = [(ReviewerUser.created_at, True)]
 
 
+class UserAccessAdmin(ModelView, model=UserAccess):
+    """The one screen that can change data: add an admin or advisor, switch the
+    digest or the AI Assistant tab on, or set who an admin views as. Advisor rows
+    are the list of account managers that clients are shared out to. A row is never
+    deleted here, switch Active off instead, so the nightly feed does not add the
+    person back."""
+
+    name = "User Access"
+    name_plural = "User Access"
+    icon = "fa-solid fa-user-lock"
+    category = "Access & Audit"
+    category_icon = "fa-solid fa-shield-halved"
+    can_delete = False
+    can_export = False
+    column_list = [
+        UserAccess.email,
+        UserAccess.name,
+        UserAccess.role,
+        UserAccess.fa_id,
+        UserAccess.daily_capacity,
+        UserAccess.active,
+        UserAccess.receives_digest,
+        UserAccess.ai_assistant,
+        UserAccess.view_as_email,
+        UserAccess.source,
+    ]
+    column_labels = {UserAccess.ai_assistant: "AI Assistant"}
+    column_searchable_list = [UserAccess.email]
+    column_sortable_list = [UserAccess.email, UserAccess.role, UserAccess.source]
+    column_default_sort = [(UserAccess.email, False)]
+    form_columns = [
+        UserAccess.email,
+        UserAccess.name,
+        UserAccess.role,
+        UserAccess.fa_id,
+        UserAccess.daily_capacity,
+        UserAccess.active,
+        UserAccess.receives_digest,
+        UserAccess.ai_assistant,
+        UserAccess.view_as_email,
+    ]
+    form_include_pk = True
+    form_overrides = {"role": SelectField}
+    form_args = {"role": {"choices": [(role, role.title()) for role in USER_ROLES]}}
+
+    async def on_model_change(self, data: dict, model: object, is_created: bool, request) -> None:
+        data["source"] = SOURCE_MANUAL
+
+
 class AuditLogAdmin(_ReadOnlyView, model=AuditLog):
     name = "Audit Log"
     name_plural = "Audit Log"
@@ -844,6 +897,33 @@ class AgentToolCallAdmin(_ReadOnlyView, model=AgentToolCall):
     column_default_sort = [(AgentToolCall.created_at, True)]
 
 
+class CampaignAgentPromptAdmin(_ReadOnlyView, model=CampaignAgentPrompt):
+    name = "Campaign Agent Prompt"
+    name_plural = "Campaign Agent Prompts"
+    icon = "fa-solid fa-pen-to-square"
+    category = "Campaigns"
+    category_icon = "fa-solid fa-bullhorn"
+    column_default_sort = [(CampaignAgentPrompt.created_at, True)]
+
+
+class CampaignAgentRunAdmin(_ReadOnlyView, model=CampaignAgentRun):
+    name = "Campaign Agent Run"
+    name_plural = "Campaign Agent Runs"
+    icon = "fa-solid fa-play"
+    category = "Campaigns"
+    category_icon = "fa-solid fa-bullhorn"
+    column_default_sort = [(CampaignAgentRun.started_at, True)]
+
+
+class CampaignAgentToolCallAdmin(_ReadOnlyView, model=CampaignAgentToolCall):
+    name = "Campaign Agent Tool Call"
+    name_plural = "Campaign Agent Tool Calls"
+    icon = "fa-solid fa-wrench"
+    category = "Campaigns"
+    category_icon = "fa-solid fa-bullhorn"
+    column_default_sort = [(CampaignAgentToolCall.created_at, True)]
+
+
 class AgentEventAdmin(_ReadOnlyView, model=AgentEvent):
     name = "Agent Event"
     name_plural = "Agent Events"
@@ -954,6 +1034,7 @@ ADMIN_VIEWS = [
     ClientComplaintAdmin,
     BriefingNarrativeAdmin,
     ReviewerUserAdmin,
+    UserAccessAdmin,
     AuditLogAdmin,
     IdempotencyKeyAdmin,
     TestRecipientAdmin,
@@ -976,6 +1057,9 @@ ADMIN_VIEWS = [
     AgentPromptAdmin,
     AgentRunAdmin,
     AgentToolCallAdmin,
+    CampaignAgentPromptAdmin,
+    CampaignAgentRunAdmin,
+    CampaignAgentToolCallAdmin,
     AgentEventAdmin,
     AgentInsightAdmin,
     AgentInsightClientAdmin,

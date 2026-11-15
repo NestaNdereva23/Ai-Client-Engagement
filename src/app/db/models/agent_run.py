@@ -28,7 +28,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
-AGENT_RUN_STATES = ("running", "completed", "failed")
+AGENT_RUN_STATES = ("running", "completed", "failed", "paused", "cancelled")
 
 AGENT_RUN_TRIGGERS = ("nightly", "manual", "chat")
 
@@ -39,8 +39,8 @@ CHAT_AGENT = "chat"
 
 # Which agent the run belongs to. The two that read the whole book take a
 # while and only one of them may go at a time; an action run answers one
-# accepted finding, and a chat run answers one question a person just
-# asked, so both run whenever a person asks for them.
+# accepted finding and a chat run answers one question a person just asked,
+# so those two run whenever a person asks for them.
 AGENT_KINDS = (NIGHTLY_AGENT, INTELLIGENCE_AGENT, ACTION_AGENT, CHAT_AGENT)
 
 BOOK_WIDE_AGENTS = (NIGHTLY_AGENT, INTELLIGENCE_AGENT)
@@ -51,7 +51,14 @@ class AgentRun(Base):
 
     __tablename__ = "agent_run"
     __table_args__ = (
-        CheckConstraint("state IN ('running', 'completed', 'failed')", name="ck_agent_run_state"),
+        CheckConstraint(
+            "state IN ('running', 'completed', 'failed', 'paused', 'cancelled')",
+            name="ck_agent_run_state",
+        ),
+        CheckConstraint(
+            "control_requested IS NULL OR control_requested IN ('pause', 'cancel')",
+            name="ck_agent_run_control_requested",
+        ),
         CheckConstraint("trigger IN ('nightly', 'manual', 'chat')", name="ck_agent_run_trigger"),
         CheckConstraint("cost_kes IS NULL OR cost_kes >= 0", name="ck_agent_run_cost_not_negative"),
         CheckConstraint(
@@ -69,6 +76,7 @@ class AgentRun(Base):
     trigger: Mapped[str] = mapped_column(Text, nullable=False)
     agent_kind: Mapped[str] = mapped_column(Text, nullable=False, server_default=NIGHTLY_AGENT)
     # The finding an action run was started for. Null for the other agents.
+    fa_id: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     insight_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("agent_insight.insight_id"), nullable=True, index=True
     )
@@ -80,6 +88,10 @@ class AgentRun(Base):
     cost_kes: Mapped[float | None] = mapped_column(Float, nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     prompt_versions: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Set by the pause/cancel endpoints; the running loop clears it once seen.
+    control_requested: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The choose step's output, kept so a resumed run does not call the model again.
+    choices: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class AgentToolCall(Base):

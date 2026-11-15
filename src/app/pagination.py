@@ -85,6 +85,20 @@ def decode_ranked_cursor(cursor: str) -> tuple[int, datetime, str]:
         raise InvalidCursor(cursor) from exc
 
 
+def encode_sort_cursor(values: list[int | float]) -> str:
+    return base64.urlsafe_b64encode(json.dumps(values).encode()).decode()
+
+
+def decode_sort_cursor(cursor: str, size: int) -> list[int | float]:
+    try:
+        values = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
+        if len(values) != size or not all(isinstance(value, int | float) for value in values):
+            raise ValueError(cursor)
+        return values
+    except Exception as exc:
+        raise InvalidCursor(cursor) from exc
+
+
 def encode_pair_cursor(a: int, b: int) -> str:
     """For a list ordered by two integer columns (a composite key, no
     timestamp to pair them with), such as (client_id, unit_fund_id).

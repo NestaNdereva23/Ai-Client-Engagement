@@ -219,6 +219,23 @@ def test_a_client_with_some_visible_history_is_not_excluded_on_that_ground(
     _cleanup_client(client_id)
 
 
+def test_a_never_funded_client_is_not_excluded_for_having_no_history(
+    campaign_with_step: int, fund: int
+) -> None:
+    client_id = 99590
+    with SessionLocal() as session:
+        _make_client(session, client_id)
+        session.commit()
+        session.add(ClientFeatures(client_id=client_id, purchase_depth="none", never_funded=True))
+        session.commit()
+        enrollment = _make_enrollment(session, campaign_id=campaign_with_step, client_id=client_id)
+
+        result = check_eligibility(session, enrollment)
+
+    assert result.eligible is True
+    _cleanup_client(client_id)
+
+
 def test_a_suppressed_client_is_skipped_and_excluded_before_the_first_touch(
     campaign_with_step: int, fund: int
 ) -> None:
@@ -754,6 +771,27 @@ def test_a_client_now_on_the_active_side_is_skipped_non_terminal(
     assert result.reason == "moved_to_active"
     with SessionLocal() as session:
         assert session.get(Enrollment, enrollment_id).status == "enrolled"
+
+    _cleanup_client(client_id)
+
+
+def test_an_agent_campaign_does_not_skip_a_client_on_the_active_side(
+    campaign_with_step: int, fund: int
+) -> None:
+    client_id = 99541
+    with SessionLocal() as session:
+        _make_client(session, client_id)
+        session.get(Campaign, campaign_with_step).campaign_type = "agent_proposal"
+        session.commit()
+        enrollment = _make_enrollment(session, campaign_id=campaign_with_step, client_id=client_id)
+    _set_side(client_id, "active")
+
+    with SessionLocal() as session:
+        enrollment = session.get(Enrollment, enrollment.enrollment_id)
+        result = check_eligibility(session, enrollment)
+        session.commit()
+
+    assert result.reason != "moved_to_active"
 
     _cleanup_client(client_id)
 

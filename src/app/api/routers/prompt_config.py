@@ -7,6 +7,10 @@ from sqlalchemy.orm import Session
 from app.agents.prompt_config import build_voice_block
 from app.agents.prompt_versioning import PromptValidationError, validate_prompt_placeholders
 from app.api.reviewer_auth import get_current_reviewer_id
+from app.campaigns.agent_prompts import (
+    COMPONENT_TYPE as CAMPAIGN_PROMPT_COMPONENT,
+)
+from app.campaigns.agent_prompts import CampaignPromptError, validate_campaign_prompt
 from app.db.models.llmops import GenerationRun, PromptVersion
 from app.db.session import get_session
 from app.personalization.eligibility import (
@@ -15,6 +19,7 @@ from app.personalization.eligibility import (
     set_global_fact_eligibility,
 )
 from app.rules import versioning
+from app.rules.catalog import CatalogValidationError, publish_angle_draft
 from app.schemas.prompt_config import (
     AngleVersionMetricsOut,
     BootstrapEntryOut,
@@ -61,11 +66,21 @@ def _with_rendered_voice_text(component_type: str, rows: list[dict]) -> list[dic
     return prepared
 
 
+def _check_campaign_prompt(prompt_name: str, rows: list[dict]) -> None:
+    try:
+        for row in rows:
+            validate_campaign_prompt(prompt_name, row.get("template"))
+    except CampaignPromptError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
+
+
 @router.post("/{component_type}/draft", response_model=DraftOut)
 def draft_component(
     component_type: str, body: DraftRequest, session: Session = Depends(get_session)
 ) -> DraftOut:
     rows = _with_rendered_voice_text(component_type, body.rows)
+    if component_type == CAMPAIGN_PROMPT_COMPONENT:
+        _check_campaign_prompt(body.component_key, rows)
     try:
         version = versioning.save_draft(
             session, component_type, body.component_key, rows, by=body.created_by
@@ -128,6 +143,11 @@ def put_personalization_facts(
 def publish_component(
     component_type: str, version: int, body: PublishRequest, session: Session = Depends(get_session)
 ) -> None:
+    if component_type == CAMPAIGN_PROMPT_COMPONENT:
+        _check_campaign_prompt(
+            body.component_key,
+            versioning.get_version_rows(session, component_type, body.component_key, version),
+        )
     if component_type == "agent_prompt":
         rows = versioning.get_version_rows(session, component_type, body.component_key, version)
         try:
@@ -136,10 +156,14 @@ def publish_component(
         except PromptValidationError as error:
             raise HTTPException(status_code=422, detail=str(error)) from None
     try:
-        versioning.publish(
-            session, component_type, body.component_key, version, by=body.by, at=body.at
-        )
-    except versioning.VersioningError as error:
+        if component_type == "message_angle_catalog":
+            publish_angle_draft(session, body.component_key, version, by=body.by, at=body.at)
+        else:
+            versioning.publish(
+                session, component_type, body.component_key, version, by=body.by, at=body.at
+            )
+    except (versioning.VersioningError, CatalogValidationError) as error:
+        session.rollback()
         raise HTTPException(status_code=422, detail=str(error)) from None
     session.commit()
 

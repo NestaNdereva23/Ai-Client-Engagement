@@ -17,8 +17,8 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.advisors import FaRecord
 from app.audit.log import record_audit
-from app.config import FaRecord
 from app.db.models.fa_assignment import FaAssignment
 from app.risk.fa_allocation import (
     AdvisorAllocation,
@@ -30,6 +30,7 @@ from app.transform.load import upsert
 
 SOURCE = "roster"
 FEED_SOURCE = "feed"
+UNASSIGNED_SOURCE = "unassigned"
 
 _UPDATE_COLUMNS = ["fa_id", "fa_name", "source"]
 
@@ -42,6 +43,7 @@ def allocate_and_persist(
     clients: Sequence[ClientLoad],
     keys: Sequence[tuple[int, int]],
     source_emails: Mapping[int, str] | None = None,
+    least_loaded_fallback: bool = True,
 ) -> AdvisorAllocation:
     """Assign this run's clients to advisors and store the result.
 
@@ -65,13 +67,29 @@ def allocate_and_persist(
 
     source_emails = source_emails or {}
     source_owners = owners_from_source(roster, source_emails)
-    allocation = allocate_advisors(roster, clients, current_owners, source_owners)
+    allocation = allocate_advisors(
+        roster,
+        clients,
+        current_owners,
+        source_owners,
+        least_loaded_fallback=least_loaded_fallback,
+    )
 
     names = {record.fa_id: record.name for record in roster}
     rows: list[dict[str, Any]] = []
     for client_id, unit_fund_id in keys:
         fa_id = allocation.owner.get(client_id)
         if fa_id is None:
+            if client_id in allocation.unassigned:
+                rows.append(
+                    {
+                        "client_id": client_id,
+                        "unit_fund_id": unit_fund_id,
+                        "fa_id": None,
+                        "fa_name": None,
+                        "source": UNASSIGNED_SOURCE,
+                    }
+                )
             continue
         rows.append(
             {
@@ -115,9 +133,10 @@ def allocate_and_persist(
             "placed_by_feed": placed_by_feed,
             "feed_clients_not_matched": len(set(source_emails) - set(source_owners)),
             "lent_for_tonight": len(allocation.covering),
+            "unassigned": len(allocation.unassigned),
         },
     )
     return allocation
 
 
-__all__ = ["allocate_and_persist", "FEED_SOURCE", "SOURCE"]
+__all__ = ["allocate_and_persist", "FEED_SOURCE", "SOURCE", "UNASSIGNED_SOURCE"]

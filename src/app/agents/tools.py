@@ -14,7 +14,8 @@ refusal and carry on rather than crash.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
+from dataclasses import asdict
 from datetime import date
 from typing import Any
 
@@ -31,7 +32,9 @@ from app.agents.watchlist import (
     build_watchlist,
     load_thresholds,
 )
+from app.agents.web_research import WebSearchUnavailable, search_verified_web
 from app.briefing.narrative_prompt import narrative_facts
+from app.campaigns.agent_information import campaign_search_web, get_weekly_report_facts
 from app.campaigns.generation_cost import (
     DEFAULT_MODEL,
     MODEL_LABELS,
@@ -39,10 +42,16 @@ from app.campaigns.generation_cost import (
     UnknownGenerationModel,
     active_generation_cost_config,
 )
+from app.campaigns.results import campaign_results
+from app.campaigns.slot_context import SlotContext
+from app.config import get_settings
 from app.db.models.models import Funds
 from app.db.models.risk import ClientRiskFeatures
 from app.privacy.llm_client import ToolSpec
+from app.rag.guides import list_guide_versions
 from app.rules.catalog import load_active_angles
+from app.rules.verified_rate import get_verified_rate as fetch_verified_rate
+from app.schemas.campaigns import CampaignPlanConfig
 from app.services.agent_proposals import daily_usage, list_proposals
 from app.services.briefing import gather_briefing_facts, to_risk_fact_block
 from app.services.rag import search as search_rag_corpus
@@ -50,6 +59,7 @@ from app.transform.features import fund_type_from_name as classify_fund_type
 
 _MAX_SEARCH_RESULTS = 10
 _SEARCH_SCORE_DECIMALS = 3
+_MAX_WEB_RESULTS = 5
 
 
 def _parse_as_of(raw: str | None) -> date:
@@ -191,6 +201,39 @@ def get_client_facts(
     return {"facts": narrative_facts(to_risk_fact_block(facts))}
 
 
+_MAX_SAMPLE_ATTEMPTS = 20
+
+
+def sample_group_member(
+    session: Session, *, group_name: str, as_of: str | None = None
+) -> dict[str, Any]:
+    """One example client fund's allowed facts from inside a group, picked
+    server side: the same bands and warning signs get_client_facts returns,
+    with no client id attached. For seeing what one member of a group looks
+    like when you have no id to call get_client_facts with.
+    """
+    day = _parse_as_of(as_of)
+    if group_name not in GROUP_NAMES:
+        return _unknown_group(group_name)
+
+    groups, refusal = _groups_for(session, day)
+    if refusal is not None:
+        return refusal
+    group = _find_group(groups, group_name)
+    if group is None or not group.members:
+        return {"error": "empty_group", "message": f"'{group_name}' has nobody in it tonight"}
+
+    for member in group.members[:_MAX_SAMPLE_ATTEMPTS]:
+        facts = gather_briefing_facts(session, member.client_id, member.unit_fund_id, day)
+        if facts is not None:
+            return {
+                "group_name": group_name,
+                "as_of": day.isoformat(),
+                "facts": narrative_facts(to_risk_fact_block(facts)),
+            }
+    return {"error": "not_found", "message": "no risk facts are on file for anyone sampled"}
+
+
 def get_contact_history(session: Session, *, group_name: str) -> dict[str, Any]:
     """The most recent proposal made for this group, and what happened to
     it: which action, how many clients qualified, and its current status.
@@ -245,6 +288,37 @@ def search_knowledge(
     }
 
 
+def search_web(session: Session, *, query: str, k: int = 5) -> dict[str, Any]:
+    if not query or not query.strip():
+        return {"error": "empty_query", "message": "a search needs some text to look for"}
+
+    capped_k = max(1, min(k, _MAX_WEB_RESULTS))
+    try:
+        results = search_verified_web(get_settings(), query, capped_k)
+    except WebSearchUnavailable as exc:
+        return {"error": "web_search_unavailable", "message": str(exc)}
+    return {
+        "query": query,
+        "results": [{"title": r.title, "url": r.url, "snippet": r.snippet} for r in results],
+    }
+
+
+def get_verified_rate(session: Session, *, product: str) -> dict[str, Any]:
+    # Refuses once the rate has gone stale rather than returning an old figure.
+    row = fetch_verified_rate(session, product)
+    if row is None:
+        return {
+            "error": "no_verified_rate",
+            "message": f"no fresh verified rate is on file for '{product}'",
+        }
+    return {
+        "product": row.product,
+        "rate_pct": float(row.rate_value),
+        "as_of": row.as_of.date().isoformat(),
+        "source": row.source,
+    }
+
+
 def list_angles(session: Session, *, as_of: str | None = None) -> dict[str, Any]:
     """The message angles live today, and what each one may and may not claim."""
     day = _parse_as_of(as_of)
@@ -261,6 +335,8 @@ def list_angles(session: Session, *, as_of: str | None = None) -> dict[str, Any]
                 "never": row.never,
                 "use": row.use,
                 "held": row.held,
+                "family": row.family,
+                "audience": list(row.audience or ()),
             }
             for row in sorted(angles.values(), key=lambda row: row.angle)
         ],
@@ -315,13 +391,13 @@ def estimate_cost(
 
 
 def _action_allowance(session: Session, action_code: str, day: date) -> dict[str, Any]:
-    permission_row = resolve_permission(session, action_code)
+    permission_row = resolve_permission(session, action_code, at=day)
     usage = daily_usage(session, action_code=action_code, as_of=day)
     cap_clients = permission_row.max_clients_per_day if permission_row else None
     cap_money = permission_row.max_money_kes if permission_row else None
     return {
         "action_code": action_code,
-        "permission": effective_permission(session, action_code),
+        "permission": effective_permission(session, action_code, at=day),
         "cap_clients_per_day": cap_clients,
         "used_clients": usage.used_clients,
         "remaining_clients": None
@@ -401,8 +477,11 @@ TOOL_FUNCTIONS: dict[str, Callable[..., dict[str, Any]]] = {
     "list_groups": list_groups,
     "describe_group": describe_group,
     "get_client_facts": get_client_facts,
+    "sample_group_member": sample_group_member,
     "get_contact_history": get_contact_history,
     "search_knowledge": search_knowledge,
+    "search_web": search_web,
+    "get_verified_rate": get_verified_rate,
     "list_angles": list_angles,
     "estimate_cost": estimate_cost,
     "check_allowance": check_allowance,
@@ -445,7 +524,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         name="get_client_facts",
         description=(
             "The allowed facts for one client fund: bands and warning signs only, "
-            "never a name, an id, or an exact figure."
+            "never a name, an id, or an exact figure. Only call this with an id "
+            "someone gave you in the conversation; never guess one."
         ),
         input_schema={
             "type": "object",
@@ -455,6 +535,26 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
                 "as_of": _AS_OF_PROPERTY,
             },
             "required": ["client_id", "unit_fund_id"],
+        },
+    ),
+    ToolSpec(
+        name="sample_group_member",
+        description=(
+            "One example client fund from inside a group, picked for you: the same "
+            "bands and warning signs get_client_facts returns, with no client id "
+            "attached. Use this instead of get_client_facts when you have no id, "
+            "only a group name."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "group_name": {
+                    "type": "string",
+                    "description": "One of the watch list's group names, from list_groups.",
+                },
+                "as_of": _AS_OF_PROPERTY,
+            },
+            "required": ["group_name"],
         },
     ),
     ToolSpec(
@@ -492,6 +592,41 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
                 },
             },
             "required": ["query"],
+        },
+    ),
+    ToolSpec(
+        name="search_web",
+        description=(
+            "Search the allow listed verified sources for a fact worth citing. "
+            "Returns only pages from sources an operator has approved."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to search for."},
+                "k": {
+                    "type": "integer",
+                    "description": f"How many results to return, at most {_MAX_WEB_RESULTS}.",
+                },
+            },
+            "required": ["query"],
+        },
+    ),
+    ToolSpec(
+        name="get_verified_rate",
+        description=(
+            "The product's own verified current rate, kept fresh by an operator. "
+            "Refuses once it has gone stale rather than returning an old figure."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "product": {
+                    "type": "string",
+                    "description": "The product to look up, for example 'money market'.",
+                }
+            },
+            "required": ["product"],
         },
     ),
     ToolSpec(
@@ -580,3 +715,190 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         },
     ),
 )
+
+# plan and choose only ever reason about groups as a whole, never one client:
+# neither has a real id to call get_client_facts with, so it is left out here.
+GROUP_LEVEL_TOOL_SPECS: tuple[ToolSpec, ...] = tuple(
+    spec for spec in TOOL_SPECS if spec.name != "get_client_facts"
+)
+
+
+CAMPAIGN_TOOL_SPECS: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="get_weekly_report_facts",
+        description=(
+            "What the latest weekly market report says about one product, as short passages "
+            "with the report's title and date. Use it for current rates and market facts. "
+            "Says so plainly when no weekly report is active."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "product": {
+                    "type": "string",
+                    "description": "The product, for example money market or high yield.",
+                }
+            },
+            "required": ["product"],
+        },
+    ),
+    ToolSpec(
+        name="search_approved_sites",
+        description=(
+            "Search the websites an operator approved for the campaign agents. Returns "
+            "short tidied facts, each with the website it came from, for current rates "
+            "and market facts the weekly report does not have. Says so plainly when no "
+            "website is approved or nothing useful was found."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to search for."},
+                "k": {
+                    "type": "integer",
+                    "description": f"How many results to read, at most {_MAX_WEB_RESULTS}.",
+                },
+            },
+            "required": ["query"],
+        },
+    ),
+    ToolSpec(
+        name="get_campaign_context",
+        description=(
+            "This campaign's objective, how it measures success, the gap allowed between "
+            "touches, how many touch points it has, the angles you may choose from, and the "
+            "client guides the writer can draw on for product basics and first steps."
+        ),
+        input_schema={"type": "object", "properties": {}},
+    ),
+    ToolSpec(
+        name="get_touch_history",
+        description=(
+            "What this slot's client was sent before: for each earlier touch the angle, "
+            "subject, a short excerpt, whether it was sent and delivered, how many days ago, "
+            "and whether it was opened, replied to or bounced. Also the events since the "
+            "last touch and the note left for this run. Times are in days, never dates."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"slot": {"type": "integer", "description": "The slot number."}},
+            "required": ["slot"],
+        },
+    ),
+    ToolSpec(
+        name="get_side_change",
+        description=(
+            "Whether this slot's client has moved between the inactive and active side, and "
+            "whether their balance went up or down, comparing each send with today. "
+            "Balances are bands, never amounts."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"slot": {"type": "integer", "description": "The slot number."}},
+            "required": ["slot"],
+        },
+    ),
+    ToolSpec(
+        name="get_campaign_results",
+        description=(
+            "What was seen after earlier campaign emails, by campaign, angle, tier and value "
+            "band: opened, replied, deposit seen within the campaign's window, moved to the "
+            "active side, balance up. Small groups say too few to tell. Says so plainly when "
+            "there is not enough finished data yet."
+        ),
+        input_schema={"type": "object", "properties": {}},
+    ),
+)
+
+SETUP_TOOLS: tuple[str, ...] = ("get_waiting_audience", "list_angles", "get_campaign_results")
+
+PLANNING_TOOLS: tuple[str, ...] = (
+    "get_campaign_context",
+    "get_touch_history",
+    "get_side_change",
+    "get_campaign_results",
+    "list_angles",
+    "search_approved_sites",
+    "get_weekly_report_facts",
+)
+
+REPORTING_TOOLS: tuple[str, ...] = ("get_campaign_context", "get_campaign_results")
+
+CAMPAIGN_WRITE_TOOLS: tuple[str, ...] = ("choose_touch_plan", "save_campaign_draft")
+
+
+def specs_for(names: Sequence[str], extra: Sequence[ToolSpec] = ()) -> tuple[ToolSpec, ...]:
+    registry = {spec.name: spec for spec in (*TOOL_SPECS, *CAMPAIGN_TOOL_SPECS, *extra)}
+    return tuple(registry[name] for name in names)
+
+
+def get_campaign_results(session: Session) -> dict[str, Any]:
+    return campaign_results(session)
+
+
+def make_campaign_read_tools(
+    *,
+    plan_config: CampaignPlanConfig,
+    touch_points: int,
+    allowed_angles: Collection[str],
+    slots: Sequence[SlotContext],
+) -> dict[str, Callable[..., dict[str, Any]]]:
+    def slot_at(number: object) -> SlotContext | None:
+        if isinstance(number, int) and not isinstance(number, bool) and 0 <= number < len(slots):
+            return slots[number]
+        return None
+
+    def unknown_slot(number: object) -> dict[str, Any]:
+        return {"error": "unknown_slot", "message": f"{number!r} is not one of this run's slots"}
+
+    def get_campaign_context(session: Session) -> dict[str, Any]:
+        return {
+            "objective": plan_config.objective,
+            "success_measure": plan_config.success_measure,
+            "observation_days": plan_config.observation_days,
+            "min_gap_days": plan_config.min_gap_days,
+            "max_gap_days": plan_config.max_gap_days,
+            "touch_points": touch_points,
+            "allowed_angles": sorted(allowed_angles),
+            "client_guides": [
+                {"title": guide.title, "topic": guide.topic}
+                for guide in list_guide_versions(session)
+                if guide.is_active
+            ],
+        }
+
+    def get_touch_history(session: Session, *, slot: int) -> dict[str, Any]:
+        context = slot_at(slot)
+        if context is None:
+            return unknown_slot(slot)
+        return {
+            "slot": slot,
+            "step": context.step_no,
+            "kind": context.kind,
+            "history_complete": not context.missing_history,
+            "touches": [asdict(touch) for touch in context.earlier_touches],
+            "events_since_last_touch": [asdict(event) for event in context.events_since_last_touch],
+            "next_time_note": context.next_time_note,
+        }
+
+    def get_side_change(session: Session, *, slot: int) -> dict[str, Any]:
+        context = slot_at(slot)
+        if context is None:
+            return unknown_slot(slot)
+        change = context.side_change
+        return {
+            "slot": slot,
+            "side_now": change.side_now,
+            "balance_band_now": change.balance_band_now,
+            "at_send": [asdict(snapshot) for snapshot in change.at_send],
+            "note": "a send with no side recorded was sent before sides were saved at send time",
+        }
+
+    return {
+        "get_campaign_context": get_campaign_context,
+        "get_touch_history": get_touch_history,
+        "get_side_change": get_side_change,
+        "get_campaign_results": get_campaign_results,
+        "get_weekly_report_facts": get_weekly_report_facts,
+        "search_approved_sites": campaign_search_web,
+    }

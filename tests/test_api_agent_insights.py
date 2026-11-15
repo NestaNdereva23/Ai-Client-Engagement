@@ -1,9 +1,5 @@
 """The agent insights HTTP API: list, count, open one, decide, recount.
-
-Drives the router through TestClient against the real app, so these prove
-the wiring rather than re-testing the state machine already covered in
-test_agent_insight_state.py.
-"""
+Drives the router through TestClient, so these prove the wiring."""
 
 from __future__ import annotations
 
@@ -36,9 +32,7 @@ def _authed(configured_reviewers, reviewer_1_headers):
 
 @pytest.fixture(autouse=True)
 def _no_real_execution(monkeypatch, db: None):
-    """Accepting starts an action run. These tests prove the wiring, so the
-    run itself is not carried out and its row is cleared up afterwards.
-    """
+    """Accepting starts an action run. The run is not carried out; its row is cleared up."""
     monkeypatch.setattr(agent_insights_router, "run_action_in_background", lambda *a, **k: None)
     yield
 
@@ -49,7 +43,7 @@ def insight(db: None):
         row = AgentInsight(
             kind="risk",
             title="fees will empty a group of small accounts",
-            group_name="fee_pressure_gone_quiet",
+            group_name="first_deposit_no_repeat",
             group_definition={"months_until_empty_below": 6.0},
             client_count=2,
             money_total_kes=4_500.0,
@@ -68,7 +62,7 @@ def insight(db: None):
                     insight_id=insight_id,
                     fact_text="client funds the fee will empty soon",
                     fact_value="2",
-                    source_filter={"group_name": "fee_pressure_gone_quiet"},
+                    source_filter={"group_name": "first_deposit_no_repeat"},
                     source_table="active_client_fund",
                 ),
                 AgentInsightFact(
@@ -160,7 +154,7 @@ def test_get_insight_separates_facts_from_the_reading(insight: int) -> None:
     assert body["confidence_reason"]
     assert body["listed_client_count"] == 2
     assert [fact["fact_value"] for fact in body["facts"]] == ["2", "4500", "0"]
-    assert body["facts"][0]["source_filter"] == {"group_name": "fee_pressure_gone_quiet"}
+    assert body["facts"][0]["source_filter"] == {"group_name": "first_deposit_no_repeat"}
     assert body["facts"][0]["source_table"] == "active_client_fund"
 
 
@@ -225,7 +219,7 @@ def test_recount_runs_a_group_filter_again(insight: int) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["stored_value"] == "2"
-    assert body["group_name"] == "fee_pressure_gone_quiet"
+    assert body["group_name"] == "first_deposit_no_repeat"
     if body["can_recount"]:
         assert body["client_count"] is not None
     else:

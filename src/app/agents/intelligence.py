@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.agent_loop import MissingPromptTemplate, start_agent_run
 from app.agents.events import NO_EVENTS, EventLog, RunEventLog
+from app.agents.fa_scope import fa_scope
 from app.agents.group_questions import EVERYTHING_ELSE, question_for
 from app.agents.insight_tools import (
     WRITE_INSIGHT,
@@ -784,7 +785,8 @@ async def execute_intelligence_run(
 
     try:
         try:
-            await graph.ainvoke({})
+            with fa_scope(run.fa_id):
+                await graph.ainvoke({})
         except Exception as exc:
             logger.exception("intelligence.run_failed", run_id=run_id, reason=str(exc))
             events.record(ERROR, about="run", reason=str(exc))
@@ -849,10 +851,13 @@ async def run_intelligence_agent(
     tracer: Tracer | None = None,
     audit: AuditSink | None = None,
     events: EventLog | None = None,
+    fa_id: str | None = None,
 ) -> AgentRun:
     """Start a run and take it all the way through, in one call."""
     run = await asyncio.to_thread(
-        lambda: start_agent_run(session, trigger=trigger, as_of=as_of, kind=INTELLIGENCE_AGENT)
+        lambda: start_agent_run(
+            session, trigger=trigger, as_of=as_of, kind=INTELLIGENCE_AGENT, fa_id=fa_id
+        )
     )
     return await execute_intelligence_run(
         session,

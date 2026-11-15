@@ -1,20 +1,4 @@
-"""Turns an approved outreach_message into an actual send.
-
-campaigns/touch.py owns everything about *whether* a touch may go out: the
-approval check, the send-time stop-condition recheck, the audit trail, and
-advancing the enrollment once it does. It stays free of any provider
-dependency on purpose, so it takes a plain SenderFn callable instead. This
-module is that callable's one real implementation: address the message and
-hand it to whatever Mailer app.delivery.mailer.get_mailer() resolves to --
-Mailpit in development, a recording no-op wherever SMTP is not configured,
-and a real provider once one is.
-
-personalized_content is required. ai_draft_content is what the model saw --
-it still carries unresolved placeholders like {{first_name}} -- and must
-never be what reaches a client. A message with no personalized_content
-reaching this sender is a bug upstream (create_outreach_message always sets
-it), not something to paper over here.
-"""
+"""Turns an approved outreach_message into an actual send."""
 
 from __future__ import annotations
 
@@ -29,9 +13,15 @@ from app.campaigns.touch import SendBlocked, SenderFn, SendResult
 from app.config import Settings, get_settings
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.models import ClientFund, PiiVault
-from app.db.models.outreach import OutreachMessage
+from app.db.models.outreach import (
+    ADVISOR_REQUESTED_QUEUE_NAME,
+    AGENT_PROPOSAL_CAMPAIGN_TYPE,
+    Campaign,
+    OutreachMessage,
+)
 from app.db.session import SessionLocal, restricted_session
 from app.delivery.mailer import EmailMessage, Mailer, get_mailer, is_cytonn_address
+from app.delivery.send_settings import settings_for_type
 from app.delivery.test_recipients import ensure_test_recipient, pick_test_recipient
 
 logger = structlog.get_logger(__name__)
@@ -72,14 +62,29 @@ def _advisor_emails(client_id: int) -> tuple[str, ...]:
     )
 
 
+def _campaign_of(campaign_id: int) -> Campaign | None:
+    with SessionLocal() as session:
+        return session.get(Campaign, campaign_id)
+
+
+def _is_advisor_requested_queue(campaign: Campaign | None) -> bool:
+    return (
+        campaign is not None
+        and campaign.campaign_type == AGENT_PROPOSAL_CAMPAIGN_TYPE
+        and campaign.name == ADVISOR_REQUESTED_QUEUE_NAME
+    )
+
+
 def build_email_sender(
     mailer: Mailer | None = None, *, settings: Settings | None = None
 ) -> SenderFn:
     settings = settings or get_settings()
     mailer = mailer if mailer is not None else get_mailer(settings)
-    test_mode = settings.delivery_mode == "test"
 
     def send(message: OutreachMessage) -> SendResult:
+        campaign = _campaign_of(message.campaign_id)
+        sending = settings_for_type(campaign.campaign_type if campaign else None, settings)
+        test_mode = sending.delivery_mode == "test"
         content = message.personalized_content
         if not content:
             raise SendBlocked("no_personalized_content")
@@ -88,11 +93,7 @@ def build_email_sender(
         body = content["body"]
         if test_mode:
             to = pick_test_recipient(message.client_id, "email", message.campaign_id)
-            subject = f"{settings.test_subject_prefix.strip()} {subject}"
-            body = (
-                f"{body}\n\n--\nTest send for client {message.client_id}, "
-                f"campaign {message.campaign_id}."
-            )
+            subject = f"{sending.test_subject_prefix.strip()} {subject}"
         else:
             to = _contact_email(message.client_id)
         if not to:
@@ -103,7 +104,19 @@ def build_email_sender(
 
         # A test send goes only to the test list, so no real account manager is copied.
         cc = () if test_mode else _advisor_emails(message.client_id)
-        result = mailer.send(EmailMessage(to=to, subject=subject, text_body=body, cc=cc))
+        # The advisor-requested queue sends as the client's own FA, not the
+        # shared client services inbox; every other campaign is unaffected.
+        from_email = cc[0] if cc and _is_advisor_requested_queue(campaign) else None
+        result = mailer.send(
+            EmailMessage(
+                to=to,
+                subject=subject,
+                text_body=body,
+                cc=cc,
+                from_email=from_email,
+                reference=message.message_id,
+            )
+        )
         status = "sent" if result.sent else "recorded"
         logger.info("outreach_message.send", message_id=message.message_id, status=status)
         return SendResult(

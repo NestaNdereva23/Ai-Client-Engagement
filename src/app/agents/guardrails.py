@@ -276,6 +276,18 @@ SMS_GUARDRAIL_CHECKS: Sequence[Any] = (
 )
 
 
+def guardrails_on() -> bool:
+    """GUARDRAIL_CHECKS: false skips the draft checks and the privacy scan on the reply."""
+    switch = get_settings().guardrail_checks
+    if switch is None:
+        raise RuntimeError("GUARDRAIL_CHECKS must be set to true or false")
+    return switch
+
+
+def enabled_checks(checks: Sequence[Any]) -> tuple[Any, ...]:
+    return tuple(checks) if guardrails_on() else ()
+
+
 def check_no_unresolved_placeholders(subject: str, body: str) -> None:
     """Every placeholder token in a resolved message must have been filled in.
     A token still present is a substitution bug, not a hallucination.

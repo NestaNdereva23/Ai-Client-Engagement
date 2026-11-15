@@ -43,6 +43,9 @@ def resolve_endpoint(endpoint: str, settings: Settings) -> EndpointConfig:
     fetch_path is None for "inactive-clients", which is how IngestionWorker
     already falls back to the client's own base URL; every other endpoint
     supplies its own full URL from settings.
+
+    page_size is how many records to ask for per page. Both feeds ask for 1000
+    to cut the round trips.
     """
     if endpoint == "inactive-clients":
         return EndpointConfig(

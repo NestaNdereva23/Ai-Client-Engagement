@@ -27,17 +27,24 @@ class ActionResult(Base):
         CheckConstraint(
             "deposit_amount_kes >= 0", name="ck_action_result_deposit_amount_not_negative"
         ),
+        CheckConstraint(
+            "proposal_id IS NOT NULL OR touch_id IS NOT NULL", name="ck_action_result_has_a_source"
+        ),
     )
 
     result_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    proposal_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("agent_proposal.proposal_id"), nullable=False, index=True
+    proposal_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("agent_proposal.proposal_id"), nullable=True, index=True
+    )
+    # Set for a campaign touch, which has no proposal; the two sources never both apply.
+    touch_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("touch_log.touch_id", ondelete="CASCADE"), nullable=True, index=True
     )
     insight_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("agent_insight.insight_id"), nullable=True, index=True
     )
     client_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
-    unit_fund_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    unit_fund_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     message_id: Mapped[str] = mapped_column(
         Text, ForeignKey("outreach_message.message_id"), nullable=False
     )
@@ -50,4 +57,7 @@ class ActionResult(Base):
     reviewer_changed: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
     deposited: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
     deposit_amount_kes: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
+    # Compared with the side and balance saved at send time; null when none was saved.
+    moved_to_active: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    balance_up: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     measured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

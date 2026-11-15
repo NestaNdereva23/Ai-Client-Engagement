@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class OutreachBucketOut(BaseModel):
@@ -38,6 +39,25 @@ class OutreachTrendPointOut(BaseModel):
 
 class OutreachTrendOut(BaseModel):
     points: list[OutreachTrendPointOut]
+
+
+class CampaignProgressClientsOut(BaseModel):
+    waiting: int
+    in_progress: int
+    finished: int
+    stopped: int
+
+
+class CampaignProgressOut(BaseModel):
+    campaign_id: int
+    status: str
+    step_days: list[int]
+    cooldown_days: int
+    plan_length_days: int
+    clients: CampaignProgressClientsOut
+    next_send_at: datetime | None
+    last_sent_at: datetime | None
+    expected_complete_at: datetime | None
 
 
 class CampaignSummaryOut(BaseModel):
@@ -101,6 +121,7 @@ class CampaignReadinessOut(BaseModel):
     sendable_now: int
     sent_count: int
     next_due_at: datetime | None = None
+    problems: list[str] = Field(default_factory=list)
 
 
 class CampaignListItemOut(BaseModel):
@@ -132,6 +153,32 @@ class CampaignDetailOut(BaseModel):
     start_date: date | None
     end_date: date | None
     created_at: datetime
+    planning_mode: str
+    agent_touch_policy: dict | None
+
+
+DEFAULT_MIN_GAP_DAYS = 2
+DEFAULT_MAX_GAP_DAYS = 10
+DEFAULT_OBSERVATION_DAYS = 30
+
+CampaignObjective = Literal["win_back_deposit", "top_up", "reactivate_never_funded"]
+
+
+class CampaignPlanConfig(BaseModel):
+    objective: CampaignObjective | None = None
+    min_gap_days: int = Field(default=DEFAULT_MIN_GAP_DAYS, ge=0)
+    max_gap_days: int = Field(default=DEFAULT_MAX_GAP_DAYS, ge=0)
+    allowed_angles: list[str] = Field(default_factory=list)
+    success_measure: Literal["deposit"] = "deposit"
+    observation_days: int = Field(default=DEFAULT_OBSERVATION_DAYS, ge=1)
+
+    @model_validator(mode="after")
+    def _gaps_in_order(self) -> CampaignPlanConfig:
+        if self.min_gap_days > self.max_gap_days:
+            raise ValueError(
+                f"min_gap_days {self.min_gap_days} may not exceed max_gap_days {self.max_gap_days}"
+            )
+        return self
 
 
 class SentMessageOut(BaseModel):
@@ -142,6 +189,234 @@ class SentMessageOut(BaseModel):
     channel: str
     sent_at: datetime
     delivery_status: str | None
+
+
+class CitedFactOut(BaseModel):
+    text: str
+    url: str | None = None
+    retrieved_at: str | None = None
+    tool: str | None = None
+
+
+class TouchPlanOut(BaseModel):
+    enrollment_id: int
+    client_id: int
+    step_no: int
+    prior_angle: str | None
+    angle: str
+    gap_days: int
+    reason: str
+    next_time_note: str | None = None
+    cited_facts: list[CitedFactOut] | None
+
+
+class ExplainPlanOut(BaseModel):
+    run_id: int
+    gap_days: int
+    reason: str
+    next_time_note: str | None = None
+    cited_facts: list[CitedFactOut] | None = None
+
+
+class ExplainDraftOut(BaseModel):
+    message_id: str
+    subject: str | None = None
+    body: str | None = None
+    status: str
+
+
+class ExplainApprovalOut(BaseModel):
+    outcome: str
+    reviewer_id: str
+    decided_at: datetime
+
+
+class ExplainSendOut(BaseModel):
+    touch_id: int
+    sent_at: datetime | None = None
+    delivery_status: str | None = None
+
+
+class ExplainOutcomeOut(BaseModel):
+    window_days: int
+    opened: bool
+    replied: bool
+    bounced: bool
+    deposit_seen: bool
+    deposit_amount_kes: float
+    moved_to_active: bool | None = None
+    balance_up: bool | None = None
+    measured_at: datetime
+
+
+class ExplainTouchOut(BaseModel):
+    enrollment_id: int
+    client_id: int
+    step_no: int
+    angle: str | None = None
+    stage: str
+    plan: ExplainPlanOut | None = None
+    draft: ExplainDraftOut | None = None
+    approval: ExplainApprovalOut | None = None
+    send: ExplainSendOut | None = None
+    outcome: ExplainOutcomeOut | None = None
+
+
+class ExplainResultsSeenOut(BaseModel):
+    called_at: datetime
+    results: dict
+
+
+class ExplainRunOut(BaseModel):
+    run_id: int
+    started_at: datetime
+    state: str
+    results_seen: list[ExplainResultsSeenOut]
+
+
+class CampaignExplainOut(BaseModel):
+    touches: list[ExplainTouchOut]
+    runs: list[ExplainRunOut]
+
+
+class CampaignAgentRunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    run_id: int
+    kind: str
+    campaign_id: int | None = None
+    trigger: str
+    state: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    summary: str | None = None
+    failure_reason: str | None = None
+
+
+class ActiveWeeklyReportOut(BaseModel):
+    title: str
+    version_no: int
+    published_on: date | None = None
+    ingested_at: datetime
+    passages: int
+    sections: list[str]
+
+
+class CampaignToolOut(BaseModel):
+    name: str
+    used_by: list[str]
+    description: str
+    parameters: list[str]
+    switch: str | None = None
+
+
+class AgentCampaignFactsOut(BaseModel):
+    name: str
+    status: str
+    planning_mode: str
+    is_test: bool
+    objective: str | None = None
+    success_measure: str
+    observation_days: int
+    min_gap_days: int
+    max_gap_days: int
+    cohort: dict | None = None
+    enrolled: int
+    touch_points: int
+    allowed_angle_count: int | None = None
+    live_angle_count: int
+
+
+class AgentCheckOut(BaseModel):
+    label: str
+    ok: bool
+    problems: list[str]
+
+
+class RejectionOut(BaseModel):
+    code: str
+    slot: int | None = None
+    message: str
+
+
+class AgentRunRowOut(BaseModel):
+    run_id: int
+    started_at: datetime
+    finished_at: datetime | None = None
+    trigger: str
+    state: str
+    summary: str | None = None
+    failure_reason: str | None = None
+    cost_kes: float | None = None
+    due: int | None = None
+    planned: int
+    left_out: dict[str, int]
+    rejections: list[RejectionOut]
+
+
+class PlannedTouchRowOut(BaseModel):
+    client_id: int
+    band: str | None = None
+    step_no: int
+    touch_points: int
+    last_angle: str | None = None
+    last_subject: str | None = None
+    angle: str
+    family: str | None = None
+    suggested_subject: str | None = None
+    gap_days: int
+    reason: str
+    next_time_note: str | None = None
+
+
+class PlannedTouchesOut(BaseModel):
+    total: int
+    touches: list[PlannedTouchRowOut]
+
+
+class ReviewProgressOut(BaseModel):
+    samples: int
+    approved: int
+    waiting: int
+    others_waiting: int
+    ready_cohorts: list[str]
+
+
+class ToolUsedOut(BaseModel):
+    name: str
+    calls: int
+
+
+class BandCountOut(BaseModel):
+    name: str
+    count: int
+
+
+class AgentGroupOut(BaseModel):
+    tier: str
+    campaign_band: str | None = None
+    total: int
+    bands: list[BandCountOut]
+
+
+class LiveAgentCampaignsOut(BaseModel):
+    live: int
+    allowed: int
+
+
+class CampaignAgentOverviewOut(BaseModel):
+    campaign: AgentCampaignFactsOut
+    checks: list[AgentCheckOut]
+    latest_run: AgentRunRowOut | None = None
+    recent_runs: list[AgentRunRowOut]
+    plan_run_id: int | None = None
+    planned: PlannedTouchesOut
+    review: ReviewProgressOut
+    tools_used: list[ToolUsedOut]
+    cited_facts: list[CitedFactOut]
+    results: dict
+    group: AgentGroupOut | None = None
+    live_agent_campaigns: LiveAgentCampaignsOut
 
 
 class EnrollmentOut(BaseModel):
@@ -265,6 +540,61 @@ class CampaignCreateOut(BaseModel):
     steps: list[CampaignStepOut]
 
 
+class CampaignDraftIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=120)
+    cohort: CohortFilter
+    planning_mode: Literal["fixed_steps", "agent"] = "agent"
+    plan_config: CampaignPlanConfig
+    touch_offsets: list[int] = Field(min_length=1, max_length=10)
+    reason: str = Field(default="", max_length=1000)
+
+    @model_validator(mode="after")
+    def _complete(self) -> CampaignDraftIn:
+        if self.plan_config.objective is None:
+            raise ValueError("a suggested campaign needs an objective")
+        offsets = self.touch_offsets
+        if offsets[0] < 0 or any(
+            later <= earlier for earlier, later in zip(offsets, offsets[1:], strict=False)
+        ):
+            raise ValueError("touch_offsets must start at day 0 or later and rise with each touch")
+        return self
+
+
+class SuggestedCampaignOut(BaseModel):
+    campaign_id: int
+    run_id: int | None
+    created_at: datetime
+    draft: CampaignDraftIn
+    waiting_now: int
+    problems: list[str]
+
+
+class SuggestionApprovedOut(BaseModel):
+    campaign_id: int
+    enrolled_count: int
+
+
+class SuggestionDismissIn(BaseModel):
+    reason: str = Field(default="", max_length=500)
+
+
+class WaitingCellOut(BaseModel):
+    tier: str
+    value_band: str
+    count: int
+
+
+class WaitingPoolOut(BaseModel):
+    total: int
+    by_tier: dict[str, int]
+    by_angle: dict[str, int]
+    by_value_band: dict[str, int]
+    by_tier_and_value_band: list[WaitingCellOut]
+    groups_too_small_to_show: int
+
+
 class TouchOutcomeOut(BaseModel):
     """What happened to one due enrollment during a generation run."""
 
@@ -292,6 +622,8 @@ class DeliveryOut(BaseModel):
     subject: str | None
     body: str
     cc: list[str] = Field(default_factory=list)
+    touch_id: int | None = None
+    step_no: int | None = None
 
 
 class CampaignDispatchOut(BaseModel):

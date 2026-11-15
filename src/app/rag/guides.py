@@ -190,10 +190,22 @@ def approve_guide_version(session: Session, version_id: int, *, approved_by: str
 
 
 def find_guides(
-    session: Session, action_code: str, query: str, *, embedder: Embedder | None = None
+    session: Session,
+    action_code: str,
+    query: str,
+    *,
+    embedder: Embedder | None = None,
+    doc_ids: Sequence[int] | None = None,
+    skip_version_ids: Sequence[int] = (),
 ) -> list[Retrieved]:
     embedder = embedder or get_embedder()
     vector = embedder.embed([query])[0]
+    # A group's own ticked guides replace the match on the action.
+    conditions = [RagChunk.chunk_metadata.contains({"actions": [action_code]})]
+    if doc_ids is not None:
+        conditions = [RagDocument.doc_id.in_(list(doc_ids))]
+    if skip_version_ids:
+        conditions.append(RagChunk.version_id.not_in(list(skip_version_ids)))
     matching = (
         select(
             RagChunk.chunk_id,
@@ -208,7 +220,7 @@ def find_guides(
             RagChunk.embedding.isnot(None),
             RagDocumentVersion.is_active.is_(True),
             RagDocument.doc_type == DOC_TYPE_CLIENT_GUIDE,
-            RagChunk.chunk_metadata.contains({"actions": [action_code]}),
+            *conditions,
         )
         .offset(0)
         .subquery("matching_guides")

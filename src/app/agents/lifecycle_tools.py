@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.agents.events import NO_EVENTS, EventLog
+from app.agents.fa_scope import current_fa_id
 from app.agents.insight_tools import InsightWriteBudget, insights_written
 from app.agents.lifecycle_members import funds_already_raised, funds_in_state
 from app.agents.query_banding import round_money
@@ -106,6 +107,7 @@ def make_lifecycle_tools(
 
         insight = AgentInsight(
             run_id=run_id,
+            fa_id=current_fa_id(),
             kind=LIFECYCLE_CHANGE_KIND,
             title=_text(title),
             group_name=f"{from_state}_to_{to_state}",

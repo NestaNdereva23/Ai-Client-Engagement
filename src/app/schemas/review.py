@@ -98,6 +98,13 @@ class CohortReadyOut(BaseModel):
     remaining_count: int
 
 
+class DecideSendOut(BaseModel):
+    # Only set for a queue that sends on approval; every other queue
+    # leaves this null and waits for a separate batch send.
+    sent: bool
+    reason: str | None = None
+
+
 class DecideResultOut(BaseModel):
     """One decide() outcome, plus whether it just made a cohort ready to
     bulk-approve the rest.
@@ -105,6 +112,7 @@ class DecideResultOut(BaseModel):
 
     action: ReviewActionOut
     cohort_ready: CohortReadyOut | None = None
+    send: DecideSendOut | None = None
 
 
 class DecideBatchFailureOut(BaseModel):

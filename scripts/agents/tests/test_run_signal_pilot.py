@@ -1,19 +1,17 @@
 """Covers run_signal_pilot.py's underlying functions, not the CLI wrapper:
-a run that finds new clients, a run that finds none, and a second run on
-unchanged data that must not write a second proposal.
-"""
+a run with new clients, a run with none, and a second run that writes no second proposal."""
 
 from __future__ import annotations
 
 import importlib.util
 import sys
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from sqlalchemy import delete, select
 
-from app.agents.situations import NEW_CLIENT_SINGLE_DEPOSIT
+from app.agents.situations import FIRST_DEPOSIT_NO_REPEAT
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.agent_insight import AgentInsight
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
@@ -29,6 +27,7 @@ from app.db.models.llmops import (
     TraceRef,
 )
 from app.db.models.outreach import OutreachMessage, ReviewAction
+from app.db.models.routing import ClientTier
 from app.db.models.signals import (
     ClientSignalSnapshot,
     ClientSignalState,
@@ -54,7 +53,7 @@ OUT_OF_WINDOW_CLIENT = 952202
 
 CLIENT_IDS = (NEW_CLIENT, OUT_OF_WINDOW_CLIENT)
 
-AS_OF = date(2026, 9, 15)
+AS_OF = date(2026, 10, 13)
 
 
 @pytest.fixture(autouse=True)
@@ -83,6 +82,18 @@ def _fund(client_id: int, **overrides) -> ActiveClientFund:
     return ActiveClientFund(**row)
 
 
+def _tier(client_id: int) -> ClientTier:
+    return ClientTier(
+        client_id=client_id,
+        purchased_recently=True,
+        real_withdrawer=False,
+        tier="frequent_depositor",
+        segment="active_active",
+        computed_at=datetime(2026, 10, 13, 6, 0, tzinfo=UTC),
+        thresholds_version=1,
+    )
+
+
 def _purge_book(session) -> None:
     stale_proposal_ids = session.scalars(
         select(AgentProposalClient.proposal_id).where(AgentProposalClient.client_id.in_(CLIENT_IDS))
@@ -99,6 +110,7 @@ def _purge_book(session) -> None:
     )
     session.execute(delete(ClientSignalState).where(ClientSignalState.client_id.in_(CLIENT_IDS)))
     session.execute(delete(ActiveClientFund).where(ActiveClientFund.client_id.in_(CLIENT_IDS)))
+    session.execute(delete(ClientTier).where(ClientTier.client_id.in_(CLIENT_IDS)))
     session.commit()
 
 
@@ -158,10 +170,7 @@ def _purge_insights(session, insight_ids: list[int]) -> None:
 
 @pytest.fixture
 def made(db: None):
-    """Ids the test creates, cleaned up by exact id rather than by name, so
-    this never touches another run's proposals or findings for the same
-    watch list group.
-    """
+    """Ids the test creates, cleaned up by exact id so no other run's rows are touched."""
     created: dict[str, list[int]] = {"insight_ids": [], "proposal_ids": []}
 
     with SessionLocal() as session:
@@ -190,7 +199,7 @@ def _find_situation(result, code: str):
 @pytest.fixture
 def book(made: dict[str, list[int]]):
     with SessionLocal() as session:
-        session.add(_fund(NEW_CLIENT))
+        session.add_all([_fund(NEW_CLIENT), _tier(NEW_CLIENT)])
         session.commit()
     return made
 
@@ -198,7 +207,12 @@ def book(made: dict[str, list[int]]):
 @pytest.fixture
 def empty_book(made: dict[str, list[int]]):
     with SessionLocal() as session:
-        session.add(_fund(OUT_OF_WINDOW_CLIENT, first_deposit_date=AS_OF - timedelta(days=90)))
+        session.add_all(
+            [
+                _fund(OUT_OF_WINDOW_CLIENT, first_deposit_date=AS_OF - timedelta(days=90)),
+                _tier(OUT_OF_WINDOW_CLIENT),
+            ]
+        )
         session.commit()
     return made
 
@@ -211,7 +225,7 @@ def test_a_run_that_finds_new_clients_proposes_and_runs_it(
         result = pilot.run_pilot(session, AS_OF, reviewer="test-reviewer", max_clients=5, limit=3)
     _remember(book, result)
 
-    sit_res = _find_situation(result, NEW_CLIENT_SINGLE_DEPOSIT)
+    sit_res = _find_situation(result, FIRST_DEPOSIT_NO_REPEAT)
     assert sit_res is not None
     assert len(sit_res.delta.newly_active) >= 1
     assert sit_res.insight is not None
@@ -230,7 +244,7 @@ def test_a_run_that_finds_none_still_recomputes_cleanly(
         result = pilot.run_pilot(session, AS_OF, reviewer="test-reviewer", max_clients=5, limit=3)
     _remember(empty_book, result)
 
-    sit_res = _find_situation(result, NEW_CLIENT_SINGLE_DEPOSIT)
+    sit_res = _find_situation(result, FIRST_DEPOSIT_NO_REPEAT)
     assert sit_res.delta.newly_active == ()
     assert sit_res.insight is None
     assert sit_res.proposal is None
@@ -249,11 +263,17 @@ def test_a_second_run_the_same_day_does_not_write_a_second_proposal(
         second = pilot.run_pilot(session, AS_OF, reviewer="test-reviewer", max_clients=5, limit=3)
     _remember(book, second)
 
-    first_sit = _find_situation(first, NEW_CLIENT_SINGLE_DEPOSIT)
-    second_sit = _find_situation(second, NEW_CLIENT_SINGLE_DEPOSIT)
+    first_sit = _find_situation(first, FIRST_DEPOSIT_NO_REPEAT)
+    second_sit = _find_situation(second, FIRST_DEPOSIT_NO_REPEAT)
 
     assert first_sit.proposal is not None
     assert second_sit.proposal is None
     assert second_sit.delta.newly_active == ()
     assert second_sit.stopped_reason is not None
-    assert len(set(book["proposal_ids"])) == 1
+    new_client_proposals = {
+        sit.proposal.proposal_id
+        for result in (first, second)
+        for sit in result.situations
+        if sit.situation_code == FIRST_DEPOSIT_NO_REPEAT and sit.proposal is not None
+    }
+    assert len(new_client_proposals) == 1

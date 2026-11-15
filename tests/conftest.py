@@ -11,6 +11,11 @@ collide with real client/fund ids from an actual Cytonn pull; on a shared
 database an upsert-based transform silently overwrites real rows with test
 data. Create the database once (`CREATE DATABASE ace_test`) and apply
 migrations to it before running the suite for the first time.
+
+Under pytest-xdist (`-n auto`), each worker process clones that database
+(`CREATE DATABASE ... TEMPLATE ace_test`) into its own `ace_test_gwN`, so
+workers never collide on the same hardcoded ids. Plain `pytest` with no `-n`
+is unaffected.
 """
 
 from __future__ import annotations
@@ -24,18 +29,54 @@ from sqlalchemy import text
 
 from app.config import get_settings
 
+_DB_PATH_RE = re.compile(r"/([^/?]+)(\?.*)?$")
+
 
 def _redirect_to_test_database() -> None:
     explicit = os.environ.get("TEST_DATABASE_URL")
     if explicit:
-        os.environ["DATABASE_URL"] = explicit
+        base = explicit
     else:
-        base = get_settings().database_url
         # .../ace -> .../ace_test ; leaves a query string, if any, untouched.
-        os.environ["DATABASE_URL"] = re.sub(
-            r"/([^/?]+)(\?.*)?$", lambda m: f"/{m.group(1)}_test{m.group(2) or ''}", base
-        )
+        # Idempotent: the xdist controller process runs this same function
+        # and leaks its already-suffixed DATABASE_URL to worker processes
+        # through the inherited environment, so a worker must not suffix twice.
+        base = get_settings().database_url
+        name = _DB_PATH_RE.search(base).group(1)
+        if not name.endswith("_test"):
+            base = _DB_PATH_RE.sub(lambda m: f"/{name}_test{m.group(2) or ''}", base)
+
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER")
+    if worker_id:
+        base = _clone_worker_database(base, worker_id)
+
+    os.environ["DATABASE_URL"] = base
     get_settings.cache_clear()
+
+
+def _clone_worker_database(template_url: str, worker_id: str) -> str:
+    """Point this xdist worker at its own copy of the test database.
+
+    CREATE DATABASE ... TEMPLATE requires a connection to neither database
+    involved, so this goes through the `postgres` maintenance database.
+    """
+    from sqlalchemy import create_engine
+
+    template_db = _DB_PATH_RE.search(template_url).group(1)
+    worker_db = f"{template_db}_{worker_id}"
+    worker_url = _DB_PATH_RE.sub(lambda m: f"/{worker_db}{m.group(2) or ''}", template_url)
+    admin_url = _DB_PATH_RE.sub(lambda m: f"/postgres{m.group(2) or ''}", template_url)
+
+    try:
+        engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+        with engine.connect() as conn:
+            conn.execute(text(f'DROP DATABASE IF EXISTS "{worker_db}" WITH (FORCE)'))
+            conn.execute(text(f'CREATE DATABASE "{worker_db}" TEMPLATE "{template_db}"'))
+        engine.dispose()
+    except Exception:
+        pass  # unreachable database; _db_available() below reports it and tests skip
+
+    return worker_url
 
 
 _redirect_to_test_database()
@@ -53,10 +94,29 @@ def _default_delivery_mode_to_live() -> None:
     # Most tests check real addressing; the test mode tests opt in themselves.
     os.environ.setdefault("DELIVERY_MODE", "live")
     os.environ.setdefault("LIVE_SMS_TO_TEST_LIST", "false")
+    os.environ.setdefault("ACTIVE_DELIVERY_MODE", "live")
+    os.environ.setdefault("ACTIVE_LIVE_SMS_TO_TEST_LIST", "false")
     get_settings.cache_clear()
 
 
 _default_delivery_mode_to_live()
+
+
+def _default_agent_scoping_to_off() -> None:
+    # A local .env may turn per advisor scoping on; tests that need it opt in themselves.
+    os.environ.setdefault("AGENT_FA_SCOPED", "false")
+    get_settings.cache_clear()
+
+
+_default_agent_scoping_to_off()
+
+
+def _default_guardrail_checks_to_on() -> None:
+    os.environ.setdefault("GUARDRAIL_CHECKS", "true")
+    get_settings.cache_clear()
+
+
+_default_guardrail_checks_to_on()
 
 import app.db.models  # noqa: E402,F401  (registers models on Base.metadata)
 from app.db.base import Base  # noqa: E402
@@ -73,6 +133,10 @@ def _db_available() -> bool:
 
 
 DB_AVAILABLE = _db_available()
+# An idle pooled connection to this database blocks CREATE DATABASE ... TEMPLATE
+# (used to clone per-worker test databases under xdist), so don't leave one open
+# in the controller process, which never runs a test but stays up for the whole run.
+engine.dispose()
 
 
 @pytest.fixture
@@ -100,7 +164,12 @@ def _seed_agent_prompts() -> None:
 
     from sqlalchemy import delete
 
-    from app.agents.prompt_versioning import FORMATTED_PROMPTS, PROMPT_KEYS, PROMPT_PLACEHOLDERS
+    from app.agents.prompt_versioning import (
+        FORMATTED_PROMPTS,
+        PROMPT_KEYS,
+        PROMPT_PLACEHOLDERS,
+        default_prompt_texts,
+    )
     from app.db.models.agent_prompt import AgentPrompt
     from app.rules import versioning
 
@@ -111,6 +180,7 @@ def _seed_agent_prompts() -> None:
     intelligence_preamble = "You look for things worth acting on. "
     group_marker = "Tonight you are looking at one group: "
 
+    defaults = default_prompt_texts()
     valid_from = _date(2020, 1, 1)
     with SessionLocal() as session:
         # Reseed every run: an earlier test run may have left rows behind
@@ -131,7 +201,7 @@ def _seed_agent_prompts() -> None:
                 )
             else:
                 template = " ".join(f"{{{name}}}" for name in sorted(placeholders))
-            template = template or "Prompt body."
+            template = template or defaults.get(key, "Prompt body.")
             version = versioning.save_draft(
                 session, "agent_prompt", key, [{"template": template}], by="test"
             )
@@ -189,6 +259,34 @@ def reviewer_2_headers() -> dict[str, str]:
 
 
 @pytest.fixture
+def all_pages():
+    def fetch(client, path: str, **params) -> list[dict]:
+        items: list[dict] = []
+        cursor = None
+        while True:
+            query = {"limit": 200, **params}
+            if cursor is not None:
+                query["cursor"] = cursor
+            body = client.get(path, params=query).json()
+            items.extend(body["items"])
+            cursor = body["next_cursor"]
+            if cursor is None:
+                return items
+
+    return fetch
+
+
+@pytest.fixture
+def headers_for():
+    """Authorization header for any email, signed with the fixed test secret."""
+
+    def make(email: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {_make_token(email)}"}
+
+    return make
+
+
+@pytest.fixture
 def configured_reviewers(monkeypatch):
     """Point app.api.reviewer_auth at the fixed test JWT secret above."""
     from app.api import reviewer_auth
@@ -216,4 +314,18 @@ def cleanup_runs():
             session.execute(text("DELETE FROM ingestion_rejects WHERE run_id = :r"), {"r": run_id})
             session.execute(text("DELETE FROM raw_staging WHERE run_id = :r"), {"r": run_id})
             session.execute(text("DELETE FROM ingestion_status WHERE run_id = :r"), {"r": run_id})
+        session.commit()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _seed_test_admins(_ensure_tables: None) -> None:
+    """Make both fixed test reviewers admins, so tests of routes that return
+    client data get past the access check without setting anything up."""
+    if not DB_AVAILABLE:
+        return
+    from app.db.models.user_access import ROLE_ADMIN, UserAccess
+
+    with SessionLocal() as session:
+        for email in (REVIEWER_1_ID, REVIEWER_2_ID):
+            session.merge(UserAccess(email=email, role=ROLE_ADMIN, active=True, view_as_email=None))
         session.commit()

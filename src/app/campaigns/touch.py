@@ -38,10 +38,11 @@ from app.campaigns.scheduler import (
     count_stale_contacts,
     select_due_enrollments,
 )
-from app.config import get_settings
-from app.db.models.campaigns import Enrollment, TouchLog
+from app.db.models.campaigns import Enrollment, TouchLog, TouchPlan
 from app.db.models.outreach import Campaign, OutreachMessage
+from app.db.models.routing import ClientSide
 from app.delivery.gate import MessageNotApproved, authorize_send
+from app.delivery.send_settings import settings_for_type
 
 logger = structlog.get_logger(__name__)
 
@@ -87,6 +88,14 @@ class TouchRunOutcome:
     generated: bool
     reason: str | None = None
     touch_id: int | None = None
+
+
+def _planned_gap_days(session: Session, enrollment_id: int, step_no: int) -> int | None:
+    return session.execute(
+        select(TouchPlan.gap_days).where(
+            TouchPlan.enrollment_id == enrollment_id, TouchPlan.step_no == step_no
+        )
+    ).scalar_one_or_none()
 
 
 def record_touch(session: Session, enrollment: Enrollment, step_no: int) -> TouchLog:
@@ -231,8 +240,8 @@ def send_touch(session: Session, touch: TouchLog, *, sender: SenderFn = stub_sen
         session.commit()
         raise
 
-    mode = get_settings().delivery_mode
     campaign = session.get(Campaign, message.campaign_id)
+    mode = settings_for_type(campaign.campaign_type if campaign else None).delivery_mode
     is_test = campaign.is_test if campaign is not None else False
     # A test campaign sends only in test mode, and a real one only in live mode.
     if is_test != (mode == "test"):
@@ -269,6 +278,9 @@ def send_touch(session: Session, touch: TouchLog, *, sender: SenderFn = stub_sen
     touch.provider_status = result.provider_status
     touch.parts = result.parts
     touch.cost = result.cost
+    side = session.get(ClientSide, enrollment.client_id)
+    if side is not None:
+        touch.side_at_send, touch.balance_at_send = side.side, side.balance
     session.flush()
 
     record_audit(
@@ -287,7 +299,13 @@ def send_touch(session: Session, touch: TouchLog, *, sender: SenderFn = stub_sen
         },
     )
 
-    advance_enrollment(session, enrollment, step_no=touch.step_no, sent_at=touch.sent_at)
+    advance_enrollment(
+        session,
+        enrollment,
+        step_no=touch.step_no,
+        sent_at=touch.sent_at,
+        gap_days=_planned_gap_days(session, touch.enrollment_id, touch.step_no),
+    )
     return touch
 
 
@@ -392,5 +410,9 @@ def reconcile_enrollment(session: Session, enrollment: Enrollment) -> Enrollment
     if latest_sent is None or latest_sent.step_no <= enrollment.current_step:
         return enrollment
     return advance_enrollment(
-        session, enrollment, step_no=latest_sent.step_no, sent_at=latest_sent.sent_at
+        session,
+        enrollment,
+        step_no=latest_sent.step_no,
+        sent_at=latest_sent.sent_at,
+        gap_days=_planned_gap_days(session, enrollment.enrollment_id, latest_sent.step_no),
     )

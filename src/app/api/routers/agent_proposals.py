@@ -6,7 +6,11 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.agents import card_copy
+from app.agents.action_catalog import load_action
+from app.agents.guide_mix import MIX_LABELS
+from app.agents.permissions import LEVEL_COPY
 from app.agents.proposal_state import InvalidTransition
+from app.api.agent_scope import AgentScope, get_agent_scope, require_proposal_in_scope
 from app.api.reviewer_auth import get_current_reviewer_id
 from app.db.session import get_session
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
@@ -20,7 +24,9 @@ from app.schemas.agent_proposals import (
     ProposalVersionsOut,
 )
 from app.services.agent_proposals import (
+    ProposalExpired,
     ProposalNotFound,
+    angle_brief_for_proposal,
     count_proposals,
     decide_proposal,
     get_proposal,
@@ -31,6 +37,7 @@ from app.services.agent_proposals import (
     run_proposal_in_background,
     stop_proposal,
 )
+from app.services.fund_names import fund_short_names
 from app.services.proposal_versions import ProposalNotSplit, compare_versions
 
 router = APIRouter(
@@ -48,6 +55,7 @@ def list_agent_proposals(
     exclude_action_code: str | None = None,
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    scope: AgentScope = Depends(get_agent_scope),
     session: Session = Depends(get_session),
 ) -> Page[AgentProposalSummaryOut]:
     try:
@@ -57,6 +65,7 @@ def list_agent_proposals(
             proposal_date=proposal_date,
             action_code=action_code,
             exclude_action_code=exclude_action_code,
+            fa_id=scope.fa_id,
             cursor=cursor,
             limit=limit,
         )
@@ -68,10 +77,11 @@ def list_agent_proposals(
         proposal_date=proposal_date,
         action_code=action_code,
         exclude_action_code=exclude_action_code,
+        fa_id=scope.fa_id,
     )
     items = []
     for p, included_count in proposals:
-        copy = card_copy.copy_for(p.group_name)
+        copy = card_copy.copy_for_history(p.group_name)
         items.append(
             AgentProposalSummaryOut(
                 proposal_id=p.proposal_id,
@@ -90,6 +100,7 @@ def list_agent_proposals(
                 screen_label=copy.screen_label,
                 why_now=copy.why_now,
                 suggested_owner=card_copy.suggested_owner_for(p.response_kind),
+                **_plain_words(session, p, included_count),
             )
         )
     return Page(
@@ -99,7 +110,36 @@ def list_agent_proposals(
     )
 
 
-@router.get("/{proposal_id}", response_model=AgentProposalDetailOut)
+def _plain_words(session: Session, proposal, included_count: int | None) -> dict:
+    action = load_action(session, proposal.action_code, proposal.created_at.date())
+    title = action.title if action is not None else proposal.action_code.replace("_", " ")
+    sends = bool(proposal.angle)
+    level = LEVEL_COPY.get(proposal.permission_applied)
+    clients = included_count if included_count is not None else proposal.client_count
+    sentence = (
+        f'If you approve, the assistant will take "{title}" for {clients:,} clients '
+        f"holding KES {proposal.money_total_kes or 0:,.0f}. "
+    )
+    sentence += (
+        "Every email still waits for a person in the review queue before it is sent."
+        if sends
+        else "No email is sent. Each adviser sees the task for their own clients."
+    )
+    return {
+        "action_title": title,
+        "sends_message": sends,
+        "level_name": level[0] if level else None,
+        "level_rank": list(LEVEL_COPY).index(proposal.permission_applied) + 1 if level else None,
+        "mix_label": MIX_LABELS.get(proposal.content_mix or ""),
+        "approve_sentence": sentence,
+    }
+
+
+@router.get(
+    "/{proposal_id}",
+    response_model=AgentProposalDetailOut,
+    dependencies=[Depends(require_proposal_in_scope)],
+)
 def get_agent_proposal(
     proposal_id: int, session: Session = Depends(get_session)
 ) -> AgentProposalDetailOut:
@@ -109,7 +149,8 @@ def get_agent_proposal(
         raise HTTPException(status_code=404, detail="proposal not found") from None
 
     included_count = get_proposal_included_count(session, proposal_id)
-    copy = card_copy.copy_for(proposal.group_name)
+    copy = card_copy.copy_for_history(proposal.group_name)
+    angle_brief = angle_brief_for_proposal(session, proposal)
     return AgentProposalDetailOut(
         proposal_id=proposal.proposal_id,
         action_code=proposal.action_code,
@@ -126,20 +167,31 @@ def get_agent_proposal(
         screen_label=copy.screen_label,
         why_now=copy.why_now,
         suggested_owner=card_copy.suggested_owner_for(proposal.response_kind),
+        **_plain_words(session, proposal, included_count),
         group_definition=proposal.group_definition,
         evidence=proposal.evidence,
+        evidence_detail=proposal.evidence_detail,
         reason=proposal.reason,
         angle=proposal.angle,
+        angle_headline=angle_brief.headline if angle_brief is not None else None,
+        angle_claim=angle_brief.claim if angle_brief is not None else None,
+        angle_ask=angle_brief.ask if angle_brief is not None else None,
         content_mix=proposal.content_mix,
         campaign_id=proposal.campaign_id,
         decided_by=proposal.decided_by,
     )
 
 
-@router.get("/{proposal_id}/clients", response_model=Page[AgentProposalClientOut])
+@router.get(
+    "/{proposal_id}/clients",
+    response_model=Page[AgentProposalClientOut],
+    dependencies=[Depends(require_proposal_in_scope)],
+)
 def list_agent_proposal_clients(
     proposal_id: int,
     included: bool | None = None,
+    min_trend: float | None = None,
+    max_trend: float | None = None,
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     session: Session = Depends(get_session),
@@ -151,18 +203,39 @@ def list_agent_proposal_clients(
 
     try:
         clients, next_cursor = list_proposal_clients(
-            session, proposal_id, included=included, cursor=cursor, limit=limit
+            session,
+            proposal_id,
+            included=included,
+            min_trend=min_trend,
+            max_trend=max_trend,
+            cursor=cursor,
+            limit=limit,
         )
     except InvalidCursor:
         raise HTTPException(status_code=400, detail="invalid cursor") from None
 
+    fund_names = fund_short_names(session, {c.unit_fund_id for c in clients})
     return Page(
-        items=[AgentProposalClientOut.model_validate(c) for c in clients],
+        items=[
+            AgentProposalClientOut(
+                client_id=c.client_id,
+                unit_fund_id=c.unit_fund_id,
+                fund_short_name=fund_names.get(c.unit_fund_id),
+                included=c.included,
+                skip_reason=c.skip_reason,
+                variant=c.variant,
+            )
+            for c in clients
+        ],
         next_cursor=next_cursor,
     )
 
 
-@router.get("/{proposal_id}/versions", response_model=ProposalVersionsOut)
+@router.get(
+    "/{proposal_id}/versions",
+    response_model=ProposalVersionsOut,
+    dependencies=[Depends(require_proposal_in_scope)],
+)
 def compare_agent_proposal_versions(
     proposal_id: int,
     window_days: int | None = Query(default=None, ge=1),
@@ -177,7 +250,11 @@ def compare_agent_proposal_versions(
     return ProposalVersionsOut.model_validate(comparison)
 
 
-@router.post("/{proposal_id}/decision", response_model=ProposalDecisionResultOut)
+@router.post(
+    "/{proposal_id}/decision",
+    response_model=ProposalDecisionResultOut,
+    dependencies=[Depends(require_proposal_in_scope)],
+)
 def decide_agent_proposal(
     proposal_id: int,
     body: ProposalDecisionRequest,
@@ -197,6 +274,12 @@ def decide_agent_proposal(
     except ProposalNotFound:
         session.rollback()
         raise HTTPException(status_code=404, detail="proposal not found") from None
+    except ProposalExpired:
+        raise HTTPException(
+            status_code=409,
+            detail="This suggestion expired at the end of the day it was made. "
+            "The next run makes a fresh one.",
+        ) from None
     except InvalidTransition as exc:
         session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from None
@@ -207,7 +290,11 @@ def decide_agent_proposal(
     return ProposalDecisionResultOut.model_validate(proposal)
 
 
-@router.post("/{proposal_id}/stop", response_model=ProposalDecisionResultOut)
+@router.post(
+    "/{proposal_id}/stop",
+    response_model=ProposalDecisionResultOut,
+    dependencies=[Depends(require_proposal_in_scope)],
+)
 def stop_agent_proposal(
     proposal_id: int,
     body: ProposalStopRequest,

@@ -7,7 +7,9 @@ from datetime import date
 from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
-from app.audit.log import record_audit
+from app.agents.prompt_versioning import CLIENT_BRIEF_NARRATIVE, prompt_text
+from app.agents.signals import keys_with_active_signal
+from app.audit.log import record_audit, with_on_behalf_of
 from app.briefing.narrative import NarrativeResult, draft_narrative
 from app.briefing.render import BriefingFacts, render_briefing
 from app.briefing.store import read_narrative, save_narrative
@@ -16,11 +18,20 @@ from app.db.models.active_clients import ActiveClientFund
 from app.db.models.complaints import ClientComplaint
 from app.db.models.models import Funds, PiiVault
 from app.db.models.risk import ClientRiskFeatures, RiskConfigVersion
+from app.db.models.routing import ClientTier
 from app.db.session import restricted_session
 from app.privacy.boundary import AuditSink, BoundaryAudit
 from app.privacy.fact_block import FUND_DISPLAY_NAMES, RiskFactBlock
 from app.privacy.llm_client import LLMClient
-from app.risk.signals import SIGNAL_LABELS, SIGNAL_ORDER
+from app.risk.signals import (
+    ADVISOR_SIGNAL_LABELS,
+    ADVISOR_SIGNAL_ORDER,
+    GOING_DORMANT,
+    NEAR_PRESERVATION_LINE,
+    SIGNAL_ORDER,
+)
+from app.routing.tier_playbook import TIER_PLAYBOOK
+from app.services.client_next_actions import next_actions_for
 from app.transform.active_features import BALANCE_TIERS
 from app.transform.features import MIN_TREND_CHANGE
 from app.transform.features import fund_type_from_name as classify_fund_type
@@ -49,13 +60,8 @@ class BriefingView:
 def briefing_available_keys(
     session: Session, keys: Sequence[tuple[int, int]]
 ) -> set[tuple[int, int]]:
-    """Which of these (client_id, unit_fund_id) keys have enough data for
-    get_briefing to render right now: a client_risk_features row and an
-    active_client_fund row, both present -- the same two reads
-    get_briefing itself does, so this can never disagree with what it
-    actually finds. A cheap existence check, not a render: no name is read
-    and nothing is audited.
-    """
+    """Which (client_id, unit_fund_id) keys have both a risk row and a fund row.
+    A cheap existence check: no name is read and nothing is audited."""
     keys = list(keys)
     if not keys:
         return set()
@@ -77,19 +83,14 @@ def briefing_available_keys(
 
 
 def _days_since(occurred: date | None, reference_date: date) -> int | None:
-    """Days from occurred to reference_date, clipped at zero. Same clipping
-    active_features.py::_days_since_deposit uses, for the same reason: a
-    date after the reference point is a data quirk, not a real future event.
-    """
+    """Days from occurred to reference_date, clipped at zero so a future date is never negative."""
     if occurred is None:
         return None
     return max(0, (reference_date - occurred).days)
 
 
 def _withdrawal_pct(largest_withdrawal: float | None, balance: float | None) -> float | None:
-    """The largest withdrawal as a share of the balance implied before it
-    happened. Mirrors active_features.py::_withdrawal_pct.
-    """
+    """The largest withdrawal as a share of the balance before it. Mirrors active_features."""
     if largest_withdrawal is None or balance is None:
         return None
     balance_before_withdrawal = balance + largest_withdrawal
@@ -157,9 +158,22 @@ def gather_briefing_facts(
     if risk is None or active is None:
         return None
 
-    signals = {name: getattr(risk, name) for name in SIGNAL_ORDER}
+    signals = {name: getattr(risk, name) for name in SIGNAL_ORDER if name != GOING_DORMANT}
+    signals[NEAR_PRESERVATION_LINE] = bool(
+        keys_with_active_signal(session, NEAR_PRESERVATION_LINE, [(client_id, unit_fund_id)])
+    )
+
+    client_tier = session.get(ClientTier, client_id)
+    playbook = TIER_PLAYBOOK.get(client_tier.tier) if client_tier else None
+    next_action = next_actions_for(session, [(client_id, unit_fund_id)])[
+        (client_id, unit_fund_id)
+    ].action
 
     return BriefingFacts(
+        tier_label=playbook.label if playbook else None,
+        tier_goal=playbook.goal if playbook else None,
+        tier_action=playbook.fa_action if playbook else None,
+        next_action=f"{next_action.title}: {next_action.why}" if next_action else None,
         client_code=active.client_code,
         fund_name=_fund_name(session, unit_fund_id),
         risk_score=risk.risk_score,
@@ -176,7 +190,7 @@ def gather_briefing_facts(
         deposit_trend=active.deposit_trend,
         largest_withdrawal=active.largest_withdrawal,
         withdrawal_pct=_withdrawal_pct(active.largest_withdrawal, active.balance),
-        days_since_withdrawal=_days_since(active.last_withdrawal_date, reference_date),
+        days_since_withdrawal=_days_since(active.largest_withdrawal_date, reference_date),
         signals=signals,
         deposit_count_capped=active.deposit_count_capped,
         withdrawal_history_hidden=active.withdrawal_history_hidden,
@@ -190,7 +204,7 @@ def gather_briefing_facts(
 
 
 def _basis(facts: BriefingFacts) -> list[str]:
-    return [SIGNAL_LABELS[sig] for sig in SIGNAL_ORDER if facts.signals.get(sig)]
+    return [ADVISOR_SIGNAL_LABELS[sig] for sig in ADVISOR_SIGNAL_ORDER if facts.signals.get(sig)]
 
 
 def get_briefing(
@@ -198,7 +212,8 @@ def get_briefing(
     client_id: int,
     unit_fund_id: int,
     *,
-    viewing_fa_id: str,
+    viewer_id: str,
+    on_behalf_of: str | None = None,
     reference_date: date | None = None,
 ) -> BriefingView:
     ref = reference_date if reference_date is not None else date.today()
@@ -220,8 +235,10 @@ def get_briefing(
         entity_type="risk_briefing",
         action="view",
         entity_id=str(client_id),
-        actor_id=viewing_fa_id,
-        detail={"unit_fund_id": unit_fund_id, "route": facts.route, "mode": mode},
+        actor_id=viewer_id,
+        detail=with_on_behalf_of(
+            {"unit_fund_id": unit_fund_id, "route": facts.route, "mode": mode}, on_behalf_of
+        ),
     )
     session.commit()
 
@@ -235,7 +252,7 @@ def get_briefing(
     )
 
 
-def _deposit_trend_band(deposit_trend: float | None) -> str:
+def deposit_trend_band_of(deposit_trend: float | None) -> str:
     if deposit_trend is None:
         return "unknown"
     if abs(deposit_trend) < MIN_TREND_CHANGE:
@@ -250,13 +267,13 @@ def to_risk_fact_block(facts: BriefingFacts) -> RiskFactBlock:
         balance_tier=facts.balance_tier if facts.balance_tier in BALANCE_TIERS else None,
         recency_band=facts.recency_band,
         value_tier=facts.value_tier,
-        deposit_trend_band=_deposit_trend_band(facts.deposit_trend),
+        deposit_trend_band=deposit_trend_band_of(facts.deposit_trend),
         fund_name=FUND_DISPLAY_NAMES.get(classify_fund_type(facts.fund_name)),
         sig_heavy_withdrawal=facts.signals.get("sig_heavy_withdrawal"),
         sig_dormant=facts.signals.get("sig_dormant"),
         sig_broken_pattern=facts.signals.get("sig_broken_pattern"),
         sig_shrinking=facts.signals.get("sig_shrinking"),
-        sig_going_dormant=facts.signals.get("sig_going_dormant"),
+        near_preservation_line=facts.signals.get(NEAR_PRESERVATION_LINE),
         sig_never_repeated=facts.signals.get("sig_never_repeated"),
         deposit_count_capped=facts.deposit_count_capped,
         withdrawal_history_hidden=facts.withdrawal_history_hidden,
@@ -265,16 +282,13 @@ def to_risk_fact_block(facts: BriefingFacts) -> RiskFactBlock:
     )
 
 
-def briefing_boundary_audit_sink(session: Session) -> AuditSink:
-    """Adapt run_model_boundary's BoundaryAudit into one audit_log row per
-    crossing, the same pattern agents.graph's own callers wire up for
-    Phase 1 generation.
-    """
+def briefing_boundary_audit_sink(session: Session, entity_type: str = "risk_briefing") -> AuditSink:
+    """Adapt run_model_boundary's BoundaryAudit into one audit_log row per crossing."""
 
     def sink(record: BoundaryAudit) -> None:
         record_audit(
             session,
-            entity_type="risk_briefing",
+            entity_type=entity_type,
             action="narrate",
             entity_id=record.entity_id,
             run_id=record.run_id,
@@ -295,20 +309,13 @@ def get_narrative_briefing(
     client_id: int,
     unit_fund_id: int,
     *,
-    viewing_fa_id: str,
+    viewer_id: str,
+    on_behalf_of: str | None = None,
     llm_client: LLMClient,
     reference_date: date | None = None,
 ) -> BriefingView:
-    """The optional, model-narrated version of get_briefing's same page (AM15).
-
-    Raises NarrativeDisabled when settings.ai_briefing_enabled is off --
-    checked here, not only in the router, so a second caller can't
-    accidentally skip the gate. Raises BriefingNotFound on the same missing
-    data get_briefing itself raises on. Never raises on a boundary leak or
-    an ungrounded narrative: draft_narrative falls back to the deterministic
-    text instead, and the response's mode field says which one was actually
-    returned.
-    """
+    """The optional model-narrated version of get_briefing's page.
+    Raises NarrativeDisabled when AI briefing is off; a leak falls back to plain text."""
     if not get_settings().ai_briefing_enabled:
         raise NarrativeDisabled("AI-narrated briefings are not enabled")
 
@@ -320,7 +327,8 @@ def get_narrative_briefing(
     fallback_text = render_briefing(facts)
     risk_fact_block = to_risk_fact_block(facts)
 
-    stored = read_narrative(session, client_id, unit_fund_id, risk_fact_block)
+    instructions = prompt_text(session, CLIENT_BRIEF_NARRATIVE, ref)
+    stored = read_narrative(session, client_id, unit_fund_id, risk_fact_block, instructions)
     if stored is not None:
         # Already drafted for these exact facts, by the nightly warm-up or by
         # an earlier look. Nothing crosses the model boundary, so there is no
@@ -331,6 +339,7 @@ def get_narrative_briefing(
             risk_fact_block,
             llm_client,
             fallback_text=fallback_text,
+            instructions=instructions,
             entity_id=str(client_id),
             audit=briefing_boundary_audit_sink(session),
         )
@@ -342,6 +351,7 @@ def get_narrative_briefing(
                 risk_fact_block,
                 text=result.text,
                 model=getattr(llm_client, "model", "unknown"),
+                instructions=instructions,
             )
 
     name = _client_name(client_id)
@@ -351,8 +361,11 @@ def get_narrative_briefing(
         entity_type="risk_briefing",
         action="view",
         entity_id=str(client_id),
-        actor_id=viewing_fa_id,
-        detail={"unit_fund_id": unit_fund_id, "route": facts.route, "mode": result.mode},
+        actor_id=viewer_id,
+        detail=with_on_behalf_of(
+            {"unit_fund_id": unit_fund_id, "route": facts.route, "mode": result.mode},
+            on_behalf_of,
+        ),
     )
     session.commit()
 

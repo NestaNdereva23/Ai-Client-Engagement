@@ -1,8 +1,5 @@
-"""The action agent, against a fake model: an accepted finding becomes a
-proposal that names it, a dismissed one never does, the checks drop a client
-who may not be contacted, and what the finding says to avoid reaches the
-drafting prompt.
-"""
+"""The action agent, against a fake model: an accepted finding becomes a proposal that names it,
+a dismissed one never does, and the checks drop a client who may not be contacted."""
 
 from __future__ import annotations
 
@@ -20,7 +17,8 @@ from app.agents.action_agent import (
 from app.agents.action_brief import insight_prohibitions
 from app.agents.email_agent import build_system_prompt
 from app.agents.propose import DO_NOTHING_ACTION, ON_DO_NOT_CONTACT_LIST
-from app.agents.watchlist import FEE_PRESSURE_GONE_QUIET, WatchlistThresholds
+from app.agents.situations import FIRST_DEPOSIT_NO_REPEAT
+from app.agents.watchlist import WatchlistThresholds
 from app.config import get_settings
 from app.db.models.action_performance import ActionPerformance
 from app.db.models.active_clients import ActiveClientFund
@@ -189,7 +187,7 @@ def _seed_client(client_id: int) -> None:
             ClientSituationState(
                 client_id=client_id,
                 unit_fund_id=FUND_ID,
-                situation_code=FEE_PRESSURE_GONE_QUIET,
+                situation_code=FIRST_DEPOSIT_NO_REPEAT,
                 is_active=True,
                 signal_codes=["fee_pressure_close"],
                 since=AS_OF,
@@ -199,7 +197,7 @@ def _seed_client(client_id: int) -> None:
         session.commit()
 
 
-def _write_insight(*, state: str, group_name: str = FEE_PRESSURE_GONE_QUIET) -> int:
+def _write_insight(*, state: str, group_name: str = FIRST_DEPOSIT_NO_REPEAT) -> int:
     with SessionLocal() as session:
         insight = AgentInsight(
             kind="risk",
@@ -375,7 +373,7 @@ def test_a_dismissed_finding_never_becomes_a_proposal() -> None:
 
 def test_a_finding_with_no_group_and_no_filter_proposes_nothing() -> None:
     _seed_client(ELIGIBLE_CLIENT)
-    insight_id = _write_insight(state="accepted", group_name=FEE_PRESSURE_GONE_QUIET)
+    insight_id = _write_insight(state="accepted", group_name=FIRST_DEPOSIT_NO_REPEAT)
     with SessionLocal() as session:
         session.get(AgentInsight, insight_id).group_name = "a group nobody defined"
         session.commit()

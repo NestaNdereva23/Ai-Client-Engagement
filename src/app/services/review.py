@@ -39,7 +39,7 @@ from app.agents.guardrails import (
 )
 from app.audit.log import record_audit
 from app.campaigns.cohorts import CohortSlot, resolve_cohort_slot
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.db.models.llmops import Evaluation, GenerationRun, PromptVersion
 from app.db.models.message_template import MessageTemplate
 from app.db.models.models import Clients, Funds, PiiVault
@@ -53,6 +53,7 @@ from app.db.models.outreach import (
 from app.db.models.rules import MessageAngleCatalog, TierContract
 from app.db.models.views import llm_client_context
 from app.db.session import restricted_session
+from app.delivery.send_settings import settings_for_campaign
 from app.pagination import (
     DEFAULT_LIMIT,
     clamp_limit,
@@ -65,6 +66,7 @@ from app.privacy.fact_block import round_sig_figs
 from app.rules.catalog import load_angle
 from app.rules.tier_contract import load_tier
 from app.schemas.review import ReviewOrder
+from app.services.agent_campaign_scope import message_visible_to
 
 # Display order for the reviewer queue: T1 is the highest-value, always-
 # reviewed tier, so it goes first. Not the same thing as app.rules.store's
@@ -107,6 +109,10 @@ class MessageAlreadyDecided(Exception):
 
 class EditedContentRequired(Exception):
     """edit_approve was chosen without the reviewer's edited content."""
+
+
+class EditedContentInvalid(EditedContentRequired):
+    """The edit still carries a placeholder that has no real value."""
 
 
 class InvalidOutcome(Exception):
@@ -259,8 +265,13 @@ def _resolve_fund_name(session: Session, client_id: int) -> str:
     return fund.unit_fund_name if fund else _FALLBACK_FUND_NAME
 
 
-def _resolve_first_name(client_id: int, *, vault_session: Session | None = None) -> str:
-    settings = get_settings()
+def _resolve_first_name(
+    client_id: int,
+    *,
+    vault_session: Session | None = None,
+    settings: Settings | None = None,
+) -> str:
+    settings = settings or get_settings()
     # Test sends go to staff inboxes, so the real name is never read or shown.
     if settings.delivery_mode == "test":
         return settings.test_client_first_name
@@ -299,7 +310,9 @@ def create_outreach_message(
     explicitly instead, so a regenerate doesn't consume a second slot.
     """
     fund_name = _resolve_fund_name(session, run.client_id)
-    first_name = _resolve_first_name(run.client_id)
+    first_name = _resolve_first_name(
+        run.client_id, settings=settings_for_campaign(session, campaign_id)
+    )
     _raw_facts, placeholder_kwargs = _placeholder_facts_for_client(session, run.client_id)
 
     personalized = personalize_content(
@@ -485,7 +498,11 @@ def instantiate_message_for_template(
     vault_session: Session | None = None,
 ) -> OutreachMessage | None:
     fund_name = _resolve_fund_name(session, client_id)
-    first_name = _resolve_first_name(client_id, vault_session=vault_session)
+    first_name = _resolve_first_name(
+        client_id,
+        vault_session=vault_session,
+        settings=settings_for_campaign(session, campaign_id),
+    )
     client_raw_facts, placeholder_kwargs = _placeholder_facts_for_client(session, client_id)
 
     personalized = personalize_content(
@@ -548,18 +565,28 @@ def _pending_messages_filters(
     only_sampled: bool,
     channel: str | None = None,
     campaign_type: str | None = None,
+    exclude_campaign_type: str | None = None,
+    fa_id: str | None = None,
 ) -> list[Any]:
     """The where-clauses list_pending_messages and count_pending_messages
     both filter on -- kept in one place so a count can never drift from
     what the page beside it actually shows.
     """
     clauses: list[Any] = [OutreachMessage.status == status]
+    if fa_id is not None:
+        clauses.append(message_visible_to(fa_id))
     if campaign_id is not None:
         clauses.append(OutreachMessage.campaign_id == campaign_id)
     if campaign_type is not None:
         clauses.append(
             OutreachMessage.campaign_id.in_(
                 select(Campaign.campaign_id).where(Campaign.campaign_type == campaign_type)
+            )
+        )
+    if exclude_campaign_type is not None:
+        clauses.append(
+            OutreachMessage.campaign_id.not_in(
+                select(Campaign.campaign_id).where(Campaign.campaign_type == exclude_campaign_type)
             )
         )
     if channel is not None:
@@ -579,6 +606,8 @@ def list_pending_messages(
     only_sampled: bool = True,
     channel: str | None = None,
     campaign_type: str | None = None,
+    exclude_campaign_type: str | None = None,
+    fa_id: str | None = None,
     order: ReviewOrder = "oldest_first",
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
@@ -606,6 +635,8 @@ def list_pending_messages(
         only_sampled=only_sampled,
         channel=channel,
         campaign_type=campaign_type,
+        exclude_campaign_type=exclude_campaign_type,
+        fa_id=fa_id,
     )
     query = select(OutreachMessage).where(*filters)
     key = tuple_(OutreachMessage.created_at, OutreachMessage.message_id)
@@ -692,6 +723,8 @@ def count_pending_messages(
     only_sampled: bool = True,
     channel: str | None = None,
     campaign_type: str | None = None,
+    exclude_campaign_type: str | None = None,
+    fa_id: str | None = None,
 ) -> int:
     """How many messages list_pending_messages' filters would return in
     total, across every page -- what a queue badge shows.
@@ -706,6 +739,8 @@ def count_pending_messages(
                 only_sampled=only_sampled,
                 channel=channel,
                 campaign_type=campaign_type,
+                exclude_campaign_type=exclude_campaign_type,
+                fa_id=fa_id,
             )
         )
     )
@@ -812,6 +847,28 @@ def get_review_history(session: Session, message_id: str) -> list[ReviewAction]:
     )
 
 
+def _personalized_edit(session: Session, message: OutreachMessage, edited_content: dict) -> dict:
+    base = dict(message.personalized_content or {})
+    merged = {
+        **base,
+        **{key: edited_content[key] for key in ("subject", "body") if key in edited_content},
+    }
+    _raw_facts, placeholder_kwargs = _placeholder_facts_for_client(session, message.client_id)
+    personalized = personalize_content(
+        merged,
+        first_name=_resolve_first_name(
+            message.client_id, settings=settings_for_campaign(session, message.campaign_id)
+        ),
+        fund_name=_resolve_fund_name(session, message.client_id),
+        **placeholder_kwargs,
+    )
+    try:
+        check_no_unresolved_placeholders(personalized.get("subject", ""), personalized["body"])
+    except GuardrailFailure as failure:
+        raise EditedContentInvalid(str(failure)) from failure
+    return personalized
+
+
 def decide(
     session: Session,
     message_id: str,
@@ -834,6 +891,9 @@ def decide(
         raise InvalidOutcome(outcome)
 
     message_angle, priority_tier = _label_for_message(session, message)
+    final_content = (
+        _personalized_edit(session, message, edited_content) if outcome == "edit_approve" else None
+    )
     edit_diff = (
         compute_edit_diff(message.ai_draft_content, edited_content)
         if outcome == "edit_approve"
@@ -852,6 +912,8 @@ def decide(
     )
     session.add(action)
     message.status = _STATUS_FOR_OUTCOME[outcome]
+    if final_content is not None:
+        message.personalized_content = final_content
     record_audit(
         session,
         entity_type="review_action",

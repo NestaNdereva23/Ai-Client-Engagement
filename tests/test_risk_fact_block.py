@@ -1,8 +1,5 @@
-"""RiskFactBlock (AM15): the closed, band-only fact block a briefing
-narrative may see. Same structural guarantees as ModelFactBlock
-(tests/test_privacy_fact_block.py), applied to the active-book risk
-briefing's own vocabulary instead.
-"""
+"""RiskFactBlock: the closed, band-only fact block a briefing narrative may see.
+Same structural guarantees as ModelFactBlock, applied to the active-book briefing."""
 
 from __future__ import annotations
 
@@ -32,7 +29,7 @@ PERMITTED_KEYS = {
     "sig_dormant",
     "sig_broken_pattern",
     "sig_shrinking",
-    "sig_going_dormant",
+    "near_preservation_line",
     "sig_never_repeated",
     "deposit_count_capped",
     "withdrawal_history_hidden",
@@ -89,7 +86,7 @@ def test_a_band_field_rejects_a_value_outside_its_vocabulary(field, bad_value) -
 @pytest.mark.parametrize(
     ("field", "good_value"),
     [
-        ("risk_band", next(iter(RISK_BANDS))),
+        ("risk_band", sorted(RISK_BANDS)[0]),
         ("route", ROUTES[0]),
         ("balance_tier", BALANCE_TIERS[0]),
         ("recency_band", RECENCY_BANDS[0]),

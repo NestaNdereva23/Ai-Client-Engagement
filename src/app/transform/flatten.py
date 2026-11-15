@@ -22,6 +22,10 @@ _PROGRESS_EVERY = 25
 PURCHASE_CAP = 5
 SALE_CAP = 2
 
+# A sale at or under this KES amount is the monthly account fee, not the client
+# acting, so it never moves the date a client went quiet.
+DORMANT_FEE_AMOUNT = 50.0
+
 
 @dataclass
 class FundRow:
@@ -215,10 +219,11 @@ def flatten_payload(payload: dict[str, Any], reference_date: datetime) -> Flatte
 
             last_purchase = max_date([r.date for r in purchase_rows])
             last_sale = max_date([r.date for r in sale_rows])
+            last_real_sale = max_date([r.date for r in sale_rows if r.amount > DORMANT_FEE_AMOUNT])
             last_activity = (
                 activity_window_to
                 if activity_window_to is not None
-                else max_date([last_purchase, last_sale])
+                else max_date([last_purchase, last_real_sale])
             )
             total_purchase = sum(r.amount for r in purchase_rows)
             total_sale = sum(r.amount for r in sale_rows)

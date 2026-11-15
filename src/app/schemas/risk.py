@@ -68,17 +68,3 @@ class RiskTrendOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     points: list[RiskTrendPointOut]
-
-
-class SmallBalanceReviewLineOut(BaseModel):
-    """One client-fund currently routed to small_balance_review."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    client_id: int
-    unit_fund_id: int
-    balance_tier: str | None
-    risk_score: int
-    risk_band: str
-    risk_reasons: str
-    fund_at_risk: float

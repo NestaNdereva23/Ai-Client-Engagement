@@ -102,7 +102,7 @@ def test_bucket_facts_carries_only_the_narrow_scan_safe_fields() -> None:
         exit_reason_charge_settled=False,
         fund_name_known=False,
     )
-    assert bucket_facts(key) == {"stale_contact": True}
+    assert bucket_facts(key) == {}
 
 
 def test_bucket_facts_includes_exit_reason_only_when_charge_settled() -> None:
@@ -176,6 +176,44 @@ def test_bucket_placeholder_chunks_omits_cadence_when_the_bucket_has_none() -> N
     text = " ".join(chunk.text for chunk in bucket_placeholder_chunks(key))
     assert "{{cadence_interval_days}}" not in text
     assert "{{typical_contribution}}" in text
+
+
+def test_bucket_placeholder_chunks_honours_the_allowed_fields() -> None:
+    key = ProfileKey(
+        message_angle="back_on_schedule",
+        priority_tier="T3",
+        product="money market",
+        has_cadence=True,
+        stale_contact=False,
+        exit_reason_charge_settled=False,
+        fund_name_known=False,
+    )
+    assert bucket_placeholder_chunks(key, ()) == ()
+    text = " ".join(
+        chunk.text for chunk in bucket_placeholder_chunks(key, ("typical_contribution",))
+    )
+    assert "{{typical_contribution}}" in text
+    assert "{{largest_contribution}}" not in text
+    assert "{{cadence_interval_days}}" not in text
+
+
+def test_prompt_builder_carries_stored_settings_and_the_subjects_already_used() -> None:
+    key = ProfileKey(
+        message_angle="pick_up_again",
+        priority_tier="T3",
+        product="money market",
+        has_cadence=False,
+        stale_contact=False,
+        exit_reason_charge_settled=False,
+        fund_name_known=False,
+    )
+    prompt = _bucket_prompt_builder(key, ("Subject one", "Subject two"))(
+        angle=key.message_angle, prompt_variant=None, voice_text="Stored voice."
+    )
+    assert "Stored voice." in prompt
+    assert "'Subject one'; 'Subject two'" in prompt
+    plain = _bucket_prompt_builder(key)(angle=key.message_angle, prompt_variant=None)
+    assert "Subjects already used" not in plain
 
 
 def test_bucket_facts_drives_the_same_conditional_prohibitions_as_the_profile() -> None:
@@ -329,6 +367,34 @@ def campaign(client: int):
         session.execute(delete(MessageTemplate).where(MessageTemplate.campaign_id == campaign_id))
         session.execute(delete(Campaign).where(Campaign.campaign_id == campaign_id))
         session.commit()
+
+
+def test_a_stale_contact_group_never_shows_the_flag_to_the_model(
+    campaign: int, client: int
+) -> None:
+    key = ProfileKey(
+        message_angle="pick_up_again",
+        priority_tier="T3",
+        product="money market",
+        has_cadence=False,
+        stale_contact=True,
+        exit_reason_charge_settled=False,
+        fund_name_known=False,
+    )
+    llm = ScriptedLLMClient([draft_json(body="Dear {{first_name}}, come back to us.")])
+
+    with SessionLocal() as session:
+        draft_template(
+            session,
+            make_bucket(key, client_id=client),
+            campaign_id=campaign,
+            settings=make_settings(),
+            llm_client=llm,
+        )
+        session.commit()
+
+    assert "stale" not in llm.calls[0]["user"].lower()
+    assert "stale_contact" not in llm.calls[0]["system"]
 
 
 def test_draft_template_persists_a_run_and_a_message_template_on_accept(
@@ -662,6 +728,57 @@ def test_deterministic_order_with_no_limit_drafts_every_bucket(multi_bucket_coho
         assert plan.effective_limit is None
         assert plan.drafted_count == 3
         assert plan.policy_source == "default"
+
+
+@pytest.mark.parametrize("rag_enabled", [True, False])
+def test_template_drafting_follows_the_weekly_report_switch(
+    multi_bucket_cohort: int, monkeypatch: pytest.MonkeyPatch, rag_enabled: bool
+) -> None:
+    seen: list[bool] = []
+
+    def recording_loader(session, client_id, product, *, use_rag):
+        seen.append(use_rag)
+        return _fixed_context_loader(client_id, product)
+
+    monkeypatch.setattr("app.campaigns.template_generation.load_client_context", recording_loader)
+    llm = ScriptedLLMClient([draft_json(body="Dear {{first_name}}, come back to us.")] * 3)
+    settings = make_settings().model_copy(update={"rag_enabled": rag_enabled})
+
+    with SessionLocal() as session:
+        draft_templates_for_campaign(
+            session, multi_bucket_cohort, settings=settings, llm_client=llm
+        )
+        session.commit()
+
+    assert seen
+    assert set(seen) == {rag_enabled}
+
+
+def test_each_draft_is_shown_the_subjects_already_used_in_the_campaign(
+    multi_bucket_cohort: int,
+) -> None:
+    body = "Dear {{first_name}}, come back to us."
+    llm = ScriptedLLMClient(
+        [
+            draft_json(subject="First note on {{fund_name}}", body=body),
+            draft_json(subject="Second note on {{fund_name}}", body=body),
+            draft_json(subject="Third note on {{fund_name}}", body=body),
+        ]
+    )
+
+    with SessionLocal() as session:
+        draft_templates_for_campaign(
+            session,
+            multi_bucket_cohort,
+            settings=make_settings(),
+            llm_client=llm,
+            context_loader=_fixed_context_loader,
+        )
+        session.commit()
+
+    assert "Subjects already used" not in llm.calls[0]["system"]
+    assert "'First note on {{fund_name}}'" in llm.calls[1]["system"]
+    assert "'First note on {{fund_name}}'; 'Second note on {{fund_name}}'" in llm.calls[2]["system"]
 
 
 def test_a_narrow_discovery_window_hides_buckets_a_wide_one_finds(

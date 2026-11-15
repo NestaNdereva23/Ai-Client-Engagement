@@ -21,12 +21,13 @@ from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.fa_assignment import FaAssignment
+from app.db.models.user_access import ROLE_ADVISOR, UserAccess
 
 
 class FaAssignmentRecord(BaseModel):
@@ -117,16 +118,26 @@ class DbFaAssignmentSource:
         ]
 
 
+def _has_active_advisors(session: Session) -> bool:
+    return bool(
+        session.scalar(
+            select(exists().where(UserAccess.role == ROLE_ADVISOR, UserAccess.active.is_(True)))
+        )
+    )
+
+
 def get_fa_assignment_source(
     session: Session | None = None, settings: Settings | None = None
 ) -> FaAssignmentSource:
     """Build the configured FaAssignmentSource. The one place an
     implementation is chosen; downstream code only ever depends on the
-    protocol. With nothing configured, a seeded roster selects the database
-    source and no roster selects the stub.
+    protocol. With nothing configured, any active advisor in user_access
+    selects the database source and none selects the stub.
     """
     settings = settings or get_settings()
-    source = settings.fa_assignment_source or ("db" if settings.fa_records else "stub")
+    source = settings.fa_assignment_source or (
+        "db" if session is not None and _has_active_advisors(session) else "stub"
+    )
     if source == "stub":
         return StubFaAssignmentSource(session=session)
     if source == "db":

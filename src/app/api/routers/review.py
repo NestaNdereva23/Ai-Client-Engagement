@@ -1,18 +1,36 @@
 from __future__ import annotations
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.email_channel import build_default_orchestrator
+from app.api.agent_scope import (
+    AgentScope,
+    get_agent_scope,
+    require_message_in_scope,
+    require_messages_in_scope,
+)
 from app.api.reviewer_auth import get_current_reviewer_id
+from app.audit.log import record_audit
 from app.campaigns.generation import (
     MessageNotRegenerable,
     RegenerationRejected,
     model_boundary_audit_sink,
     regenerate_message,
 )
+from app.campaigns.touch import SendBlocked, SendOutcome, send_touch
 from app.config import get_settings
+from app.db.models.campaigns import TouchLog
+from app.db.models.outreach import (
+    ADVISOR_REQUESTED_QUEUE_NAME,
+    AGENT_PROPOSAL_CAMPAIGN_TYPE,
+    Campaign,
+    OutreachMessage,
+)
 from app.db.session import get_session
+from app.delivery.sender import build_email_sender
 from app.llmops.tracing import get_shared_tracer
 from app.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursor, Page
 from app.schemas.review import (
@@ -22,6 +40,7 @@ from app.schemas.review import (
     DecideBatchResultOut,
     DecideRequest,
     DecideResultOut,
+    DecideSendOut,
     OutreachMessageDetail,
     OutreachMessageSummary,
     ReviewActionOut,
@@ -45,9 +64,57 @@ from app.services.review import approve_cohort_remainder as approve_cohort_remai
 from app.services.review import decide as decide_message
 from app.services.review import decide_batch as decide_message_batch
 
+logger = structlog.get_logger(__name__)
+
 router = APIRouter(
     prefix="/reviews", tags=["review"], dependencies=[Depends(get_current_reviewer_id)]
 )
+
+
+def _is_advisor_requested_queue(session: Session, campaign_id: int) -> bool:
+    campaign = session.get(Campaign, campaign_id)
+    return (
+        campaign is not None
+        and campaign.campaign_type == AGENT_PROPOSAL_CAMPAIGN_TYPE
+        and campaign.name == ADVISOR_REQUESTED_QUEUE_NAME
+    )
+
+
+def _send_if_advisor_requested_queue(
+    session: Session, message: OutreachMessage
+) -> SendOutcome | None:
+    # A drafted-from-profile message sends as soon as it's approved; every
+    # other queue still waits for a separate batch send.
+    if not _is_advisor_requested_queue(session, message.campaign_id):
+        return None
+    touch = session.scalar(select(TouchLog).where(TouchLog.message_id == message.message_id))
+    if touch is None:
+        return None
+
+    email_sender = build_email_sender()
+    try:
+        send_touch(session, touch, sender=email_sender)
+        return SendOutcome(touch.touch_id, touch.enrollment_id, sent=True)
+    except SendBlocked as exc:
+        return SendOutcome(touch.touch_id, touch.enrollment_id, sent=False, reason=exc.reason)
+    except Exception:
+        logger.exception(
+            "advisor_requested_queue.send_failed",
+            touch_id=touch.touch_id,
+            message_id=message.message_id,
+        )
+        record_audit(
+            session,
+            entity_type="touch_log",
+            action="send_refused",
+            entity_id=str(touch.touch_id),
+            detail={"reason": "send_error"},
+        )
+        return SendOutcome(touch.touch_id, touch.enrollment_id, sent=False, reason="send_error")
+    finally:
+        mailer = getattr(email_sender, "mailer", None)
+        if mailer is not None:
+            mailer.close()
 
 
 @router.get("", response_model=Page[OutreachMessageSummary])
@@ -55,11 +122,13 @@ def list_reviews(
     status: str = "pending_review",
     campaign_id: int | None = None,
     campaign_type: str | None = None,
+    exclude_campaign_type: str | None = None,
     only_sampled: bool = True,
     channel: str | None = None,
     order: ReviewOrder = "oldest_first",
     cursor: str | None = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    scope: AgentScope = Depends(get_agent_scope),
     session: Session = Depends(get_session),
     reviewer_id: str = Depends(get_current_reviewer_id),
 ) -> Page[OutreachMessageSummary]:
@@ -69,6 +138,8 @@ def list_reviews(
             status=status,
             campaign_id=campaign_id,
             campaign_type=campaign_type,
+            exclude_campaign_type=exclude_campaign_type,
+            fa_id=scope.fa_id,
             only_sampled=only_sampled,
             channel=channel,
             order=order,
@@ -82,6 +153,8 @@ def list_reviews(
         status=status,
         campaign_id=campaign_id,
         campaign_type=campaign_type,
+        exclude_campaign_type=exclude_campaign_type,
+        fa_id=scope.fa_id,
         only_sampled=only_sampled,
         channel=channel,
     )
@@ -98,7 +171,11 @@ def list_reviews(
     )
 
 
-@router.get("/{message_id}", response_model=OutreachMessageDetail)
+@router.get(
+    "/{message_id}",
+    response_model=OutreachMessageDetail,
+    dependencies=[Depends(require_message_in_scope)],
+)
 def get_review(message_id: str, session: Session = Depends(get_session)) -> OutreachMessageDetail:
     try:
         message = get_message(session, message_id)
@@ -123,7 +200,11 @@ def get_review(message_id: str, session: Session = Depends(get_session)) -> Outr
     )
 
 
-@router.post("/{message_id}/decide", response_model=DecideResultOut)
+@router.post(
+    "/{message_id}/decide",
+    response_model=DecideResultOut,
+    dependencies=[Depends(require_message_in_scope)],
+)
 def decide_review(
     message_id: str,
     body: DecideRequest,
@@ -140,6 +221,11 @@ def decide_review(
             reason=body.reason,
             edited_content=body.edited_content,
         )
+        send_outcome = (
+            _send_if_advisor_requested_queue(session, message)
+            if body.outcome in ("approve", "edit_approve")
+            else None
+        )
         cohort_ready = check_cohort_ready(session, message)
         session.commit()
     except MessageNotFound:
@@ -155,6 +241,9 @@ def decide_review(
     return DecideResultOut(
         action=ReviewActionOut.model_validate(action),
         cohort_ready=CohortReadyOut.model_validate(cohort_ready) if cohort_ready else None,
+        send=DecideSendOut(sent=send_outcome.sent, reason=send_outcome.reason)
+        if send_outcome
+        else None,
     )
 
 
@@ -182,7 +271,11 @@ def approve_cohort_remaining(
     )
 
 
-@router.post("/decide-batch", response_model=DecideBatchResultOut)
+@router.post(
+    "/decide-batch",
+    response_model=DecideBatchResultOut,
+    dependencies=[Depends(require_messages_in_scope)],
+)
 def decide_reviews_batch(
     body: DecideBatchRequest,
     reviewer_id: str = Depends(get_current_reviewer_id),
@@ -207,7 +300,11 @@ def decide_reviews_batch(
     )
 
 
-@router.post("/{message_id}/regenerate", response_model=OutreachMessageDetail)
+@router.post(
+    "/{message_id}/regenerate",
+    response_model=OutreachMessageDetail,
+    dependencies=[Depends(require_message_in_scope)],
+)
 def regenerate_review(
     message_id: str, session: Session = Depends(get_session)
 ) -> OutreachMessageDetail:

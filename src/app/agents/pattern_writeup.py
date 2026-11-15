@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.pattern_search import NOT_MESSAGED, OTHER_MESSAGES
+from app.agents.prompt_versioning import PATTERN_WRITEUP, prompt_text
 from app.audit.log import record_audit
 from app.db.models.agent_insight import (
     INSIGHT_CONFIDENCE_LEVELS,
@@ -125,14 +126,17 @@ def write_up_patterns(
         )
         .order_by(ObservedPattern.pattern_id)
     ).all()
+    system = prompt_text(session, PATTERN_WRITEUP, seen_at.date())
     written = 0
     for pattern in pending:
-        if _write_up(session, client, pattern):
+        if _write_up(session, client, pattern, system):
             written += 1
     return WriteUpResult(written=written, failed=len(pending) - written)
 
 
-def _write_up(session: Session, client: ConversingLLMClient, pattern: ObservedPattern) -> bool:
+def _write_up(
+    session: Session, client: ConversingLLMClient, pattern: ObservedPattern, system: str
+) -> bool:
     captured: list[PatternWriteup] = []
 
     def call_tool(name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
@@ -145,7 +149,7 @@ def _write_up(session: Session, client: ConversingLLMClient, pattern: ObservedPa
     try:
         run_conversation_boundary(
             {},
-            as_converse_call(client, system=SYSTEM_PROMPT, tools=tool_specs()),
+            as_converse_call(client, system=system, tools=tool_specs()),
             call_tool,
             max_turns=MAX_TURNS,
             entity_id=str(pattern.pattern_id),

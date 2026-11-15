@@ -24,6 +24,7 @@ from app.privacy.scanners import (
     scan_inbound,
     scan_outbound,
 )
+from app.transform.active_features import QUIET_FOR_BY_RECENCY_BAND
 
 # A model call takes an allow-listed payload and returns the drafted text.
 ModelCall = Callable[[dict[str, Any]], str]
@@ -85,9 +86,16 @@ def to_model_context(row: Mapping[str, Any]) -> dict[str, Any]:
     return {key: row[key] for key in MODEL_ALLOWED_KEYS if key in row}
 
 
+def _plain_value(key: str, value: Any) -> Any:
+    if key == "recency_band":
+        return QUIET_FOR_BY_RECENCY_BAND.get(value, value)
+    return value
+
+
 def render_model_context(payload: Mapping[str, Any]) -> str:
-    """Turn an allow listed payload into the plain text a model call sends."""
-    return "\n".join(f"{key}: {value}" for key, value in sorted(payload.items()))
+    """Turn an allow listed payload into the plain text a model call sends.
+    The scanners see the band codes; the model reads them as plain words."""
+    return "\n".join(f"{key}: {_plain_value(key, value)}" for key, value in sorted(payload.items()))
 
 
 def run_model_boundary(
@@ -99,6 +107,7 @@ def run_model_boundary(
     run_id: str | None = None,
     trace_id: str | None = None,
     audit: AuditSink | None = None,
+    scan_output: bool = True,
 ) -> str:
     """Send allow listed context to the model and return the drafted text.
 
@@ -106,6 +115,8 @@ def run_model_boundary(
     from the payload and from the draft. Fails closed: an inbound hit aborts
     before the call, an outbound hit aborts after it, returning nothing. The
     audit sink, when given, records one row per crossing including blocks.
+    scan_output=False skips only the scan on the reply, and the audit row says so;
+    the scan on what goes to the model always runs.
     """
     payload = dict(context)
     identifiers = tuple(identifiers)
@@ -116,8 +127,9 @@ def run_model_boundary(
         scan_inbound(payload, identifiers)
         record.inbound = "pass"
         draft = model_call(payload)
-        scan_outbound(draft, identifiers)
-        record.outbound = "pass"
+        if scan_output:
+            scan_outbound(draft, identifiers)
+            record.outbound = "pass"
         return draft
     except InboundLeak as leak:
         record.inbound = "blocked"

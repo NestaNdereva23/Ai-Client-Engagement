@@ -1,11 +1,5 @@
 """The ordered record of what happened during a run.
-
-These cover what the record has to get right: a finished run replays from
-the table alone in the order it happened, groups worked side by side still
-leave one clean order, and a run that fails says so before it stops. The
-rest hold the two promises the record makes to the run itself, that writing
-an event never fails it and never carries a name out with it.
-"""
+A finished run replays in order, a failed run says so, and writing an event never fails the run."""
 
 from __future__ import annotations
 
@@ -19,7 +13,8 @@ from app.agents import intelligence as intelligence_module
 from app.agents.events import NO_EVENTS, RunEventLog, stored_detail
 from app.agents.insight_state import transition_insight
 from app.agents.intelligence import run_intelligence_agent
-from app.agents.watchlist import FEE_PRESSURE_GONE_QUIET, VERY_SMALL_AND_QUIET, WatchlistThresholds
+from app.agents.situations import DEPOSIT_SIZE_FALLING, FIRST_DEPOSIT_NO_REPEAT
+from app.agents.watchlist import WatchlistThresholds
 from app.db.async_session import dispose_async_engine
 from app.db.models.active_clients import ActiveClientFund
 from app.db.models.agent_event import (
@@ -303,8 +298,8 @@ def test_the_log_that_throws_events_away_accepts_anything() -> None:
 
 
 def test_a_detail_carrying_a_contact_channel_is_withheld() -> None:
-    kept = stored_detail(RUN_STATUS, {"group_name": FEE_PRESSURE_GONE_QUIET, "client_count": 4})
-    assert kept == {"group_name": FEE_PRESSURE_GONE_QUIET, "client_count": 4}
+    kept = stored_detail(RUN_STATUS, {"group_name": FIRST_DEPOSIT_NO_REPEAT, "client_count": 4})
+    assert kept == {"group_name": FIRST_DEPOSIT_NO_REPEAT, "client_count": 4}
 
     withheld = stored_detail(RUN_STATUS, {"note": "write to grace.wanjiru@example.com"})
     assert withheld == {"withheld": True}
@@ -312,12 +307,12 @@ def test_a_detail_carrying_a_contact_channel_is_withheld() -> None:
 
 async def test_a_finished_run_replays_from_the_event_table_alone(book: None) -> None:
     scripts = {
-        FEE_PRESSURE_GONE_QUIET: [
-            _calls(_write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET)),
+        FIRST_DEPOSIT_NO_REPEAT: [
+            _calls(_write("The fee will empty these accounts", FIRST_DEPOSIT_NO_REPEAT)),
             _final_answer("One finding written."),
         ],
-        VERY_SMALL_AND_QUIET: [
-            _calls(_dismiss(VERY_SMALL_AND_QUIET, "These are too small to be worth chasing.")),
+        DEPOSIT_SIZE_FALLING: [
+            _calls(_dismiss(DEPOSIT_SIZE_FALLING, "These are too small to be worth chasing.")),
             _final_answer("Nothing here."),
         ],
     }
@@ -338,7 +333,7 @@ async def test_a_finished_run_replays_from_the_event_table_alone(book: None) -> 
 
     created = [row for row in events if row.kind == INSIGHT_CREATED]
     assert len(created) == 1
-    assert created[0].detail["group_name"] == FEE_PRESSURE_GONE_QUIET
+    assert created[0].detail["group_name"] == FIRST_DEPOSIT_NO_REPEAT
 
     assert kinds.count(TOOL_STARTED) == kinds.count(TOOL_COMPLETED) == 2
     assert ERROR not in kinds
@@ -346,12 +341,12 @@ async def test_a_finished_run_replays_from_the_event_table_alone(book: None) -> 
 
 async def test_groups_worked_side_by_side_still_leave_one_clean_order(book: None) -> None:
     scripts = {
-        FEE_PRESSURE_GONE_QUIET: [
-            _calls(_write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET)),
+        FIRST_DEPOSIT_NO_REPEAT: [
+            _calls(_write("The fee will empty these accounts", FIRST_DEPOSIT_NO_REPEAT)),
             _final_answer("One finding written."),
         ],
-        VERY_SMALL_AND_QUIET: [
-            _calls(_dismiss(VERY_SMALL_AND_QUIET, "These are too small to be worth chasing.")),
+        DEPOSIT_SIZE_FALLING: [
+            _calls(_dismiss(DEPOSIT_SIZE_FALLING, "These are too small to be worth chasing.")),
             _final_answer("Nothing here."),
         ],
     }
@@ -411,8 +406,8 @@ async def test_a_run_can_be_asked_to_keep_no_events_at_all(book: None) -> None:
 async def test_a_person_dismissing_a_finding_joins_that_run_s_story(book: None) -> None:
     run_id = await _run(
         {
-            FEE_PRESSURE_GONE_QUIET: [
-                _calls(_write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET)),
+            FIRST_DEPOSIT_NO_REPEAT: [
+                _calls(_write("The fee will empty these accounts", FIRST_DEPOSIT_NO_REPEAT)),
                 _final_answer("One finding written."),
             ]
         },
@@ -455,8 +450,8 @@ def test_every_kind_the_agents_write_is_one_the_table_allows() -> None:
 async def test_events_from_a_run_carry_no_client_ids(book: None) -> None:
     run_id = await _run(
         {
-            FEE_PRESSURE_GONE_QUIET: [
-                _calls(_write("The fee will empty these accounts", FEE_PRESSURE_GONE_QUIET)),
+            FIRST_DEPOSIT_NO_REPEAT: [
+                _calls(_write("The fee will empty these accounts", FIRST_DEPOSIT_NO_REPEAT)),
                 _final_answer("One finding written."),
             ]
         },

@@ -18,6 +18,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     Text,
     UniqueConstraint,
@@ -80,6 +81,7 @@ class AgentProposal(Base):
     run_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("agent_run.run_id"), nullable=True
     )
+    fa_id: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     action_code: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     catalog_version: Mapped[int] = mapped_column(Integer, nullable=False)
     group_name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -88,6 +90,9 @@ class AgentProposal(Base):
     client_count: Mapped[int] = mapped_column(Integer, nullable=False)
     money_total_kes: Mapped[float | None] = mapped_column(Float, nullable=True)
     evidence: Mapped[str] = mapped_column(Text, nullable=False)
+    # A metric breakdown behind the evidence sentence, for groups where one
+    # exists (not every situation has a meaningful one). Counts and KES only.
+    evidence_detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     # {skip_reason: count of client funds left out for it}. Excludes only;
     # a fully included group has an empty dict, never a missing one.
@@ -95,6 +100,8 @@ class AgentProposal(Base):
     # Null for an action that sends no message.
     angle: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_mix: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The client guide versions its drafts were given, so the next run can skip them.
+    guide_version_ids: Mapped[list[int] | None] = mapped_column(JSONB, nullable=True)
     response_kind: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Which version of the message this group got, once a two version test is running.
     variant: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -128,6 +135,7 @@ class AgentProposalClient(Base):
             "included OR skip_reason IS NOT NULL",
             name="ck_agent_proposal_client_skip_reason_required",
         ),
+        Index("ix_agent_proposal_client_client_fund", "client_id", "unit_fund_id"),
     )
 
     proposal_client_id: Mapped[int] = mapped_column(

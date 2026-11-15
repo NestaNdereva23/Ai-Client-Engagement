@@ -67,7 +67,7 @@ def _proposal(session, campaign_id: int, action_code: str) -> int:
     proposal = AgentProposal(
         action_code=action_code,
         catalog_version=1,
-        group_name="getting_smaller",
+        group_name="deposit_size_falling",
         client_count=1,
         evidence="evidence",
         reason="reason",

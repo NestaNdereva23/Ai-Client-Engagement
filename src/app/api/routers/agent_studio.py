@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -55,35 +56,13 @@ router = APIRouter(
 
 
 def _thresholds(session: Session, body: ScenarioRequest, as_of: date) -> WatchlistThresholds:
-    overrides = (
-        body.new_client_days,
-        body.months_until_empty_threshold,
-        body.small_balance_kes,
-        body.awaiting_call_days,
-    )
-    if all(value is not None for value in overrides):
-        return WatchlistThresholds(
-            new_client_days=body.new_client_days,
-            months_until_empty=body.months_until_empty_threshold,
-            small_balance=body.small_balance_kes,
-            awaiting_call_days=body.awaiting_call_days,
-        )
     try:
         live = load_thresholds(session, as_of)
     except WatchlistConfigMissing:
         raise HTTPException(
-            status_code=409,
-            detail=(
-                "no risk config version is in force, and the scenario "
-                "did not supply every threshold"
-            ),
+            status_code=409, detail="no risk config version is in force on that day"
         ) from None
-    return WatchlistThresholds(
-        new_client_days=body.new_client_days or live.new_client_days,
-        months_until_empty=body.months_until_empty_threshold or live.months_until_empty,
-        small_balance=body.small_balance_kes or live.small_balance,
-        awaiting_call_days=body.awaiting_call_days or live.awaiting_call_days,
-    )
+    return replace(live, new_client_days=body.new_client_days or live.new_client_days)
 
 
 @router.post("/scenario", response_model=ScenarioResponseOut)
@@ -94,21 +73,24 @@ def post_scenario(
     thresholds = _thresholds(session, body, as_of)
     scenario = ScenarioInput(
         balance=body.balance,
+        days_since_last_deposit=body.days_since_last_deposit,
+        typical_gap_days=body.typical_gap_days,
+        real_withdrawer=body.real_withdrawer,
+        net_flow_negative=body.net_flow_negative,
+        funds_held=body.funds_held,
         n_deposits=body.n_deposits,
         first_deposit_days_ago=body.first_deposit_days_ago,
-        months_until_empty=body.months_until_empty,
-        sig_dormant=body.sig_dormant,
         sig_shrinking=body.sig_shrinking,
-        risk_band=body.risk_band,
-        funds_held=body.funds_held,
-        days_since_call_flagged=body.days_since_call_flagged,
-        call_logged_since_flagged=body.call_logged_since_flagged,
-        route_moved_more_urgent=body.route_moved_more_urgent,
-        on_call_list=body.on_call_list,
+        advisor_call_overdue=body.advisor_call_overdue,
+        risk_band_rose=body.risk_band_rose,
+        near_preservation_line=body.near_preservation_line,
     )
-    result = evaluate_scenario(
-        session, scenario, thresholds, as_of=as_of, money_ceiling_kes=body.money_ceiling_kes
-    )
+    try:
+        result = evaluate_scenario(
+            session, scenario, thresholds, as_of=as_of, money_ceiling_kes=body.money_ceiling_kes
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
     return ScenarioResponseOut(
         matched=result.matched,
         winner=result.winner,

@@ -92,12 +92,17 @@ def build_default_agent(
     tracer: Tracer | None = None,
     prompt_builder: PromptBuilder = build_system_prompt,
     extra_chunks: Sequence[GroundingChunk] = (),
+    angle_override: str | None = None,
 ) -> EmailAgent:
     settings = settings or get_settings()
     use_rag = settings.rag_enabled
     return EmailAgent(
         context_loader=functools.partial(
-            load_client_context, session, use_rag=use_rag, extra_chunks=extra_chunks
+            load_client_context,
+            session,
+            use_rag=use_rag,
+            extra_chunks=extra_chunks,
+            angle_override=angle_override,
         ),
         llm_client=get_llm_client(settings),
         audit=audit,

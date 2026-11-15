@@ -1,15 +1,14 @@
-"""Tests for the active-client console endpoints: logging an interaction
-(username attribution, the audit row, the 404 for an unknown client-fund),
-reading the interaction history back, and the profile read.
-"""
+"""Tests for the active-client console endpoints: logging an interaction, reading the
+history back, and the profile read."""
 
 from __future__ import annotations
 
 from datetime import date, timedelta
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 
 from app.db.models.active_clients import (
     ActiveClientFund,
@@ -19,6 +18,7 @@ from app.db.models.active_clients import (
 from app.db.models.audit import AuditLog
 from app.db.models.complaints import ClientComplaint
 from app.db.models.risk import ClientRiskFeatures, RiskRun, RiskSnapshot
+from app.db.models.signals import ClientSignalState, SignalRun
 from app.db.session import SessionLocal
 from app.main import app
 from app.risk.history import write_snapshot
@@ -90,12 +90,6 @@ def _interactions_url(client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID) -
     return f"/api/v1/active-clients/{client_id}/{unit_fund_id}/interactions"
 
 
-def _post_interactions_url(
-    client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID, username: str = "fa-77"
-) -> str:
-    return f"{_interactions_url(client_id, unit_fund_id)}?username={username}"
-
-
 def _profile_url(client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID) -> str:
     return f"/api/v1/active-clients/{client_id}/{unit_fund_id}/profile"
 
@@ -105,28 +99,23 @@ def _transactions_url(client_id: int = CLIENT_ID, unit_fund_id: int = FUND_ID) -
 
 
 def test_post_interaction_missing_token_is_401(configured_reviewers) -> None:
-    response = TestClient(app).post(_post_interactions_url(), json={"type": "call_logged"})
+    response = TestClient(app).post(_interactions_url(), json={"type": "call_logged"})
     assert response.status_code == 401
-
-
-def test_post_interaction_missing_username_is_422(seeded_active_client) -> None:
-    response = client.post(_interactions_url(), json={"type": "call_logged"})
-    assert response.status_code == 422
 
 
 def test_post_interaction_unknown_client_fund_is_404() -> None:
     response = client.post(
-        _post_interactions_url(999999, 999999),
+        _interactions_url(999999, 999999),
         json={"type": "call_logged"},
     )
     assert response.status_code == 404
 
 
-def test_post_interaction_records_username_not_a_resolved_reviewer_id(
+def test_post_interaction_records_the_token_email_as_the_reviewer(
     seeded_active_client,
 ) -> None:
     response = client.post(
-        _post_interactions_url(username="fa-1"),
+        _interactions_url(),
         json={"type": "call_logged", "note": "left a voicemail"},
     )
     assert response.status_code == 201
@@ -152,13 +141,13 @@ def test_post_interaction_records_username_not_a_resolved_reviewer_id(
 
 
 def test_post_interaction_accepts_email_sent(seeded_active_client) -> None:
-    response = client.post(_post_interactions_url(), json={"type": "email_sent"})
+    response = client.post(_interactions_url(), json={"type": "email_sent"})
     assert response.status_code == 201
     assert response.json()["type"] == "email_sent"
 
 
 def test_post_interaction_risk_band_is_null_when_never_scored(seeded_active_client) -> None:
-    response = client.post(_post_interactions_url(), json={"type": "call_logged"})
+    response = client.post(_interactions_url(), json={"type": "call_logged"})
     assert response.status_code == 201
     assert response.json()["risk_band_at_interaction"] is None
 
@@ -183,7 +172,7 @@ def test_post_interaction_stamps_the_current_risk_band(seeded_active_client) -> 
         session.commit()
 
     try:
-        response = client.post(_post_interactions_url(), json={"type": "dismissed"})
+        response = client.post(_interactions_url(), json={"type": "dismissed"})
         assert response.status_code == 201
         assert response.json()["risk_band_at_interaction"] == "High"
     finally:
@@ -197,9 +186,11 @@ def test_post_interaction_stamps_the_current_risk_band(seeded_active_client) -> 
             session.commit()
 
 
-def test_get_interactions_returns_most_recent_first(seeded_active_client) -> None:
-    client.post(_post_interactions_url(username="fa-1"), json={"type": "snoozed"})
-    client.post(_post_interactions_url(username="fa-2"), json={"type": "dismissed"})
+def test_get_interactions_returns_most_recent_first(
+    seeded_active_client, reviewer_2_headers
+) -> None:
+    client.post(_interactions_url(), json={"type": "snoozed"})
+    client.post(_interactions_url(), json={"type": "dismissed"}, headers=reviewer_2_headers)
 
     response = client.get(_interactions_url())
     assert response.status_code == 200
@@ -210,7 +201,7 @@ def test_get_interactions_returns_most_recent_first(seeded_active_client) -> Non
 
 
 def test_get_interactions_since_filter_excludes_older_rows(seeded_active_client) -> None:
-    client.post(_post_interactions_url(username="fa-1"), json={"type": "snoozed"})
+    client.post(_interactions_url(), json={"type": "snoozed"})
 
     far_future = (date.today() + timedelta(days=3650)).isoformat()
     response = client.get(_interactions_url(), params={"since": far_future})
@@ -289,7 +280,7 @@ def test_get_profile_returns_identity_and_bands(seeded_active_client) -> None:
         )
         session.commit()
 
-    client.post(_post_interactions_url(username="fa-1"), json={"type": "call_logged"})
+    client.post(_interactions_url(), json={"type": "call_logged"})
 
     try:
         response = client.get(_profile_url())
@@ -702,6 +693,41 @@ def test_roster_reports_fired_signal_tags_and_empty_for_unscored(seeded_roster) 
     response = client.get(ROSTER, params={"client_id": unscored_id})
     unscored_row = response.json()["items"][0]
     assert unscored_row["risk_reason_tags"] == []
+
+
+def test_roster_shows_the_near_line_chip_in_place_of_the_fee_runway_chip(
+    seeded_roster,
+) -> None:
+    scored_id, _unscored_id, _route = seeded_roster
+    run_id = uuid4().hex
+    with SessionLocal() as session:
+        session.execute(
+            update(ClientRiskFeatures)
+            .where(ClientRiskFeatures.client_id == scored_id)
+            .values(sig_going_dormant=True)
+        )
+        session.add(SignalRun(run_id=run_id))
+        session.flush()
+        session.add(
+            ClientSignalState(
+                client_id=scored_id,
+                unit_fund_id=FUND_ID,
+                signal_code="near_preservation_line",
+                is_active=True,
+                since=date(2026, 10, 13),
+                run_id=run_id,
+            )
+        )
+        session.commit()
+    try:
+        response = client.get(ROSTER, params={"client_id": scored_id})
+        tags = response.json()["items"][0]["risk_reason_tags"]
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(ClientSignalState).where(ClientSignalState.run_id == run_id))
+            session.execute(delete(SignalRun).where(SignalRun.run_id == run_id))
+            session.commit()
+    assert tags == ["dormant", "near_preservation_line"]
 
 
 def test_roster_reports_client_code_fund_name_and_briefing_available(seeded_roster) -> None:

@@ -312,6 +312,22 @@ def test_activity_window_to_is_the_recency_anchor_when_present() -> None:
     assert client.days_since_last_activity == (date(2026, 7, 23) - date(2026, 7, 10)).days
 
 
+def test_fee_sales_do_not_move_the_last_activity_date() -> None:
+    purchase = {"id": 1, "date": "2019-12-25T00:00:00", "number": "2000", "unit_fund_id": 10}
+    fees = [
+        {"id": 10 + i, "date": f"2026-0{i}-27T00:00:00", "number": "50", "unit_fund_id": 10}
+        for i in range(1, 7)
+    ]
+    payload = _payload_with_windows(
+        last_5=[purchase], purchases_12m=[], last_2=fees[-2:], sales_12m=fees
+    )
+
+    client = flatten_payload(payload, ANCHOR).clients[0]
+
+    assert client.last_sale_date == date(2026, 6, 27)
+    assert client.last_activity_date == date(2019, 12, 25)
+
+
 def test_drawdown_ignores_fee_sized_sales_between_two_real_ones() -> None:
     sales = [
         {"id": 1, "date": "2026-01-01T00:00:00", "number": "5000", "unit_fund_id": 10},

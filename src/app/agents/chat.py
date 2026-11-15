@@ -35,7 +35,8 @@ from app.db.models.agent_run import CHAT_AGENT, AgentRun
 from app.db.models.chat import ChatSession, ChatTurn
 from app.db.session import SessionLocal
 from app.llmops.spans import ModelCallTally, traced_aconverse, traced_async_tool_call
-from app.llmops.tracing import NullTracer, Tracer, get_shared_tracer
+from app.llmops.trace_names import ASK_CHAT, TAG_CHAT
+from app.llmops.tracing import NullTracer, Tracer, get_shared_tracer, trace_scope
 from app.privacy.boundary import AuditSink, run_conversation_boundary_async
 from app.privacy.llm_client import (
     AsyncConversingLLMClient,
@@ -91,8 +92,10 @@ def start_chat_turn(
         session.add(chat_session)
         session.flush()
         session_id = chat_session.session_id
-    elif session.get(ChatSession, session_id) is None:
-        raise ChatSessionNotFound(session_id)
+    else:
+        existing = session.get(ChatSession, session_id)
+        if existing is None or existing.client_id is not None:
+            raise ChatSessionNotFound(session_id)
 
     run = start_agent_run(session, trigger="chat", as_of=as_of, kind=CHAT_AGENT)
     turn = ChatTurn(session_id=session_id, run_id=run.run_id, question=question)
@@ -150,19 +153,25 @@ async def execute_chat_turn(
     logger.info("chat.run_executing", run_id=run_id, trace_id=trace_id, model=llm_client.model)
 
     try:
-        answer, tally = await _answer(
-            session,
-            run_id=run_id,
-            question=question,
-            day=day,
-            cooldown_days=cooldown_days,
-            max_turns=max_turns,
-            llm_client=llm_client,
-            trace_id=trace_id,
-            tracer=tracer,
-            audit=audit,
-            events=events,
-        )
+        with trace_scope(
+            tracer,
+            name=ASK_CHAT,
+            tags=[TAG_CHAT],
+            session_id=f"ask-chat-{run_id}",
+        ):
+            answer, tally = await _answer(
+                session,
+                run_id=run_id,
+                question=question,
+                day=day,
+                cooldown_days=cooldown_days,
+                max_turns=max_turns,
+                llm_client=llm_client,
+                trace_id=trace_id,
+                tracer=tracer,
+                audit=audit,
+                events=events,
+            )
     except Exception as exc:
         logger.exception("chat.run_failed", run_id=run_id, reason=str(exc))
         events.record(ERROR, about="run", reason=str(exc))
@@ -205,7 +214,13 @@ async def _answer(
     ordinals = await asyncio.to_thread(OrdinalSource.from_database, session, run_id)
     write_tools = make_insight_tools(run_id=run_id, events=events)
     write_tools.update(
-        make_write_tools(run_id=run_id, as_of=day, cooldown_days=cooldown_days, events=events)
+        make_write_tools(
+            run_id=run_id,
+            as_of=day,
+            cooldown_days=cooldown_days,
+            events=events,
+            tracer=tracer,
+        )
     )
     tally = ModelCallTally()
     span = tracer.start_span(

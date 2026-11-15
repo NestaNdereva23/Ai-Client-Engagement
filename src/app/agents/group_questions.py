@@ -1,48 +1,45 @@
 """The open question the agent is asked of each group, all in one place.
-
-A group is still a plain database filter. What changes here is that the
-agent is not handed a menu of actions to pick from: it is handed a question
-and the tools to answer it with, and it may answer that a group holds
-nothing worth raising.
-
-The last entry has no filter behind it at all. It is where the agent may
-look for something none of the named groups would catch, which is the only
-place in the system it is allowed to find something nobody asked about.
-"""
+The last entry has no filter behind it: it is where the agent may look for something new."""
 
 from __future__ import annotations
 
-from app.agents.watchlist import (
-    FEE_PRESSURE_ACTIVE_CONTRIBUTOR,
-    FEE_PRESSURE_GONE_QUIET,
-    GETTING_SMALLER,
-    HEALTHY_ONE_FUND,
-    MORE_URGENT_BUT_NOT_CALLED,
-    SIGNED_UP_RECENTLY,
-    VERY_SMALL_AND_QUIET,
-    WAITING_ON_A_CALL,
+from app.agents.situations import (
+    APPROACHING_PRESERVATION_LINE,
+    DEPOSIT_SIZE_FALLING,
+    FA_CALL_OVERDUE,
+    FIRST_DEPOSIT_NO_REPEAT,
+    FREQUENT_DEPOSITOR_ONE_FUND,
+    FREQUENT_DEPOSITOR_WITHDRAWING,
+    GRADUAL_DEPOSITOR_DUE,
+    GRADUAL_DEPOSITOR_WITHDRAWING,
+    RISK_ROSE_NO_CALL,
 )
 
 EVERYTHING_ELSE = "everything_else"
 
 GROUP_QUESTIONS: dict[str, str] = {
-    SIGNED_UP_RECENTLY: (
-        "Who has not built a habit of paying in, and who is doing fine on their own?"
+    GRADUAL_DEPOSITOR_DUE: (
+        "Whose pause is longer than usual for them, and who simply pays in at a slow pace?"
     ),
-    FEE_PRESSURE_GONE_QUIET: "Which of these can still be saved, and which are already gone?",
-    FEE_PRESSURE_ACTIVE_CONTRIBUTOR: (
-        "Which of these are worth a nudge to keep going, and which are fine as they are?"
+    GRADUAL_DEPOSITOR_WITHDRAWING: (
+        "Who is taking money out because they need it, and who might be leaving?"
     ),
-    VERY_SMALL_AND_QUIET: (
-        "Which of these are worth winning back, and which are too small to chase?"
-    ),
-    GETTING_SMALLER: "Is this the time of year, or is something actually wrong?",
-    HEALTHY_ONE_FUND: (
+    FREQUENT_DEPOSITOR_ONE_FUND: (
         "Which of these look like our clients with several funds did before they took a second one?"
     ),
-    WAITING_ON_A_CALL: "Which of these cannot wait for the team to catch up?",
-    MORE_URGENT_BUT_NOT_CALLED: (
+    FREQUENT_DEPOSITOR_WITHDRAWING: (
+        "Whose withdrawals are cancelling out their deposits, and who is just moving cash around?"
+    ),
+    DEPOSIT_SIZE_FALLING: "Is this the time of year, or is something actually wrong?",
+    FIRST_DEPOSIT_NO_REPEAT: (
+        "Who has not built a habit of paying in, and who is doing fine on their own?"
+    ),
+    FA_CALL_OVERDUE: "Which of these calls cannot wait any longer?",
+    RISK_ROSE_NO_CALL: (
         "Whose situation got worse overnight in a way nobody will hear about otherwise?"
+    ),
+    APPROACHING_PRESERVATION_LINE: (
+        "Who is likely to fall below the line soon, and who is only having a quiet spell?"
     ),
     EVERYTHING_ELSE: "Is anything happening here that none of the other groups would catch?",
 }

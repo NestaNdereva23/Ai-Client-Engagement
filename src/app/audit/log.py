@@ -38,3 +38,12 @@ def record_audit(
     session.add(row)
     session.flush()
     return row
+
+
+def with_on_behalf_of(
+    detail: Mapping[str, Any] | None, on_behalf_of: str | None
+) -> dict[str, Any] | None:
+    """detail with the advisor an admin was viewing as added, when there was one."""
+    if on_behalf_of is None:
+        return dict(detail) if detail is not None else None
+    return {**(detail or {}), "on_behalf_of": on_behalf_of}

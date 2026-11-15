@@ -14,8 +14,9 @@ Five rules, in order:
    survives a run.
 3. A client with no advisor goes to the least loaded one, measured by the
    money at risk they already carry and then by how many clients they hold.
+   With the fallback switched off they are listed as unassigned instead.
 4. A client whose advisor has left the roster is treated as unassigned and
-   gets a new permanent owner by that same rule.
+   gets a new permanent owner by that same rule, or is listed as unassigned.
 5. When an advisor's call queue for the night runs past their daily
    capacity, the overflow lines are lent to advisors with room. A loan is
    for that night only. It never moves ownership, so tomorrow the client is
@@ -34,7 +35,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
-from app.config import FaRecord
+from app.advisors import FaRecord
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,7 @@ class AdvisorAllocation:
     owner: dict[int, str] = field(default_factory=dict)
     covering: dict[int, str] = field(default_factory=dict)
     demoted: set[int] = field(default_factory=set)
+    unassigned: set[int] = field(default_factory=set)
 
     def advisor_for(self, client_id: int) -> str | None:
         """Who is calling this client tonight: the stand-in if there is one,
@@ -94,6 +96,8 @@ def allocate_advisors(
     clients: Sequence[ClientLoad],
     current_owners: dict[int, str],
     source_owners: Mapping[int, str] | None = None,
+    *,
+    least_loaded_fallback: bool = True,
 ) -> AdvisorAllocation:
     """Assign every client an owner and lend out tonight's overflow.
 
@@ -115,6 +119,11 @@ def allocate_advisors(
         else:
             unassigned.append(client)
 
+    unassigned_ids: set[int] = set()
+    if not least_loaded_fallback:
+        unassigned_ids = {client.client_id for client in unassigned}
+        unassigned = []
+
     money = dict.fromkeys(rostered, 0.0)
     heads = dict.fromkeys(rostered, 0)
     by_id = {client.client_id: client for client in clients}
@@ -132,7 +141,9 @@ def allocate_advisors(
         heads[fa_id] += 1
 
     covering, demoted = _lend_overflow(rostered, clients, owner)
-    return AdvisorAllocation(owner=owner, covering=covering, demoted=demoted)
+    return AdvisorAllocation(
+        owner=owner, covering=covering, demoted=demoted, unassigned=unassigned_ids
+    )
 
 
 def _lend_overflow(
@@ -154,7 +165,7 @@ def _lend_overflow(
     """
     queue_by_fa: dict[str, list[ClientLoad]] = defaultdict(list)
     for client in clients:
-        if client.in_call_queue:
+        if client.in_call_queue and client.client_id in owner:
             queue_by_fa[owner[client.client_id]].append(client)
 
     counts = {fa_id: len(queue_by_fa[fa_id]) for fa_id in rostered}

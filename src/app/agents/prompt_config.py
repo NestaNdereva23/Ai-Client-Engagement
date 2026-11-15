@@ -161,7 +161,7 @@ def _configuration_from_rows(
     allowed_placeholder_fields = None
     if output_row is not None and output_row.placeholder_rules:
         fields = output_row.placeholder_rules.get("fields")
-        if fields:
+        if fields is not None:
             allowed_placeholder_fields = tuple(fields)
 
     return AgentConfiguration(

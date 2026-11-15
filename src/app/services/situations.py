@@ -6,10 +6,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.signals import FIRST_DEPOSIT_RECENT
-from app.agents.situations import NEW_CLIENT_SINGLE_DEPOSIT, resolved_signal_codes, situation_delta
+from app.agents.situations import FIRST_DEPOSIT_NO_REPEAT, resolved_signal_codes, situation_delta
 from app.db.models.signals import ClientSituationSnapshot, SignalRun
 
-KNOWN_SITUATION_CODES = (NEW_CLIENT_SINGLE_DEPOSIT,)
+KNOWN_SITUATION_CODES = (FIRST_DEPOSIT_NO_REPEAT,)
 
 _EMPTY_DELTA = {
     "newly_active": 0,

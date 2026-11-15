@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import delete
 
 from app.agents.signals import FIRST_DEPOSIT_RECENT, SINGLE_DEPOSIT, recompute_new_client_signals
 from app.agents.situations import (
-    NEW_CLIENT_SINGLE_DEPOSIT,
-    recompute_new_client_single_deposit,
+    FIRST_DEPOSIT_NO_REPEAT,
+    recompute_first_deposit_no_repeat,
     resolved_signal_codes,
     situation_delta,
 )
 from app.db.models.active_clients import ActiveClientFund
+from app.db.models.routing import ClientTier
 from app.db.models.signals import (
     ClientSignalSnapshot,
     ClientSignalState,
@@ -65,6 +66,7 @@ def _purge(session) -> None:
     )
     session.execute(delete(ClientSignalState).where(ClientSignalState.client_id.in_(CLIENT_IDS)))
     session.execute(delete(ActiveClientFund).where(ActiveClientFund.client_id.in_(CLIENT_IDS)))
+    session.execute(delete(ClientTier).where(ClientTier.client_id.in_(CLIENT_IDS)))
     session.commit()
 
 
@@ -80,6 +82,18 @@ def book(db: None):
                 _fund(PERSIST_CLIENT),
             ]
         )
+        session.add_all(
+            ClientTier(
+                client_id=client_id,
+                purchased_recently=True,
+                real_withdrawer=False,
+                tier="frequent_depositor",
+                segment="active_active",
+                computed_at=datetime(2026, 10, 13, 6, 0, tzinfo=UTC),
+                thresholds_version=1,
+            )
+            for client_id in CLIENT_IDS
+        )
         session.commit()
 
     yield
@@ -90,14 +104,14 @@ def book(db: None):
 
 def _recompute(session, as_of: date) -> str:
     run = recompute_new_client_signals(session, as_of)
-    recompute_new_client_single_deposit(session, as_of, run.run_id)
+    recompute_first_deposit_no_repeat(session, as_of, run.run_id)
     return run.run_id
 
 
 def test_a_client_fund_appearing_for_the_first_time_is_newly_active(book: None) -> None:
     with SessionLocal() as session:
         run_id = _recompute(session, AS_OF)
-        delta = situation_delta(session, NEW_CLIENT_SINGLE_DEPOSIT, run_id)
+        delta = situation_delta(session, FIRST_DEPOSIT_NO_REPEAT, run_id)
 
     assert (FIRST_TIME_CLIENT, FUND_ID) in delta.newly_active
     assert (FIRST_TIME_CLIENT, FUND_ID) not in delta.newly_inactive
@@ -115,7 +129,7 @@ def test_a_client_fund_resolving_by_a_second_deposit(book: None) -> None:
 
     with SessionLocal() as session:
         second_run_id = _recompute(session, AS_OF + timedelta(days=1))
-        delta = situation_delta(session, NEW_CLIENT_SINGLE_DEPOSIT, second_run_id)
+        delta = situation_delta(session, FIRST_DEPOSIT_NO_REPEAT, second_run_id)
         reason = resolved_signal_codes(session, SECOND_DEPOSIT_CLIENT, FUND_ID, second_run_id)
 
     assert (SECOND_DEPOSIT_CLIENT, FUND_ID) in delta.newly_inactive
@@ -128,7 +142,7 @@ def test_a_client_fund_resolving_by_the_window_elapsing(book: None) -> None:
 
     with SessionLocal() as session:
         second_run_id = _recompute(session, AS_OF + timedelta(days=WINDOW_DAYS + 10))
-        delta = situation_delta(session, NEW_CLIENT_SINGLE_DEPOSIT, second_run_id)
+        delta = situation_delta(session, FIRST_DEPOSIT_NO_REPEAT, second_run_id)
         reason = resolved_signal_codes(session, WINDOW_CLIENT, FUND_ID, second_run_id)
 
     assert (WINDOW_CLIENT, FUND_ID) in delta.newly_inactive
@@ -138,15 +152,15 @@ def test_a_client_fund_resolving_by_the_window_elapsing(book: None) -> None:
 def test_a_client_fund_persisting_across_three_runs_is_unchanged(book: None) -> None:
     with SessionLocal() as session:
         first_run_id = _recompute(session, AS_OF)
-        first_delta = situation_delta(session, NEW_CLIENT_SINGLE_DEPOSIT, first_run_id)
+        first_delta = situation_delta(session, FIRST_DEPOSIT_NO_REPEAT, first_run_id)
 
     with SessionLocal() as session:
         second_run_id = _recompute(session, AS_OF + timedelta(days=1))
-        second_delta = situation_delta(session, NEW_CLIENT_SINGLE_DEPOSIT, second_run_id)
+        second_delta = situation_delta(session, FIRST_DEPOSIT_NO_REPEAT, second_run_id)
 
     with SessionLocal() as session:
         third_run_id = _recompute(session, AS_OF + timedelta(days=2))
-        third_delta = situation_delta(session, NEW_CLIENT_SINGLE_DEPOSIT, third_run_id)
+        third_delta = situation_delta(session, FIRST_DEPOSIT_NO_REPEAT, third_run_id)
 
     assert (PERSIST_CLIENT, FUND_ID) in first_delta.newly_active
     assert (PERSIST_CLIENT, FUND_ID) in second_delta.persisting

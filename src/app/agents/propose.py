@@ -1,31 +1,34 @@
-"""Turn tonight's watch list groups into proposed actions, using a fixed
-rule table. No model is involved: every group maps to exactly one action,
-and the whole point of this stage is to prove the shape works before any
-model risk is taken on.
-"""
+"""Turn tonight's watch list groups into proposed actions with a fixed rule table.
+No model is involved: every group maps to exactly one action."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta
+from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select, true
 from sqlalchemy.orm import Session
 
 from app.agents.action_catalog import action_is_paused, load_action
 from app.agents.action_rules import already_offered, lacks_an_approved_guide
-from app.agents.permissions import effective_permission
+from app.agents.fa_scope import current_fa_id
+from app.agents.permissions import apply_group_rules, effective_permission, load_group_settings
+from app.agents.proposal_state import transition_proposal
 from app.agents.situation_action_mapping import action_code_for_situation
+from app.agents.situations import (
+    APPROACHING_PRESERVATION_LINE,
+    DEPOSIT_SIZE_FALLING,
+    FA_CALL_OVERDUE,
+    FIRST_DEPOSIT_NO_REPEAT,
+    FREQUENT_DEPOSITOR_ONE_FUND,
+    FREQUENT_DEPOSITOR_WITHDRAWING,
+    GRADUAL_DEPOSITOR_DUE,
+    GRADUAL_DEPOSITOR_WITHDRAWING,
+    RISK_ROSE_NO_CALL,
+)
 from app.agents.watchlist import (
-    FEE_PRESSURE_ACTIVE_CONTRIBUTOR,
-    FEE_PRESSURE_GONE_QUIET,
-    GETTING_SMALLER,
     GROUP_TO_SITUATION,
-    HEALTHY_ONE_FUND,
-    MORE_URGENT_BUT_NOT_CALLED,
-    SIGNED_UP_RECENTLY,
-    VERY_SMALL_AND_QUIET,
-    WAITING_ON_A_CALL,
     GroupMember,
     WatchGroup,
     WatchlistThresholds,
@@ -34,7 +37,11 @@ from app.agents.watchlist import (
 )
 from app.audit.log import record_audit
 from app.config import get_settings
-from app.db.models.active_clients import ActiveClientInteraction
+from app.db.models.active_clients import (
+    CONTACT_INTERACTION_TYPES,
+    ActiveClientFund,
+    ActiveClientInteraction,
+)
 from app.db.models.agent import AgentActionCatalog
 from app.db.models.agent_proposal import AgentProposal, AgentProposalClient
 from app.db.models.complaints import ClientComplaint
@@ -45,17 +52,16 @@ DO_NOTHING_ACTION = "do_nothing"
 WATCH_FOR_NOW_ACTION = "watch_for_now"
 
 GROUP_ACTIONS: dict[str, str] = {
-    SIGNED_UP_RECENTLY: "welcome_and_top_up",
-    FEE_PRESSURE_GONE_QUIET: "fee_pressure_warning_dormant",
-    FEE_PRESSURE_ACTIVE_CONTRIBUTOR: "fee_pressure_encourage_active",
-    VERY_SMALL_AND_QUIET: "start_win_back",
-    GETTING_SMALLER: "ask_what_changed",
-    HEALTHY_ONE_FUND: "suggest_second_fund",
-    WAITING_ON_A_CALL: "follow_up_when_no_one_called",
-    MORE_URGENT_BUT_NOT_CALLED: "check_in_rising_risk",
+    GRADUAL_DEPOSITOR_DUE: "give_advisor_a_task",
+    GRADUAL_DEPOSITOR_WITHDRAWING: "give_advisor_a_task",
+    FREQUENT_DEPOSITOR_ONE_FUND: "suggest_second_fund",
+    FREQUENT_DEPOSITOR_WITHDRAWING: "send_learning_note",
+    DEPOSIT_SIZE_FALLING: "ask_what_changed",
+    FIRST_DEPOSIT_NO_REPEAT: "welcome_and_top_up",
+    FA_CALL_OVERDUE: "follow_up_when_no_one_called",
+    RISK_ROSE_NO_CALL: "check_in_rising_risk",
+    APPROACHING_PRESERVATION_LINE: "give_advisor_a_task",
 }
-
-_CONTACT_TYPES = ("email_sent", "call_logged")
 
 ON_DO_NOT_CONTACT_LIST = "on_do_not_contact_list"
 OPEN_COMPLAINT = "open_complaint"
@@ -64,18 +70,52 @@ ANGLE_PAUSED = "angle_paused"
 ACTION_PAUSED = "action_paused"
 NO_APPROVED_GUIDE = "no_approved_guide"
 ALREADY_OFFERED = "already_offered"
+ALREADY_IN_A_RUNNING_PROPOSAL = "already_in_a_running_proposal"
 CONSOLIDATED_INTO_ANOTHER_SITUATION = "consolidated_into_another_situation"
 
+RUNNING_PROPOSAL_STATUS = "running"
+
 SITUATION_PRIORITY: tuple[str, ...] = (
-    MORE_URGENT_BUT_NOT_CALLED,
-    WAITING_ON_A_CALL,
-    FEE_PRESSURE_GONE_QUIET,
-    FEE_PRESSURE_ACTIVE_CONTRIBUTOR,
-    GETTING_SMALLER,
-    VERY_SMALL_AND_QUIET,
-    SIGNED_UP_RECENTLY,
-    HEALTHY_ONE_FUND,
+    RISK_ROSE_NO_CALL,
+    FA_CALL_OVERDUE,
+    GRADUAL_DEPOSITOR_WITHDRAWING,
+    FREQUENT_DEPOSITOR_WITHDRAWING,
+    DEPOSIT_SIZE_FALLING,
+    GRADUAL_DEPOSITOR_DUE,
+    FIRST_DEPOSIT_NO_REPEAT,
+    FREQUENT_DEPOSITOR_ONE_FUND,
+    APPROACHING_PRESERVATION_LINE,
 )
+
+
+WAITING_STATUS = "proposed"
+REPLACED_REASON = "a newer run replaced it before anyone decided"
+LAPSED_REASON = "nobody decided before the end of the day it was made"
+
+
+def still_fresh():
+    """True for a suggestion that is not waiting, or was made today (the session runs on EAT)."""
+    return or_(
+        AgentProposal.status != WAITING_STATUS,
+        func.date(AgentProposal.created_at) >= func.current_date(),
+    )
+
+
+def expire_waiting_proposals(session: Session, *, keep_run_id: int | None = None) -> int:
+    """Expire group suggestions still waiting from earlier runs, in the current adviser scope.
+    Approved and running ones stay, so later runs still know which clients are covered."""
+    fa_id = current_fa_id()
+    waiting = session.scalars(
+        select(AgentProposal).where(
+            AgentProposal.status == WAITING_STATUS,
+            AgentProposal.insight_id.is_(None),
+            AgentProposal.fa_id.is_(None) if fa_id is None else AgentProposal.fa_id == fa_id,
+            true() if keep_run_id is None else AgentProposal.run_id.is_distinct_from(keep_run_id),
+        )
+    ).all()
+    for proposal in waiting:
+        transition_proposal(session, proposal, to_status="expired", reason=REPLACED_REASON)
+    return len(waiting)
 
 
 class ProposalActionMissing(LookupError):
@@ -90,13 +130,12 @@ def propose_watchlist(
     thresholds: WatchlistThresholds | None = None,
     cooldown_days: int | None = None,
 ) -> list[AgentProposal]:
-    """Run tonight's watch list and write one proposal per group that has
-    someone in it. Groups with nobody in them tonight are skipped: there is
-    no situation to record a decision about.
-    """
+    """Run tonight's watch list and write one proposal per group that has someone in it.
+    Groups with nobody in them are skipped."""
     if thresholds is None:
         thresholds = load_thresholds(session, as_of)
     groups = build_watchlist(session, as_of, thresholds)
+    expire_waiting_proposals(session)
     winners = situation_winners(groups)
     proposals = []
     for group in groups:
@@ -116,11 +155,7 @@ def propose_watchlist(
 
 def situation_winners(groups: Sequence[WatchGroup]) -> dict[tuple[int, int], str]:
     """Which one situation wins for each client fund carrying more than one.
-
-    A client fund sitting in several groups on the same night gets exactly
-    one action, the most urgent situation's, rather than one action per
-    situation it happens to qualify for.
-    """
+    A fund in several groups gets one action, the most urgent situation's."""
     by_name = {group.name: group for group in groups}
     winners: dict[tuple[int, int], str] = {}
     for group_name in SITUATION_PRIORITY:
@@ -134,11 +169,7 @@ def situation_winners(groups: Sequence[WatchGroup]) -> dict[tuple[int, int], str
 
 def default_action_code_for_group(session: Session, group_name: str, as_of: date) -> str | None:
     """The action a group falls back to when nothing else picks one for it.
-
-    Checked first against the situation/action mapping table, since that is
-    the live, editable source; GROUP_ACTIONS is the fixed fallback for a
-    group with no mapping published for its situation.
-    """
+    The mapping table comes first; GROUP_ACTIONS is the fallback when none is published."""
     situation_code = GROUP_TO_SITUATION.get(group_name, group_name)
     return action_code_for_situation(session, situation_code, as_of) or GROUP_ACTIONS.get(
         group_name
@@ -164,7 +195,9 @@ def propose_group(
         raise ProposalActionMissing(f"the group '{group.name}' has no action in the rule table")
     mapped_action = load_action_or_raise(session, mapped_code, as_of)
 
-    skip_reasons = group_skip_reasons(session, group.members, mapped_action, as_of, cooldown_days)
+    skip_reasons = group_skip_reasons(
+        session, group.name, group.members, mapped_action, as_of, cooldown_days
+    )
     if winners is not None:
         for member in group.members:
             key = member_key(member)
@@ -191,10 +224,7 @@ def propose_group(
 
 def load_action_or_raise(session: Session, action_code: str, as_of: date) -> AgentActionCatalog:
     """One action from the live catalogue, or raise ProposalActionMissing.
-
-    Shared with the model driven proposal flow, so a run fails loudly rather
-    than proposing against an action that no longer exists.
-    """
+    Shared with the model driven flow, so a run fails loudly on a missing action."""
     action = load_action(session, action_code, as_of)
     if action is None:
         raise ProposalActionMissing(
@@ -210,11 +240,7 @@ def member_key(member: GroupMember) -> tuple[int, int]:
 
 def skip_reason_counts(skip_reasons: dict[tuple[int, int], str | None]) -> dict[str, int]:
     """How many client funds were left out, tallied by reason.
-
-    Members with no reason (they were included) do not appear. Stored on
-    the proposal itself, so a group that empties itself always says which
-    check emptied it, without a separate query over agent_proposal_client.
-    """
+    Included members do not appear."""
     counts: dict[str, int] = {}
     for reason in skip_reasons.values():
         if reason is None:
@@ -225,32 +251,33 @@ def skip_reason_counts(skip_reasons: dict[tuple[int, int], str | None]) -> dict[
 
 def group_skip_reasons(
     session: Session,
+    group_name: str,
     members: Sequence[GroupMember],
     action: AgentActionCatalog,
     as_of: date,
     cooldown_days: int | None,
 ) -> dict[tuple[int, int], str | None]:
     """Why each member of the group was left out, or None if they qualify.
-
-    Shared with the model driven proposal flow, so both ways of choosing an
-    action run the same gates before anything is proposed.
-    """
+    Shared with the model driven flow, so both run the same gates."""
     if action_is_paused(session, action.action_code, as_of):
         return {member_key(member): ACTION_PAUSED for member in members}
-    if lacks_an_approved_guide(session, action):
+    group = load_group_settings(session, group_name, current_fa_id(), as_of)
+    if lacks_an_approved_guide(session, action, doc_ids=group.guide_doc_ids):
         return {member_key(member): NO_APPROVED_GUIDE for member in members}
 
     settings = get_settings()
     cooldown = settings.agent_contact_cooldown_days if cooldown_days is None else cooldown_days
-    return {
-        member_key(member): member_skip_reason(session, member, action, as_of, cooldown)
+    reasons = {
+        member_key(member): member_skip_reason(session, member, group_name, action, as_of, cooldown)
         for member in members
     }
+    return apply_group_rules(session, group_name, members, reasons, as_of)
 
 
 def member_skip_reason(
     session: Session,
     member: GroupMember,
+    group_name: str,
     action: AgentActionCatalog,
     as_of: date,
     cooldown_days: int,
@@ -261,11 +288,31 @@ def member_skip_reason(
         return OPEN_COMPLAINT
     if _contacted_recently(session, member, as_of, cooldown_days):
         return CONTACTED_RECENTLY
+    if _already_in_running_proposal(session, member, group_name):
+        return ALREADY_IN_A_RUNNING_PROPOSAL
     if action.message_angle and angle_is_held(session, action.message_angle, as_of):
         return ANGLE_PAUSED
     if already_offered(session, member.client_id, action):
         return ALREADY_OFFERED
     return None
+
+
+def _already_in_running_proposal(session: Session, member: GroupMember, group_name: str) -> bool:
+    return (
+        session.scalar(
+            select(AgentProposalClient.proposal_client_id)
+            .join(AgentProposal, AgentProposal.proposal_id == AgentProposalClient.proposal_id)
+            .where(
+                AgentProposal.group_name == group_name,
+                AgentProposal.status == RUNNING_PROPOSAL_STATUS,
+                AgentProposalClient.client_id == member.client_id,
+                AgentProposalClient.unit_fund_id == member.unit_fund_id,
+                AgentProposalClient.included.is_(True),
+            )
+            .limit(1)
+        )
+        is not None
+    )
 
 
 def _has_open_complaint(session: Session, client_id: int) -> bool:
@@ -289,7 +336,7 @@ def _contacted_recently(
             .where(
                 ActiveClientInteraction.client_id == member.client_id,
                 ActiveClientInteraction.unit_fund_id == member.unit_fund_id,
-                ActiveClientInteraction.type.in_(_CONTACT_TYPES),
+                ActiveClientInteraction.type.in_(CONTACT_INTERACTION_TYPES),
                 ActiveClientInteraction.created_at >= cutoff,
             )
             .limit(1)
@@ -314,6 +361,7 @@ def _save_proposal(
     money_total = sum(member.balance for member in included)
 
     proposal = AgentProposal(
+        fa_id=current_fa_id(),
         action_code=action.action_code,
         catalog_version=action.version,
         group_name=group.name,
@@ -323,13 +371,16 @@ def _save_proposal(
         evidence=group_evidence(group, thresholds),
         reason=_reason(action, group, included_count=included_count, total_count=total_count),
         angle=action.message_angle,
-        content_mix=action.content_mix,
+        content_mix=load_group_settings(session, group.name, current_fa_id(), as_of).content_mix
+        or action.content_mix,
         response_kind=action.response_kind,
         permission_applied=effective_permission(
             session,
             action.action_code,
             money_total_kes=money_total,
             money_ceiling_kes=action.money_ceiling_kes,
+            at=as_of,
+            group_name=group.name,
         ),
         skip_reason_counts=skip_reason_counts(skip_reasons),
         status="proposed",
@@ -365,44 +416,113 @@ def _save_proposal(
     return proposal
 
 
+GROUP_EVIDENCE: dict[str, str] = {
+    GRADUAL_DEPOSITOR_DUE: (
+        "have not bought recently, have not withdrawn, and are past their own usual gap "
+        "between deposits."
+    ),
+    GRADUAL_DEPOSITOR_WITHDRAWING: "have not bought recently and have taken money out.",
+    FREQUENT_DEPOSITOR_ONE_FUND: "buy regularly, have not withdrawn, and hold only one fund.",
+    FREQUENT_DEPOSITOR_WITHDRAWING: (
+        "buy regularly but have taken out as much as they put in, or more."
+    ),
+    DEPOSIT_SIZE_FALLING: "have deposits that are getting smaller over time.",
+    FIRST_DEPOSIT_NO_REPEAT: "made one deposit recently and have not come back.",
+    FA_CALL_OVERDUE: "have a call their advisor promised that is now past its date.",
+    RISK_ROSE_NO_CALL: "moved to a worse risk band in the last run with no response since.",
+    APPROACHING_PRESERVATION_LINE: (
+        "are on course to fall below the active line within a few months."
+    ),
+}
+
+
 def group_evidence(group: WatchGroup, thresholds: WatchlistThresholds) -> str:
     """The plain language evidence behind one group, shared with the model driven flow."""
     count = group.client_count
-    if group.name == SIGNED_UP_RECENTLY:
-        return (
-            f"{count} clients made exactly one deposit, within the last "
-            f"{thresholds.new_client_days} days."
+    evidence = GROUP_EVIDENCE.get(group.name)
+    if evidence is None:
+        return f"{count} clients matched the '{group.name}' group."
+    return f"{count} clients {evidence}"
+
+
+# "mildest" used to be called "just starting to turn" on screen, which implied
+# a reversal this metric cannot show -- it only ranks how fast deposits are
+# shrinking, so the wording stays about pace, not direction.
+_DEPOSIT_TREND_THIRDS = ("sharpest", "middle", "mildest")
+_DEPOSIT_TREND_THIRD_TITLES = {
+    "sharpest": "Declining sharply",
+    "middle": "Declining moderately",
+    "mildest": "Declining slowly",
+}
+
+
+def _split_into_thirds(ranked: list) -> list[list]:
+    n = len(ranked)
+    first, second = round(n / 3), round(2 * n / 3)
+    return [ranked[:first], ranked[first:second], ranked[second:]]
+
+
+def group_evidence_detail(session: Session, group: WatchGroup) -> dict[str, Any] | None:
+    """How a group's own members split by severity, for situations where a
+    real metric exists behind the evidence sentence. None when there is no
+    such metric for this situation, or too few members carry it to rank.
+
+    Ranked by each member's own deposit trend rather than a fixed cutoff, so
+    this always describes tonight's group honestly instead of a guessed
+    universal threshold.
+    """
+    if group.name != DEPOSIT_SIZE_FALLING:
+        return None
+
+    keys = {(member.client_id, member.unit_fund_id) for member in group.members}
+    fund_ids = {member.unit_fund_id for member in group.members}
+    if not fund_ids:
+        return None
+    rows = [
+        row
+        for row in session.execute(
+            select(
+                ActiveClientFund.client_id,
+                ActiveClientFund.unit_fund_id,
+                ActiveClientFund.deposit_trend,
+            ).where(
+                ActiveClientFund.unit_fund_id.in_(fund_ids),
+                ActiveClientFund.deposit_trend.isnot(None),
+            )
+        ).all()
+        if (row.client_id, row.unit_fund_id) in keys
+    ]
+    if len(rows) < 3:
+        return None
+
+    balance_by_key = {(m.client_id, m.unit_fund_id): m.balance for m in group.members}
+    ranked = sorted(rows, key=lambda row: row.deposit_trend)
+    thirds = []
+    for label, chunk in zip(_DEPOSIT_TREND_THIRDS, _split_into_thirds(ranked), strict=True):
+        trend_low = round(min(row.deposit_trend for row in chunk), 2)
+        trend_high = round(max(row.deposit_trend for row in chunk), 2)
+        thirds.append(
+            {
+                "label": label,
+                "title": _DEPOSIT_TREND_THIRD_TITLES[label],
+                "description": (
+                    f"Deposit trend score {trend_low} to {trend_high} within this group "
+                    "(more negative means a faster fall)."
+                ),
+                "client_count": len(chunk),
+                "balance_kes": sum(
+                    balance_by_key[(row.client_id, row.unit_fund_id)] for row in chunk
+                ),
+                "trend_low": trend_low,
+                "trend_high": trend_high,
+            }
         )
-    if group.name == FEE_PRESSURE_GONE_QUIET:
-        return (
-            f"{count} clients have a balance the monthly fee will empty in under "
-            f"{thresholds.months_until_empty:.1f} months, and have gone quiet."
-        )
-    if group.name == FEE_PRESSURE_ACTIVE_CONTRIBUTOR:
-        return (
-            f"{count} clients have a balance the monthly fee will empty in under "
-            f"{thresholds.months_until_empty:.1f} months, and are still paying in."
-        )
-    if group.name == VERY_SMALL_AND_QUIET:
-        return (
-            f"{count} clients have a balance under {thresholds.small_balance:,.0f} "
-            "and have stopped moving."
-        )
-    if group.name == GETTING_SMALLER:
-        return f"{count} clients have deposits that are getting smaller over time."
-    if group.name == HEALTHY_ONE_FUND:
-        return f"{count} clients are in a healthy risk band and hold only one fund."
-    if group.name == WAITING_ON_A_CALL:
-        return (
-            f"{count} clients have sat on the call list for more than "
-            f"{thresholds.awaiting_call_days} days with nothing logged against them."
-        )
-    if group.name == MORE_URGENT_BUT_NOT_CALLED:
-        return (
-            f"{count} clients moved to a more urgent queue overnight but did not "
-            "make this morning's call list."
-        )
-    return f"{count} clients matched the '{group.name}' group."
+    return {
+        "metric": "deposit_trend",
+        "ranked_on": len(rows),
+        "not_ranked": len(keys) - len(rows),
+        "thirds": thirds,
+    }
 
 
 def _reason(

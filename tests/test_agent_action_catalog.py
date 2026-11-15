@@ -17,6 +17,7 @@ from app.agents.action_catalog import (
     save_action_catalog_version,
     selectable_actions,
     set_action_content_mix,
+    set_action_paused,
     validate_actions,
 )
 from app.db.models.agent import AgentActionCatalog
@@ -302,6 +303,33 @@ def test_setting_a_mix_saves_a_new_version_that_changes_only_that_action(
     assert still_old == before
 
 
+def test_pausing_an_action_saves_a_new_version_that_changes_only_that_action(
+    db: None, catalog_versions: list[int]
+) -> None:
+    starts = date(2026, 12, 2)
+    code = "fee_warning"
+    with SessionLocal() as session:
+        before = {c: row.paused for c, row in load_active_actions(session, starts).items()}
+        version = set_action_paused(
+            session, code, not before[code], changed_by="lead", valid_from=starts
+        )
+        catalog_versions.append(version)
+        session.commit()
+
+    with SessionLocal() as session:
+        after = {c: row.paused for c, row in load_active_actions(session, starts).items()}
+        unchanged = set_action_paused(
+            session, code, after[code], changed_by="lead", valid_from=starts
+        )
+        session.rollback()
+
+    assert after[code] is not before[code]
+    assert {c: v for c, v in after.items() if c != code} == {
+        c: v for c, v in before.items() if c != code
+    }
+    assert unchanged == version
+
+
 def test_setting_a_mix_refuses_an_unknown_mix_or_action(db: None) -> None:
     with SessionLocal() as session:
         with pytest.raises(ActionCatalogValidationError, match="content mix"):
@@ -343,3 +371,14 @@ def test_an_action_the_catalogue_does_not_hold_counts_as_paused(db: None) -> Non
     with SessionLocal() as session:
         assert load_action(session, "never_existed", IN_FORCE) is None
         assert action_is_paused(session, "never_existed", IN_FORCE)
+
+
+def test_start_win_back_and_fee_pressure_warning_dormant_are_live(db: None) -> None:
+    today = date(2026, 10, 21)
+    with SessionLocal() as session:
+        actions = load_active_actions(session, today)
+        assert not actions["start_win_back"].paused
+        assert not actions["fee_pressure_warning_dormant"].paused
+        selectable = selectable_actions(session, today)
+    assert "start_win_back" in selectable
+    assert "fee_pressure_warning_dormant" in selectable

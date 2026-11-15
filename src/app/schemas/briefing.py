@@ -22,3 +22,8 @@ class BriefingOut(BaseModel):
     text: str
     basis: list[str]
     mode: str = "deterministic"
+
+
+class ClientEmailDraftOut(BaseModel):
+    message_id: str
+    drafts_left_today: int

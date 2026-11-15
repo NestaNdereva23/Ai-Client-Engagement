@@ -1,11 +1,5 @@
-"""Read only tools the agent can call: one test per tool, plus an empty
-result and a refusal case for each, wherever the tool has one.
-
-The watch list itself already has its own tests, so most tools here get
-their groups from a monkeypatched build_watchlist rather than a seeded
-active book. describe_group and get_client_facts read the risk tables
-directly, so those two seed real rows.
-"""
+"""Read only tools the agent can call: one test per tool, plus an empty and a refusal case.
+Most tools get groups from a monkeypatched build_watchlist."""
 
 from __future__ import annotations
 
@@ -15,6 +9,7 @@ import pytest
 from sqlalchemy import delete
 
 from app.agents import tools as tools_module
+from app.agents.situations import FIRST_DEPOSIT_NO_REPEAT
 from app.agents.tools import (
     check_allowance,
     describe_group,
@@ -23,10 +18,10 @@ from app.agents.tools import (
     get_contact_history,
     list_angles,
     list_groups,
+    sample_group_member,
     search_knowledge,
 )
 from app.agents.watchlist import (
-    FEE_PRESSURE_GONE_QUIET,
     GroupMember,
     WatchGroup,
     WatchlistConfigMissing,
@@ -58,7 +53,7 @@ def _member(client_id: int, unit_fund_id: int = FUND_ID, balance: float = 100_00
 
 
 def _stub_watchlist(monkeypatch, members: tuple[GroupMember, ...]) -> None:
-    group = WatchGroup(name=FEE_PRESSURE_GONE_QUIET, definition={}, members=members)
+    group = WatchGroup(name=FIRST_DEPOSIT_NO_REPEAT, definition={}, members=members)
     monkeypatch.setattr(tools_module, "load_thresholds", lambda session, as_of: THRESHOLDS)
     monkeypatch.setattr(
         tools_module, "build_watchlist", lambda session, as_of, thresholds: (group,)
@@ -76,7 +71,7 @@ def test_list_groups_reports_counts_and_money(db: None, monkeypatch) -> None:
         result = list_groups(session, as_of=AS_OF.isoformat())
     assert result["as_of"] == AS_OF.isoformat()
     [group] = result["groups"]
-    assert group["group_name"] == FEE_PRESSURE_GONE_QUIET
+    assert group["group_name"] == FIRST_DEPOSIT_NO_REPEAT
     assert group["client_count"] == 2
     assert group["fund_count"] == 2
     assert group["money_total_kes"] == 500_000.0
@@ -182,7 +177,7 @@ def test_describe_group_reports_bands_and_fund_spread(risk_book: None, monkeypat
     )
     with SessionLocal() as session:
         result = describe_group(
-            session, group_name=FEE_PRESSURE_GONE_QUIET, as_of=AS_OF.isoformat()
+            session, group_name=FIRST_DEPOSIT_NO_REPEAT, as_of=AS_OF.isoformat()
         )
 
     assert result["client_count"] == 3
@@ -196,7 +191,7 @@ def test_describe_group_is_empty_when_nobody_is_in_it(db: None, monkeypatch) -> 
     _stub_watchlist(monkeypatch, ())
     with SessionLocal() as session:
         result = describe_group(
-            session, group_name=FEE_PRESSURE_GONE_QUIET, as_of=AS_OF.isoformat()
+            session, group_name=FIRST_DEPOSIT_NO_REPEAT, as_of=AS_OF.isoformat()
         )
     assert result["client_count"] == 0
     assert result["risk_bands"] == {}
@@ -329,6 +324,64 @@ def test_get_client_facts_refuses_a_client_with_no_risk_data(db: None) -> None:
     assert result["error"] == "not_found"
 
 
+# --- sample_group_member ---
+
+
+def test_sample_group_member_returns_facts_with_no_client_id(
+    client_book: None, monkeypatch
+) -> None:
+    _stub_watchlist(monkeypatch, (_member(CLIENT_A, FUND_ID),))
+    with SessionLocal() as session:
+        result = sample_group_member(
+            session, group_name=FIRST_DEPOSIT_NO_REPEAT, as_of=AS_OF.isoformat()
+        )
+    assert result["group_name"] == FIRST_DEPOSIT_NO_REPEAT
+    facts = result["facts"]
+    assert facts["risk_band"] == "High"
+    assert "client_id" not in result
+    assert "unit_fund_id" not in result
+    assert "client_id" not in facts
+
+
+def test_sample_group_member_skips_a_member_with_no_data_on_file(
+    client_book: None, monkeypatch
+) -> None:
+    _stub_watchlist(monkeypatch, (_member(999999999, 999999999), _member(CLIENT_A, FUND_ID)))
+    with SessionLocal() as session:
+        result = sample_group_member(
+            session, group_name=FIRST_DEPOSIT_NO_REPEAT, as_of=AS_OF.isoformat()
+        )
+    assert result["facts"]["risk_band"] == "High"
+
+
+def test_sample_group_member_refuses_an_empty_group(db: None, monkeypatch) -> None:
+    _stub_watchlist(monkeypatch, ())
+    with SessionLocal() as session:
+        result = sample_group_member(
+            session, group_name=FIRST_DEPOSIT_NO_REPEAT, as_of=AS_OF.isoformat()
+        )
+    assert result["error"] == "empty_group"
+
+
+def test_sample_group_member_refuses_an_unknown_group(db: None) -> None:
+    with SessionLocal() as session:
+        result = sample_group_member(
+            session, group_name="not_a_real_group", as_of=AS_OF.isoformat()
+        )
+    assert result["error"] == "unknown_group"
+
+
+def test_sample_group_member_is_not_found_when_nobody_sampled_has_data(
+    db: None, monkeypatch
+) -> None:
+    _stub_watchlist(monkeypatch, (_member(999999999, 999999999),))
+    with SessionLocal() as session:
+        result = sample_group_member(
+            session, group_name=FIRST_DEPOSIT_NO_REPEAT, as_of=AS_OF.isoformat()
+        )
+    assert result["error"] == "not_found"
+
+
 # --- get_contact_history ---
 
 
@@ -338,7 +391,7 @@ def contact_history_proposal(db: None):
         proposal = AgentProposal(
             action_code="fee_warning",
             catalog_version=1,
-            group_name=FEE_PRESSURE_GONE_QUIET,
+            group_name=FIRST_DEPOSIT_NO_REPEAT,
             client_count=1,
             money_total_kes=250_000.0,
             evidence="one client fits the fee warning group",
@@ -373,7 +426,7 @@ def test_get_contact_history_reports_the_most_recent_proposal(
     contact_history_proposal: int,
 ) -> None:
     with SessionLocal() as session:
-        result = get_contact_history(session, group_name=FEE_PRESSURE_GONE_QUIET)
+        result = get_contact_history(session, group_name=FIRST_DEPOSIT_NO_REPEAT)
     assert result["ever_proposed"] is True
     assert result["action_code"] == "fee_warning"
     assert result["status"] == "proposed"
@@ -382,8 +435,8 @@ def test_get_contact_history_reports_the_most_recent_proposal(
 
 def test_get_contact_history_is_empty_when_the_group_was_never_proposed(db: None) -> None:
     with SessionLocal() as session:
-        result = get_contact_history(session, group_name="waiting_on_a_call")
-    assert result == {"group_name": "waiting_on_a_call", "ever_proposed": False}
+        result = get_contact_history(session, group_name="fa_call_overdue")
+    assert result == {"group_name": "fa_call_overdue", "ever_proposed": False}
 
 
 def test_get_contact_history_refuses_an_unknown_group(db: None) -> None:
@@ -470,7 +523,7 @@ def test_estimate_cost_prices_the_whole_group(db: None, monkeypatch) -> None:
     _stub_watchlist(monkeypatch, (_member(CLIENT_A), _member(CLIENT_B), _member(CLIENT_C)))
     with SessionLocal() as session:
         config = active_generation_cost_config(session, DEFAULT_MODEL, AS_OF)
-        result = estimate_cost(session, group_name=FEE_PRESSURE_GONE_QUIET, as_of=AS_OF.isoformat())
+        result = estimate_cost(session, group_name=FIRST_DEPOSIT_NO_REPEAT, as_of=AS_OF.isoformat())
 
     assert result["client_count"] == 3
     assert result["model"] == DEFAULT_MODEL
@@ -480,7 +533,7 @@ def test_estimate_cost_prices_the_whole_group(db: None, monkeypatch) -> None:
 def test_estimate_cost_is_zero_for_an_empty_group(db: None, monkeypatch) -> None:
     _stub_watchlist(monkeypatch, ())
     with SessionLocal() as session:
-        result = estimate_cost(session, group_name=FEE_PRESSURE_GONE_QUIET, as_of=AS_OF.isoformat())
+        result = estimate_cost(session, group_name=FIRST_DEPOSIT_NO_REPEAT, as_of=AS_OF.isoformat())
     assert result["client_count"] == 0
     assert result["total_cost_kes"] == 0
 
@@ -496,7 +549,7 @@ def test_estimate_cost_refuses_an_unpriced_model(db: None, monkeypatch) -> None:
     with SessionLocal() as session:
         result = estimate_cost(
             session,
-            group_name=FEE_PRESSURE_GONE_QUIET,
+            group_name=FIRST_DEPOSIT_NO_REPEAT,
             model="claude-mythos-5",
             as_of=AS_OF.isoformat(),
         )
@@ -515,9 +568,13 @@ class _FakePermission:
 def test_check_allowance_reports_what_is_left_under_a_cap(db: None, monkeypatch) -> None:
     monkeypatch.setattr(tools_module, "load_action", lambda session, code, at: object())
     monkeypatch.setattr(
-        tools_module, "resolve_permission", lambda session, code: _FakePermission(5, 100_000.0)
+        tools_module,
+        "resolve_permission",
+        lambda session, code, at=None: _FakePermission(5, 100_000.0),
     )
-    monkeypatch.setattr(tools_module, "effective_permission", lambda session, code: "approve_each")
+    monkeypatch.setattr(
+        tools_module, "effective_permission", lambda session, code, at=None: "approve_each"
+    )
 
     from app.services.agent_proposals import DailyUsage
 
@@ -538,8 +595,10 @@ def test_check_allowance_reports_what_is_left_under_a_cap(db: None, monkeypatch)
 
 def test_check_allowance_treats_no_cap_as_unlimited(db: None, monkeypatch) -> None:
     monkeypatch.setattr(tools_module, "load_action", lambda session, code, at: object())
-    monkeypatch.setattr(tools_module, "resolve_permission", lambda session, code: None)
-    monkeypatch.setattr(tools_module, "effective_permission", lambda session, code: "suggest_only")
+    monkeypatch.setattr(tools_module, "resolve_permission", lambda session, code, at=None: None)
+    monkeypatch.setattr(
+        tools_module, "effective_permission", lambda session, code, at=None: "suggest_only"
+    )
 
     from app.services.agent_proposals import DailyUsage
 
@@ -591,3 +650,14 @@ def test_check_allowance_without_an_action_sums_every_action(db: None, monkeypat
     assert result["overall"]["used_money_kes"] == 2_000.0
     assert result["overall"]["remaining_clients"] is None
     assert set(result["by_action"]) == {"fee_warning", "start_win_back"}
+
+
+# --- tool offering ---
+
+
+def test_group_level_tool_specs_drop_get_client_facts_but_keep_the_sample_tool() -> None:
+    names = {spec.name for spec in tools_module.GROUP_LEVEL_TOOL_SPECS}
+    assert "get_client_facts" not in names
+    assert "sample_group_member" in names
+    # Every other tool plan/choose had before is still offered.
+    assert names == {spec.name for spec in tools_module.TOOL_SPECS} - {"get_client_facts"}

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models.agent import AgentActionCatalog, SituationActionMapping
 from app.db.models.agent_prompt import AgentPrompt
+from app.db.models.campaign_agent_prompt import CampaignAgentPrompt
 from app.db.models.prompt_config import (
     ActiveConfiguration,
     OutputPolicy,
@@ -55,6 +56,7 @@ COMPONENTS: dict[str, ComponentSpec] = {
     "agent_action_catalog": ComponentSpec(AgentActionCatalog),
     "situation_action_mapping": ComponentSpec(SituationActionMapping),
     "agent_prompt": ComponentSpec(AgentPrompt, key_column="prompt_name"),
+    "campaign_agent_prompt": ComponentSpec(CampaignAgentPrompt, key_column="prompt_name"),
 }
 
 

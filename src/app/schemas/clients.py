@@ -13,6 +13,7 @@ from app.schemas.rules import AngleStatusOut
 class ClientSummaryOut(BaseModel):
     client_id: int
     unit_fund_id: int
+    fund_short_name: str | None = None
     recency_band: str | None
     value_band: str | None
     cadence_band: str | None
