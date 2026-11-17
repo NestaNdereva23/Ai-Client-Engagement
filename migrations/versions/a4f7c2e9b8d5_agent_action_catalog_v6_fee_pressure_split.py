@@ -17,9 +17,10 @@ from datetime import date
 
 import sqlalchemy as sa
 from alembic import op
+from seed_compat import load_active_actions, save_action_catalog_version
 from sqlalchemy.orm import Session
 
-from app.agents.action_catalog import ActionSpec, load_active_actions, save_action_catalog_version
+from app.agents.action_catalog import ActionSpec
 
 revision: str = "a4f7c2e9b8d5"
 down_revision: str | Sequence[str] | None = "e4a2f6c8d1b3"

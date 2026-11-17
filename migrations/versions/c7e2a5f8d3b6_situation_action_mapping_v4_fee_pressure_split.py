@@ -15,13 +15,10 @@ from datetime import date
 
 import sqlalchemy as sa
 from alembic import op
+from seed_compat import load_active_mappings, save_situation_action_mapping_version
 from sqlalchemy.orm import Session
 
-from app.agents.situation_action_mapping import (
-    MappingSpec,
-    load_active_mappings,
-    save_situation_action_mapping_version,
-)
+from app.agents.situation_action_mapping import MappingSpec
 
 revision: str = "c7e2a5f8d3b6"
 down_revision: str | Sequence[str] | None = "b9d3e6f1a2c4"

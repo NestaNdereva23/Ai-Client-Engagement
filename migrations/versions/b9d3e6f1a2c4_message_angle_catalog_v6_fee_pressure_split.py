@@ -18,9 +18,10 @@ from datetime import date
 
 import sqlalchemy as sa
 from alembic import op
+from seed_compat import load_active_angles, save_catalog_version
 from sqlalchemy.orm import Session
 
-from app.rules.catalog import AngleSpec, load_active_angles, save_catalog_version
+from app.rules.catalog import AngleSpec
 
 revision: str = "b9d3e6f1a2c4"
 down_revision: str | Sequence[str] | None = "a4f7c2e9b8d5"

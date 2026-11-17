@@ -3,11 +3,12 @@ from datetime import date
 
 import sqlalchemy as sa
 from alembic import op
+from seed_compat import load_active_angles, save_catalog_version
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.models.rules import MessageAngleCatalog as M
-from app.rules.catalog import AngleSpec, load_active_angles, save_catalog_version
+from app.rules.catalog import AngleSpec
 
 revision: str = "c3d4e5f6a7b8"
 down_revision: str | Sequence[str] | None = "b2c3d4e5f6a7"

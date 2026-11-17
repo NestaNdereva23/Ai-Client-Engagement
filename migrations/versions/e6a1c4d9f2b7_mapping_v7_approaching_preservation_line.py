@@ -5,9 +5,10 @@ from datetime import date
 
 import sqlalchemy as sa
 from alembic import op
+from seed_compat import save_situation_action_mapping_version
 from sqlalchemy.orm import Session
 
-from app.agents.situation_action_mapping import MappingSpec, save_situation_action_mapping_version
+from app.agents.situation_action_mapping import MappingSpec
 
 revision: str = "e6a1c4d9f2b7"
 down_revision: str | Sequence[str] | None = "a7d3f9c2e6b4"

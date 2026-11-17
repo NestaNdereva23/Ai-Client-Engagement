@@ -6,24 +6,20 @@ from datetime import date
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.orm import Session
-
-from app.agents.action_catalog import (
-    ActionSpec,
+from seed_compat import (
+    active_catalog_version,
     load_active_actions,
-    save_action_catalog_version,
-)
-from app.agents.situation_action_mapping import (
-    MappingSpec,
+    load_active_angles,
     load_active_mappings,
+    save_action_catalog_version,
+    save_catalog_version,
     save_situation_action_mapping_version,
 )
-from app.rules.catalog import (
-    AngleSpec,
-    active_catalog_version,
-    load_active_angles,
-    save_catalog_version,
-)
+from sqlalchemy.orm import Session
+
+from app.agents.action_catalog import ActionSpec
+from app.agents.situation_action_mapping import MappingSpec
+from app.rules.catalog import AngleSpec
 
 revision: str = "b2d5f8a1c4e7"
 down_revision: str | Sequence[str] | None = "c8e4a1b6d2f7"
