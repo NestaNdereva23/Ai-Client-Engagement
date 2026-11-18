@@ -63,6 +63,12 @@ class UserAccess(Base):
     )
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     receives_digest: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    receives_weekly_report: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    receives_lead_report: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
     ai_assistant: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     view_as_email: Mapped[str | None] = mapped_column(Text, nullable=True)
     source: Mapped[str] = mapped_column(Text, nullable=False, server_default=SOURCE_MANUAL)

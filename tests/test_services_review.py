@@ -134,7 +134,7 @@ def test_personalize_content_applies_placeholder_filled_facts_to_subject_and_bod
     )
     assert result == {
         "subject": "Your fund, Jane",
-        "body": "You held for 2.5 years, largest contribution KES 20,000.",
+        "body": "You held for two and a half years, largest contribution KES 20,000.",
     }
 
 

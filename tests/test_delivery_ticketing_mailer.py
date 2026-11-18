@@ -8,6 +8,7 @@ import pytest
 
 from app.config import get_settings
 from app.delivery.mailer import (
+    Attachment,
     EmailMessage,
     NullMailer,
     TicketingMailer,
@@ -116,3 +117,29 @@ def test_get_mailer_stays_quiet_when_ticketing_is_half_configured(url, secret, r
     mailer = get_mailer(settings)
     assert isinstance(mailer, NullMailer)
     assert mailer.reason == reason
+
+
+def test_internal_mail_goes_to_its_own_endpoint_with_attachments():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"sent": True})
+
+    message = EmailMessage(
+        to="lead@example.com",
+        subject="Report",
+        text_body="Attached",
+        attachments=(Attachment(filename="report.pdf", content=b"%PDF-1.4"),),
+        internal=True,
+    )
+    _mailer(handler).send(message)
+
+    assert seen[0].url == "https://ticketing.test/api/ai-outreach/send-internal-email"
+    token = seen[0].headers["Authorization"].removeprefix("Bearer ")
+    claims = jwt.decode(token, SECRET, algorithms=["HS256"], audience="ticketing-send")
+    assert claims["purpose"] == "send_internal_email"
+
+    assert json.loads(seen[0].content)["attachments"] == [
+        {"filename": "report.pdf", "content_type": "application/pdf", "content": "JVBERi0xLjQ="}
+    ]

@@ -673,11 +673,17 @@ class UserAccessAdmin(ModelView, model=UserAccess):
         UserAccess.daily_capacity,
         UserAccess.active,
         UserAccess.receives_digest,
+        UserAccess.receives_weekly_report,
+        UserAccess.receives_lead_report,
         UserAccess.ai_assistant,
         UserAccess.view_as_email,
         UserAccess.source,
     ]
-    column_labels = {UserAccess.ai_assistant: "AI Assistant"}
+    column_labels = {
+        UserAccess.ai_assistant: "AI Assistant",
+        UserAccess.receives_weekly_report: "Individual Report",
+        UserAccess.receives_lead_report: "Lead Report",
+    }
     column_searchable_list = [UserAccess.email]
     column_sortable_list = [UserAccess.email, UserAccess.role, UserAccess.source]
     column_default_sort = [(UserAccess.email, False)]
@@ -689,6 +695,8 @@ class UserAccessAdmin(ModelView, model=UserAccess):
         UserAccess.daily_capacity,
         UserAccess.active,
         UserAccess.receives_digest,
+        UserAccess.receives_weekly_report,
+        UserAccess.receives_lead_report,
         UserAccess.ai_assistant,
         UserAccess.view_as_email,
     ]

@@ -283,7 +283,7 @@ def test_instantiate_message_fills_every_placeholder_with_this_clients_own_figur
     assert "Dear Jane," in body
     assert "typical contribution was 5,000" in body
     assert "largest 20,000" in body
-    assert "held 0.5 years" in body
+    assert "held about six months" in body
     assert "45 days after top-up" in body
     assert "left March 2025" in body
     assert "cadence 30 days" in body
@@ -705,3 +705,18 @@ def test_create_outreach_message_rejects_a_draft_with_a_token_the_client_cannot_
             ).first()
             is None
         )
+
+
+@pytest.mark.parametrize(
+    ("years", "draft", "expected"),
+    [
+        ("1.2", "It has been a little over {{years_since_exit}} years since", "It has been just over a year since"),
+        ("1", "It has been about {{years_since_exit}} year since", "It has been about a year since"),
+        ("1.5", "what made sense {{years_since_exit}} years ago", "what made sense a year and a half ago"),
+        ("2.9", "about {{years_since_exit}} years", "almost three years"),
+    ],
+)
+def test_years_since_exit_reads_as_words_not_decimals(years, draft, expected) -> None:
+    from app.services.review import resolve_placeholders
+
+    assert resolve_placeholders(draft, first_name="A", fund_name="F", years_since_exit=years) == expected

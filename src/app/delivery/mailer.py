@@ -12,11 +12,12 @@ a half-configured environment should go quiet, not crash.
 
 from __future__ import annotations
 
+import base64
 import smtplib
 import time
 from dataclasses import dataclass, field
 from email.message import EmailMessage as MimeMessage
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import httpx
 import jwt
@@ -34,6 +35,13 @@ def is_cytonn_address(email: str) -> bool:
 
 
 @dataclass(frozen=True)
+class Attachment:
+    filename: str
+    content: bytes
+    content_type: str = "application/pdf"
+
+
+@dataclass(frozen=True)
 class EmailMessage:
     """One message to send. Plain text is required; HTML is optional and is
     added as an alternative part so a text-only reader still sees the body.
@@ -48,6 +56,9 @@ class EmailMessage:
     cc: tuple[str, ...] = ()
     from_email: str | None = None
     reference: str | None = None
+    attachments: tuple[Attachment, ...] = ()
+    # Staff mail, sent by Ticketing without the client campaign wrapper.
+    internal: bool = False
 
 
 @dataclass(frozen=True)
@@ -83,6 +94,11 @@ def build_mime_message(sender: str, message: EmailMessage) -> MimeMessage:
     mime.set_content(message.text_body)
     if message.html_body is not None:
         mime.add_alternative(message.html_body, subtype="html")
+    for attachment in message.attachments:
+        maintype, _, subtype = attachment.content_type.partition("/")
+        mime.add_attachment(
+            attachment.content, maintype=maintype, subtype=subtype, filename=attachment.filename
+        )
     return mime
 
 
@@ -177,6 +193,7 @@ class TicketingSendError(RuntimeError):
 
 TICKETING_SEND_AUDIENCE = "ticketing-send"
 TICKETING_EMAIL_PATH = "/api/ai-outreach/send-email"
+TICKETING_INTERNAL_EMAIL_PATH = "/api/ai-outreach/send-internal-email"
 TICKETING_TOKEN_TTL_SECONDS = 60
 
 
@@ -216,20 +233,34 @@ class TicketingMailer:
         return self._client
 
     def send(self, message: EmailMessage) -> SendResult:
-        payload: dict[str, str | list[str]] = {
+        payload: dict[str, Any] = {
             "to": message.to,
             "subject": message.subject,
             "body": message.text_body,
         }
         if message.cc:
             payload["cc"] = list(message.cc)
-        if message.from_email:
+        if message.from_email and not message.internal:
             payload["from"] = message.from_email
+        if message.attachments:
+            payload["attachments"] = [
+                {
+                    "filename": attachment.filename,
+                    "content_type": attachment.content_type,
+                    "content": base64.b64encode(attachment.content).decode("ascii"),
+                }
+                for attachment in message.attachments
+            ]
         try:
+            path, purpose = (
+                (TICKETING_INTERNAL_EMAIL_PATH, "send_internal_email")
+                if message.internal
+                else (TICKETING_EMAIL_PATH, "send_email")
+            )
             response = self._http().post(
-                TICKETING_EMAIL_PATH,
+                path,
                 headers={
-                    "Authorization": f"Bearer {ticketing_send_token(self.secret, 'send_email')}",
+                    "Authorization": f"Bearer {ticketing_send_token(self.secret, purpose)}",
                     "Accept": "application/json",
                 },
                 json=payload,
