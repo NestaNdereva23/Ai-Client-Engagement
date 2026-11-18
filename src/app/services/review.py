@@ -232,8 +232,16 @@ def resolve_placeholders(
 
 
 _NUMBER_WORDS = {
-    1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
-    6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten",
+    1: "one",
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+    9: "nine",
+    10: "ten",
 }
 
 # A draft says "about {{years_since_exit}} years" or "a little over
@@ -257,16 +265,21 @@ def humanize_years(years: float) -> tuple[str, bool]:
         return "a year" if n == 1 else f"{_NUMBER_WORDS.get(n, str(n))} years"
 
     if whole == 0:
-        return ("about a month", False) if months <= 1 else (
-            f"about {_NUMBER_WORDS.get(months, str(months))} months", False
+        return (
+            ("about a month", False)
+            if months <= 1
+            else (f"about {_NUMBER_WORDS.get(months, str(months))} months", False)
         )
     if rest == 0:
         return n_years(whole), True
     if rest <= 5:
         return f"just over {n_years(whole)}", False
     if rest == 6:
-        return ("a year and a half" if whole == 1 else
-                f"{_NUMBER_WORDS.get(whole, str(whole))} and a half years"), False
+        return (
+            "a year and a half"
+            if whole == 1
+            else f"{_NUMBER_WORDS.get(whole, str(whole))} and a half years"
+        ), False
     return f"almost {n_years(whole + 1)}", False
 
 
