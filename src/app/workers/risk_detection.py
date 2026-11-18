@@ -79,6 +79,7 @@ from app.workers.digest_email import send_digest_emails
 from app.workers.fa_assignment import allocate_and_persist
 from app.workers.ingestion import IngestionWorker
 from app.workers.narrative import warm_digest_narratives
+from app.workers.weekly_report import send_weekly_reports
 
 logger = structlog.get_logger(__name__)
 
@@ -405,6 +406,7 @@ class RiskDetectionWorker:
             self._warm_narratives(digest_run.digest_run_id)
             self._recompute_signals_and_situations(run.reference_ts.date(), run.run_id)
             self._send_digest_emails(digest_run.digest_run_id)
+            self._send_weekly_reports()
             self._prune_old_data()
             self._run_agent(run.reference_ts.date())
 
@@ -492,6 +494,13 @@ class RiskDetectionWorker:
                 send_digest_emails(session, digest_run_id)
         except Exception:
             logger.exception("risk_detection.digest_email_failed", digest_run_id=digest_run_id)
+
+    def _send_weekly_reports(self) -> None:
+        try:
+            with self._session_factory() as session:
+                send_weekly_reports(session)
+        except Exception:
+            logger.exception("risk_detection.weekly_report_failed")
 
     def _recompute_signals_and_situations(self, as_of: date, risk_run_id: str) -> None:
         try:

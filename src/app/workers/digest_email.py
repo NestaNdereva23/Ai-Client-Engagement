@@ -97,7 +97,7 @@ def _already_sent(session: Session, digest_run_id: int, fa_ids: Sequence[str]) -
     )
 
 
-def _addressing(advisor_email: str, settings: Settings) -> tuple[str, tuple[str, ...]]:
+def addressing(advisor_email: str, settings: Settings) -> tuple[str, tuple[str, ...]]:
     """Where one digest goes. With a redirect set, every digest goes to that one
     address and nobody is copied."""
     if settings.digest_redirect_to:
@@ -139,13 +139,14 @@ def send_digest_emails(
         if email.fa_id in done:
             continue
         try:
-            to, cc = _addressing(email.advisor.email, settings)
+            to, cc = addressing(email.advisor.email, settings)
             result = mailer.send(
                 EmailMessage(
                     to=to,
                     subject=email.rendered.subject,
                     text_body=email.rendered.text_body,
                     cc=cc,
+                    internal=True,
                 )
             )
             status = "sent" if result.sent else "recorded"

@@ -67,6 +67,20 @@ def load_advisors(session: Session) -> list[FaRecord]:
     return [advisor_record(row) for row in list_active_advisors(session)]
 
 
+def weekly_report_recipients(session: Session) -> list[UserAccess]:
+    return [row for row in list_active_advisors(session) if row.receives_weekly_report]
+
+
+def lead_report_recipients(session: Session) -> list[UserAccess]:
+    return list(
+        session.scalars(
+            select(UserAccess)
+            .where(UserAccess.receives_lead_report.is_(True), UserAccess.active.is_(True))
+            .order_by(UserAccess.email)
+        )
+    )
+
+
 def link_advisors_from_feed(session: Session) -> int:
     """Add an advisor row for every account manager email that has clients on the
     active side, named from the feed. A row that already exists is never changed,

@@ -18,6 +18,7 @@ joins against.
 from __future__ import annotations
 
 import difflib
+import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -214,6 +215,8 @@ def resolve_placeholders(
     nothing supplied for it.
     """
     resolved = text.replace("{{first_name}}", first_name).replace("{{fund_name}}", fund_name)
+    if years_since_exit is not None:
+        resolved = _resolve_years_phrase(resolved, years_since_exit)
     placeholder_facts = {
         "typical_contribution": typical_contribution,
         "largest_contribution": largest_contribution,
@@ -226,6 +229,71 @@ def resolve_placeholders(
         if value is not None:
             resolved = resolved.replace(f"{{{{{field_name}}}}}", str(value))
     return resolved
+
+
+_NUMBER_WORDS = {
+    1: "one",
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+    9: "nine",
+    10: "ten",
+}
+
+# A draft says "about {{years_since_exit}} years" or "a little over
+# {{years_since_exit}} year"; the whole phrase is swapped for one that reads
+# naturally ("just over a year"), since "1.2 years" is not how people talk.
+_YEARS_PHRASE = re.compile(
+    r"(?:(?P<qualifier>about|around|roughly|nearly|almost|over|more than|a little over"
+    r"|just over|a bit over|a little more than)\s+)?"
+    r"\{\{years_since_exit\}\}(?:\s+years?\b)?",
+    re.IGNORECASE,
+)
+
+
+def humanize_years(years: float) -> tuple[str, bool]:
+    """1.2 -> ("just over a year", False). The flag says whether the phrase is
+    exact, so the draft's own "about" / "a little over" can stay in front of it."""
+    months = max(round(years * 12), 0)
+    whole, rest = divmod(months, 12)
+
+    def n_years(n: int) -> str:
+        return "a year" if n == 1 else f"{_NUMBER_WORDS.get(n, str(n))} years"
+
+    if whole == 0:
+        return (
+            ("about a month", False)
+            if months <= 1
+            else (f"about {_NUMBER_WORDS.get(months, str(months))} months", False)
+        )
+    if rest == 0:
+        return n_years(whole), True
+    if rest <= 5:
+        return f"just over {n_years(whole)}", False
+    if rest == 6:
+        return (
+            "a year and a half"
+            if whole == 1
+            else f"{_NUMBER_WORDS.get(whole, str(whole))} and a half years"
+        ), False
+    return f"almost {n_years(whole + 1)}", False
+
+
+def _resolve_years_phrase(text: str, years_since_exit: str) -> str:
+    try:
+        phrase, exact = humanize_years(float(years_since_exit))
+    except ValueError:
+        return text
+
+    def repl(match: re.Match[str]) -> str:
+        qualifier = match.group("qualifier")
+        return f"{qualifier} {phrase}" if qualifier and exact else phrase
+
+    return _YEARS_PHRASE.sub(repl, text)
 
 
 def personalize_content(

@@ -183,6 +183,7 @@ def test_the_email_says_what_happened_and_links_to_the_brief(db, cleanup) -> Non
     ) in body
     subject = next(m.subject for m in mailer.messages if m.to == ASHA.email)
     assert subject == "Daily Brief: KSh 100K at risk"
+    assert all(message.internal for message in mailer.messages)
 
 
 def test_an_advisor_with_nothing_on_the_worklist_gets_the_short_note(db, cleanup) -> None:

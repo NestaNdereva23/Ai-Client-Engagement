@@ -213,6 +213,10 @@ Extra arguments after the wrapper name go straight to the script. More detail is
 
 See the `LANGFUSE_*` block in `.env.example` for the compose bootstrap variables (all `CHANGEME` defaults, dev only) and for `LANGFUSE_HOST` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`, the three the app itself reads. Until all three are set, every generation runs through a no-op tracer.
 
+### Weekly follow-up reports
+
+After the digest emails, the risk run emails a PDF report on how advisors followed up with flagged clients over the last seven days. An advisor with **Individual Report** switched on in User Access gets their own sheet. Anyone with **Lead Report** switched on gets the team summary followed by every advisor's sheet. While the reports are being tested they go out on every weekday run; set `MONDAY_ONLY = True` in `src/app/workers/weekly_report.py` to send them on Mondays only. `DIGEST_REDIRECT_TO` redirects these emails as well.
+
 ### Morning digest emails
 
 Each advisor chosen for the digest gets one email after the nightly run has recomputed the groups. It is the same brief the Daily Brief screen shows.
